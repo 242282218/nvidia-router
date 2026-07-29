@@ -17,11 +17,17 @@ func RunCLI(args []string) {
 func runCLI(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("nvidia-router", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	var usageErr error
 	flags.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: nvidia-router [--help]")
+		if _, err := fmt.Fprintln(stdout, "Usage: nvidia-router [--help]"); err != nil {
+			usageErr = fmt.Errorf("write usage: %w", err)
+		}
 	}
 
 	if err := flags.Parse(args); err != nil {
+		if usageErr != nil {
+			return usageErr
+		}
 		return err
 	}
 	_, err := New(context.Background(), Dependencies{})
