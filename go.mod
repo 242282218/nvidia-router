@@ -2,7 +2,10 @@ module nvidia-router
 
 go 1.24.0
 
-require github.com/ncruces/go-sqlite3 v0.32.0
+require (
+	github.com/ncruces/go-sqlite3 v0.32.0
+	golang.org/x/crypto v0.48.0
+)
 
 require (
 	github.com/ncruces/julianday v1.0.0 // indirect
