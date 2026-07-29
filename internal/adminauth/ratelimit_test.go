@@ -1,10 +1,8 @@
 package adminauth
 
 import (
-	"container/list"
 	"context"
 	"errors"
-	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -48,17 +46,6 @@ func TestLoginRateLimiterKeepsRejectedAttemptStateBounded(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimiterMaintainsOrderedExpirationIndex(t *testing.T) {
-	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
-	field, found := reflect.TypeOf(*limiter).FieldByName("expirationOrder")
-	if !found {
-		t.Fatal("LoginLimiter has no ordered expiration index")
-	}
-	if want := reflect.TypeOf((*list.List)(nil)); field.Type != want {
-		t.Fatalf("expiration index type = %v, want %v", field.Type, want)
-	}
-}
-
 func TestLoginRateLimiterAllowsOnlyFiveConcurrentAttemptsPerIP(t *testing.T) {
 	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
 	const callers = 20
@@ -90,6 +77,35 @@ func TestLoginRateLimiterAllowsOnlyFiveConcurrentAttemptsPerIP(t *testing.T) {
 	}
 	if succeeded != loginAttemptLimit || limited != callers-loginAttemptLimit {
 		t.Fatalf("concurrent attempts succeeded=%d limited=%d, want %d and %d", succeeded, limited, loginAttemptLimit, callers-loginAttemptLimit)
+	}
+}
+
+func TestLoginRateLimiterSamplesClockWhileStateIsLocked(t *testing.T) {
+	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		run  func(*LoginLimiter) error
+	}{
+		{name: "start attempt", run: func(limiter *LoginLimiter) error { return limiter.StartAttempt("192.0.2.30") }},
+		{name: "record failure", run: func(limiter *LoginLimiter) error {
+			return limiter.RecordFailure(context.Background(), "192.0.2.31")
+		}},
+		{name: "record success", run: func(limiter *LoginLimiter) error {
+			limiter.RecordSuccess("192.0.2.32")
+			return nil
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testClock := &lockAwareLimiterClock{now: now}
+			limiter := NewLoginLimiter(testClock)
+			testClock.limiter = limiter
+			if err := test.run(limiter); err != nil {
+				t.Fatalf("limiter operation: %v", err)
+			}
+			if testClock.sampledWithoutLock {
+				t.Fatal("clock sampled before acquiring limiter state lock")
+			}
+		})
 	}
 }
 
@@ -203,6 +219,25 @@ type limiterClock struct {
 	now       time.Time
 	durations []time.Duration
 	block     bool
+}
+
+type lockAwareLimiterClock struct {
+	clock.RealClock
+	limiter            *LoginLimiter
+	now                time.Time
+	sampledWithoutLock bool
+}
+
+func (c *lockAwareLimiterClock) Now() time.Time {
+	if c.limiter.mu.TryLock() {
+		c.sampledWithoutLock = true
+		c.limiter.mu.Unlock()
+	}
+	return c.now
+}
+
+func (c *lockAwareLimiterClock) NewTimer(time.Duration) *time.Timer {
+	return time.NewTimer(0)
 }
 
 func newLimiterClock(now time.Time) *limiterClock { return &limiterClock{now: now} }

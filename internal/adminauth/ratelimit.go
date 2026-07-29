@@ -45,9 +45,9 @@ func NewLoginLimiter(source clock.Clock) *LoginLimiter {
 }
 
 func (l *LoginLimiter) StartAttempt(ip string) error {
-	now := l.clock.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := l.clock.Now()
 	l.cleanInactive(now)
 	state := l.state(ip, now)
 	state.attempts = keepWindowAttempts(state.attempts, now)
@@ -60,8 +60,8 @@ func (l *LoginLimiter) StartAttempt(ip string) error {
 }
 
 func (l *LoginLimiter) RecordFailure(ctx context.Context, ip string) error {
-	now := l.clock.Now()
 	l.mu.Lock()
+	now := l.clock.Now()
 	l.cleanInactive(now)
 	state := l.state(ip, now)
 	state.failures++
@@ -80,9 +80,9 @@ func (l *LoginLimiter) RecordFailure(ctx context.Context, ip string) error {
 }
 
 func (l *LoginLimiter) RecordSuccess(ip string) {
-	now := l.clock.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := l.clock.Now()
 	l.cleanInactive(now)
 	if state := l.states[ip]; state != nil {
 		l.remove(state)
