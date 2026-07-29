@@ -67,8 +67,13 @@ func (c *Client) ValidateCredential(ctx context.Context, token string) Validatio
 	if response.StatusCode == http.StatusOK {
 		models, parseErr := parseModels(response.Body)
 		if parseErr != nil {
-			result.State = ValidationIndeterminate
-			result.SafeError = "NVIDIA models response was malformed"
+			if errors.Is(parseErr, ErrProtocol) {
+				result.State = ValidationIndeterminate
+				result.SafeError = "NVIDIA models response was malformed"
+			} else {
+				result.State = ValidationTemporarilyUnavailable
+				result.SafeError = "NVIDIA models response could not be read"
+			}
 			return result
 		}
 		result.State = ValidationValid

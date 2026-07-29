@@ -117,6 +117,23 @@ func TestValidationTreatsNetworkAndTimeoutAsTemporary(t *testing.T) {
 	}
 }
 
+func TestValidationTreatsSuccessBodyReadFailureAsTemporary(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       errorReadCloser{err: errors.New("connection interrupted")},
+		}, nil
+	})}
+	result := newTestClient(t, "https://example.invalid", httpClient).ValidateCredential(context.Background(), "test-token")
+	if result.State != ValidationTemporarilyUnavailable {
+		t.Fatalf("state = %v, want temporarily unavailable", result.State)
+	}
+	if strings.Contains(result.SafeError, "connection interrupted") {
+		t.Fatal("validation result exposes body read error")
+	}
+}
+
 func TestValidationReadsAtMostEightKiBOfErrorBody(t *testing.T) {
 	body := &countingReadCloser{reader: strings.NewReader(strings.Repeat("x", 32<<10))}
 	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -193,3 +210,9 @@ func (r *countingReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (*countingReadCloser) Close() error { return nil }
+
+type errorReadCloser struct{ err error }
+
+func (r errorReadCloser) Read([]byte) (int, error) { return 0, r.err }
+
+func (errorReadCloser) Close() error { return nil }
