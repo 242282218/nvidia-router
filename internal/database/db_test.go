@@ -75,6 +75,33 @@ func TestOpenConfiguresSQLiteAndMigratesSchema(t *testing.T) {
 	}
 }
 
+func TestOpenConfiguresReplacementConnections(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	db.SetMaxIdleConns(0)
+	assertPragmaText(t, db, "journal_mode", "wal")
+	assertPragmaInt(t, db, "foreign_keys", 1)
+	assertPragmaInt(t, db, "busy_timeout", 5000)
+	assertPragmaInt(t, db, "synchronous", 1)
+
+	_, err = db.Exec(`
+		INSERT INTO nvidia_key_model_blocks (
+			nvidia_key_id, model_id, reason_code, first_seen_at, last_seen_at
+		) VALUES (999, 999, 'test', '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z')
+	`)
+	if err == nil {
+		t.Fatal("invalid foreign-key insert succeeded after replacing the connection")
+	}
+}
+
 func assertPragmaText(t *testing.T, db *sql.DB, name, want string) {
 	t.Helper()
 

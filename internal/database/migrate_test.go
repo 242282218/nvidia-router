@@ -1,11 +1,51 @@
 package database
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+func TestMigrateRollsBackFailedMigration(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	err = migrateFS(db, fstest.MapFS{
+		"migrations/003_broken.sql": &fstest.MapFile{Data: []byte(`
+			CREATE TABLE rolled_back_table (id INTEGER PRIMARY KEY);
+			THIS IS NOT SQL;
+		`)},
+		"migrations/004_later.sql": &fstest.MapFile{Data: []byte("CREATE TABLE must_not_exist (id INTEGER PRIMARY KEY);")},
+	})
+	if err == nil {
+		t.Fatal("migrateFS succeeded with invalid migration SQL")
+	}
+	for _, part := range []string{"version 3", "003_broken.sql", "execute"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Fatalf("migrateFS error = %q, want substring %q", err, part)
+		}
+	}
+
+	assertTableDoesNotExist(t, db, "rolled_back_table")
+	assertTableDoesNotExist(t, db, "must_not_exist")
+
+	var migrationCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version IN (3, 4)").Scan(&migrationCount); err != nil {
+		t.Fatalf("query failed migration ledger rows: %v", err)
+	}
+	if migrationCount != 0 {
+		t.Fatalf("failed migration ledger rows = %d, want 0", migrationCount)
+	}
+}
 
 func TestMigrateRejectsChangedChecksum(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "router.db"))
@@ -31,12 +71,20 @@ func TestMigrateRejectsChangedChecksum(t *testing.T) {
 		}
 	}
 
+	assertTableDoesNotExist(t, db, "must_not_exist")
+}
+
+func assertTableDoesNotExist(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+
 	var count int
-	query := "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'must_not_exist'"
-	if queryErr := db.QueryRow(query).Scan(&count); queryErr != nil {
-		t.Fatalf("query later migration table: %v", queryErr)
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+		name,
+	).Scan(&count); err != nil {
+		t.Fatalf("query table %q: %v", name, err)
 	}
 	if count != 0 {
-		t.Fatal("later migration ran after checksum mismatch")
+		t.Fatalf("table %q exists, want rolled back", name)
 	}
 }
