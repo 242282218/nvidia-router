@@ -40,9 +40,14 @@ func TestServerForceClosesAfterShutdownTimeout(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.ListenAndServe(ctx) }()
 	go func() {
-		response, err := http.Get("http://" + address)
-		if err == nil {
-			response.Body.Close()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			response, err := http.Get("http://" + address)
+			if err == nil {
+				response.Body.Close()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 	select {
