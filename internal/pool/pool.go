@@ -27,6 +27,8 @@ type Pool struct {
 	keys     map[int64]*keyState
 	order    []int64
 	cursor   int
+	waiters  waitQueue
+	closed   bool
 }
 
 func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
@@ -42,7 +44,7 @@ func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
 
 func (p *Pool) LoadSnapshot(keys []keystate.KeySnapshot, blocks []keystate.ModelBlock) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	p.keys = make(map[int64]*keyState, len(keys))
 	p.order = make([]int64, 0, len(keys))
@@ -61,7 +63,7 @@ func (p *Pool) LoadSnapshot(keys []keystate.KeySnapshot, blocks []keystate.Model
 
 func (p *Pool) UpsertKey(key keystate.KeySnapshot) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	if state, ok := p.keys[key.ID]; ok {
 		state.snapshot = cloneSnapshot(key)
@@ -85,7 +87,7 @@ func (p *Pool) UpsertKey(key keystate.KeySnapshot) {
 
 func (p *Pool) RemoveKey(keyID int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	if _, ok := p.keys[keyID]; !ok {
 		return
@@ -112,7 +114,7 @@ func (p *Pool) RemoveKey(keyID int64) {
 
 func (p *Pool) ApplySuccess(keyID int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	state, ok := p.keys[keyID]
 	if !ok {
@@ -125,7 +127,7 @@ func (p *Pool) ApplySuccess(keyID int64) {
 
 func (p *Pool) ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keystate.KeySnapshot) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	state, ok := p.keys[keyID]
 	if !ok {
@@ -139,7 +141,7 @@ func (p *Pool) ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keyst
 
 func (p *Pool) SetModelBlock(keyID, modelID int64, blocked bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer p.unlockAndDispatch()
 
 	state, ok := p.keys[keyID]
 	if !ok {
@@ -155,12 +157,38 @@ func (p *Pool) SetModelBlock(keyID, modelID int64, blocked bool) {
 func (p *Pool) tryAcquire(modelID int64, attempted map[int64]struct{}) (Lease, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	lease, _ := p.tryAcquireLocked(modelID, attempted)
+	return lease, lease != nil
+}
 
+func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}) (Lease, unavailableState) {
 	now := p.clock.Now()
+	hasEnabled := false
+	hasUnblocked := false
+	hasReady := false
+	var earliestCooldown time.Time
 	for offset := range p.order {
 		index := (p.cursor + offset) % len(p.order)
 		state := p.keys[p.order[index]]
-		if !p.available(state, modelID, attempted, now) {
+		if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
+			continue
+		}
+		if !state.snapshot.Enabled || state.snapshot.AuthInvalid {
+			continue
+		}
+		hasEnabled = true
+		if _, blocked := state.blocks[modelID]; blocked {
+			continue
+		}
+		hasUnblocked = true
+		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
+			if earliestCooldown.IsZero() || state.snapshot.CooldownUntil.Before(earliestCooldown) {
+				earliestCooldown = *state.snapshot.CooldownUntil
+			}
+			continue
+		}
+		hasReady = true
+		if state.busy {
 			continue
 		}
 		state.busy = true
@@ -168,29 +196,30 @@ func (p *Pool) tryAcquire(modelID int64, attempted map[int64]struct{}) (Lease, b
 		return &lease{
 			keyID:   state.snapshot.ID,
 			release: func() { p.release(state) },
-		}, true
+		}, unavailableState{}
 	}
-	return nil, false
-}
-
-func (p *Pool) available(state *keyState, modelID int64, attempted map[int64]struct{}, now time.Time) bool {
-	if state.busy || !state.snapshot.Enabled || state.snapshot.AuthInvalid {
-		return false
+	if !hasEnabled {
+		return nil, unavailableState{reason: UnavailableDisabled}
 	}
-	if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
-		return false
+	if !hasUnblocked {
+		return nil, unavailableState{reason: UnavailableModelBlocked}
 	}
-	if _, attempted := attempted[state.snapshot.ID]; attempted {
-		return false
+	if !hasReady {
+		return nil, unavailableState{reason: UnavailableCooling, retryAfter: earliestCooldown.Sub(now)}
 	}
-	_, blocked := state.blocks[modelID]
-	return !blocked
+	return nil, unavailableState{reason: UnavailableBusy}
 }
 
 func (p *Pool) release(state *keyState) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	state.busy = false
+	p.dispatchWaitersLocked()
+	p.mu.Unlock()
+}
+
+func (p *Pool) unlockAndDispatch() {
+	p.dispatchWaitersLocked()
+	p.mu.Unlock()
 }
 
 func (p *Pool) sortOrder() {

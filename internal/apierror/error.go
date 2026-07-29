@@ -11,3 +11,7 @@ type Error struct {
 	RetryAfter time.Duration
 	Cause      error
 }
+
+func (err Error) Error() string {
+	return err.Message
+}

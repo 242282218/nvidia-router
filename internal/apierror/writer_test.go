@@ -110,3 +110,11 @@ func TestErrorWriteOmitsRetryAfterForNonRetryError(t *testing.T) {
 		t.Fatalf("Retry-After = %q, want empty", retryAfter)
 	}
 }
+
+func TestErrorStringExposesOnlyPublicMessage(t *testing.T) {
+	err := Error{Message: "safe public message", Cause: errors.New("Bearer nvapi-secret")}
+
+	if got := err.Error(); got != "safe public message" {
+		t.Fatalf("Error() = %q, want public message", got)
+	}
+}
