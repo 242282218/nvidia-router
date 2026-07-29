@@ -10,24 +10,89 @@ import (
 	"nvidia-router/internal/clock"
 )
 
-func TestLoginLimiterLimitsSixthAttemptInSlidingWindow(t *testing.T) {
-	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
-	limiter := NewLoginLimiter(testClock)
-	for range 5 {
+func TestLoginRateLimiterLimitsSixthAttemptInSlidingWindow(t *testing.T) {
+	start := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	t.Run("inside window", func(t *testing.T) {
+		testClock := newLimiterClock(start)
+		limiter := NewLoginLimiter(testClock)
+		fillLoginWindow(t, limiter, "192.0.2.1")
+		testClock.Advance(loginWindow - time.Nanosecond)
+		if err := limiter.StartAttempt("192.0.2.1"); !errors.Is(err, ErrLoginRateLimited) {
+			t.Fatalf("StartAttempt inside window error = %v, want ErrLoginRateLimited", err)
+		}
+	})
+	t.Run("exact boundary", func(t *testing.T) {
+		testClock := newLimiterClock(start)
+		limiter := NewLoginLimiter(testClock)
+		fillLoginWindow(t, limiter, "192.0.2.1")
+		testClock.Advance(loginWindow)
 		if err := limiter.StartAttempt("192.0.2.1"); err != nil {
-			t.Fatalf("StartAttempt before limit: %v", err)
+			t.Fatalf("StartAttempt at exact window boundary: %v", err)
+		}
+	})
+}
+
+func TestLoginRateLimiterKeepsRejectedAttemptStateBounded(t *testing.T) {
+	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
+	fillLoginWindow(t, limiter, "192.0.2.2")
+	for range 100 {
+		if err := limiter.StartAttempt("192.0.2.2"); !errors.Is(err, ErrLoginRateLimited) {
+			t.Fatalf("rejected StartAttempt error = %v, want ErrLoginRateLimited", err)
 		}
 	}
-	if err := limiter.StartAttempt("192.0.2.1"); !errors.Is(err, ErrLoginRateLimited) {
-		t.Fatalf("sixth StartAttempt error = %v, want ErrLoginRateLimited", err)
-	}
-	testClock.Advance(61 * time.Second)
-	if err := limiter.StartAttempt("192.0.2.1"); err != nil {
-		t.Fatalf("StartAttempt after window: %v", err)
+	if got := limiterAttemptCount(limiter, "192.0.2.2"); got != loginAttemptLimit {
+		t.Fatalf("stored attempts after sustained rejection = %d, want %d", got, loginAttemptLimit)
 	}
 }
 
-func TestLoginLimiterBacksOffFailuresAndResetsAfterSuccess(t *testing.T) {
+func TestLoginRateLimiterAllowsOnlyFiveConcurrentAttemptsPerIP(t *testing.T) {
+	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
+	const callers = 20
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			results <- limiter.StartAttempt("192.0.2.3")
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	succeeded, limited := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrLoginRateLimited):
+			limited++
+		default:
+			t.Fatalf("unexpected StartAttempt error: %v", err)
+		}
+	}
+	if succeeded != loginAttemptLimit || limited != callers-loginAttemptLimit {
+		t.Fatalf("concurrent attempts succeeded=%d limited=%d, want %d and %d", succeeded, limited, loginAttemptLimit, callers-loginAttemptLimit)
+	}
+}
+
+func TestLoginRateLimiterTracksIPsIndependently(t *testing.T) {
+	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
+	fillLoginWindow(t, limiter, "192.0.2.4")
+	if err := limiter.StartAttempt("192.0.2.4"); !errors.Is(err, ErrLoginRateLimited) {
+		t.Fatalf("limited IP error = %v, want ErrLoginRateLimited", err)
+	}
+	for range loginAttemptLimit {
+		if err := limiter.StartAttempt("192.0.2.5"); err != nil {
+			t.Fatalf("independent IP StartAttempt: %v", err)
+		}
+	}
+}
+
+func TestLoginRateLimiterBacksOffFailuresAndResetsAfterSuccess(t *testing.T) {
 	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
 	limiter := NewLoginLimiter(testClock)
 	for _, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second} {
@@ -47,13 +112,13 @@ func TestLoginLimiterBacksOffFailuresAndResetsAfterSuccess(t *testing.T) {
 	}
 }
 
-func TestLoginLimiterCleansInactiveState(t *testing.T) {
+func TestLoginRateLimiterCleansInactiveState(t *testing.T) {
 	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
 	limiter := NewLoginLimiter(testClock)
 	if err := limiter.StartAttempt("192.0.2.3"); err != nil {
 		t.Fatalf("StartAttempt: %v", err)
 	}
-	testClock.Advance(24*time.Hour + time.Nanosecond)
+	testClock.Advance(24 * time.Hour)
 	if err := limiter.StartAttempt("192.0.2.4"); err != nil {
 		t.Fatalf("StartAttempt cleanup trigger: %v", err)
 	}
@@ -62,7 +127,22 @@ func TestLoginLimiterCleansInactiveState(t *testing.T) {
 	}
 }
 
-func TestLoginLimiterFailureCanBeCancelled(t *testing.T) {
+func fillLoginWindow(t *testing.T, limiter *LoginLimiter, ip string) {
+	t.Helper()
+	for range loginAttemptLimit {
+		if err := limiter.StartAttempt(ip); err != nil {
+			t.Fatalf("StartAttempt before limit: %v", err)
+		}
+	}
+}
+
+func limiterAttemptCount(limiter *LoginLimiter, ip string) int {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	return len(limiter.states[ip].attempts)
+}
+
+func TestLoginRateLimiterFailureCanBeCancelled(t *testing.T) {
 	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
 	testClock.blockTimers()
 	limiter := NewLoginLimiter(testClock)

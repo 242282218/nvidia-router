@@ -57,7 +57,7 @@ func (s *SessionService) Create(ctx context.Context) (CreatedSession, error) {
 		return CreatedSession{}, fmt.Errorf("generate admin session ID: %w", err)
 	}
 
-	now := s.clock.Now().UTC()
+	now := s.clock.Now().UTC().Truncate(time.Second)
 	expiresAt := now.Add(sessionLifetime)
 	tokenBytes := []byte(token)
 	digest := s.keys.SessionDigest(tokenBytes)

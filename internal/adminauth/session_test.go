@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,65 @@ func TestSessionCreateStoresOnlyDigestAndAuthenticates(t *testing.T) {
 	}
 }
 
+func TestSessionCreateReturnsPersistedFullLifetimeAtUTCSecondPrecision(t *testing.T) {
+	db := newTestDatabase(t)
+	localZone := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, time.July, 29, 20, 0, 0, 987654321, localZone)
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+
+	created, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wantExpiry := now.UTC().Truncate(time.Second).Add(24 * time.Hour)
+	if created.ExpiresAt != wantExpiry {
+		t.Fatalf("returned expiry = %s, want %s", created.ExpiresAt, wantExpiry)
+	}
+
+	var storedExpiry string
+	if err := db.QueryRow("SELECT expires_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&storedExpiry); err != nil {
+		t.Fatalf("read stored expiry: %v", err)
+	}
+	parsedExpiry, err := time.Parse(time.RFC3339, storedExpiry)
+	if err != nil {
+		t.Fatalf("parse stored expiry: %v", err)
+	}
+	if parsedExpiry != created.ExpiresAt {
+		t.Fatalf("stored expiry = %s, returned expiry = %s", parsedExpiry, created.ExpiresAt)
+	}
+}
+
+func TestSessionAuthenticateUpdatesLastSeenWithoutExtendingExpiry(t *testing.T) {
+	db := newTestDatabase(t)
+	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
+	service := NewSessionService(db, testClock, newSessionTestKeySet(t))
+	created, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var originalExpiry string
+	if err := db.QueryRow("SELECT expires_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&originalExpiry); err != nil {
+		t.Fatalf("read original expiry: %v", err)
+	}
+	testClock.Advance(2 * time.Hour)
+	authenticated, err := service.Authenticate(context.Background(), created.Token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	var storedExpiry, lastSeen string
+	if err := db.QueryRow("SELECT expires_at, last_seen_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&storedExpiry, &lastSeen); err != nil {
+		t.Fatalf("read authenticated session: %v", err)
+	}
+	if storedExpiry != originalExpiry || authenticated.ExpiresAt != created.ExpiresAt {
+		t.Fatal("Authenticate extended the fixed session expiry")
+	}
+	if want := timestamp(testClock.Now()); lastSeen != want {
+		t.Fatalf("last_seen_at = %q, want %q", lastSeen, want)
+	}
+}
+
 func TestSessionAuthenticationRejectsRevokedAndExpiredSessions(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
@@ -99,6 +159,61 @@ func TestSessionRevokeAllInvalidatesAllSessions(t *testing.T) {
 	}
 	assertInvalidSession(t, service, first.Token)
 	assertInvalidSession(t, service, second.Token)
+}
+
+func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
+	db := newTestDatabase(t)
+	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	repository := NewRepository(db, fixedClock{now: now})
+	if err := repository.EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	firstOld, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create first old session: %v", err)
+	}
+	secondOld, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create second old session: %v", err)
+	}
+	replacement, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create replacement session: %v", err)
+	}
+
+	// Passing an authenticating old session ID would preserve the cookie being rotated out.
+	if err := repository.ChangePassword(context.Background(), "admin", "a replacement password", replacement.ID); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	assertInvalidSession(t, service, firstOld.Token)
+	assertInvalidSession(t, service, secondOld.Token)
+	if _, err := service.Authenticate(context.Background(), replacement.Token); err != nil {
+		t.Fatalf("Authenticate replacement session: %v", err)
+	}
+}
+
+func TestSessionAuthenticationSeparatesInvalidCredentialsFromDatabaseFailures(t *testing.T) {
+	db := newTestDatabase(t)
+	service := NewSessionService(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)}, newSessionTestKeySet(t))
+	assertInvalidSession(t, service, "not-a-session-token")
+	unknownToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, sessionTokenBytes))
+	assertInvalidSession(t, service, unknownToken)
+
+	created, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	_, err = service.Authenticate(context.Background(), created.Token)
+	if err == nil || !strings.Contains(err.Error(), "load admin session") {
+		t.Fatalf("Authenticate database error lacks operation context: %v", err)
+	}
+	if errors.Is(err, ErrInvalidSession) {
+		t.Fatal("Authenticate classified a database failure as ErrInvalidSession")
+	}
 }
 
 func TestSessionCookieHasRequiredAttributes(t *testing.T) {

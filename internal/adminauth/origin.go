@@ -21,7 +21,7 @@ func ValidateOrigin(request *http.Request) error {
 	if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" {
 		return ErrInvalidOrigin
 	}
-	if origin.Scheme != requestScheme(request) || !strings.EqualFold(origin.Host, request.Host) {
+	if !strings.EqualFold(origin.Scheme, requestScheme(request)) || !strings.EqualFold(origin.Host, request.Host) {
 		return ErrInvalidOrigin
 	}
 	return nil

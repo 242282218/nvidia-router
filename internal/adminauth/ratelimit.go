@@ -43,11 +43,11 @@ func (l *LoginLimiter) StartAttempt(ip string) error {
 	l.cleanInactive(now)
 	state := l.state(ip, now)
 	state.attempts = keepWindowAttempts(state.attempts, now)
-	state.attempts = append(state.attempts, now)
 	state.lastUsed = now
-	if len(state.attempts) > loginAttemptLimit {
+	if len(state.attempts) >= loginAttemptLimit {
 		return ErrLoginRateLimited
 	}
+	state.attempts = append(state.attempts, now)
 	return nil
 }
 
@@ -90,7 +90,7 @@ func (l *LoginLimiter) state(ip string, now time.Time) *loginState {
 
 func (l *LoginLimiter) cleanInactive(now time.Time) {
 	for ip, state := range l.states {
-		if now.Sub(state.lastUsed) > loginStateLifetime {
+		if now.Sub(state.lastUsed) >= loginStateLifetime {
 			delete(l.states, ip)
 		}
 	}
