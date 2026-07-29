@@ -3,6 +3,7 @@ package runtimeconfig
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -28,8 +29,8 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 		if committed {
 			return
 		}
-		if rollbackErr := tx.Rollback(); rollbackErr != nil {
-			returnErr = fmt.Errorf("rollback runtime settings transaction: %w", rollbackErr)
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = fmt.Errorf("rollback runtime settings transaction: %w", errors.Join(returnErr, rollbackErr))
 		}
 	}()
 	result, err := tx.ExecContext(ctx, `

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
@@ -33,6 +34,40 @@ type migration struct {
 func Migrate(db *sql.DB) error {
 	if err := migrateFS(db, embeddedMigrations); err != nil {
 		return fmt.Errorf("apply embedded SQLite migrations: %w", err)
+	}
+	return nil
+}
+
+// VerifyMigrations checks that the database exactly matches the embedded migration ledger.
+func VerifyMigrations(ctx context.Context, db *sql.DB) error {
+	migrations, err := loadMigrations(embeddedMigrations)
+	if err != nil {
+		return fmt.Errorf("load embedded migrations: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations")
+	if err != nil {
+		return fmt.Errorf("read migration ledger: %w", err)
+	}
+	defer rows.Close()
+	recorded := make(map[int]string, len(migrations))
+	for rows.Next() {
+		var version int
+		var checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return fmt.Errorf("scan migration ledger: %w", err)
+		}
+		recorded[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate migration ledger: %w", err)
+	}
+	if len(recorded) != len(migrations) {
+		return fmt.Errorf("verify migration ledger: expected %d migrations, found %d", len(migrations), len(recorded))
+	}
+	for _, item := range migrations {
+		if recorded[item.version] != item.checksum {
+			return fmt.Errorf("verify migration %d checksum: mismatch", item.version)
+		}
 	}
 	return nil
 }

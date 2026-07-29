@@ -15,13 +15,15 @@ type Server struct {
 	httpServer *http.Server
 	address    string
 	settings   runtimeconfig.Provider
+	onShutdown func()
 }
 
-func NewServer(address string, handler http.Handler, settings runtimeconfig.Provider) *Server {
+func NewServer(address string, handler http.Handler, settings runtimeconfig.Provider, onShutdown func()) *Server {
 	return &Server{
 		httpServer: &http.Server{Addr: address, Handler: handler},
 		address:    address,
 		settings:   settings,
+		onShutdown: onShutdown,
 	}
 }
 
@@ -42,10 +44,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		return fmt.Errorf("serve HTTP: %w", err)
 	case <-ctx.Done():
+		if s.onShutdown != nil {
+			s.onShutdown()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownGrace())
 		defer cancel()
-		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown HTTP server: %w", err)
+		shutdownErr := s.httpServer.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
+			closeErr := s.httpServer.Close()
+			serveErr := <-serveDone
+			if errors.Is(serveErr, http.ErrServerClosed) {
+				serveErr = nil
+			}
+			return fmt.Errorf("shutdown HTTP server: %w", errors.Join(shutdownErr, closeErr, serveErr))
 		}
 		if err := <-serveDone; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("wait for HTTP server shutdown: %w", err)

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,30 @@ func TestMigrateRejectsChangedChecksum(t *testing.T) {
 	}
 
 	assertTableDoesNotExist(t, db, "must_not_exist")
+}
+
+func TestVerifyMigrationsRejectsMissingOrChangedRecordedMigration(t *testing.T) {
+	for _, mutate := range []struct {
+		name string
+		sql  string
+	}{
+		{"missing", "DELETE FROM schema_migrations WHERE version = 2"},
+		{"checksum", "UPDATE schema_migrations SET checksum = 'invalid' WHERE version = 1"},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			db, err := Open(filepath.Join(t.TempDir(), "router.db"))
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(mutate.sql); err != nil {
+				t.Fatalf("mutate migration ledger: %v", err)
+			}
+			if err := VerifyMigrations(context.Background(), db); err == nil {
+				t.Fatal("VerifyMigrations accepted an incomplete migration ledger")
+			}
+		})
+	}
 }
 
 func assertTableDoesNotExist(t *testing.T, db *sql.DB, name string) {

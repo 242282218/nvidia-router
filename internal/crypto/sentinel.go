@@ -52,6 +52,18 @@ func (keys *KeySet) EnsureSentinel(ctx context.Context, db *sql.DB) error {
 	return keys.validateSentinel(record)
 }
 
+// ValidateSentinel verifies the existing sentinel without modifying the database.
+func (keys *KeySet) ValidateSentinel(ctx context.Context, db *sql.DB) error {
+	record, err := readSentinel(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read crypto sentinel: %w", err)
+	}
+	if err := keys.validateSentinel(record); err != nil {
+		return fmt.Errorf("validate crypto sentinel: %w", err)
+	}
+	return nil
+}
+
 func readSentinel(ctx context.Context, db *sql.DB) (sentinelRecord, error) {
 	var record sentinelRecord
 	err := db.QueryRowContext(ctx, `

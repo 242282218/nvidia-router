@@ -29,6 +29,26 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidateSentinelRejectsCorruptionAndWrongMasterKey(t *testing.T) {
+	db := newTestDatabase(t)
+	keys := newTestKeySet(t, 1)
+	if err := keys.EnsureSentinel(context.Background(), db); err != nil {
+		t.Fatalf("EnsureSentinel: %v", err)
+	}
+	for _, mutate := range []func(t *testing.T){
+		func(t *testing.T) {
+			if _, err := db.Exec("UPDATE crypto_sentinel SET ciphertext = X'00' WHERE id = 1"); err != nil {
+				t.Fatalf("corrupt sentinel: %v", err)
+			}
+			if err := keys.ValidateSentinel(context.Background(), db); err == nil {
+				t.Fatal("ValidateSentinel accepted corrupt data")
+			}
+		},
+	} {
+		mutate(t)
+	}
+}
+
 func TestDecryptReturnsIndependentSlice(t *testing.T) {
 	keys := newTestKeySet(t, 1)
 	plaintext := []byte("nvapi-test-secret")

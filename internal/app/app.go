@@ -51,7 +51,8 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := initialize(ctx, db, resolved); err != nil {
+	keys, err := initialize(ctx, db, resolved)
+	if err != nil {
 		return nil, closeAfterInitializationError(db, err)
 	}
 	settings, err := runtimeconfig.New(ctx, db)
@@ -61,8 +62,8 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, RuntimeSettings: settings}
-	app.Handler = httpapi.NewRouter(health.New(db, app.shutting.Load))
-	app.Server = NewServer(resolved.Config.ListenAddress, app.Handler, settings)
+	app.Handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load))
+	app.Server = NewServer(resolved.Config.ListenAddress, app.Handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }
 
@@ -100,18 +101,18 @@ func openDatabase(dependencies Dependencies) (*sql.DB, error) {
 	return db, nil
 }
 
-func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) error {
+func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) (*crypto.KeySet, error) {
 	keys, err := crypto.New(dependencies.Config.MasterKey)
 	if err != nil {
-		return fmt.Errorf("create crypto key set: %w", err)
+		return nil, fmt.Errorf("create crypto key set: %w", err)
 	}
 	if err := keys.EnsureSentinel(ctx, db); err != nil {
-		return fmt.Errorf("ensure crypto sentinel: %w", err)
+		return nil, fmt.Errorf("ensure crypto sentinel: %w", err)
 	}
 	if err := adminauth.NewRepository(db, dependencies.Clock).EnsureAdmin(ctx); err != nil {
-		return fmt.Errorf("initialize administrator: %w", err)
+		return nil, fmt.Errorf("initialize administrator: %w", err)
 	}
-	return nil
+	return keys, nil
 }
 
 func closeAfterInitializationError(db *sql.DB, operationErr error) error {
@@ -122,16 +123,7 @@ func closeAfterInitializationError(db *sql.DB, operationErr error) error {
 }
 
 func (a *App) Serve(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			a.shutting.Store(true)
-		case <-done:
-		}
-	}()
 	err := a.Server.ListenAndServe(ctx)
-	close(done)
 	if closeErr := a.Close(); closeErr != nil {
 		return fmt.Errorf("serve application: %w", errors.Join(err, closeErr))
 	}

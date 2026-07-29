@@ -14,7 +14,7 @@ import (
 )
 
 func TestLiveReturnsExactOKResponse(t *testing.T) {
-	handler := New(nil, func() bool { return false })
+	handler := New(nil, nil, func() bool { return false })
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/live", nil))
@@ -33,7 +33,7 @@ func TestReadyReturnsServiceUnavailableWithoutOperationalDetails(t *testing.T) {
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 1 WHERE id = 1"); err != nil {
 		t.Fatalf("require password change: %v", err)
 	}
-	handler := New(db, func() bool { return false })
+	handler := New(db, testKeys(t), func() bool { return false })
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
@@ -51,7 +51,7 @@ func TestReadyReturnsServiceUnavailableWhenDatabaseCannotBeReached(t *testing.T)
 	if err := db.Close(); err != nil {
 		t.Fatalf("close database: %v", err)
 	}
-	assertReadyUnavailable(t, New(db, func() bool { return false }))
+	assertReadyUnavailable(t, New(db, testKeys(t), func() bool { return false }))
 }
 
 func TestReadyReturnsServiceUnavailableWhenMigrationsAreUnavailable(t *testing.T) {
@@ -60,7 +60,7 @@ func TestReadyReturnsServiceUnavailableWhenMigrationsAreUnavailable(t *testing.T
 	if _, err := db.Exec("DROP TABLE schema_migrations"); err != nil {
 		t.Fatalf("drop migration ledger: %v", err)
 	}
-	assertReadyUnavailable(t, New(db, func() bool { return false }))
+	assertReadyUnavailable(t, New(db, testKeys(t), func() bool { return false }))
 }
 
 func TestReadyReturnsServiceUnavailableWhenSentinelIsUnavailable(t *testing.T) {
@@ -69,11 +69,38 @@ func TestReadyReturnsServiceUnavailableWhenSentinelIsUnavailable(t *testing.T) {
 	if _, err := db.Exec("DELETE FROM crypto_sentinel WHERE id = 1"); err != nil {
 		t.Fatalf("delete sentinel: %v", err)
 	}
-	assertReadyUnavailable(t, New(db, func() bool { return false }))
+	assertReadyUnavailable(t, New(db, testKeys(t), func() bool { return false }))
+}
+
+func TestReadyReturnsServiceUnavailableForInvalidMigrationOrSentinel(t *testing.T) {
+	for _, item := range []struct {
+		name   string
+		mutate func(*sql.DB) error
+		keys   *crypto.KeySet
+	}{
+		{"checksum", func(db *sql.DB) error {
+			_, err := db.Exec("UPDATE schema_migrations SET checksum = 'bad' WHERE version = 1")
+			return err
+		}, testKeys(t)},
+		{"corrupt sentinel", func(db *sql.DB) error {
+			_, err := db.Exec("UPDATE crypto_sentinel SET ciphertext = X'00' WHERE id = 1")
+			return err
+		}, testKeys(t)},
+		{"wrong key", func(_ *sql.DB) error { return nil }, func() *crypto.KeySet { keys, _ := crypto.New([32]byte{2}); return keys }()},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			db := readyDatabase(t)
+			defer db.Close()
+			if err := item.mutate(db); err != nil {
+				t.Fatalf("mutate ready prerequisite: %v", err)
+			}
+			assertReadyUnavailable(t, New(db, item.keys, func() bool { return false }))
+		})
+	}
 }
 
 func TestReadyRejectsShutdown(t *testing.T) {
-	handler := New(nil, func() bool { return true })
+	handler := New(nil, nil, func() bool { return true })
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
@@ -115,4 +142,13 @@ func readyDatabase(t *testing.T) *sql.DB {
 		t.Fatalf("clear forced password change: %v", err)
 	}
 	return db
+}
+
+func testKeys(t *testing.T) *crypto.KeySet {
+	t.Helper()
+	keys, err := crypto.New([32]byte{1})
+	if err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	return keys
 }

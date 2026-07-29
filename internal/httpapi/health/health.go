@@ -4,15 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+
+	"nvidia-router/internal/crypto"
+	"nvidia-router/internal/database"
 )
 
 type Handler struct {
 	db       *sql.DB
+	keys     *crypto.KeySet
 	shutting func() bool
 }
 
-func New(db *sql.DB, shutting func() bool) *Handler {
-	return &Handler{db: db, shutting: shutting}
+func New(db *sql.DB, keys *crypto.KeySet, shutting func() bool) *Handler {
+	return &Handler{db: db, keys: keys, shutting: shutting}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -38,10 +42,10 @@ func (h *Handler) ready(ctx context.Context) bool {
 	if h.shutting == nil || h.shutting() || h.db == nil || h.db.PingContext(ctx) != nil {
 		return false
 	}
-	if !queryExists(ctx, h.db, "SELECT 1 FROM schema_migrations LIMIT 1") {
+	if database.VerifyMigrations(ctx, h.db) != nil {
 		return false
 	}
-	if !queryExists(ctx, h.db, "SELECT 1 FROM crypto_sentinel WHERE id = 1") {
+	if h.keys == nil || h.keys.ValidateSentinel(ctx, h.db) != nil {
 		return false
 	}
 	var mustChange int
@@ -49,11 +53,6 @@ func (h *Handler) ready(ctx context.Context) bool {
 		return false
 	}
 	return mustChange == 0
-}
-
-func queryExists(ctx context.Context, db *sql.DB, query string) bool {
-	var value int
-	return db.QueryRowContext(ctx, query).Scan(&value) == nil
 }
 
 func writeStatus(writer http.ResponseWriter, status int, value string) {

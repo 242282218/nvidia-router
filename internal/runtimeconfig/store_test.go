@@ -44,6 +44,48 @@ func TestSnapshotIsSafeDuringConcurrentReadsAndUpdates(t *testing.T) {
 	readers.Wait()
 }
 
+func TestConcurrentStoresPublishTheLastCommittedSnapshot(t *testing.T) {
+	firstCommitted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	store := newStore(Snapshot{QueueCapacity: 100}, settingsWriterFunc(func(_ context.Context, next Snapshot) error {
+		if next.QueueCapacity == 101 {
+			close(firstCommitted)
+			<-releaseFirst
+		}
+		return nil
+	}))
+	first := store.Snapshot()
+	first.QueueCapacity = 101
+	second := first
+	second.QueueCapacity = 102
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- store.Store(context.Background(), first) }()
+	<-firstCommitted
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- store.Store(context.Background(), second) }()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second Store completed before first was published: %v", err)
+	default:
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Store: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Store: %v", err)
+	}
+	if got := store.Snapshot(); got != second {
+		t.Fatalf("snapshot = %#v, want %#v", got, second)
+	}
+}
+
+type settingsWriterFunc func(context.Context, Snapshot) error
+
+func (f settingsWriterFunc) Store(ctx context.Context, snapshot Snapshot) error {
+	return f(ctx, snapshot)
+}
+
 func TestStoreDoesNotReplaceSnapshotWhenTransactionFails(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {
