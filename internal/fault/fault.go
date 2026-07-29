@@ -13,16 +13,17 @@ const (
 )
 
 type Fault struct {
-	HTTPStatus    int
-	Scope         Scope
-	Retryable     bool
-	RetryAfter    time.Duration
-	DisableKey    bool
-	BlockModel    bool
-	PublicType    string
-	PublicCode    string
-	PublicMessage string
-	Cause         error
+	HTTPStatus      int
+	Scope           Scope
+	Retryable       bool
+	RetryAfter      time.Duration
+	DisableKey      bool
+	BlockModel      bool
+	PublicType      string
+	PublicCode      string
+	PublicMessage   string
+	Cause           error
+	retryAfterValid bool
 }
 
 func New(httpStatus int, scope Scope, publicType, publicCode, publicMessage string, cause error) Fault {

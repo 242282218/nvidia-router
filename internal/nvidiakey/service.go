@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/crypto"
+	"nvidia-router/internal/fault"
+	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -18,13 +21,41 @@ type Service struct {
 	keys       *crypto.KeySet
 	validator  CredentialValidator
 	clock      clock.Clock
+	random     fault.RandomSource
+}
+
+type KeyStateWriter interface {
+	MarkSuccess(ctx context.Context, keyID int64) (keystate.KeySnapshot, error)
+	MarkFailure(ctx context.Context, keyID, modelID int64, f fault.Fault) (keystate.KeySnapshot, error)
 }
 
 func NewService(repository *Repository, keys *crypto.KeySet, validator CredentialValidator, source clock.Clock) *Service {
 	if source == nil {
 		source = clock.RealClock{}
 	}
-	return &Service{repository: repository, keys: keys, validator: validator, clock: source}
+	return &Service{
+		repository: repository,
+		keys:       keys,
+		validator:  validator,
+		clock:      source,
+		random:     fault.RandomFunc(rand.Float64),
+	}
+}
+
+func (s *Service) MarkSuccess(ctx context.Context, keyID int64) (keystate.KeySnapshot, error) {
+	snapshot, err := s.repository.markSuccess(ctx, keyID, s.clock.Now())
+	if err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("mark NVIDIA key success: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (s *Service) MarkFailure(ctx context.Context, keyID, modelID int64, f fault.Fault) (keystate.KeySnapshot, error) {
+	snapshot, err := s.repository.markFailure(ctx, keyID, modelID, f, s.clock.Now(), s.random)
+	if err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("mark NVIDIA key failure: %w", err)
+	}
+	return snapshot, nil
 }
 
 func (s *Service) Import(ctx context.Context, token string) (ImportResult, error) {

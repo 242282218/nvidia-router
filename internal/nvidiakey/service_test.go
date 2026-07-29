@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,9 @@ import (
 
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
+	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -231,6 +234,177 @@ func TestRepositoryListsPersistedSchedulingSnapshots(t *testing.T) {
 		snapshots[1].CooldownUntil == nil || snapshots[1].CooldownUntil.Format(time.RFC3339) != "2026-07-30T03:05:00Z" {
 		t.Fatalf("snapshot = %+v", snapshots[1])
 	}
+}
+
+func TestMarkFailurePersistsCooldownAcrossReopen(t *testing.T) {
+	service, db, dbPath, keyID := newImportedKeyForStateTest(t)
+	snapshot, err := service.MarkFailure(context.Background(), keyID, 0, fault.Fault{
+		HTTPStatus: 429, Scope: fault.ScopeTransientCredential, Retryable: true,
+		RetryAfter: 10 * time.Second, PublicCode: "rate_limit_exceeded",
+	})
+	if err != nil {
+		t.Fatalf("MarkFailure: %v", err)
+	}
+	if snapshot.CooldownUntil == nil || snapshot.CooldownLevel != 1 || snapshot.ConsecutiveFailures != 1 {
+		t.Fatalf("failure snapshot = %+v", snapshot)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	reopened, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer reopened.Close()
+	persisted, err := NewRepository(reopened).ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots after reopen: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].CooldownUntil == nil || persisted[0].CooldownLevel != 1 || persisted[0].ConsecutiveFailures != 1 {
+		t.Fatalf("persisted snapshots = %+v", persisted)
+	}
+}
+
+func TestMarkFailureRecordsPastRetryAfterWithoutFallback(t *testing.T) {
+	service, _, _, keyID := newImportedKeyForStateTest(t)
+	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
+	response := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{now.Add(-time.Minute).Format(http.TimeFormat)}},
+	}
+	classified := fault.Classify(response, nil, false, now)
+
+	snapshot, err := service.MarkFailure(context.Background(), keyID, 0, classified)
+	if err != nil {
+		t.Fatalf("MarkFailure: %v", err)
+	}
+	if snapshot.CooldownUntil == nil || !snapshot.CooldownUntil.Equal(now) || snapshot.CooldownLevel != 1 || snapshot.ConsecutiveFailures != 1 {
+		t.Fatalf("past Retry-After snapshot = %+v", snapshot)
+	}
+}
+
+func TestMarkFailureDisablesCredentialOrBlocksOnlyModel(t *testing.T) {
+	t.Run("credential", func(t *testing.T) {
+		service, db, _, keyID := newImportedKeyForStateTest(t)
+		snapshot, err := service.MarkFailure(context.Background(), keyID, 0, fault.Fault{
+			HTTPStatus: 401, Scope: fault.ScopeCredential, Retryable: true,
+			DisableKey: true, PublicCode: "invalid_api_key",
+		})
+		if err != nil {
+			t.Fatalf("MarkFailure: %v", err)
+		}
+		if !snapshot.AuthInvalid {
+			t.Fatalf("credential snapshot = %+v", snapshot)
+		}
+		var enabled int
+		if err := db.QueryRow("SELECT enabled FROM nvidia_keys WHERE id = ?", keyID).Scan(&enabled); err != nil || enabled != 1 {
+			t.Fatalf("enabled = %d, err = %v", enabled, err)
+		}
+	})
+
+	t.Run("model", func(t *testing.T) {
+		service, db, _, keyID := newImportedKeyForStateTest(t)
+		modelID := createStateTestModel(t, db)
+		snapshot, err := service.MarkFailure(context.Background(), keyID, modelID, fault.Fault{
+			HTTPStatus: 403, Scope: fault.ScopeModelCredential, Retryable: true,
+			BlockModel: true, PublicCode: "model_not_available",
+		})
+		if err != nil {
+			t.Fatalf("MarkFailure: %v", err)
+		}
+		if snapshot.AuthInvalid {
+			t.Fatalf("model failure invalidated credential: %+v", snapshot)
+		}
+		var reason string
+		var status int
+		if err := db.QueryRow(`
+			SELECT reason_code, upstream_status FROM nvidia_key_model_blocks
+			WHERE nvidia_key_id = ? AND model_id = ?
+		`, keyID, modelID).Scan(&reason, &status); err != nil {
+			t.Fatalf("query model block: %v", err)
+		}
+		if reason != "model_not_available" || status != 403 {
+			t.Fatalf("model block = %q/%d", reason, status)
+		}
+	})
+}
+
+func TestMarkSuccessClearsCooldownAndFailureCounters(t *testing.T) {
+	service, db, _, keyID := newImportedKeyForStateTest(t)
+	if _, err := service.MarkFailure(context.Background(), keyID, 0, fault.Fault{
+		HTTPStatus: 429, Retryable: true, RetryAfter: 10 * time.Second, PublicCode: "rate_limit_exceeded",
+	}); err != nil {
+		t.Fatalf("MarkFailure: %v", err)
+	}
+
+	snapshot, err := service.MarkSuccess(context.Background(), keyID)
+	if err != nil {
+		t.Fatalf("MarkSuccess: %v", err)
+	}
+	if snapshot.CooldownUntil != nil || snapshot.CooldownLevel != 0 || snapshot.ConsecutiveFailures != 0 {
+		t.Fatalf("success snapshot = %+v", snapshot)
+	}
+	var cooldownReason, lastErrorCode sql.NullString
+	var lastSuccessAt sql.NullString
+	if err := db.QueryRow(`
+		SELECT cooldown_reason, last_error_code, last_success_at FROM nvidia_keys WHERE id = ?
+	`, keyID).Scan(&cooldownReason, &lastErrorCode, &lastSuccessAt); err != nil {
+		t.Fatalf("query success state: %v", err)
+	}
+	if cooldownReason.Valid || lastErrorCode.Valid || !lastSuccessAt.Valid {
+		t.Fatalf("success state reason/error/success = %+v/%+v/%+v", cooldownReason, lastErrorCode, lastSuccessAt)
+	}
+}
+
+func TestMarkFailureRollsBackWithoutSnapshot(t *testing.T) {
+	service, db, _, keyID := newImportedKeyForStateTest(t)
+	snapshot, err := service.MarkFailure(context.Background(), keyID, 999999, fault.Fault{
+		HTTPStatus: 403, Scope: fault.ScopeModelCredential, Retryable: true,
+		BlockModel: true, PublicCode: "model_not_available",
+	})
+	if err == nil {
+		t.Fatal("MarkFailure succeeded with missing model")
+	}
+	if snapshot != (keystate.KeySnapshot{}) {
+		t.Fatalf("snapshot after rollback = %+v", snapshot)
+	}
+	var lastErrorAt sql.NullString
+	if err := db.QueryRow("SELECT last_error_at FROM nvidia_keys WHERE id = ?", keyID).Scan(&lastErrorAt); err != nil {
+		t.Fatalf("query rolled back state: %v", err)
+	}
+	if lastErrorAt.Valid {
+		t.Fatalf("last_error_at persisted after rollback: %s", lastErrorAt.String)
+	}
+}
+
+func newImportedKeyForStateTest(t *testing.T) (*Service, *sql.DB, string, int64) {
+	t.Helper()
+	validator := newFakeValidator()
+	token := "state-test-token-123456"
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationValid, Models: []string{"model-a"}}
+	service, db, dbPath := newNVIDIAKeyTestService(t, validator)
+	result, err := service.Import(context.Background(), token)
+	if err != nil || result.Key == nil {
+		t.Fatalf("Import state test key: %+v, %v", result, err)
+	}
+	return service, db, dbPath, result.Key.ID
+}
+
+func createStateTestModel(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
+	repository := modelcatalog.NewRepository(db)
+	if err := repository.SaveSelections(context.Background(), []modelcatalog.Selection{{
+		PublicID: "state-test-model", UpstreamID: "state-test-model", DisplayName: "State Test Model",
+		Kind: modelcatalog.KindChat, Enabled: true, ReasoningWireFormat: "none",
+	}}, now); err != nil {
+		t.Fatalf("SaveSelections: %v", err)
+	}
+	model, err := repository.ResolveEnabled(context.Background(), "state-test-model")
+	if err != nil {
+		t.Fatalf("ResolveEnabled: %v", err)
+	}
+	return model.ID
 }
 
 func newNVIDIAKeyTestService(t *testing.T, validator *fakeValidator) (*Service, *sql.DB, string) {

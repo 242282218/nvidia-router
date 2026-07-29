@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
 )
 
@@ -103,20 +104,9 @@ func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot,
 	defer rows.Close()
 	snapshots := make([]keystate.KeySnapshot, 0)
 	for rows.Next() {
-		var snapshot keystate.KeySnapshot
-		var enabled, authInvalid int
-		var cooldownUntil sql.NullString
-		if err := rows.Scan(&snapshot.ID, &enabled, &authInvalid, &cooldownUntil, &snapshot.CooldownLevel, &snapshot.ConsecutiveFailures); err != nil {
+		snapshot, err := scanSchedulingSnapshot(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan NVIDIA key scheduling snapshot: %w", err)
-		}
-		snapshot.Enabled = enabled == 1
-		snapshot.AuthInvalid = authInvalid == 1
-		if cooldownUntil.Valid {
-			parsed, err := time.Parse(time.RFC3339, cooldownUntil.String)
-			if err != nil {
-				return nil, fmt.Errorf("parse NVIDIA key cooldown time: %w", err)
-			}
-			snapshot.CooldownUntil = &parsed
 		}
 		snapshots = append(snapshots, snapshot)
 	}
@@ -124,6 +114,219 @@ func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot,
 		return nil, fmt.Errorf("iterate NVIDIA key scheduling snapshots: %w", err)
 	}
 	return snapshots, nil
+}
+
+func (r *Repository) markSuccess(ctx context.Context, keyID int64, now time.Time) (keystate.KeySnapshot, error) {
+	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE nvidia_keys SET
+				cooldown_until = NULL,
+				cooldown_reason = NULL,
+				cooldown_level = 0,
+				consecutive_failures = 0,
+				last_success_at = ?,
+				last_error_code = NULL,
+				updated_at = ?
+			WHERE id = ?
+		`, formatTimestamp(now), formatTimestamp(now), keyID)
+		if err != nil {
+			return keystate.KeySnapshot{}, fmt.Errorf("update successful NVIDIA key state: %w", err)
+		}
+		if err := requireOneRow(result, "update successful NVIDIA key state"); err != nil {
+			return keystate.KeySnapshot{}, err
+		}
+		return loadSchedulingSnapshot(ctx, tx, keyID)
+	})
+}
+
+func (r *Repository) markFailure(
+	ctx context.Context,
+	keyID, modelID int64,
+	f fault.Fault,
+	now time.Time,
+	random fault.RandomSource,
+) (keystate.KeySnapshot, error) {
+	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
+		current, err := loadSchedulingSnapshot(ctx, tx, keyID)
+		if err != nil {
+			return keystate.KeySnapshot{}, err
+		}
+		code := safePersistedCode(f.PublicCode)
+		duration, nextLevel := fault.CalculateCooldown(f, current.CooldownLevel, random)
+		authInvalid := current.AuthInvalid || f.DisableKey || f.HTTPStatus == 401
+		recordCooldown := f.HTTPStatus == 429 || duration > 0
+		if err := updateFailedKey(ctx, tx, keyID, authInvalid, code, duration, nextLevel, recordCooldown, now); err != nil {
+			return keystate.KeySnapshot{}, err
+		}
+		if f.BlockModel {
+			if err := upsertModelBlock(ctx, tx, keyID, modelID, code, f.HTTPStatus, now); err != nil {
+				return keystate.KeySnapshot{}, err
+			}
+		}
+		return loadSchedulingSnapshot(ctx, tx, keyID)
+	})
+}
+
+func updateFailedKey(
+	ctx context.Context,
+	tx *sql.Tx,
+	keyID int64,
+	authInvalid bool,
+	code string,
+	duration time.Duration,
+	nextLevel int,
+	recordCooldown bool,
+	now time.Time,
+) error {
+	timestamp := formatTimestamp(now)
+	if recordCooldown {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE nvidia_keys SET
+				auth_invalid = ?, cooldown_until = ?, cooldown_reason = ?, cooldown_level = ?,
+				consecutive_failures = consecutive_failures + 1,
+				last_error_at = ?, last_error_code = ?, updated_at = ?
+			WHERE id = ?
+		`, boolInt(authInvalid), formatTimestamp(now.Add(duration)), code, nextLevel, timestamp, code, timestamp, keyID)
+		if err != nil {
+			return fmt.Errorf("update failed NVIDIA key cooldown: %w", err)
+		}
+		return requireOneRow(result, "update failed NVIDIA key cooldown")
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE nvidia_keys SET
+			auth_invalid = ?, last_error_at = ?, last_error_code = ?, updated_at = ?
+		WHERE id = ?
+	`, boolInt(authInvalid), timestamp, code, timestamp, keyID)
+	if err != nil {
+		return fmt.Errorf("update failed NVIDIA key state: %w", err)
+	}
+	return requireOneRow(result, "update failed NVIDIA key state")
+}
+
+func upsertModelBlock(
+	ctx context.Context,
+	tx *sql.Tx,
+	keyID, modelID int64,
+	reason string,
+	status int,
+	now time.Time,
+) error {
+	var upstreamStatus any
+	if status > 0 {
+		upstreamStatus = status
+	}
+	timestamp := formatTimestamp(now)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO nvidia_key_model_blocks (
+			nvidia_key_id, model_id, reason_code, upstream_status, first_seen_at, last_seen_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(nvidia_key_id, model_id) DO UPDATE SET
+			reason_code = excluded.reason_code,
+			upstream_status = excluded.upstream_status,
+			last_seen_at = excluded.last_seen_at
+	`, keyID, modelID, reason, upstreamStatus, timestamp, timestamp); err != nil {
+		return fmt.Errorf("upsert NVIDIA key model block: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) stateTransaction(
+	ctx context.Context,
+	operation func(*sql.Tx) (keystate.KeySnapshot, error),
+) (snapshot keystate.KeySnapshot, returnErr error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("begin NVIDIA key state transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = fmt.Errorf("rollback NVIDIA key state transaction: %w", errors.Join(returnErr, rollbackErr))
+		}
+	}()
+
+	snapshot, err = operation(tx)
+	if err != nil {
+		return keystate.KeySnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("commit NVIDIA key state transaction: %w", err)
+	}
+	committed = true
+	return snapshot, nil
+}
+
+type schedulingSnapshotScanner interface {
+	Scan(...any) error
+}
+
+func loadSchedulingSnapshot(ctx context.Context, tx *sql.Tx, keyID int64) (keystate.KeySnapshot, error) {
+	snapshot, err := scanSchedulingSnapshot(tx.QueryRowContext(ctx, `
+		SELECT id, enabled, auth_invalid, cooldown_until, cooldown_level, consecutive_failures
+		FROM nvidia_keys WHERE id = ?
+	`, keyID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return keystate.KeySnapshot{}, fmt.Errorf("load NVIDIA key scheduling snapshot: %w", sql.ErrNoRows)
+	}
+	if err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("load NVIDIA key scheduling snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+func scanSchedulingSnapshot(scanner schedulingSnapshotScanner) (keystate.KeySnapshot, error) {
+	var snapshot keystate.KeySnapshot
+	var enabled, authInvalid int
+	var cooldownUntil sql.NullString
+	if err := scanner.Scan(
+		&snapshot.ID, &enabled, &authInvalid, &cooldownUntil,
+		&snapshot.CooldownLevel, &snapshot.ConsecutiveFailures,
+	); err != nil {
+		return keystate.KeySnapshot{}, err
+	}
+	snapshot.Enabled = enabled == 1
+	snapshot.AuthInvalid = authInvalid == 1
+	if cooldownUntil.Valid {
+		parsed, err := time.Parse(time.RFC3339, cooldownUntil.String)
+		if err != nil {
+			return keystate.KeySnapshot{}, fmt.Errorf("parse NVIDIA key cooldown time: %w", err)
+		}
+		snapshot.CooldownUntil = &parsed
+	}
+	return snapshot, nil
+}
+
+func requireOneRow(result sql.Result, operation string) error {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: count affected rows: %w", operation, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("%s: expected one row, updated %d", operation, rows)
+	}
+	return nil
+}
+
+func safePersistedCode(code string) string {
+	if code == "" || len(code) > 128 {
+		return "upstream_error"
+	}
+	for _, character := range code {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '-' && character != '.' {
+			return "upstream_error"
+		}
+	}
+	return code
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func formatTimestamp(value time.Time) string {
