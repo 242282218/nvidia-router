@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,27 +14,15 @@ func RunCLI(args []string) {
 	}
 }
 
-func runCLI(args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("nvidia-router", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	var usageErr error
-	flags.Usage = func() {
+func runCLI(args []string, stdout, _ io.Writer) error {
+	if len(args) == 1 && args[0] == "--help" {
 		if _, err := fmt.Fprintln(stdout, "Usage: nvidia-router [--help]"); err != nil {
-			usageErr = fmt.Errorf("write usage: %w", err)
+			return fmt.Errorf("write usage: %w", err)
 		}
+		return nil
 	}
-
-	if err := flags.Parse(args); err != nil {
-		if usageErr != nil {
-			return usageErr
-		}
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
-	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected argument: %s", flags.Arg(0))
+	if len(args) != 0 {
+		return fmt.Errorf("unexpected argument: %s", args[0])
 	}
 	_, err := New(context.Background(), Dependencies{})
 	return err

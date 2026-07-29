@@ -70,17 +70,34 @@ func TestRunCLIHelpProcess(t *testing.T) {
 
 func TestRunCLIRejectsInvalidArgumentsProcess(t *testing.T) {
 	for _, args := range [][]string{{"serve"}, {"--unknown"}} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			_, stderr, err := runCLIProcess(t, args...)
-
-			if err == nil {
-				t.Fatal("RunCLI succeeded, want non-zero exit")
-			}
-			if stderr == "" {
-				t.Fatal("stderr is empty")
-			}
-		})
+		assertRunCLIFails(t, args...)
 	}
+}
+
+func TestRunCLIRejectsHelpAliasesProcess(t *testing.T) {
+	for _, args := range [][]string{
+		{"-h"},
+		{"--h"},
+		{"-help"},
+		{"--help=value"},
+		{"--help", "extra"},
+	} {
+		assertRunCLIFails(t, args...)
+	}
+}
+
+func assertRunCLIFails(t *testing.T, args ...string) {
+	t.Helper()
+	t.Run(strings.Join(args, " "), func(t *testing.T) {
+		_, stderr, err := runCLIProcess(t, args...)
+
+		if err == nil {
+			t.Fatal("RunCLI succeeded, want non-zero exit")
+		}
+		if stderr == "" {
+			t.Fatal("stderr is empty")
+		}
+	})
 }
 
 func runCLIProcess(t *testing.T, args ...string) (string, string, error) {
