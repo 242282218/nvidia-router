@@ -73,7 +73,24 @@ func (q *waitQueue) remove(waiter *waiter) bool {
 }
 
 func (p *Pool) Acquire(ctx context.Context, modelID int64, attempted map[int64]struct{}) (Lease, error) {
-	settings := p.queueSettings()
+	return p.acquire(ctx, modelID, attempted, p.queueSettings())
+}
+
+func (p *Pool) AcquireWithSnapshot(
+	ctx context.Context,
+	modelID int64,
+	attempted map[int64]struct{},
+	snapshot runtimeconfig.Snapshot,
+) (Lease, error) {
+	return p.acquire(ctx, modelID, attempted, resolveQueueSettings(snapshot))
+}
+
+func (p *Pool) acquire(
+	ctx context.Context,
+	modelID int64,
+	attempted map[int64]struct{},
+	settings resolvedQueueSettings,
+) (Lease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -136,6 +153,10 @@ func (p *Pool) queueSettings() resolvedQueueSettings {
 	if p.settings != nil {
 		snapshot = p.settings.Snapshot()
 	}
+	return resolveQueueSettings(snapshot)
+}
+
+func resolveQueueSettings(snapshot runtimeconfig.Snapshot) resolvedQueueSettings {
 	capacity := snapshot.QueueCapacity
 	if capacity <= 0 {
 		capacity = defaultQueueCapacity
