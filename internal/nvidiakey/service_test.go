@@ -16,6 +16,7 @@ import (
 
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -197,6 +198,38 @@ func TestImportDoesNotLeakPlaintextToDatabaseWALOrLogs(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), token) {
 		t.Fatal("logs contain plaintext key")
+	}
+}
+
+func TestRepositoryListsPersistedSchedulingSnapshots(t *testing.T) {
+	_, db, _ := newNVIDIAKeyTestService(t, newFakeValidator())
+	if _, err := db.Exec(`
+		INSERT INTO nvidia_keys (
+			ciphertext, nonce, fingerprint, display_prefix, display_suffix,
+			enabled, auth_invalid, cooldown_until, cooldown_level,
+			consecutive_failures, created_at, updated_at
+		) VALUES
+			(x'01', x'02', x'03', 'first', 'one', 1, 0, NULL, 0, 0, ?, ?),
+			(x'04', x'05', x'06', 'second', 'two', 0, 1, ?, 3, 4, ?, ?)
+	`,
+		"2026-07-30T03:00:00Z", "2026-07-30T03:00:00Z",
+		"2026-07-30T03:05:00Z", "2026-07-30T03:00:00Z", "2026-07-30T03:00:00Z",
+	); err != nil {
+		t.Fatalf("insert scheduling states: %v", err)
+	}
+
+	snapshots, err := NewRepository(db).ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshot count = %d", len(snapshots))
+	}
+	want := keystate.KeySnapshot{ID: snapshots[1].ID, Enabled: false, AuthInvalid: true, CooldownLevel: 3, ConsecutiveFailures: 4}
+	if snapshots[1].Enabled != want.Enabled || snapshots[1].AuthInvalid != want.AuthInvalid ||
+		snapshots[1].CooldownLevel != want.CooldownLevel || snapshots[1].ConsecutiveFailures != want.ConsecutiveFailures ||
+		snapshots[1].CooldownUntil == nil || snapshots[1].CooldownUntil.Format(time.RFC3339) != "2026-07-30T03:05:00Z" {
+		t.Fatalf("snapshot = %+v", snapshots[1])
 	}
 }
 

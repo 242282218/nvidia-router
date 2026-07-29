@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"nvidia-router/internal/keystate"
 )
 
 type Repository struct {
@@ -87,6 +89,41 @@ func (r *Repository) LoadEncrypted(ctx context.Context, id int64) (encryptedKey,
 		return encryptedKey{}, fmt.Errorf("load NVIDIA key ciphertext: %w", err)
 	}
 	return value, nil
+}
+
+func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, enabled, auth_invalid, cooldown_until, cooldown_level, consecutive_failures
+		FROM nvidia_keys
+		ORDER BY id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list NVIDIA key scheduling snapshots: %w", err)
+	}
+	defer rows.Close()
+	snapshots := make([]keystate.KeySnapshot, 0)
+	for rows.Next() {
+		var snapshot keystate.KeySnapshot
+		var enabled, authInvalid int
+		var cooldownUntil sql.NullString
+		if err := rows.Scan(&snapshot.ID, &enabled, &authInvalid, &cooldownUntil, &snapshot.CooldownLevel, &snapshot.ConsecutiveFailures); err != nil {
+			return nil, fmt.Errorf("scan NVIDIA key scheduling snapshot: %w", err)
+		}
+		snapshot.Enabled = enabled == 1
+		snapshot.AuthInvalid = authInvalid == 1
+		if cooldownUntil.Valid {
+			parsed, err := time.Parse(time.RFC3339, cooldownUntil.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse NVIDIA key cooldown time: %w", err)
+			}
+			snapshot.CooldownUntil = &parsed
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate NVIDIA key scheduling snapshots: %w", err)
+	}
+	return snapshots, nil
 }
 
 func formatTimestamp(value time.Time) string {
