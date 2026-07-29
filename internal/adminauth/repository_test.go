@@ -1,6 +1,7 @@
 package adminauth
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -228,6 +229,75 @@ func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T)
 	}
 }
 
+func TestResetPasswordWithoutCurrentPasswordRevokesAllSessionsAndPreservesNVIDIASecrets(t *testing.T) {
+	db := newTestDatabase(t)
+	now := time.Date(2026, time.July, 29, 15, 0, 0, 0, time.UTC)
+	repository := NewRepository(db, fixedClock{now: now})
+	if err := repository.EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	if err := repository.ChangePassword(context.Background(), "admin", "previous recovery password", ""); err != nil {
+		t.Fatalf("set previous password: %v", err)
+	}
+	insertSession(t, db, "first-reset-session", nil)
+	insertSession(t, db, "second-reset-session", nil)
+	insertNVIDIASecretFixture(t, db)
+	beforeCiphertext, beforeNonce, beforeFingerprint := readNVIDIASecretFixture(t, db)
+
+	if err := repository.ResetPassword(context.Background(), "replacement recovery password"); err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+	admin := readAdmin(t, db)
+	if admin.mustChangePassword {
+		t.Fatal("ResetPassword left must_change_password enabled")
+	}
+	if matched, err := VerifyPassword("previous recovery password", admin.passwordHash); err != nil || matched {
+		t.Fatalf("previous password verification = %t, %v", matched, err)
+	}
+	if matched, err := VerifyPassword("replacement recovery password", admin.passwordHash); err != nil || !matched {
+		t.Fatalf("replacement password verification = %t, %v", matched, err)
+	}
+	for _, id := range []string{"first-reset-session", "second-reset-session"} {
+		if revokedAt := sessionRevokedAt(t, db, id); revokedAt == nil || *revokedAt != now.Format(time.RFC3339) {
+			t.Fatalf("session %q revoked_at = %v, want %q", id, revokedAt, now.Format(time.RFC3339))
+		}
+	}
+	afterCiphertext, afterNonce, afterFingerprint := readNVIDIASecretFixture(t, db)
+	if !bytes.Equal(afterCiphertext, beforeCiphertext) ||
+		!bytes.Equal(afterNonce, beforeNonce) ||
+		!bytes.Equal(afterFingerprint, beforeFingerprint) {
+		t.Fatal("ResetPassword changed NVIDIA encrypted fields")
+	}
+}
+
+func TestResetPasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
+	db := newTestDatabase(t)
+	repository := NewRepository(db, fixedClock{now: time.Date(2026, time.July, 29, 15, 0, 0, 0, time.UTC)})
+	if err := repository.EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	insertSession(t, db, "reset-session", nil)
+	beforeAdmin := readAdmin(t, db)
+	if _, err := db.Exec(`
+		CREATE TRIGGER reject_reset_session_revocation
+		BEFORE UPDATE OF revoked_at ON admin_sessions
+		BEGIN
+			SELECT RAISE(ABORT, 'reset revocation rejected');
+		END
+	`); err != nil {
+		t.Fatalf("create session trigger: %v", err)
+	}
+
+	err := repository.ResetPassword(context.Background(), "replacement recovery password")
+	if err == nil || !strings.Contains(err.Error(), "revoke all admin sessions") {
+		t.Fatalf("ResetPassword error = %v, want revocation context", err)
+	}
+	assertAdminEqual(t, readAdmin(t, db), beforeAdmin)
+	if revokedAt := sessionRevokedAt(t, db, "reset-session"); revokedAt != nil {
+		t.Fatalf("failed ResetPassword revoked session at %q", *revokedAt)
+	}
+}
+
 type fixedClock struct {
 	clock.RealClock
 	now time.Time
@@ -312,6 +382,27 @@ func insertSession(t *testing.T, db *sql.DB, id string, revokedAt *string) {
 	`, id, []byte(id), revokedAt); err != nil {
 		t.Fatalf("insert session: %v", err)
 	}
+}
+
+func insertNVIDIASecretFixture(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO nvidia_keys (
+			ciphertext, nonce, fingerprint, display_prefix, display_suffix,
+			created_at, updated_at
+		) VALUES (?, ?, ?, 'nvapi-', '-tail', '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z')
+	`, []byte("reset-ciphertext"), []byte("reset-nonce"), []byte("reset-fingerprint")); err != nil {
+		t.Fatalf("insert NVIDIA secret fixture: %v", err)
+	}
+}
+
+func readNVIDIASecretFixture(t *testing.T, db *sql.DB) ([]byte, []byte, []byte) {
+	t.Helper()
+	var ciphertext, nonce, fingerprint []byte
+	if err := db.QueryRow("SELECT ciphertext, nonce, fingerprint FROM nvidia_keys LIMIT 1").Scan(&ciphertext, &nonce, &fingerprint); err != nil {
+		t.Fatalf("read NVIDIA secret fixture: %v", err)
+	}
+	return ciphertext, nonce, fingerprint
 }
 
 func sessionRevokedAt(t *testing.T, db *sql.DB, id string) *string {

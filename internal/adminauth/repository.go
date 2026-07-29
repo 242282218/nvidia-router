@@ -111,6 +111,56 @@ func (r *Repository) ChangePassword(ctx context.Context, currentPassword, newPas
 	return nil
 }
 
+// ResetPassword is reserved for offline recovery when no authenticated session is available.
+func (r *Repository) ResetPassword(ctx context.Context, newPassword string) (returnErr error) {
+	if err := validateNewPassword(newPassword); err != nil {
+		return fmt.Errorf("validate new password: %w", err)
+	}
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password reset transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			returnErr = fmt.Errorf("rollback password reset transaction: %w", errors.Join(returnErr, rollbackErr))
+		}
+	}()
+
+	now := timestamp(r.clock.Now())
+	result, err := tx.ExecContext(ctx, `
+		UPDATE admins
+		SET password_hash = ?, must_change_password = 0, updated_at = ?
+		WHERE id = 1
+	`, newHash, now)
+	if err != nil {
+		return fmt.Errorf("update admin password during reset: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count reset admin rows: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("update admin password during reset: %w", sql.ErrNoRows)
+	}
+	if err := revokeOtherSessions(ctx, tx, "", now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password reset transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 func validateNewPassword(password string) error {
 	if password == defaultAdminUsername {
 		return errPasswordIsDefault

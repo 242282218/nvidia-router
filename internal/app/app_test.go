@@ -60,7 +60,11 @@ func TestRunCLIHelpProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCLI --help: %v\nstderr: %s", err, stderr)
 	}
-	if stdout != "Usage: nvidia-router [--help]\n" {
+	want := "Usage:\n" +
+		"  nvidia-router [--help]\n" +
+		"  nvidia-router admin reset-password --password <new>\n" +
+		"  nvidia-router db backup --output <path>\n"
+	if stdout != want {
 		t.Fatalf("stdout = %q", stdout)
 	}
 	if stderr != "" {

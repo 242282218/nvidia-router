@@ -1,0 +1,144 @@
+package database
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestBackupCopiesConsistentWALDatabase(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "router.db")
+	db, err := Open(sourcePath)
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close source database: %v", err)
+		}
+	})
+
+	if _, err := db.Exec("PRAGMA wal_autocheckpoint = 0"); err != nil {
+		t.Fatalf("disable WAL autocheckpoint: %v", err)
+	}
+	insertBackupFixtures(t, db)
+	if info, err := os.Stat(sourcePath + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("source WAL is not populated: info=%v err=%v", info, err)
+	}
+
+	backupDir := filepath.Join(root, "backup dir")
+	if err := os.Mkdir(backupDir, 0o700); err != nil {
+		t.Fatalf("create backup directory: %v", err)
+	}
+	backupPath := filepath.Join(backupDir, "router #1.db")
+	if err := Backup(context.Background(), db, backupPath); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(backupPath)
+		if err != nil {
+			t.Fatalf("stat backup: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("backup permissions = %o, want 600", got)
+		}
+	}
+
+	backupDB, err := Open(backupPath)
+	if err != nil {
+		t.Fatalf("Open backup: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backupDB.Close(); err != nil {
+			t.Errorf("close backup database: %v", err)
+		}
+	})
+	assertBackupContents(t, backupDB)
+}
+
+func TestBackupRemovesTemporaryFileWhenSourceIsClosed(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(filepath.Join(root, "router.db"))
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close source: %v", err)
+	}
+
+	backupDir := filepath.Join(root, "backups")
+	if err := os.Mkdir(backupDir, 0o700); err != nil {
+		t.Fatalf("create backup directory: %v", err)
+	}
+	backupPath := filepath.Join(backupDir, "router.db")
+	if err := Backup(context.Background(), db, backupPath); err == nil {
+		t.Fatal("Backup succeeded with a closed source database")
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("read backup directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("backup failure left %d files", len(entries))
+	}
+}
+
+func insertBackupFixtures(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO admins (id, username, password_hash, must_change_password, created_at, updated_at)
+		VALUES (1, 'admin', 'backup-hash', 0, '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("insert admin fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO nvidia_keys (
+			ciphertext, nonce, fingerprint, display_prefix, display_suffix,
+			created_at, updated_at
+		) VALUES (?, ?, ?, 'nvapi-', '-tail', '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z')
+	`, []byte("ciphertext-fixture"), []byte("nonce-fixture"), []byte("fingerprint-fixture")); err != nil {
+		t.Fatalf("insert NVIDIA Key fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO access_keys (name, key_digest, key_prefix, created_at)
+		VALUES ('test client', ?, 'nvr_example', '2026-07-29T00:00:00Z')
+	`, []byte("access-digest-fixture")); err != nil {
+		t.Fatalf("insert Access Key fixture: %v", err)
+	}
+}
+
+func assertBackupContents(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var migrationCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
+		t.Fatalf("read backup schema: %v", err)
+	}
+	if migrationCount == 0 {
+		t.Fatal("backup has no migration records")
+	}
+	var username string
+	if err := db.QueryRow("SELECT username FROM admins WHERE id = 1").Scan(&username); err != nil || username != "admin" {
+		t.Fatalf("backup admin = %q, err=%v", username, err)
+	}
+	var ciphertext, nonce, fingerprint []byte
+	if err := db.QueryRow("SELECT ciphertext, nonce, fingerprint FROM nvidia_keys").Scan(&ciphertext, &nonce, &fingerprint); err != nil {
+		t.Fatalf("read backup NVIDIA Key: %v", err)
+	}
+	if !bytes.Equal(ciphertext, []byte("ciphertext-fixture")) ||
+		!bytes.Equal(nonce, []byte("nonce-fixture")) ||
+		!bytes.Equal(fingerprint, []byte("fingerprint-fixture")) {
+		t.Fatal("backup changed NVIDIA Key encrypted fields")
+	}
+	var accessName, accessPrefix string
+	if err := db.QueryRow("SELECT name, key_prefix FROM access_keys").Scan(&accessName, &accessPrefix); err != nil {
+		t.Fatalf("read backup Access Key: %v", err)
+	}
+	if accessName != "test client" || accessPrefix != "nvr_example" {
+		t.Fatalf("backup Access Key = %q/%q", accessName, accessPrefix)
+	}
+}
