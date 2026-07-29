@@ -12,12 +12,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/keystate"
+	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/nvidiakey"
 )
 
 func TestNew(t *testing.T) {
@@ -41,6 +46,78 @@ func TestNew(t *testing.T) {
 	response := httptestGet(t, app.Handler, "/health/live")
 	if response.Code != http.StatusOK {
 		t.Fatalf("live status = %d", response.Code)
+	}
+}
+
+func TestNewRestoresPoolStateFromDatabase(t *testing.T) {
+	db := openAppDatabase(t)
+	defer db.Close()
+	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
+	keyRepository := nvidiakey.NewRepository(db)
+	first, _, err := keyRepository.Create(context.Background(), []byte{1}, []byte{2}, []byte{3}, "key", "one", now)
+	if err != nil {
+		t.Fatalf("create first key: %v", err)
+	}
+	second, _, err := keyRepository.Create(context.Background(), []byte{4}, []byte{5}, []byte{6}, "key", "two", now)
+	if err != nil {
+		t.Fatalf("create second key: %v", err)
+	}
+	if _, err := db.Exec("UPDATE nvidia_keys SET enabled = 0 WHERE id = ?", first.ID); err != nil {
+		t.Fatalf("disable first key: %v", err)
+	}
+	modelRepository := modelcatalog.NewRepository(db)
+	if err := modelRepository.SaveSelections(context.Background(), []modelcatalog.Selection{{
+		PublicID: "test-model", UpstreamID: "test-model", DisplayName: "Test Model", Kind: modelcatalog.KindChat, Enabled: true, ReasoningWireFormat: "none",
+	}}, now); err != nil {
+		t.Fatalf("save test model: %v", err)
+	}
+	model, err := modelRepository.ResolveEnabled(context.Background(), "test-model")
+	if err != nil {
+		t.Fatalf("resolve test model: %v", err)
+	}
+	if err := modelRepository.BlockKeyModel(context.Background(), second.ID, model.ID, "model_unsupported", nil, now); err != nil {
+		t.Fatalf("block second key model: %v", err)
+	}
+
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if app.Pool == nil {
+		t.Fatal("New did not initialize Pool")
+	}
+	poolKeys := reflect.ValueOf(app.Pool).Elem().FieldByName("keys")
+	if poolKeys.Len() != 2 {
+		t.Fatalf("restored pool key count = %d, want 2", poolKeys.Len())
+	}
+	firstState := poolKeys.MapIndex(reflect.ValueOf(first.ID)).Elem()
+	if firstState.FieldByName("snapshot").FieldByName("Enabled").Bool() {
+		t.Fatal("restored first key is enabled, want disabled")
+	}
+	secondState := poolKeys.MapIndex(reflect.ValueOf(second.ID)).Elem()
+	blocksValue := secondState.FieldByName("blocks")
+	if !blocksValue.MapIndex(reflect.ValueOf(model.ID)).IsValid() {
+		t.Fatal("restored second key is missing its model block")
+	}
+
+	keys, err := keyRepository.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list key snapshots: %v", err)
+	}
+	blocks, err := modelcatalog.NewRepository(db).ListBlocks(context.Background())
+	if err != nil {
+		t.Fatalf("list model blocks: %v", err)
+	}
+	if len(keys) != 2 || keys[0].ID != first.ID || keys[1].ID != second.ID {
+		t.Fatalf("key snapshots = %#v", keys)
+	}
+	if len(blocks) != 1 || blocks[0] != (keystate.ModelBlock{KeyID: second.ID, ModelID: model.ID}) {
+		t.Fatalf("model blocks = %#v", blocks)
 	}
 }
 

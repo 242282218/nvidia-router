@@ -19,6 +19,9 @@ import (
 	"nvidia-router/internal/database"
 	"nvidia-router/internal/httpapi"
 	"nvidia-router/internal/httpapi/health"
+	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/nvidiakey"
+	"nvidia-router/internal/pool"
 	"nvidia-router/internal/runtimeconfig"
 )
 
@@ -33,6 +36,7 @@ type Dependencies struct {
 type App struct {
 	Dependencies    Dependencies
 	Handler         http.Handler
+	Pool            *pool.Pool
 	RuntimeSettings runtimeconfig.Provider
 	Server          *Server
 
@@ -59,9 +63,19 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize runtime settings store: %w", err))
 	}
+	keySnapshots, err := nvidiakey.NewRepository(db).ListSnapshots(ctx)
+	if err != nil {
+		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key scheduling snapshots: %w", err))
+	}
+	modelBlocks, err := modelcatalog.NewRepository(db).ListBlocks(ctx)
+	if err != nil {
+		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key model blocks: %w", err))
+	}
+	keyPool := pool.New(settings, resolved.Clock)
+	keyPool.LoadSnapshot(keySnapshots, modelBlocks)
 
 	resolved.DB = db
-	app := &App{Dependencies: resolved, db: db, RuntimeSettings: settings}
+	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
 	app.Handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load))
 	app.Server = NewServer(resolved.Config.ListenAddress, app.Handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
