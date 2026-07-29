@@ -1,8 +1,11 @@
 package adminauth
 
 import (
+	"container/list"
 	"context"
 	"errors"
+	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +45,17 @@ func TestLoginRateLimiterKeepsRejectedAttemptStateBounded(t *testing.T) {
 	}
 	if got := limiterAttemptCount(limiter, "192.0.2.2"); got != loginAttemptLimit {
 		t.Fatalf("stored attempts after sustained rejection = %d, want %d", got, loginAttemptLimit)
+	}
+}
+
+func TestLoginRateLimiterMaintainsOrderedExpirationIndex(t *testing.T) {
+	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
+	field, found := reflect.TypeOf(*limiter).FieldByName("expirationOrder")
+	if !found {
+		t.Fatal("LoginLimiter has no ordered expiration index")
+	}
+	if want := reflect.TypeOf((*list.List)(nil)); field.Type != want {
+		t.Fatalf("expiration index type = %v, want %v", field.Type, want)
 	}
 }
 
@@ -127,6 +141,36 @@ func TestLoginRateLimiterCleansInactiveState(t *testing.T) {
 	}
 }
 
+func TestLoginRateLimiterExpirationOrderFollowsLastUse(t *testing.T) {
+	start := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	testClock := newLimiterClock(start)
+	limiter := NewLoginLimiter(testClock)
+	if err := limiter.StartAttempt("recently-touched"); err != nil {
+		t.Fatalf("StartAttempt first IP: %v", err)
+	}
+	testClock.Advance(time.Hour)
+	if err := limiter.StartAttempt("expired"); err != nil {
+		t.Fatalf("StartAttempt second IP: %v", err)
+	}
+	testClock.Advance(22 * time.Hour)
+	if err := limiter.StartAttempt("recently-touched"); err != nil {
+		t.Fatalf("touch first IP: %v", err)
+	}
+	testClock.Advance(2 * time.Hour)
+	if err := limiter.StartAttempt("cleanup-trigger"); err != nil {
+		t.Fatalf("StartAttempt cleanup trigger: %v", err)
+	}
+
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.states["expired"] != nil {
+		t.Fatal("expiration index retained the 24-hour-old state")
+	}
+	if limiter.states["recently-touched"] == nil {
+		t.Fatal("expiration index removed a recently touched state")
+	}
+}
+
 func fillLoginWindow(t *testing.T, limiter *LoginLimiter, ip string) {
 	t.Helper()
 	for range loginAttemptLimit {
@@ -196,4 +240,22 @@ func (c *limiterClock) blockTimers() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.block = true
+}
+
+func BenchmarkLoginRateLimiterStartAttemptWithManyActiveIPs(b *testing.B) {
+	for _, stateCount := range []int{1_000, 10_000} {
+		b.Run(strconv.Itoa(stateCount), func(b *testing.B) {
+			testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
+			limiter := NewLoginLimiter(testClock)
+			for index := range stateCount {
+				if err := limiter.StartAttempt("benchmark-ip-" + strconv.Itoa(index)); err != nil {
+					b.Fatalf("populate limiter: %v", err)
+				}
+			}
+			b.ResetTimer()
+			for range b.N {
+				_ = limiter.StartAttempt("benchmark-active-ip")
+			}
+		})
+	}
 }

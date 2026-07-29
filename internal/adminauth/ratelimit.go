@@ -1,6 +1,7 @@
 package adminauth
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
@@ -18,22 +19,29 @@ const (
 var ErrLoginRateLimited = errors.New("login rate limited")
 
 type LoginLimiter struct {
-	clock  clock.Clock
-	mu     sync.Mutex
-	states map[string]*loginState
+	clock           clock.Clock
+	mu              sync.Mutex
+	states          map[string]*loginState
+	expirationOrder *list.List
 }
 
 type loginState struct {
-	attempts []time.Time
-	failures int
-	lastUsed time.Time
+	ip              string
+	attempts        []time.Time
+	failures        int
+	lastUsed        time.Time
+	expirationEntry *list.Element
 }
 
 func NewLoginLimiter(source clock.Clock) *LoginLimiter {
 	if source == nil {
 		source = clock.RealClock{}
 	}
-	return &LoginLimiter{clock: source, states: make(map[string]*loginState)}
+	return &LoginLimiter{
+		clock:           source,
+		states:          make(map[string]*loginState),
+		expirationOrder: list.New(),
+	}
 }
 
 func (l *LoginLimiter) StartAttempt(ip string) error {
@@ -43,7 +51,7 @@ func (l *LoginLimiter) StartAttempt(ip string) error {
 	l.cleanInactive(now)
 	state := l.state(ip, now)
 	state.attempts = keepWindowAttempts(state.attempts, now)
-	state.lastUsed = now
+	l.touch(state, now)
 	if len(state.attempts) >= loginAttemptLimit {
 		return ErrLoginRateLimited
 	}
@@ -57,7 +65,7 @@ func (l *LoginLimiter) RecordFailure(ctx context.Context, ip string) error {
 	l.cleanInactive(now)
 	state := l.state(ip, now)
 	state.failures++
-	state.lastUsed = now
+	l.touch(state, now)
 	delay := loginFailureDelay(state.failures)
 	l.mu.Unlock()
 
@@ -76,24 +84,44 @@ func (l *LoginLimiter) RecordSuccess(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.cleanInactive(now)
-	delete(l.states, ip)
+	if state := l.states[ip]; state != nil {
+		l.remove(state)
+	}
 }
 
 func (l *LoginLimiter) state(ip string, now time.Time) *loginState {
 	state := l.states[ip]
 	if state == nil {
-		state = &loginState{lastUsed: now}
+		state = &loginState{ip: ip, lastUsed: now}
+		state.expirationEntry = l.expirationOrder.PushBack(state)
 		l.states[ip] = state
 	}
 	return state
 }
 
 func (l *LoginLimiter) cleanInactive(now time.Time) {
-	for ip, state := range l.states {
-		if now.Sub(state.lastUsed) >= loginStateLifetime {
-			delete(l.states, ip)
+	for {
+		oldest := l.expirationOrder.Front()
+		if oldest == nil {
+			return
 		}
+		state := oldest.Value.(*loginState)
+		if now.Sub(state.lastUsed) < loginStateLifetime {
+			return
+		}
+		l.remove(state)
 	}
+}
+
+func (l *LoginLimiter) touch(state *loginState, now time.Time) {
+	state.lastUsed = now
+	l.expirationOrder.MoveToBack(state.expirationEntry)
+}
+
+func (l *LoginLimiter) remove(state *loginState) {
+	delete(l.states, state.ip)
+	l.expirationOrder.Remove(state.expirationEntry)
+	state.expirationEntry = nil
 }
 
 func (l *LoginLimiter) stateCount() int {

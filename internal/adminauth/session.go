@@ -85,10 +85,11 @@ func (s *SessionService) Authenticate(ctx context.Context, token string) (Sessio
 	var expiresAt string
 	now := s.clock.Now().UTC()
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, expires_at
-		FROM admin_sessions
+		UPDATE admin_sessions
+		SET last_seen_at = ?
 		WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
-	`, digest, timestamp(now)).Scan(&session.ID, &expiresAt)
+		RETURNING id, expires_at
+	`, timestamp(now), digest, timestamp(now)).Scan(&session.ID, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrInvalidSession
 	}
@@ -100,9 +101,6 @@ func (s *SessionService) Authenticate(ctx context.Context, token string) (Sessio
 		return Session{}, fmt.Errorf("parse admin session expiry: %w", err)
 	}
 	session.ExpiresAt = parsedExpiry
-	if _, err := s.db.ExecContext(ctx, "UPDATE admin_sessions SET last_seen_at = ? WHERE id = ?", timestamp(now), session.ID); err != nil {
-		return Session{}, fmt.Errorf("update admin session last seen time: %w", err)
-	}
 	return session, nil
 }
 

@@ -119,6 +119,40 @@ func TestSessionAuthenticateUpdatesLastSeenWithoutExtendingExpiry(t *testing.T) 
 	}
 }
 
+func TestSessionAuthenticateRejectsRevocationBeforeFinalTouch(t *testing.T) {
+	db := newTestDatabase(t)
+	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	created, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TRIGGER revoke_before_session_touch
+		BEFORE UPDATE OF last_seen_at ON admin_sessions
+		BEGIN
+			UPDATE admin_sessions
+			SET revoked_at = '2026-07-29T12:00:00Z'
+			WHERE id = OLD.id;
+			SELECT RAISE(IGNORE);
+		END
+	`); err != nil {
+		t.Fatalf("create revocation trigger: %v", err)
+	}
+
+	_, err = service.Authenticate(context.Background(), created.Token)
+	if !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("Authenticate during revocation error = %v, want ErrInvalidSession", err)
+	}
+	var revokedAt string
+	if err := db.QueryRow("SELECT revoked_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&revokedAt); err != nil {
+		t.Fatalf("read revoked session: %v", err)
+	}
+	if revokedAt == "" {
+		t.Fatal("revocation trigger did not persist revocation")
+	}
+}
+
 func TestSessionAuthenticationRejectsRevokedAndExpiredSessions(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
