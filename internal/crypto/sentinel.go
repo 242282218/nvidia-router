@@ -9,11 +9,10 @@ import (
 )
 
 const (
-	sentinelVersion = 1
-	sentinelAAD     = "crypto-sentinel:v1"
+	sentinelVersion   = 1
+	sentinelAAD       = "crypto-sentinel:v1"
+	sentinelPlaintext = "nvidia-router/crypto-sentinel/v1"
 )
-
-var sentinelPlaintext = []byte("nvidia-router/crypto-sentinel/v1")
 
 type sentinelRecord struct {
 	version    int
@@ -30,7 +29,9 @@ func (keys *KeySet) EnsureSentinel(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("read crypto sentinel: %w", err)
 	}
 
-	ciphertext, nonce, err := keys.Encrypt(sentinelPlaintext, sentinelAAD)
+	plaintext := []byte(sentinelPlaintext)
+	defer Zero(plaintext)
+	ciphertext, nonce, err := keys.Encrypt(plaintext, sentinelAAD)
 	if err != nil {
 		return fmt.Errorf("encrypt crypto sentinel: %w", err)
 	}
@@ -72,7 +73,9 @@ func (keys *KeySet) validateSentinel(record sentinelRecord) error {
 		return fmt.Errorf("decrypt crypto sentinel: %w", err)
 	}
 	defer Zero(plaintext)
-	if subtle.ConstantTimeCompare(plaintext, sentinelPlaintext) != 1 {
+	expected := []byte(sentinelPlaintext)
+	defer Zero(expected)
+	if subtle.ConstantTimeCompare(plaintext, expected) != 1 {
 		return fmt.Errorf("validate crypto sentinel: plaintext mismatch")
 	}
 	return nil
