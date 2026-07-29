@@ -24,18 +24,21 @@ check_command() {
   fi
 }
 
-check_major_version() {
-  local command_name="$1"
-  local minimum_major="$2"
-  local version="$3"
-  local install_command="$4"
+check_node_version() {
+  local version="$1"
+  local install_command="$2"
   local major
+  local remainder
+  local minor
 
   major="${version%%.*}"
-  if [[ "$major" =~ ^[0-9]+$ ]] && (( major >= minimum_major )); then
-    pass "$command_name $version"
+  remainder="${version#*.}"
+  minor="${remainder%%.*}"
+  if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] &&
+    (( (major == 20 && minor >= 19) || major > 22 || (major == 22 && minor >= 12) )); then
+    pass "Node.js $version"
   else
-    fail "$command_name $version is unsupported; require $minimum_major+. Install with: $install_command"
+    fail "Node.js $version is unsupported; require ^20.19.0 || >=22.12.0. Install with: $install_command"
   fi
 }
 
@@ -60,13 +63,18 @@ fi
 
 if command -v node >/dev/null 2>&1; then
   node_version="$(node --version)"
-  check_major_version Node.js 20 "${node_version#v}" 'winget install --id OpenJS.NodeJS --version 24.12.0 --exact'
+  check_node_version "${node_version#v}" 'winget install --id OpenJS.NodeJS --version 24.12.0 --exact'
 else
   fail 'Node.js is required. Install with: winget install --id OpenJS.NodeJS --version 24.12.0 --exact'
 fi
 
-if command -v golangci-lint >/dev/null 2>&1; then
-  pass "golangci-lint $(golangci-lint version --short 2>/dev/null || golangci-lint --version)"
+golangci_lint="$(command -v golangci-lint || true)"
+if [[ -z "$golangci_lint" ]] && command -v go >/dev/null 2>&1; then
+  golangci_lint="$(go env GOPATH)/bin/golangci-lint"
+fi
+
+if [[ -x "$golangci_lint" ]]; then
+  pass "golangci-lint $($golangci_lint version --short 2>/dev/null || $golangci_lint --version)"
 else
   fail 'golangci-lint is required. Install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0'
 fi
