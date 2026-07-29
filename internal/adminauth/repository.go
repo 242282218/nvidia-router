@@ -112,11 +112,11 @@ func (r *Repository) ChangePassword(ctx context.Context, currentPassword, newPas
 }
 
 func validateNewPassword(password string) error {
-	if utf8.RuneCountInString(password) < 12 {
-		return errPasswordTooShort
-	}
 	if password == defaultAdminUsername {
 		return errPasswordIsDefault
+	}
+	if utf8.RuneCountInString(password) < 12 {
+		return errPasswordTooShort
 	}
 	return nil
 }

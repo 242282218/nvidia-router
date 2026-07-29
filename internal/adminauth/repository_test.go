@@ -3,7 +3,10 @@ package adminauth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +55,47 @@ func TestEnsureAdminPreservesExistingAdmin(t *testing.T) {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	assertAdminEqual(t, readAdmin(t, db), existing)
+}
+
+func TestEnsureAdminConcurrentInitializationCreatesOneStableAdmin(t *testing.T) {
+	db := newTestDatabase(t)
+	repository := NewRepository(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)})
+
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			errs <- repository.EnsureAdmin(context.Background())
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent EnsureAdmin: %v", err)
+		}
+	}
+
+	if count := adminCount(t, db); count != 1 {
+		t.Fatalf("admin count = %d, want 1", count)
+	}
+	created := readAdmin(t, db)
+	if matched, err := VerifyPassword("admin", created.passwordHash); err != nil || !matched {
+		t.Fatalf("concurrently created admin verification = %t, %v", matched, err)
+	}
+
+	for range callers {
+		if err := repository.EnsureAdmin(context.Background()); err != nil {
+			t.Fatalf("subsequent EnsureAdmin: %v", err)
+		}
+	}
+	assertAdminEqual(t, readAdmin(t, db), created)
 }
 
 func TestChangePasswordUpdatesPasswordAndRevokesOtherSessions(t *testing.T) {
@@ -113,6 +157,37 @@ func TestChangePasswordWithoutCurrentSessionRevokesAllActiveSessions(t *testing.
 	}
 }
 
+func TestChangePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
+	db := newTestDatabase(t)
+	repository := NewRepository(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)})
+	if err := repository.EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	insertSession(t, db, "keep", nil)
+	insertSession(t, db, "revoke", nil)
+	beforeAdmin := readAdmin(t, db)
+	beforeSessions := sessionRevocations(t, db)
+	if _, err := db.Exec(`
+		CREATE TRIGGER reject_admin_session_revocation
+		BEFORE UPDATE OF revoked_at ON admin_sessions
+		BEGIN
+			SELECT RAISE(ABORT, 'session revocation rejected');
+		END
+	`); err != nil {
+		t.Fatalf("create session trigger: %v", err)
+	}
+
+	err := repository.ChangePassword(context.Background(), "admin", "a replacement password", "keep")
+	if err == nil {
+		t.Fatal("ChangePassword succeeded despite session revocation trigger")
+	}
+	if !strings.Contains(err.Error(), "revoke other admin sessions") {
+		t.Fatalf("ChangePassword error lacks revocation context: %v", err)
+	}
+	assertAdminEqual(t, readAdmin(t, db), beforeAdmin)
+	assertSessionRevocationsEqual(t, sessionRevocations(t, db), beforeSessions)
+}
+
 func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T) {
 	db := newTestDatabase(t)
 	repository := NewRepository(db, fixedClock{})
@@ -126,15 +201,24 @@ func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T)
 		name            string
 		currentPassword string
 		newPassword     string
+		want            error
+		dontWant        error
 	}{
-		{name: "wrong current password", currentPassword: "wrong", newPassword: "a replacement password"},
-		{name: "short password", currentPassword: "admin", newPassword: "too-short"},
-		{name: "four multi-byte characters", currentPassword: "admin", newPassword: "😀😀😀😀"},
-		{name: "default password", currentPassword: "admin", newPassword: "admin"},
+		{name: "wrong current password", currentPassword: "wrong", newPassword: "a replacement password", want: errCurrentPasswordIncorrect},
+		{name: "short password", currentPassword: "admin", newPassword: "too-short", want: errPasswordTooShort},
+		{name: "four multi-byte characters", currentPassword: "admin", newPassword: "😀😀😀😀", want: errPasswordTooShort},
+		{name: "default password", currentPassword: "admin", newPassword: "admin", want: errPasswordIsDefault, dontWant: errPasswordTooShort},
 	} {
 		t.Run(input.name, func(t *testing.T) {
-			if err := repository.ChangePassword(context.Background(), input.currentPassword, input.newPassword, "active"); err == nil {
+			err := repository.ChangePassword(context.Background(), input.currentPassword, input.newPassword, "active")
+			if err == nil {
 				t.Fatal("ChangePassword succeeded")
+			}
+			if !errors.Is(err, input.want) {
+				t.Fatalf("ChangePassword error does not match expected cause: %v", err)
+			}
+			if input.dontWant != nil && errors.Is(err, input.dontWant) {
+				t.Fatal("ChangePassword returned a less-specific password error")
 			}
 			assertAdminEqual(t, readAdmin(t, db), before)
 			if revokedAt := sessionRevokedAt(t, db, "active"); revokedAt != nil {
@@ -189,6 +273,15 @@ func newTestDatabase(t *testing.T) *sql.DB {
 	return db
 }
 
+func adminCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM admins").Scan(&count); err != nil {
+		t.Fatalf("count admins: %v", err)
+	}
+	return count
+}
+
 func readAdmin(t *testing.T, db *sql.DB) adminRecord {
 	t.Helper()
 	var record adminRecord
@@ -231,4 +324,43 @@ func sessionRevokedAt(t *testing.T, db *sql.DB, id string) *string {
 		return nil
 	}
 	return &revokedAt.String
+}
+
+func sessionRevocations(t *testing.T, db *sql.DB) map[string]string {
+	t.Helper()
+	rows, err := db.Query("SELECT id, revoked_at FROM admin_sessions ORDER BY id")
+	if err != nil {
+		t.Fatalf("query session revocations: %v", err)
+	}
+	defer rows.Close()
+
+	revocations := make(map[string]string)
+	for rows.Next() {
+		var id string
+		var revokedAt sql.NullString
+		if err := rows.Scan(&id, &revokedAt); err != nil {
+			t.Fatalf("scan session revocation: %v", err)
+		}
+		if revokedAt.Valid {
+			revocations[id] = revokedAt.String
+		} else {
+			revocations[id] = ""
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate session revocations: %v", err)
+	}
+	return revocations
+}
+
+func assertSessionRevocationsEqual(t *testing.T, got, want map[string]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("session count = %d, want %d", len(got), len(want))
+	}
+	for id, wantRevokedAt := range want {
+		if gotRevokedAt, found := got[id]; !found || gotRevokedAt != wantRevokedAt {
+			t.Fatalf("session %q revocation changed", id)
+		}
+	}
 }
