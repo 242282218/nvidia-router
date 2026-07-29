@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"nvidia-router/internal/adminauth"
 	"nvidia-router/internal/database"
@@ -20,18 +22,25 @@ const (
 	routerDBFilename  = "router.db"
 	cliUsage          = "Usage:\n" +
 		"  nvidia-router [--help]\n" +
+		"  nvidia-router serve\n" +
 		"  nvidia-router admin reset-password --password <new>\n" +
 		"  nvidia-router db backup --output <path>\n"
 )
 
 func RunCLI(args []string) {
-	if err := runCLI(args, os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runCLIContext(ctx, args, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func runCLI(args []string, stdout, _ io.Writer) error {
+	return runCLIContext(context.Background(), args, stdout, io.Discard)
+}
+
+func runCLIContext(ctx context.Context, args []string, stdout, _ io.Writer) error {
 	if len(args) == 1 && args[0] == "--help" {
 		if _, err := fmt.Fprint(stdout, cliUsage); err != nil {
 			return fmt.Errorf("write usage: %w", err)
@@ -44,11 +53,31 @@ func runCLI(args []string, stdout, _ io.Writer) error {
 	if len(args) == 4 && args[0] == "db" && args[1] == "backup" && args[2] == "--output" {
 		return runDatabaseBackup(context.Background(), args[3], stdout)
 	}
+	if len(args) == 1 && args[0] == "serve" {
+		return runServe(ctx)
+	}
 	if len(args) != 0 {
 		return errors.New("invalid command; run --help for usage")
 	}
-	_, err := New(context.Background(), Dependencies{})
-	return err
+	application, err := New(ctx, Dependencies{})
+	if err != nil {
+		return err
+	}
+	if err := application.Close(); err != nil {
+		return fmt.Errorf("close initialized application: %w", err)
+	}
+	return nil
+}
+
+func runServe(ctx context.Context) error {
+	application, err := New(ctx, Dependencies{})
+	if err != nil {
+		return fmt.Errorf("initialize serve application: %w", err)
+	}
+	if err := application.Serve(ctx); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	return nil
 }
 
 func runAdminPasswordReset(ctx context.Context, password string, stdout io.Writer) error {

@@ -4,13 +4,68 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"io"
+	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/adminauth"
 	"nvidia-router/internal/database"
 )
+
+func TestCLIServeStopsWhenContextIsCancelled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listener: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release listener: %v", err)
+	}
+	master := make([]byte, 32)
+	master[0] = 1
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY", base64.RawURLEncoding.EncodeToString(master))
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", t.TempDir())
+	t.Setenv("NVIDIA_ROUTER_LISTEN_ADDR", address)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runCLIContext(ctx, []string{"serve"}, io.Discard, io.Discard)
+	}()
+	waitForLive(t, "http://"+address+"/health/live")
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not stop after context cancellation")
+	}
+}
+
+func waitForLive(t *testing.T, endpoint string) {
+	t.Helper()
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := client.Get(endpoint)
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("live endpoint did not become available: %s", endpoint)
+}
 
 func TestCLIResetPasswordRevokesSessionsWithoutChangingNVIDIASecrets(t *testing.T) {
 	dataDir := t.TempDir()

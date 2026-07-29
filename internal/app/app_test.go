@@ -3,22 +3,82 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"nvidia-router/internal/clock"
+	"nvidia-router/internal/config"
+	"nvidia-router/internal/database"
 )
 
 func TestNew(t *testing.T) {
-	app, err := New(context.Background(), Dependencies{})
+	db := openAppDatabase(t)
+	defer db.Close()
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if app == nil {
 		t.Fatal("expected app")
 	}
+	if app.Dependencies.DB != db {
+		t.Fatal("App did not retain the injected database dependency")
+	}
+	response := httptestGet(t, app.Handler, "/health/live")
+	if response.Code != http.StatusOK {
+		t.Fatalf("live status = %d", response.Code)
+	}
+}
+
+func TestNewClosesDatabaseWhenInitializationFails(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := db.Exec("DROP TABLE runtime_settings"); err != nil {
+		t.Fatalf("drop runtime settings: %v", err)
+	}
+
+	_, err = New(context.Background(), Dependencies{
+		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db,
+	})
+	if err == nil {
+		t.Fatal("New succeeded without runtime settings")
+	}
+	if err := db.Ping(); err == nil {
+		t.Fatal("New did not close an injected database after initialization failure")
+	}
+}
+
+func openAppDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	return db
+}
+
+func httptestGet(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	return response
 }
 
 func TestRunCLIPropagatesUsageWriteError(t *testing.T) {
@@ -62,6 +122,7 @@ func TestRunCLIHelpProcess(t *testing.T) {
 	}
 	want := "Usage:\n" +
 		"  nvidia-router [--help]\n" +
+		"  nvidia-router serve\n" +
 		"  nvidia-router admin reset-password --password <new>\n" +
 		"  nvidia-router db backup --output <path>\n"
 	if stdout != want {
@@ -73,7 +134,7 @@ func TestRunCLIHelpProcess(t *testing.T) {
 }
 
 func TestRunCLIRejectsInvalidArgumentsProcess(t *testing.T) {
-	for _, args := range [][]string{{"serve"}, {"--unknown"}} {
+	for _, args := range [][]string{{"--unknown"}} {
 		assertRunCLIFails(t, args...)
 	}
 }
