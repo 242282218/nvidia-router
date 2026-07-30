@@ -49,6 +49,37 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestNewServesEmbeddedFrontendAndKeepsAPIPrefixesOutOfSPA(t *testing.T) {
+	db := openAppDatabase(t)
+	defer db.Close()
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, path := range []string{"/", "/admin/keys", "/unknown/deep-link"} {
+		response := httptestGet(t, app.Handler(), path)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, response.Code)
+		}
+		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+			t.Fatalf("%s Content-Type = %q, want HTML", path, got)
+		}
+	}
+
+	for _, path := range []string{"/v1", "/v1/unknown", "/admin/api", "/admin/api/unknown", "/health", "/health/unknown"} {
+		response := httptestGet(t, app.Handler(), path)
+		if strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s returned HTML: status=%d body=%q", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestNewRestoresPoolStateFromDatabase(t *testing.T) {
 	db := openAppDatabase(t)
 	defer db.Close()

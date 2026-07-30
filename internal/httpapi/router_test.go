@@ -11,7 +11,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	})
 	security := fakeAdminSecurity{}
-	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler(), ok, ok)
+	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler(), ok, ok, http.NotFoundHandler())
 
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech", "/v1/models"} {
 		response := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 
 func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
 
 	for _, path := range []string{"/v1", "/v1/some/unknown"} {
 		response := httptest.NewRecorder()
@@ -52,7 +52,7 @@ func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 	})
 	router := NewRouter(
 		notFound, notFound, notFound, notFound, notFound, notFound, notFound,
-		fakeAdminSecurity{}, notFound, settings, runtimeSummary,
+		fakeAdminSecurity{}, notFound, settings, runtimeSummary, notFound,
 	)
 
 	for _, request := range []struct {
@@ -76,7 +76,7 @@ func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 
 func TestRouterSeparatesAuthAndProtectedAdminAPI(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
 
 	authResponse := httptest.NewRecorder()
 	router.ServeHTTP(authResponse, httptest.NewRequest(http.MethodGet, "/admin/api/auth/session", nil))

@@ -15,10 +15,11 @@ type AdminSecurity interface {
 func NewRouter(
 	health, chat, responses, embeddings, audio, speech, models http.Handler,
 	security AdminSecurity,
-	management, settings, runtimeSummary http.Handler,
+	management, settings, runtimeSummary, frontend http.Handler,
 	additionalAdmin ...http.Handler,
 ) http.Handler {
 	root := http.NewServeMux()
+	root.Handle("/health", health)
 	root.Handle("/health/", health)
 	dataRoutes := security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models))
 	root.Handle("/v1", dataRoutes)
@@ -31,8 +32,8 @@ func NewRouter(
 	securedManagement := security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
-	root.HandleFunc("/admin/", frontendPlaceholder)
-	root.HandleFunc("/", frontendPlaceholder)
+	root.Handle("/admin/", frontend)
+	root.Handle("/", frontend)
 	return root
 }
 
@@ -59,8 +60,4 @@ func newV1Router(chat, responses, embeddings, audio, speech, models http.Handler
 	// Fallback for any other /v1/* path must come after the concrete routes above.
 	mux.Handle("/v1/", v1.Unsupported)
 	return mux
-}
-
-func frontendPlaceholder(writer http.ResponseWriter, request *http.Request) {
-	http.NotFound(writer, request)
 }

@@ -29,6 +29,7 @@ import (
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
+	webui "nvidia-router/internal/web"
 )
 
 type Dependencies struct {
@@ -113,6 +114,10 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	audio := observe(v1.NewAudio(models, attempts, nvidiaClient))
 	speech := observe(v1.NewSpeech(models, attempts, nvidiaClient))
 	modelList := observe(v1.NewModels(models))
+	frontend, err := webui.NewEmbeddedHandler()
+	if err != nil {
+		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize embedded frontend: %w", err))
+	}
 
 	resolved.DB = db
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -123,7 +128,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	}
 	app.handler = httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
-		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool),
+		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
 		adminapi.NewStats(observabilityRepository, resolved.Clock),
 	)
 	worker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
