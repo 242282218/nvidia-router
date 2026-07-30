@@ -92,10 +92,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
 	chat := httpapi.DataMiddleware(accessKeys, v1.NewChat(models, attempts, nvidiaClient))
+	modelList := httpapi.DataMiddleware(accessKeys, v1.NewModels(models))
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat)
+	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, modelList)
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }

@@ -1,12 +1,18 @@
 package httpapi
 
-import "net/http"
+import (
+	"net/http"
 
-func NewRouter(health, chat http.Handler) http.Handler {
+	v1 "nvidia-router/internal/httpapi/v1"
+)
+
+func NewRouter(health, chat, models http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/health/", health)
 	mux.Handle("/v1/chat/completions", chat)
-	mux.HandleFunc("/v1/", http.NotFound)
+	mux.Handle("/v1/models", models)
+	// Fallback for any other /v1/* path must come after the concrete routes above.
+	mux.Handle("/v1/", v1.Unsupported)
 	mux.HandleFunc("/admin/api/", http.NotFound)
 	mux.HandleFunc("/admin/", frontendPlaceholder)
 	mux.HandleFunc("/", frontendPlaceholder)

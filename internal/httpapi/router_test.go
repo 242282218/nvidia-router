@@ -10,13 +10,40 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 	health := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(health, http.NotFoundHandler())
+	chat := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	models := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	router := NewRouter(health, chat, models)
 
-	for _, path := range []string{"/v1/chat/completions", "/admin/api/settings"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/models"} {
 		response := httptest.NewRecorder()
-		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusNotFound {
-			t.Fatalf("%s status = %d, want %d", path, response.Code, http.StatusNotFound)
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, response.Code)
 		}
+	}
+}
+
+func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
+	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
+
+	for _, path := range []string{"/v1/responses", "/v1/audio/transcriptions", "/v1/some/unknown"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNotImplemented {
+			t.Fatalf("%s status = %d, want 501", path, response.Code)
+		}
+	}
+}
+
+func TestRouterAdminAPIReturnsNotFound(t *testing.T) {
+	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("admin api status = %d, want 404", response.Code)
 	}
 }
