@@ -51,7 +51,7 @@ func TestAppV1UnknownPathReturnsNotImplementedAndSkipsNVIDIA(t *testing.T) {
 	server := httptest.NewServer(application.Handler())
 	t.Cleanup(server.Close)
 
-	authed, err := newAuthedGet(server.URL+"/v1/embeddings", accessToken)
+	authed, err := newAuthedGet(server.URL+"/v1/some/unknown", accessToken)
 	if err != nil {
 		t.Fatalf("get unknown: %v", err)
 	}

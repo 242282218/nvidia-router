@@ -1,0 +1,89 @@
+package nvidia
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"nvidia-router/internal/runtimeconfig"
+)
+
+// MaxEmbeddingsResponseBytes bounds how much of a non-streaming embeddings
+// response body we read before declaring a protocol error.
+const MaxEmbeddingsResponseBytes = 32 << 20
+
+// Embeddings sends a non-streaming embeddings request to NVIDIA. Like Chat,
+// the per-attempt connect timeout comes from the request-scoped snapshot.
+func (c *Client) Embeddings(
+	ctx context.Context,
+	snapshot runtimeconfig.Snapshot,
+	token string,
+	body []byte,
+) (*http.Response, error) {
+	request, err := c.descriptor.NewRequest(c.descriptor.Embedding, false, token)
+	if err != nil {
+		return nil, safeError{"create NVIDIA embeddings request", err}
+	}
+	request = request.WithContext(ctx)
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+
+	transport, _ := newAttemptTransport(c.httpClient.Transport, snapshot)
+	httpClient := *c.httpClient
+	httpClient.Transport = transport
+	response, err := httpClient.Do(request)
+	if err != nil {
+		closeIdleConnections(transport)
+		return nil, safeError{"send NVIDIA embeddings request", err}
+	}
+	if response.Body != nil {
+		response.Body = &attemptBody{ReadCloser: response.Body, transport: transport}
+	}
+	return response, nil
+}
+
+// ValidatedEmbeddingsResponse is the validated, structured form of a 2xx
+// embeddings response: the raw body plus extracted metadata.
+type ValidatedEmbeddingsResponse struct {
+	Body     []byte
+	Metadata EmbeddingsMetadata
+}
+
+// EmbeddingsMetadata carries the usage and upstream request ID extracted from a
+// successful embeddings response. It never carries input or vector contents.
+type EmbeddingsMetadata struct {
+	RequestID string
+	Usage     json.RawMessage
+}
+
+// ValidateNonstreamEmbeddings reads and validates a non-streaming embeddings
+// response. A 2xx body must be a JSON object containing a `data` array; anything
+// else is surfaced as a protocol error so the Attempt loop can fail over.
+func ValidateNonstreamEmbeddings(response *http.Response) (ValidatedEmbeddingsResponse, error) {
+	body, err := io.ReadAll(io.LimitReader(response.Body, MaxEmbeddingsResponseBytes+1))
+	if err != nil {
+		return ValidatedEmbeddingsResponse{}, safeError{"read NVIDIA embeddings response", err}
+	}
+	if len(body) > MaxEmbeddingsResponseBytes {
+		return ValidatedEmbeddingsResponse{}, protocolError()
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return ValidatedEmbeddingsResponse{}, protocolError()
+	}
+	data, exists := fields["data"]
+	if !exists || !isJSONArray(data) {
+		return ValidatedEmbeddingsResponse{}, protocolError()
+	}
+
+	return ValidatedEmbeddingsResponse{
+		Body: body,
+		Metadata: EmbeddingsMetadata{
+			RequestID: allowedRequestID(response.Header),
+			Usage:     fields["usage"],
+		},
+	}, nil
+}
