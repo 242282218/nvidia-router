@@ -24,6 +24,113 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
+func (r *Repository) List(ctx context.Context) ([]Key, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, display_prefix, display_suffix, enabled, auth_invalid,
+		       cooldown_until, cooldown_reason, cooldown_level, consecutive_failures,
+		       last_success_at, last_error_at, last_error_code, created_at, updated_at
+		FROM nvidia_keys ORDER BY id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list NVIDIA keys: %w", err)
+	}
+	defer rows.Close()
+	keys := make([]Key, 0)
+	for rows.Next() {
+		key, err := scanKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate NVIDIA keys: %w", err)
+	}
+	return keys, nil
+}
+
+func (r *Repository) FirstEnabledID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT id FROM nvidia_keys
+		WHERE enabled = 1 AND auth_invalid = 0
+		ORDER BY id LIMIT 1
+	`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("find first enabled NVIDIA key: %w", err)
+	}
+	return id, nil
+}
+
+func (r *Repository) SetEnabled(ctx context.Context, id int64, enabled bool, now time.Time) (keystate.KeySnapshot, error) {
+	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
+		result, err := tx.ExecContext(ctx, `UPDATE nvidia_keys SET enabled = ?, updated_at = ? WHERE id = ?`, boolInt(enabled), formatTimestamp(now), id)
+		if err != nil {
+			return keystate.KeySnapshot{}, fmt.Errorf("set NVIDIA key enabled state: %w", err)
+		}
+		if err := requireOneRow(result, "set NVIDIA key enabled state"); err != nil {
+			return keystate.KeySnapshot{}, err
+		}
+		return loadSchedulingSnapshot(ctx, tx, id)
+	})
+}
+
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM nvidia_keys WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete NVIDIA key: %w", err)
+	}
+	return requireOneRow(result, "delete NVIDIA key")
+}
+
+type keyRowScanner interface{ Scan(...any) error }
+
+func scanKey(row keyRowScanner) (Key, error) {
+	var key Key
+	var enabled, authInvalid int
+	var cooldownUntil, lastSuccessAt, lastErrorAt sql.NullString
+	var cooldownReason, lastErrorCode sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(
+		&key.ID, &key.DisplayPrefix, &key.DisplaySuffix, &enabled, &authInvalid,
+		&cooldownUntil, &cooldownReason, &key.CooldownLevel, &key.ConsecutiveFailures,
+		&lastSuccessAt, &lastErrorAt, &lastErrorCode, &createdAt, &updatedAt,
+	); err != nil {
+		return Key{}, fmt.Errorf("scan NVIDIA key: %w", err)
+	}
+	key.Enabled = enabled == 1
+	key.AuthInvalid = authInvalid == 1
+	key.CooldownReason = cooldownReason.String
+	key.LastErrorCode = lastErrorCode.String
+	var err error
+	if key.CooldownUntil, err = parseOptionalTimestamp(cooldownUntil); err != nil {
+		return Key{}, fmt.Errorf("parse NVIDIA key cooldown: %w", err)
+	}
+	if key.LastSuccessAt, err = parseOptionalTimestamp(lastSuccessAt); err != nil {
+		return Key{}, fmt.Errorf("parse NVIDIA key last success: %w", err)
+	}
+	if key.LastErrorAt, err = parseOptionalTimestamp(lastErrorAt); err != nil {
+		return Key{}, fmt.Errorf("parse NVIDIA key last error: %w", err)
+	}
+	if key.CreatedAt, err = time.Parse(time.RFC3339, createdAt); err != nil {
+		return Key{}, fmt.Errorf("parse NVIDIA key created time: %w", err)
+	}
+	if key.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt); err != nil {
+		return Key{}, fmt.Errorf("parse NVIDIA key updated time: %w", err)
+	}
+	return key, nil
+}
+
+func parseOptionalTimestamp(value sql.NullString) (*time.Time, error) {
+	if !value.Valid {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
 func (r *Repository) FingerprintExists(ctx context.Context, fingerprint []byte) (bool, error) {
 	var exists int
 	err := r.db.QueryRowContext(ctx, "SELECT 1 FROM nvidia_keys WHERE fingerprint = ?", fingerprint).Scan(&exists)

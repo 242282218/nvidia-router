@@ -1,6 +1,10 @@
 package nvidiakey
 
-import "time"
+import (
+	"time"
+
+	"nvidia-router/internal/keystate"
+)
 
 type Key struct {
 	ID                  int64
@@ -35,4 +39,14 @@ type ImportResult struct {
 	Reason string
 	Masked string
 	Key    *Key
+}
+
+// TestResult contains only safe metadata from a manual credential check.
+type TestResult struct {
+	ID        int64                `json:"id"`
+	Status    string               `json:"status"`
+	Reason    string               `json:"reason,omitempty"`
+	RequestID string               `json:"request_id,omitempty"`
+	Models    []string             `json:"models,omitempty"`
+	Snapshot  keystate.KeySnapshot `json:"-"`
 }

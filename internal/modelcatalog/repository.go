@@ -73,6 +73,26 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	return nil
 }
 
+func (r *Repository) List(ctx context.Context) ([]Model, error) {
+	rows, err := r.db.QueryContext(ctx, modelColumns+" ORDER BY public_id")
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	defer rows.Close()
+	models := make([]Model, 0)
+	for rows.Next() {
+		model, err := scanModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate models: %w", err)
+	}
+	return models, nil
+}
+
 func (r *Repository) ListEnabled(ctx context.Context) ([]Model, error) {
 	rows, err := r.db.QueryContext(ctx, modelColumns+" WHERE enabled = 1 ORDER BY public_id")
 	if err != nil {
@@ -156,6 +176,44 @@ func (r *Repository) BlockKeyModel(ctx context.Context, keyID, modelID int64, re
 		return fmt.Errorf("block NVIDIA key for model: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) VerifyAndUnblock(ctx context.Context, keyID, modelID int64, verifiedAt time.Time) (model Model, returnErr error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Model{}, fmt.Errorf("begin model verification transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = fmt.Errorf("rollback model verification transaction: %w", errors.Join(returnErr, rollbackErr))
+		}
+	}()
+	model, err = scanModel(tx.QueryRowContext(ctx, modelColumns+" WHERE id = ?", modelID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Model{}, ErrModelNotFound
+	}
+	if err != nil {
+		return Model{}, fmt.Errorf("load model for verification: %w", err)
+	}
+	if requiresVerification(model.Kind) {
+		if _, err := tx.ExecContext(ctx, `UPDATE models SET capability_verified_at = ?, updated_at = ? WHERE id = ?`, formatTimestamp(verifiedAt), formatTimestamp(verifiedAt), modelID); err != nil {
+			return Model{}, fmt.Errorf("mark model capability verified: %w", err)
+		}
+		verified := verifiedAt.UTC().Truncate(time.Second)
+		model.CapabilityVerifiedAt = &verified
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM nvidia_key_model_blocks WHERE nvidia_key_id = ? AND model_id = ?`, keyID, modelID); err != nil {
+		return Model{}, fmt.Errorf("clear NVIDIA key model block: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Model{}, fmt.Errorf("commit model verification transaction: %w", err)
+	}
+	committed = true
+	return model, nil
 }
 
 func (r *Repository) UnblockKeyModel(ctx context.Context, keyID, modelID int64) error {

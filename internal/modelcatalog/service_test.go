@@ -132,6 +132,87 @@ func TestAudioModelsRequireVerificationBeforeEnable(t *testing.T) {
 	}
 }
 
+func TestChangingModelKindClearsCapabilityVerification(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	verifiedAt := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "speech", UpstreamID: "vendor/speech", DisplayName: "Speech",
+		Kind: KindASR, CapabilityVerifiedAt: &verifiedAt,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	model := models[0]
+
+	chat, err := service.Patch(context.Background(), model.ID, Patch{Kind: kindPointer(KindChat)})
+	if err != nil {
+		t.Fatalf("Patch to chat: %v", err)
+	}
+	if chat.CapabilityVerifiedAt != nil {
+		t.Fatalf("chat retained audio verification: %v", chat.CapabilityVerifiedAt)
+	}
+	asr, err := service.Patch(context.Background(), model.ID, Patch{Kind: kindPointer(KindASR)})
+	if err != nil {
+		t.Fatalf("Patch back to asr: %v", err)
+	}
+	if asr.CapabilityVerifiedAt != nil {
+		t.Fatalf("asr regained stale verification: %v", asr.CapabilityVerifiedAt)
+	}
+	if err := service.SetEnabled(context.Background(), model.ID, true); !errors.Is(err, ErrCapabilityUnverified) {
+		t.Fatalf("enable stale-verified asr error = %v", err)
+	}
+}
+
+func kindPointer(kind Kind) *Kind { return &kind }
+
+func TestModelsListingCannotVerifyAudioEndpointCapability(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+
+	for _, kind := range []Kind{KindASR, KindTTS} {
+		upstreamID := "vendor/" + string(kind)
+		if err := service.SaveSelection(context.Background(), []Selection{{
+			PublicID: string(kind), UpstreamID: upstreamID, DisplayName: string(kind), Kind: kind,
+		}}); err != nil {
+			t.Fatalf("SaveSelection(%s): %v", kind, err)
+		}
+		models, err := service.List(context.Background())
+		if err != nil {
+			t.Fatalf("List(%s): %v", kind, err)
+		}
+		var model Model
+		for _, item := range models {
+			if item.PublicID == string(kind) {
+				model = item
+				break
+			}
+		}
+		status := 403
+		if err := service.BlockKeyModel(context.Background(), keyID, model.ID, "model_forbidden", &status); err != nil {
+			t.Fatalf("BlockKeyModel(%s): %v", kind, err)
+		}
+		discoverer.models = []string{upstreamID}
+
+		if _, err := service.VerifyAndUnblock(context.Background(), keyID, model.ID); !errors.Is(err, ErrManualTestRequired) {
+			t.Fatalf("VerifyAndUnblock(%s) error = %v", kind, err)
+		}
+		stored, err := service.repository.Get(context.Background(), model.ID)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", kind, err)
+		}
+		if stored.CapabilityVerifiedAt != nil {
+			t.Fatalf("%s capability verified by /models discovery: %v", kind, stored.CapabilityVerifiedAt)
+		}
+		assertBlockCount(t, db, 1)
+		if err := service.UnblockKeyModel(context.Background(), keyID, model.ID, true); err != nil {
+			t.Fatalf("cleanup block(%s): %v", kind, err)
+		}
+	}
+}
+
 func TestBlockUpsertsAndOnlySuccessfulManualTestCanUnblock(t *testing.T) {
 	service, db, _, _ := newCatalogTestService(t)
 	keyID := insertNVIDIAKey(t, db)

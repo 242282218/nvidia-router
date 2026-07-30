@@ -2,6 +2,7 @@ package nvidiakey
 
 import (
 	"context"
+	"time"
 	"unicode"
 
 	"nvidia-router/internal/upstream/nvidia"
@@ -13,7 +14,7 @@ const (
 )
 
 type CredentialValidator interface {
-	ValidateCredential(context.Context, string) nvidia.ValidationResult
+	ValidateCredential(context.Context, string, time.Time) nvidia.ValidationResult
 }
 
 func validToken(token string) bool {

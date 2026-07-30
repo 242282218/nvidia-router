@@ -42,6 +42,77 @@ func NewService(repository *Repository, keys *crypto.KeySet, validator Credentia
 	}
 }
 
+func (s *Service) List(ctx context.Context) ([]Key, error) {
+	keys, err := s.repository.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list NVIDIA keys: %w", err)
+	}
+	return keys, nil
+}
+
+func (s *Service) FirstEnabledID(ctx context.Context) (int64, error) {
+	id, err := s.repository.FirstEnabledID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("find NVIDIA key for model discovery: %w", err)
+	}
+	return id, nil
+}
+
+func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) (keystate.KeySnapshot, error) {
+	snapshot, err := s.repository.SetEnabled(ctx, id, enabled, s.clock.Now())
+	if err != nil {
+		return keystate.KeySnapshot{}, fmt.Errorf("set NVIDIA key enabled state: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if err := s.repository.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete NVIDIA key: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) Test(ctx context.Context, id int64) (TestResult, error) {
+	var validation nvidia.ValidationResult
+	if err := s.WithSecret(ctx, id, func(secret []byte) error {
+		validation = s.validator.ValidateCredential(ctx, string(secret), s.clock.Now())
+		return nil
+	}); err != nil {
+		return TestResult{}, fmt.Errorf("test NVIDIA key: %w", err)
+	}
+
+	result := TestResult{ID: id, RequestID: validation.RequestID, Models: validation.Models}
+	if validation.State == nvidia.ValidationValid {
+		result.Status = "valid"
+		snapshot, err := s.MarkSuccess(ctx, id)
+		if err != nil {
+			return TestResult{}, err
+		}
+		result.Snapshot = snapshot
+		return result, nil
+	}
+
+	switch validation.State {
+	case nvidia.ValidationInvalidCredential:
+		result.Status = "invalid"
+	case nvidia.ValidationTemporarilyUnavailable:
+		result.Status = "temporarily_unavailable"
+	default:
+		result.Status = "indeterminate"
+	}
+	result.Reason = result.Status
+	if validation.Fault == nil {
+		return TestResult{}, fmt.Errorf("test NVIDIA key: validator returned a failure without fault metadata")
+	}
+	snapshot, err := s.MarkFailure(ctx, id, 0, *validation.Fault)
+	if err != nil {
+		return TestResult{}, err
+	}
+	result.Snapshot = snapshot
+	return result, nil
+}
+
 func (s *Service) MarkSuccess(ctx context.Context, keyID int64) (keystate.KeySnapshot, error) {
 	snapshot, err := s.repository.markSuccess(ctx, keyID, s.clock.Now())
 	if err != nil {
@@ -76,7 +147,7 @@ func (s *Service) Import(ctx context.Context, token string) (ImportResult, error
 		return ImportResult{Status: ImportStatusDuplicate, Reason: "duplicate", Masked: masked}, nil
 	}
 
-	validation := s.validator.ValidateCredential(ctx, token)
+	validation := s.validator.ValidateCredential(ctx, token, s.clock.Now())
 	if validation.State != nvidia.ValidationValid {
 		status, reason := validationStatus(validation.State)
 		return ImportResult{Status: status, Reason: reason, Masked: masked}, nil

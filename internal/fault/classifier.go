@@ -122,8 +122,8 @@ func readErrorSummary(body io.Reader) errorSummary {
 	if body == nil {
 		return errorSummary{}
 	}
-	payload, err := io.ReadAll(io.LimitReader(body, maximumErrorSummaryBytes+1))
-	if err != nil || len(payload) > maximumErrorSummaryBytes {
+	payload, err := io.ReadAll(io.LimitReader(body, maximumErrorSummaryBytes))
+	if err != nil {
 		return errorSummary{}
 	}
 	var envelope struct {

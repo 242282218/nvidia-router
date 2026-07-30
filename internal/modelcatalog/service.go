@@ -67,6 +67,92 @@ func (s *Service) SaveSelection(ctx context.Context, selections []Selection) err
 	return nil
 }
 
+func (s *Service) List(ctx context.Context) ([]Model, error) {
+	models, err := s.repository.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	return models, nil
+}
+
+func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (Model, error) {
+	model, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return Model{}, fmt.Errorf("load model before patch: %w", err)
+	}
+	selection := Selection{
+		PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName,
+		Kind: model.Kind, Enabled: model.Enabled, SupportsVision: model.SupportsVision,
+		SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning,
+		ReasoningWireFormat: model.ReasoningWireFormat, CapabilityVerifiedAt: model.CapabilityVerifiedAt,
+	}
+	if patch.DisplayName != nil {
+		selection.DisplayName = *patch.DisplayName
+	}
+	if patch.Kind != nil {
+		selection.Kind = *patch.Kind
+	}
+	if patch.Enabled != nil {
+		selection.Enabled = *patch.Enabled
+	}
+	if patch.SupportsVision != nil {
+		selection.SupportsVision = *patch.SupportsVision
+	}
+	if patch.SupportsTools != nil {
+		selection.SupportsTools = *patch.SupportsTools
+	}
+	if patch.SupportsReasoning != nil {
+		selection.SupportsReasoning = *patch.SupportsReasoning
+	}
+	if patch.ReasoningWireFormat != nil {
+		selection.ReasoningWireFormat = *patch.ReasoningWireFormat
+	}
+	if model.Kind != selection.Kind {
+		selection.CapabilityVerifiedAt = nil
+	}
+	normalized, err := normalizeSelection(selection)
+	if err != nil {
+		return Model{}, fmt.Errorf("validate model patch: %w", err)
+	}
+	if err := s.repository.SaveSelections(ctx, []Selection{normalized}, s.clock.Now()); err != nil {
+		return Model{}, fmt.Errorf("save model patch: %w", err)
+	}
+	updated, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return Model{}, fmt.Errorf("load patched model: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (Model, error) {
+	model, err := s.repository.Get(ctx, modelID)
+	if err != nil {
+		return Model{}, fmt.Errorf("load model before manual test: %w", err)
+	}
+	if requiresVerification(model.Kind) {
+		return Model{}, ErrManualTestRequired
+	}
+	candidates, err := s.DiscoverCandidates(ctx, keyID)
+	if err != nil {
+		return Model{}, fmt.Errorf("manual model test: %w", err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.UpstreamID == model.UpstreamID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return Model{}, ErrManualTestRequired
+	}
+	verified, err := s.repository.VerifyAndUnblock(ctx, keyID, modelID, s.clock.Now())
+	if err != nil {
+		return Model{}, fmt.Errorf("verify model and clear block: %w", err)
+	}
+	return verified, nil
+}
+
 func (s *Service) ListEnabled(ctx context.Context) ([]Model, error) {
 	models, err := s.repository.ListEnabled(ctx)
 	if err != nil {

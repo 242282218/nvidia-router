@@ -93,6 +93,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys), adminauth.NewLoginLimiter(resolved.Clock))
+	adminManagement := adminapi.NewManagement(
+		adminapi.NewNVIDIAKeys(nvidiaKeys, keyPool),
+		adminapi.NewAccessKeys(accessKeys),
+		adminapi.NewModels(models, nvidiaKeys, keyPool),
+	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
 	chat := httpapi.DataMiddleware(accessKeys, v1.NewChat(models, attempts, nvidiaClient))
 	responses := httpapi.DataMiddleware(accessKeys, v1.NewResponses(models, attempts, nvidiaClient))
@@ -103,7 +108,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, adminSecurity)
+	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, adminSecurity, adminManagement)
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }

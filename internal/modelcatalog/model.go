@@ -54,3 +54,14 @@ type Requirements struct {
 	Tools     bool
 	Reasoning bool
 }
+
+// Patch is an allowlist of mutable model fields.
+type Patch struct {
+	DisplayName         *string `json:"display_name,omitempty"`
+	Kind                *Kind   `json:"kind,omitempty"`
+	Enabled             *bool   `json:"enabled,omitempty"`
+	SupportsVision      *bool   `json:"supports_vision,omitempty"`
+	SupportsTools       *bool   `json:"supports_tools,omitempty"`
+	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
+	ReasoningWireFormat *string `json:"reasoning_wire_format,omitempty"`
+}

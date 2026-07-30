@@ -83,7 +83,7 @@ func TestValidationClassifiesResponses(t *testing.T) {
 				Headers: http.Header{"X-Request-Id": []string{"request-123"}, "X-Secret": []string{"hidden"}},
 			})
 			t.Cleanup(server.Close)
-			result := newTestClient(t, server.URL(), server.Client()).ValidateCredential(context.Background(), "test-token")
+			result := newTestClient(t, server.URL(), server.Client()).ValidateCredential(context.Background(), "test-token", time.Now())
 			if result.State != test.want {
 				t.Fatalf("state = %v, want %v", result.State, test.want)
 			}
@@ -104,7 +104,7 @@ func TestValidationTreatsNetworkAndTimeoutAsTemporary(t *testing.T) {
 	client := newTestClient(t, "https://example.invalid", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("network unavailable")
 	})})
-	if result := client.ValidateCredential(context.Background(), "test-token"); result.State != ValidationTemporarilyUnavailable {
+	if result := client.ValidateCredential(context.Background(), "test-token", time.Now()); result.State != ValidationTemporarilyUnavailable {
 		t.Fatalf("network state = %v", result.State)
 	}
 
@@ -112,7 +112,7 @@ func TestValidationTreatsNetworkAndTimeoutAsTemporary(t *testing.T) {
 	t.Cleanup(server.Close)
 	timeoutClient := server.Client()
 	timeoutClient.Timeout = 10 * time.Millisecond
-	if result := newTestClient(t, server.URL(), timeoutClient).ValidateCredential(context.Background(), "test-token"); result.State != ValidationTemporarilyUnavailable {
+	if result := newTestClient(t, server.URL(), timeoutClient).ValidateCredential(context.Background(), "test-token", time.Now()); result.State != ValidationTemporarilyUnavailable {
 		t.Fatalf("timeout state = %v", result.State)
 	}
 }
@@ -125,7 +125,7 @@ func TestValidationTreatsSuccessBodyReadFailureAsTemporary(t *testing.T) {
 			Body:       errorReadCloser{err: errors.New("connection interrupted")},
 		}, nil
 	})}
-	result := newTestClient(t, "https://example.invalid", httpClient).ValidateCredential(context.Background(), "test-token")
+	result := newTestClient(t, "https://example.invalid", httpClient).ValidateCredential(context.Background(), "test-token", time.Now())
 	if result.State != ValidationTemporarilyUnavailable {
 		t.Fatalf("state = %v, want temporarily unavailable", result.State)
 	}
@@ -139,7 +139,7 @@ func TestValidationReadsAtMostEightKiBOfErrorBody(t *testing.T) {
 	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 500, Header: make(http.Header), Body: body}, nil
 	})}
-	result := newTestClient(t, "https://example.invalid", httpClient).ValidateCredential(context.Background(), "test-token")
+	result := newTestClient(t, "https://example.invalid", httpClient).ValidateCredential(context.Background(), "test-token", time.Now())
 	if result.State != ValidationTemporarilyUnavailable {
 		t.Fatalf("state = %v", result.State)
 	}

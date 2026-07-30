@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -377,6 +379,40 @@ func TestMarkFailureRollsBackWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestManualTestUsesActualFaultMetadata(t *testing.T) {
+	service, _, _, keyID := newImportedKeyForStateTest(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Retry-After", "37")
+		writer.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(upstream.Close)
+	baseURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	descriptor, err := nvidia.DefaultDescriptor().WithBaseURL(baseURL)
+	if err != nil {
+		t.Fatalf("rewrite descriptor: %v", err)
+	}
+	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	service.validator = client
+
+	result, err := service.Test(context.Background(), keyID)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if result.Status != "temporarily_unavailable" {
+		t.Fatalf("status = %q", result.Status)
+	}
+	wantCooldown := time.Date(2026, 7, 30, 3, 0, 37, 0, time.UTC)
+	if result.Snapshot.CooldownUntil == nil || !result.Snapshot.CooldownUntil.Equal(wantCooldown) {
+		t.Fatalf("cooldown = %v, want %v", result.Snapshot.CooldownUntil, wantCooldown)
+	}
+}
+
 func newImportedKeyForStateTest(t *testing.T) (*Service, *sql.DB, string, int64) {
 	t.Helper()
 	validator := newFakeValidator()
@@ -436,7 +472,7 @@ func newFakeValidator() *fakeValidator {
 	return &fakeValidator{results: make(map[string]nvidia.ValidationResult), calls: make(map[string]int)}
 }
 
-func (v *fakeValidator) ValidateCredential(_ context.Context, token string) nvidia.ValidationResult {
+func (v *fakeValidator) ValidateCredential(_ context.Context, token string, _ time.Time) nvidia.ValidationResult {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.calls[token]++

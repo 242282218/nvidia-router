@@ -11,7 +11,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	})
 	security := fakeAdminSecurity{}
-	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security)
+	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler())
 
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech", "/v1/models"} {
 		response := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 
 func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{})
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound)
 
 	for _, path := range []string{"/v1", "/v1/some/unknown"} {
 		response := httptest.NewRecorder()
@@ -43,7 +43,7 @@ func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 
 func TestRouterSeparatesAuthAndProtectedAdminAPI(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{})
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound)
 
 	authResponse := httptest.NewRecorder()
 	router.ServeHTTP(authResponse, httptest.NewRequest(http.MethodGet, "/admin/api/auth/session", nil))

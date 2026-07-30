@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
+
+	"nvidia-router/internal/fault"
 )
 
 const maxErrorBodyBytes = 8 << 10
@@ -31,6 +34,7 @@ type ValidationResult struct {
 	Models    []string
 	RequestID string
 	SafeError string
+	Fault     *fault.Fault
 }
 
 func NewClient(httpClient *http.Client, descriptor Descriptor) (*Client, error) {
@@ -57,36 +61,42 @@ func (c *Client) Models(ctx context.Context, token string) ([]string, error) {
 	return models, nil
 }
 
-func (c *Client) ValidateCredential(ctx context.Context, token string) ValidationResult {
+func (c *Client) ValidateCredential(ctx context.Context, token string, now time.Time) ValidationResult {
 	response, err := c.modelsRequest(ctx, token)
 	if err != nil {
-		return ValidationResult{State: ValidationTemporarilyUnavailable, SafeError: "NVIDIA models request failed"}
+		classified := fault.Classify(nil, err, true, now)
+		return ValidationResult{
+			State: ValidationTemporarilyUnavailable, SafeError: "NVIDIA models request failed", Fault: &classified,
+		}
 	}
 	defer response.Body.Close()
 	result := ValidationResult{RequestID: allowedRequestID(response.Header)}
 	if response.StatusCode == http.StatusOK {
 		models, parseErr := parseModels(response.Body)
-		if parseErr != nil {
-			if errors.Is(parseErr, ErrProtocol) {
-				result.State = ValidationIndeterminate
-				result.SafeError = "NVIDIA models response was malformed"
-			} else {
-				result.State = ValidationTemporarilyUnavailable
-				result.SafeError = "NVIDIA models response could not be read"
-			}
+		if parseErr == nil {
+			result.State = ValidationValid
+			result.Models = models
 			return result
 		}
-		result.State = ValidationValid
-		result.Models = models
+		classified := fault.Protocol(parseErr)
+		result.Fault = &classified
+		if errors.Is(parseErr, ErrProtocol) {
+			result.State = ValidationIndeterminate
+			result.SafeError = "NVIDIA models response was malformed"
+		} else {
+			result.State = ValidationTemporarilyUnavailable
+			result.SafeError = "NVIDIA models response could not be read"
+		}
 		return result
 	}
 
-	discardErrorBody(response.Body)
+	classified := fault.Classify(response, nil, true, now)
+	result.Fault = &classified
 	result.SafeError = fmt.Sprintf("NVIDIA models returned HTTP %d", response.StatusCode)
-	switch response.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	switch {
+	case classified.DisableKey:
 		result.State = ValidationInvalidCredential
-	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case classified.Retryable:
 		result.State = ValidationTemporarilyUnavailable
 	default:
 		result.State = ValidationIndeterminate
