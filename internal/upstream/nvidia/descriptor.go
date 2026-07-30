@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type ModelKind string
@@ -58,6 +59,27 @@ func DefaultDescriptor() Descriptor {
 		TTS:             Endpoint{Method: http.MethodPost, URL: baseURL + "/audio/speech", ContentType: "application/json"},
 		CapabilityHints: reasoningHints(),
 	}
+}
+
+func (d Descriptor) WithBaseURL(base *url.URL) (Descriptor, error) {
+	if base == nil || base.Host == "" || base.Scheme != "https" && base.Scheme != "http" {
+		return Descriptor{}, errors.New("rewrite NVIDIA endpoints: base URL must use HTTP or HTTPS and include a host")
+	}
+	if base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return Descriptor{}, errors.New("rewrite NVIDIA endpoints: base URL must not contain credentials, query, or fragment")
+	}
+	endpointURL := func(path string) string {
+		value := *base
+		value.Path = strings.TrimRight(value.Path, "/") + path
+		value.RawPath = ""
+		return value.String()
+	}
+	d.Models.URL = endpointURL("/v1/models")
+	d.Chat.URL = endpointURL("/v1/chat/completions")
+	d.Embedding.URL = endpointURL("/v1/embeddings")
+	d.ASR.URL = endpointURL("/v1/audio/transcriptions")
+	d.TTS.URL = endpointURL("/v1/audio/speech")
+	return d, nil
 }
 
 func reasoningHints() map[string]CapabilityHint {

@@ -7,9 +7,10 @@ import (
 )
 
 func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
-	router := NewRouter(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	health := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	router := NewRouter(health, http.NotFoundHandler())
 
 	for _, path := range []string{"/v1/chat/completions", "/admin/api/settings"} {
 		response := httptest.NewRecorder()

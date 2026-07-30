@@ -83,6 +83,17 @@ func TestClassifierNetworkErrors(t *testing.T) {
 	}
 }
 
+func TestClassifierPreservesRetryableProtocolFault(t *testing.T) {
+	cause := errors.New("malformed upstream response")
+	got := Classify(nil, Protocol(cause), false, time.Time{})
+	if got.HTTPStatus != http.StatusBadGateway || got.Scope != ScopeUpstreamGlobal || !got.Retryable {
+		t.Fatalf("Classify() = %+v", got)
+	}
+	if got.PublicCode != "upstream_protocol_error" || !errors.Is(got, cause) {
+		t.Fatalf("Classify() = %+v, cause = %v", got, cause)
+	}
+}
+
 func TestClassifierIgnoresMessageAndUnsafeSummaryValues(t *testing.T) {
 	secret := "Bearer nvapi-secret"
 	for _, body := range []string{

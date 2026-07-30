@@ -63,6 +63,10 @@ func Classify(response *http.Response, requestErr error, modelsRequest bool, now
 }
 
 func classifyRequestError(err error) Fault {
+	var classified Fault
+	if errors.As(err, &classified) {
+		return classified
+	}
 	if errors.Is(err, context.Canceled) {
 		return Fault{
 			HTTPStatus: 499, Scope: ScopeRequest, PublicType: "invalid_request_error",

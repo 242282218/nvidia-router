@@ -2,6 +2,7 @@ package nvidia
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -65,6 +66,33 @@ func TestDescriptorCapabilityHintsAreConservative(t *testing.T) {
 		hint := descriptor.CapabilityHint(modelID)
 		if hint.Kind != KindChat || !hint.SupportsReasoning || hint.ReasoningWireFormat != ReasoningWireOpenAI {
 			t.Fatalf("hint for %s = %#v", modelID, hint)
+		}
+	}
+}
+
+func TestDescriptorWithBaseURLRewritesEveryEndpoint(t *testing.T) {
+	base, err := url.Parse("http://127.0.0.1:12345")
+	if err != nil {
+		t.Fatalf("parse base URL: %v", err)
+	}
+	descriptor, err := DefaultDescriptor().WithBaseURL(base)
+	if err != nil {
+		t.Fatalf("WithBaseURL: %v", err)
+	}
+	wants := map[string]string{
+		"models":    "http://127.0.0.1:12345/v1/models",
+		"chat":      "http://127.0.0.1:12345/v1/chat/completions",
+		"embedding": "http://127.0.0.1:12345/v1/embeddings",
+		"asr":       "http://127.0.0.1:12345/v1/audio/transcriptions",
+		"tts":       "http://127.0.0.1:12345/v1/audio/speech",
+	}
+	got := map[string]string{
+		"models": descriptor.Models.URL, "chat": descriptor.Chat.URL,
+		"embedding": descriptor.Embedding.URL, "asr": descriptor.ASR.URL, "tts": descriptor.TTS.URL,
+	}
+	for name, want := range wants {
+		if got[name] != want {
+			t.Fatalf("%s URL = %q, want %q", name, got[name], want)
 		}
 	}
 }

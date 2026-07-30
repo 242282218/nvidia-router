@@ -1,6 +1,9 @@
 package fault
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
 
 type Scope uint8
 
@@ -34,6 +37,14 @@ func New(httpStatus int, scope Scope, publicType, publicCode, publicMessage stri
 		PublicCode:    publicCode,
 		PublicMessage: publicMessage,
 		Cause:         cause,
+	}
+}
+
+func Protocol(cause error) Fault {
+	return Fault{
+		HTTPStatus: http.StatusBadGateway, Scope: ScopeUpstreamGlobal, Retryable: true,
+		PublicType: "server_error", PublicCode: "upstream_protocol_error",
+		PublicMessage: "The upstream response was malformed.", Cause: cause,
 	}
 }
 

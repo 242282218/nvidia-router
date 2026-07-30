@@ -43,7 +43,7 @@ func TestNew(t *testing.T) {
 	if app.Dependencies.DB != db {
 		t.Fatal("App did not retain the injected database dependency")
 	}
-	response := httptestGet(t, app.Handler, "/health/live")
+	response := httptestGet(t, app.Handler(), "/health/live")
 	if response.Code != http.StatusOK {
 		t.Fatalf("live status = %d", response.Code)
 	}

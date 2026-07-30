@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"nvidia-router/internal/accesskey"
 	"nvidia-router/internal/adminauth"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
@@ -19,10 +20,13 @@ import (
 	"nvidia-router/internal/database"
 	"nvidia-router/internal/httpapi"
 	"nvidia-router/internal/httpapi/health"
+	v1 "nvidia-router/internal/httpapi/v1"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/nvidiakey"
 	"nvidia-router/internal/pool"
+	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/upstream/nvidia"
 )
 
 type Dependencies struct {
@@ -35,12 +39,12 @@ type Dependencies struct {
 
 type App struct {
 	Dependencies    Dependencies
-	Handler         http.Handler
 	Pool            *pool.Pool
 	RuntimeSettings runtimeconfig.Provider
 	Server          *Server
 
 	db       *sql.DB
+	handler  http.Handler
 	shutting atomic.Bool
 	close    sync.Once
 	closeErr error
@@ -63,22 +67,53 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize runtime settings store: %w", err))
 	}
-	keySnapshots, err := nvidiakey.NewRepository(db).ListSnapshots(ctx)
+	keyRepository := nvidiakey.NewRepository(db)
+	keySnapshots, err := keyRepository.ListSnapshots(ctx)
 	if err != nil {
 		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key scheduling snapshots: %w", err))
 	}
-	modelBlocks, err := modelcatalog.NewRepository(db).ListBlocks(ctx)
+	modelRepository := modelcatalog.NewRepository(db)
+	modelBlocks, err := modelRepository.ListBlocks(ctx)
 	if err != nil {
 		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key model blocks: %w", err))
 	}
 	keyPool := pool.New(settings, resolved.Clock)
 	keyPool.LoadSnapshot(keySnapshots, modelBlocks)
+	descriptor, err := nvidiaDescriptor(resolved.Config)
+	if err != nil {
+		return nil, closeAfterInitializationError(db, err)
+	}
+	nvidiaClient, err := nvidia.NewClient(resolved.NVIDIAHTTPClient, descriptor)
+	if err != nil {
+		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize NVIDIA client: %w", err))
+	}
+	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
+	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
+	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
+	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
+	chat := httpapi.DataMiddleware(accessKeys, v1.NewChat(models, attempts, nvidiaClient))
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.Handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load))
-	app.Server = NewServer(resolved.Config.ListenAddress, app.Handler, settings, func() { app.shutting.Store(true) })
+	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat)
+	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
+}
+
+func (a *App) Handler() http.Handler {
+	return a.handler
+}
+
+func nvidiaDescriptor(cfg config.Config) (nvidia.Descriptor, error) {
+	descriptor := nvidia.DefaultDescriptor()
+	if cfg.NVIDIABaseURL == nil {
+		return descriptor, nil
+	}
+	rewritten, err := descriptor.WithBaseURL(cfg.NVIDIABaseURL)
+	if err != nil {
+		return nvidia.Descriptor{}, fmt.Errorf("configure NVIDIA endpoints: %w", err)
+	}
+	return rewritten, nil
 }
 
 func resolveDependencies(dependencies Dependencies) (Dependencies, error) {
