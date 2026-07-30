@@ -61,7 +61,9 @@ function legacyCopy(value: string): void {
   input.style.opacity = '0'
   globalThis.document.body.append(input)
   input.select()
-  globalThis.document.execCommand('copy')
+  const copied = globalThis.document.execCommand('copy')
+  if (!copied) throw new Error('legacy copy failed')
+
   input.remove()
 }
 

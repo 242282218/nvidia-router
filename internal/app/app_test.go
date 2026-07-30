@@ -67,8 +67,8 @@ func TestNewServesEmbeddedFrontendAndKeepsAPIPrefixesOutOfSPA(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200", path, response.Code)
 		}
-		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-			t.Fatalf("%s Content-Type = %q, want HTML", path, got)
+		if !strings.Contains(response.Body.String(), "NVIDIA API Router") {
+			t.Fatalf("%s body = %q, want embedded index marker", path, response.Body.String())
 		}
 	}
 

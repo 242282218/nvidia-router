@@ -168,7 +168,7 @@ function formatDate(value: string): string {
               <tbody class="divide-y divide-slate-800">
                 <tr
                   v-for="item in statisticsByDimension[dimension.type]"
-                  :key="`${item.day}-${item.dimension_id}`"
+                  :key="`${item.day}-${item.dimension_type}-${item.dimension_id}`"
                 >
                   <td class="px-4 py-3">
                     {{ item.day }}

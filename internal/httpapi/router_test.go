@@ -74,8 +74,52 @@ func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 	}
 }
 
+func TestRouterAddsNoStoreToAPIHealthAndAuthResponsesWithoutSPAHTML(t *testing.T) {
+	api := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	})
+	frontend := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("SPA INDEX MARKER"))
+	})
+	router := NewRouter(api, api, api, api, api, api, api, fakeAdminSecurity{}, api, api, api, frontend)
+
+	for _, path := range []string{"/v1/models", "/admin/api/auth/session", "/admin/api/settings", "/health/live"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := response.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s Cache-Control = %q, want no-store", path, got)
+		}
+		if response.Header().Get("Content-Type") == "text/html; charset=utf-8" {
+			t.Errorf("%s returned SPA HTML: %q", path, response.Body.String())
+		}
+	}
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/settings", nil))
+	if response.Body.String() != "SPA INDEX MARKER" {
+		t.Fatalf("frontend body = %q, want SPA marker", response.Body.String())
+	}
+}
+
+func TestNoStoreMiddlewareAppendsWithoutReplacingCacheDirectives(t *testing.T) {
+	handler := NoStoreMiddleware(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Cache-Control", "private, max-age=0")
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if got := response.Header().Get("Cache-Control"); got != "private, max-age=0, no-store" {
+		t.Fatalf("Cache-Control = %q, want existing directives plus no-store", got)
+	}
+}
 func TestRouterSeparatesAuthAndProtectedAdminAPI(t *testing.T) {
 	notFound := http.NotFoundHandler()
+
 	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
 
 	authResponse := httptest.NewRecorder()

@@ -21,19 +21,23 @@ onMounted(() => {
 
 async function loadRuntime(): Promise<void> {
   loading.value = true
-  try {
-    const [summaryResponse, settingsResponse] = await Promise.all([
-      runtimeApi.getSummary(),
-      runtimeApi.getSettings(),
-    ])
-    summary.value = summaryResponse.data
-    settings.value = settingsResponse.data
-    errorMessage.value = ''
-  } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '运行状态加载失败。'
-  } finally {
-    loading.value = false
+  const [summaryResult, settingsResult] = await Promise.allSettled([
+    runtimeApi.getSummary(),
+    runtimeApi.getSettings(),
+  ])
+  const errors: string[] = []
+  if (summaryResult.status === 'fulfilled') {
+    summary.value = summaryResult.value.data
+  } else {
+    errors.push(summaryResult.reason instanceof ApiError ? summaryResult.reason.message : '运行状态加载失败。')
   }
+  if (settingsResult.status === 'fulfilled') {
+    settings.value = settingsResult.value.data
+  } else {
+    errors.push(settingsResult.reason instanceof ApiError ? settingsResult.reason.message : '运行设置加载失败。')
+  }
+  errorMessage.value = errors.join(' ')
+  loading.value = false
 }
 
 async function saveSettings(next: RuntimeSettings): Promise<void> {

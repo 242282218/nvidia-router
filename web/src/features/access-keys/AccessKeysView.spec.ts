@@ -63,6 +63,33 @@ describe('AccessKeysView', () => {
     expect(wrapper.findAll('[data-testid="create-access-key-form"]')).toHaveLength(1)
   })
 
+  it('reports legacy copy failure when execCommand returns false', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    })
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn().mockReturnValue(false),
+    })
+    vi.mocked(accessKeysApi.create).mockResolvedValue({
+      ...listedKey,
+      id: 5,
+      name: 'CI',
+      key_prefix: 'nvr_ci12',
+      key: 'nvr_legacy_secret',
+    })
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="open-create-access-key"]').trigger('click')
+    await wrapper.get('[data-testid="access-key-name"]').setValue('CI')
+    await wrapper.get('[data-testid="create-access-key-form"]').trigger('submit')
+    await flushPromises()
+    await wrapper.get('[data-testid="copy-created-access-key"]').trigger('click')
+
+    expect(wrapper.text()).toContain('复制失败，请手动复制。')
+  })
   it('shows safe metadata and requires confirmation before revoking', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const wrapper = mount(AccessKeysView)

@@ -19,17 +19,17 @@ func NewRouter(
 	additionalAdmin ...http.Handler,
 ) http.Handler {
 	root := http.NewServeMux()
-	root.Handle("/health", health)
-	root.Handle("/health/", health)
-	dataRoutes := security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models))
+	root.Handle("/health", NoStoreMiddleware(health))
+	root.Handle("/health/", NoStoreMiddleware(health))
+	dataRoutes := NoStoreMiddleware(security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models)))
 	root.Handle("/v1", dataRoutes)
 	root.Handle("/v1/", dataRoutes)
-	root.Handle("/admin/api/auth/", security)
+	root.Handle("/admin/api/auth/", NoStoreMiddleware(security))
 	stats := http.NotFoundHandler()
 	if len(additionalAdmin) > 0 && additionalAdmin[0] != nil {
 		stats = additionalAdmin[0]
 	}
-	securedManagement := security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats))
+	securedManagement := NoStoreMiddleware(security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats)))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
 	root.Handle("/admin/", frontend)

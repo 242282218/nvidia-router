@@ -50,6 +50,37 @@ describe('RuntimeView', () => {
     expect(wrapper.get('[data-testid="runtime-shutdown"]').text()).toContain('关闭中')
   })
 
+  it('shows settings when summary loading fails', async () => {
+    vi.mocked(runtimeApi.getSummary).mockRejectedValue(new ApiError(503, {
+      type: 'server_error',
+      code: 'summary_unavailable',
+      message: '运行摘要暂时不可用。',
+      param: null,
+    }))
+    const wrapper = mount(RuntimeView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('运行摘要暂时不可用')
+    expect(wrapper.find('[data-testid="runtime-active"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="runtime-settings-form"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="queue-capacity"]').element).toBeTruthy()
+  })
+
+  it('shows summary when settings loading fails', async () => {
+    vi.mocked(runtimeApi.getSettings).mockRejectedValue(new ApiError(503, {
+      type: 'server_error',
+      code: 'settings_unavailable',
+      message: '运行设置暂时不可用。',
+      param: null,
+    }))
+    const wrapper = mount(RuntimeView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('运行设置暂时不可用')
+    expect(wrapper.get('[data-testid="runtime-active"]').text()).toContain('4')
+    expect(wrapper.find('[data-testid="runtime-settings-form"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="runtime-settings-form"] button').attributes('disabled')).toBeDefined()
+  })
   it('edits all settings in UI units and converts them to backend milliseconds', async () => {
     const wrapper = mount(RuntimeView)
     await flushPromises()
@@ -66,6 +97,7 @@ describe('RuntimeView', () => {
 
     expect(runtimeApi.updateSettings).toHaveBeenCalledWith(settings)
   })
+
 
   it('places a backend param validation error beside its field', async () => {
     vi.mocked(runtimeApi.updateSettings).mockRejectedValue(

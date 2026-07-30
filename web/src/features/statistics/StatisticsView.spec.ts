@@ -76,6 +76,28 @@ describe('StatisticsView', () => {
     expect(wrapper.get('[data-testid="statistics-access_key"]').text()).toContain('—')
   })
 
+  it('includes the statistic dimension in each row key', async () => {
+    vi.mocked(statisticsApi.getDaily).mockResolvedValue({
+      data: [
+        { ...base, dimension_type: 'global', dimension_id: 'shared-id' },
+        { ...base, dimension_type: 'model', dimension_id: 'shared-id' },
+      ],
+    })
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    const rows = [
+      ...wrapper.get('[data-testid="statistics-global"]').findAll('tbody tr'),
+      ...wrapper.get('[data-testid="statistics-model"]').findAll('tbody tr'),
+    ]
+    const keys = rows.map((row) => (row.element as HTMLElement & {
+      __vnode?: { key?: unknown }
+    }).__vnode?.key)
+    expect(keys).toEqual([
+      '2026-07-30-global-shared-id',
+      '2026-07-30-model-shared-id',
+    ])
+  })
   it('shows recent safe error metadata without request or response bodies', async () => {
     const wrapper = mount(StatisticsView)
     await flushPromises()
