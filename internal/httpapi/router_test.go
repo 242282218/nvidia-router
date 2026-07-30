@@ -19,12 +19,15 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 	embeddings := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusOK)
 	})
+	audio := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
 	models := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusOK)
 	})
-	router := NewRouter(health, chat, responses, embeddings, models)
+	router := NewRouter(health, chat, responses, embeddings, audio, models)
 
-	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/models"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/models"} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
 		if response.Code != http.StatusOK {
@@ -34,9 +37,9 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 }
 
 func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
-	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
+	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
 
-	for _, path := range []string{"/v1/audio/transcriptions", "/v1/some/unknown"} {
+	for _, path := range []string{"/v1/audio/speech", "/v1/some/unknown"} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
 		if response.Code != http.StatusNotImplemented {
@@ -46,7 +49,7 @@ func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 }
 
 func TestRouterAdminAPIReturnsNotFound(t *testing.T) {
-	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
+	router := NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
 	if response.Code != http.StatusNotFound {
