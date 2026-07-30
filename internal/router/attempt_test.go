@@ -19,7 +19,7 @@ import (
 	"nvidia-router/internal/runtimeconfig"
 )
 
-func TestAttemptTriesEachKeyOnceWithOneCapturedBudget(t *testing.T) {
+func TestAttemptTriesEachKeyOnceWithCapturedSettingsAndPerAttemptFirstByteBudget(t *testing.T) {
 	settings := &countingProvider{snapshot: runtimeconfig.Snapshot{
 		ConnectTimeoutMS: 2500, FirstByteTimeoutMS: 5000, NonstreamTotalTimeoutMS: 12000,
 	}}
@@ -64,9 +64,12 @@ func TestAttemptTriesEachKeyOnceWithOneCapturedBudget(t *testing.T) {
 	if len(calls) != 3 || calls[0] != 1 || calls[1] != 2 || calls[2] != 3 {
 		t.Fatalf("Execute calls = %v", calls)
 	}
-	for _, deadline := range deadlines[1:] {
-		if !deadline.Equal(deadlines[0]) {
-			t.Fatalf("first-byte deadlines changed across attempts: %v", deadlines)
+	for index, deadline := range deadlines {
+		if deadline.IsZero() {
+			t.Fatalf("first-byte deadline %d is zero", index)
+		}
+		if index > 0 && deadline.Before(deadlines[index-1]) {
+			t.Fatalf("first-byte deadlines moved backwards: %v", deadlines)
 		}
 	}
 	for _, deadline := range totalDeadlines[1:] {

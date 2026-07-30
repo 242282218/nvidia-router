@@ -94,10 +94,16 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		if err != nil {
 			return nil, err
 		}
-		if stream || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			// Streaming: return the raw SSE response so streamResponse can drive the
-			// state machine after Attempt commits. Error responses pass through so
-			// Attempt can classify and fail over before any bytes reach the client.
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return response, nil
+		}
+		if stream {
+			if err := primeSSE(ctx, response); err != nil {
+				if errors.Is(err, sse.ErrEventTooLarge) {
+					return response, fault.Protocol(err)
+				}
+				return response, err
+			}
 			return response, nil
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)

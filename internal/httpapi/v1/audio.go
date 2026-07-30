@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -42,9 +43,16 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	parsed, err := audiocollections.ParseMultipart(request)
-	if err != nil {
-		writeChatError(writer, err)
+	parsed, parseErr := audiocollections.ParseMultipart(request)
+	if err := removeMultipartFiles(request); err != nil {
+		writeChatError(writer, &apierror.Error{
+			Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
+			Message: "The server could not clean up the audio upload.",
+		})
+		return
+	}
+	if parseErr != nil {
+		writeChatError(writer, parseErr)
 		return
 	}
 	model, err := h.models.Resolve(request.Context(), parsed.ModelID(), parsed.Requirements())
@@ -98,6 +106,16 @@ func (h *Audio) execute(body []byte, contentType string) router.ExecuteFunc {
 		response.ContentLength = int64(len(validated.Body))
 		return response, nil
 	}
+}
+
+func removeMultipartFiles(request *http.Request) error {
+	if request.MultipartForm == nil {
+		return nil
+	}
+	if err := request.MultipartForm.RemoveAll(); err != nil {
+		return fmt.Errorf("remove multipart temporary files: %w", err)
+	}
+	return nil
 }
 
 // verifyMultipartAudio rejects non-multipart content types before parsing so

@@ -1,6 +1,7 @@
 package mocknvidia
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -8,31 +9,38 @@ import (
 )
 
 type SSEChunk struct {
-	Data  string
-	Delay time.Duration
+	Data        string
+	Delay       time.Duration
+	NoKeepAlive bool
 }
 
 type Script struct {
-	Status  int
-	Body    string
-	Headers http.Header
-	Delay   time.Duration
-	SSE     []SSEChunk
+	Status       int
+	Body         string
+	Headers      http.Header
+	Delay        time.Duration
+	BodyDelay    time.Duration
+	Disconnect   bool
+	FlushHeaders bool
+	SSE          []SSEChunk
 }
 
 type Request struct {
 	Method string
 	Path   string
 	Header http.Header
+	Body   []byte
 }
 
 type Server struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	scripts  []Script
-	requests []Request
-	canceled int
+	mu        sync.Mutex
+	scripts   []Script
+	requests  []Request
+	canceled  int
+	active    int
+	maxActive int
 }
 
 func New(scripts ...Script) *Server {
@@ -53,6 +61,12 @@ func (s *Server) Count() int {
 	return len(s.requests)
 }
 
+func (s *Server) MaxActive() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxActive
+}
+
 func (s *Server) CanceledCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,7 +82,13 @@ func (s *Server) Requests() []Request {
 }
 
 func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
+	s.beginRequest()
+	defer s.endRequest()
 	script := s.next(request)
+	if script.Disconnect {
+		s.disconnect(writer)
+		return
+	}
 	for key, values := range script.Headers {
 		writer.Header()[key] = append([]string(nil), values...)
 	}
@@ -84,16 +104,39 @@ func (s *Server) handle(writer http.ResponseWriter, request *http.Request) {
 		status = http.StatusOK
 	}
 	writer.WriteHeader(status)
+	if script.FlushHeaders {
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+	if !waitForRequest(writer, request, script.BodyDelay, s.markCanceled) {
+		return
+	}
 	_, _ = writer.Write([]byte(script.Body))
 }
 
+func (s *Server) disconnect(writer http.ResponseWriter) {
+	hijacker, ok := writer.(http.Hijacker)
+	if !ok {
+		writer.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	connection, _, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	_ = connection.Close()
+}
+
 func (s *Server) next(request *http.Request) Script {
+	body, _ := io.ReadAll(request.Body)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, Request{
 		Method: request.Method,
 		Path:   request.URL.Path,
 		Header: request.Header.Clone(),
+		Body:   append([]byte(nil), body...),
 	})
 	index := len(s.requests) - 1
 	if index >= len(s.scripts) {
@@ -106,8 +149,11 @@ func (s *Server) writeSSE(writer http.ResponseWriter, request *http.Request, scr
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.WriteHeader(statusOrOK(script.Status))
 	flusher, _ := writer.(http.Flusher)
+	if script.FlushHeaders && flusher != nil {
+		flusher.Flush()
+	}
 	for _, chunk := range script.SSE {
-		if !waitForStreamDelay(writer, request, chunk.Delay, flusher, s.markCanceled) {
+		if !waitForStreamDelay(writer, request, chunk.Delay, chunk.NoKeepAlive, flusher, s.markCanceled) {
 			return
 		}
 		if chunk.Data != "" {
@@ -120,6 +166,21 @@ func (s *Server) writeSSE(writer http.ResponseWriter, request *http.Request, scr
 			}
 		}
 	}
+}
+
+func (s *Server) beginRequest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active++
+	if s.active > s.maxActive {
+		s.maxActive = s.active
+	}
+}
+
+func (s *Server) endRequest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
 }
 
 func (s *Server) markCanceled() {
@@ -147,12 +208,21 @@ func waitForRequest(writer http.ResponseWriter, request *http.Request, delay tim
 // not cancel an in-flight HTTP/1.1 streaming request when the client disconnects,
 // we probe the connection with comment keepalives: a write failure proves the
 // client is gone and counts as a cancellation.
-func waitForStreamDelay(writer http.ResponseWriter, request *http.Request, delay time.Duration, flusher http.Flusher, canceled func()) bool {
+func waitForStreamDelay(writer http.ResponseWriter, request *http.Request, delay time.Duration, noKeepAlive bool, flusher http.Flusher, canceled func()) bool {
 	if delay == 0 {
 		return true
 	}
 	deadline := time.NewTimer(delay)
 	defer deadline.Stop()
+	if noKeepAlive {
+		select {
+		case <-deadline.C:
+			return true
+		case <-request.Context().Done():
+			canceled()
+			return false
+		}
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {

@@ -94,8 +94,12 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 			return response, nil
 		}
 		if stream {
-			// For streaming, return the response directly without reading body.
-			// The SSE proxy will read it after Attempt commits.
+			if err := primeSSE(ctx, response); err != nil {
+				if errors.Is(err, sse.ErrEventTooLarge) {
+					return response, fault.Protocol(err)
+				}
+				return response, err
+			}
 			return response, nil
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)
@@ -154,7 +158,15 @@ func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {
 	if !ok {
 		return runtimeconfig.Snapshot{}
 	}
-	return runtimeconfig.Snapshot{ConnectTimeoutMS: int(budget.ConnectTimeout() / time.Millisecond)}
+	remaining := time.Until(budget.FirstByteDeadline())
+	firstByteTimeoutMS := int((remaining + time.Millisecond - 1) / time.Millisecond)
+	if firstByteTimeoutMS < 1 {
+		firstByteTimeoutMS = 1
+	}
+	return runtimeconfig.Snapshot{
+		ConnectTimeoutMS:   int(budget.ConnectTimeout() / time.Millisecond),
+		FirstByteTimeoutMS: firstByteTimeoutMS,
+	}
 }
 
 func modelError(err error) error {
@@ -193,4 +205,14 @@ func writeChatError(writer http.ResponseWriter, err error) {
 		Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
 		Message: "The server could not complete the request.",
 	}.Write(writer)
+}
+
+func primeSSE(ctx context.Context, response *http.Response) error {
+	primeCtx := ctx
+	cancel := func() {}
+	if budget, ok := router.BudgetFromContext(ctx); ok {
+		primeCtx, cancel = context.WithDeadline(ctx, budget.FirstByteDeadline())
+	}
+	defer cancel()
+	return sse.Prime(primeCtx, response)
 }

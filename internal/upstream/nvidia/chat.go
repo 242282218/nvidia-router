@@ -61,6 +61,7 @@ func newAttemptTransport(base http.RoundTripper, snapshot runtimeconfig.Snapshot
 	if transport, ok := base.(*http.Transport); ok {
 		clone := transport.Clone()
 		clone.DialContext = dialer.DialContext
+		clone.ResponseHeaderTimeout = time.Duration(snapshot.FirstByteTimeoutMS) * time.Millisecond
 		return clone, dialer
 	}
 	return &attemptRoundTripper{base: base}, dialer

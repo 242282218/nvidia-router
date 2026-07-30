@@ -96,16 +96,18 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	attempted := make(map[int64]struct{})
 	var lastFault *fault.Fault
 	for {
-		lease, err := a.acquire(requestCtx, budget, settings, modelID, attempted)
+		attemptBudget := budget.forAttempt(a.clock.Now())
+		lease, err := a.acquire(requestCtx, attemptBudget, settings, modelID, attempted)
 		if err != nil {
-			if lastFault != nil && a.budgetExpired(requestCtx, budget) {
+			if lastFault != nil && (a.budgetExpired(requestCtx) || !a.clock.Now().Before(attemptBudget.FirstByteDeadline())) {
 				return AttemptResult{}, *lastFault
 			}
 			return AttemptResult{}, chooseAcquireError(err, lastFault)
 		}
 		attempted[lease.KeyID()] = struct{}{}
 
-		response, commit, currentFault, err := a.executeLease(requestCtx, ctx, modelID, lease, execute)
+		executeCtx := withBudget(requestCtx, attemptBudget)
+		response, commit, currentFault, err := a.executeLease(executeCtx, ctx, modelID, lease, execute)
 		if err != nil {
 			return AttemptResult{}, err
 		}
@@ -113,14 +115,13 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 			return AttemptResult{Response: response, Lease: lease, Attempts: len(attempted)}, nil
 		}
 		lastFault = currentFault
-		if !currentFault.Retryable || commit.Committed() || a.budgetExpired(requestCtx, budget) {
+		if !currentFault.Retryable || commit.Committed() || a.budgetExpired(requestCtx) {
 			return AttemptResult{}, *currentFault
 		}
 	}
 }
 
 func (a *Attempt) requestContext(ctx context.Context, budget Budget) (context.Context, context.CancelFunc) {
-	ctx = withBudget(ctx, budget)
 	if budget.totalDeadline.IsZero() {
 		return ctx, func() {}
 	}
@@ -190,8 +191,8 @@ func (a *Attempt) executeLease(
 	return nil, commit, &classified, nil
 }
 
-func (a *Attempt) budgetExpired(ctx context.Context, budget Budget) bool {
-	return ctx.Err() != nil || !a.clock.Now().Before(budget.FirstByteDeadline())
+func (a *Attempt) budgetExpired(ctx context.Context) bool {
+	return ctx.Err() != nil
 }
 
 func chooseAcquireError(err error, lastFault *fault.Fault) error {
