@@ -89,6 +89,7 @@ describe('AccessKeysView', () => {
     await wrapper.get('[data-testid="copy-created-access-key"]').trigger('click')
 
     expect(wrapper.text()).toContain('复制失败，请手动复制。')
+    expect(document.querySelector('textarea')).toBeNull()
   })
   it('shows safe metadata and requires confirmation before revoking', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)

@@ -60,11 +60,13 @@ function legacyCopy(value: string): void {
   input.style.position = 'fixed'
   input.style.opacity = '0'
   globalThis.document.body.append(input)
-  input.select()
-  const copied = globalThis.document.execCommand('copy')
-  if (!copied) throw new Error('legacy copy failed')
-
-  input.remove()
+  try {
+    input.select()
+    const copied = globalThis.document.execCommand('copy')
+    if (!copied) throw new Error('legacy copy failed')
+  } finally {
+    input.remove()
+  }
 }
 
 function close(): void {
