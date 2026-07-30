@@ -20,6 +20,31 @@ type StateSync interface {
 	SetModelBlock(keyID, modelID int64, blocked bool)
 }
 
+// KeyStatusCounts contains non-secret scheduling state counts for the admin summary.
+type KeyStatusCounts struct {
+	Total       int `json:"total"`
+	Enabled     int `json:"enabled"`
+	Disabled    int `json:"disabled"`
+	AuthInvalid int `json:"auth_invalid"`
+	CoolingDown int `json:"cooling_down"`
+	Ready       int `json:"ready"`
+}
+
+// QueueSummary contains only queue sizing and occupancy metadata.
+type QueueSummary struct {
+	Length   int `json:"length"`
+	Capacity int `json:"capacity"`
+}
+
+// Summary contains safe operational metadata for the admin runtime view.
+type Summary struct {
+	Keys             KeyStatusCounts `json:"keys"`
+	Active           int             `json:"active"`
+	Queue            QueueSummary    `json:"queue"`
+	EarliestCooldown *time.Time      `json:"earliest_cooldown,omitempty"`
+	ShuttingDown     bool            `json:"shutting_down"`
+}
+
 type Pool struct {
 	mu       sync.Mutex
 	settings runtimeconfig.Provider
@@ -40,6 +65,51 @@ func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
 		clock:    source,
 		keys:     make(map[int64]*keyState),
 	}
+}
+
+// Summary returns a lock-consistent view without exposing credential state.
+func (p *Pool) Summary() Summary {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	summary := Summary{Queue: QueueSummary{Length: p.waiters.Len(), Capacity: resolveQueueSettings(p.currentSnapshot()).capacity}, ShuttingDown: p.closed}
+	now := p.clock.Now()
+	for _, state := range p.keys {
+		summary.Keys.Total++
+		if state.snapshot.Enabled {
+			summary.Keys.Enabled++
+		} else {
+			summary.Keys.Disabled++
+		}
+		if state.snapshot.AuthInvalid {
+			summary.Keys.AuthInvalid++
+		}
+		if state.busy {
+			summary.Active++
+		}
+		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
+			summary.Keys.CoolingDown++
+			if summary.EarliestCooldown == nil || state.snapshot.CooldownUntil.Before(*summary.EarliestCooldown) {
+				cooldown := *state.snapshot.CooldownUntil
+				summary.EarliestCooldown = &cooldown
+			}
+		}
+		if state.snapshot.Enabled && !state.snapshot.AuthInvalid && !state.busy && !isCoolingDown(state.snapshot.CooldownUntil, now) {
+			summary.Keys.Ready++
+		}
+	}
+	return summary
+}
+
+func (p *Pool) currentSnapshot() runtimeconfig.Snapshot {
+	if p.settings == nil {
+		return runtimeconfig.Snapshot{}
+	}
+	return p.settings.Snapshot()
+}
+
+func isCoolingDown(until *time.Time, now time.Time) bool {
+	return until != nil && now.Before(*until)
 }
 
 func (p *Pool) LoadSnapshot(keys []keystate.KeySnapshot, blocks []keystate.ModelBlock) {

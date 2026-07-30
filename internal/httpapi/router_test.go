@@ -11,7 +11,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	})
 	security := fakeAdminSecurity{}
-	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler())
+	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler(), ok, ok)
 
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech", "/v1/models"} {
 		response := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 
 func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound)
 
 	for _, path := range []string{"/v1", "/v1/some/unknown"} {
 		response := httptest.NewRecorder()
@@ -41,9 +41,42 @@ func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
+	notFound := http.NotFoundHandler()
+	settings := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Settings-Method", request.Method)
+		writer.WriteHeader(http.StatusOK)
+	})
+	runtimeSummary := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	router := NewRouter(
+		notFound, notFound, notFound, notFound, notFound, notFound, notFound,
+		fakeAdminSecurity{}, notFound, settings, runtimeSummary,
+	)
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/admin/api/settings"},
+		{method: http.MethodPatch, path: "/admin/api/settings"},
+		{method: http.MethodGet, path: "/admin/api/runtime/summary"},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(request.method, request.path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s %s status = %d, want 200", request.method, request.path, response.Code)
+		}
+		if response.Header().Get("X-Admin-Guard") != "applied" {
+			t.Fatalf("%s %s did not pass through management guard", request.method, request.path)
+		}
+	}
+}
+
 func TestRouterSeparatesAuthAndProtectedAdminAPI(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound)
 
 	authResponse := httptest.NewRecorder()
 	router.ServeHTTP(authResponse, httptest.NewRequest(http.MethodGet, "/admin/api/auth/session", nil))

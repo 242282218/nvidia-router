@@ -12,19 +12,32 @@ type AdminSecurity interface {
 	RequireManagement(http.Handler) http.Handler
 }
 
-func NewRouter(health, chat, responses, embeddings, audio, speech, models http.Handler, security AdminSecurity, management http.Handler) http.Handler {
+func NewRouter(
+	health, chat, responses, embeddings, audio, speech, models http.Handler,
+	security AdminSecurity,
+	management, settings, runtimeSummary http.Handler,
+) http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/health/", health)
 	dataRoutes := security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models))
 	root.Handle("/v1", dataRoutes)
 	root.Handle("/v1/", dataRoutes)
 	root.Handle("/admin/api/auth/", security)
-	securedManagement := security.RequireManagement(management)
+	securedManagement := security.RequireManagement(newAdminRouter(management, settings, runtimeSummary))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
 	root.HandleFunc("/admin/", frontendPlaceholder)
 	root.HandleFunc("/", frontendPlaceholder)
 	return root
+}
+
+func newAdminRouter(management, settings, runtimeSummary http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/admin/api/settings", settings)
+	mux.Handle("/admin/api/runtime/summary", runtimeSummary)
+	mux.Handle("/admin/api", management)
+	mux.Handle("/admin/api/", management)
+	return mux
 }
 
 func newV1Router(chat, responses, embeddings, audio, speech, models http.Handler) http.Handler {

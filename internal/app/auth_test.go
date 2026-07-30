@@ -53,8 +53,8 @@ func TestAuthFlowEnforcesGlobalPasswordChangeGate(t *testing.T) {
 	dataAllowed := authRequest(t, server.Client(), http.MethodGet, server.URL+"/v1/models", "", nil, "")
 	assertResponseError(t, dataAllowed, http.StatusUnauthorized, "invalid_api_key")
 	managementAllowed := authRequest(t, server.Client(), http.MethodGet, server.URL+"/admin/api/settings", "", active, "")
-	if managementAllowed.StatusCode != http.StatusNotFound {
-		t.Fatalf("management status = %d, want 404: %s", managementAllowed.StatusCode, readResponse(t, managementAllowed))
+	if managementAllowed.StatusCode != http.StatusOK {
+		t.Fatalf("management status = %d, want 200: %s", managementAllowed.StatusCode, readResponse(t, managementAllowed))
 	}
 	_ = managementAllowed.Body.Close()
 	crossOrigin := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/settings", "", active, "http://attacker.example")

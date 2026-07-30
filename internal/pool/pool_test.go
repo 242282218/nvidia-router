@@ -142,6 +142,43 @@ func TestStateSyncAppliesPersistedFailureAndSuccess(t *testing.T) {
 	}
 }
 
+func TestRuntimeSummaryCountsSafePoolState(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	earlyCooldown := now.Add(time.Minute)
+	lateCooldown := now.Add(2 * time.Minute)
+	expiredCooldown := now.Add(-time.Minute)
+	p := New(summarySettings{snapshot: runtimeconfig.Snapshot{QueueCapacity: 7}}, fakeClock{now: now})
+	p.LoadSnapshot([]keystate.KeySnapshot{
+		{ID: 1, Enabled: true},
+		{ID: 2, Enabled: false},
+		{ID: 3, Enabled: true, AuthInvalid: true},
+		{ID: 4, Enabled: true, CooldownUntil: &lateCooldown},
+		{ID: 5, Enabled: true, CooldownUntil: &earlyCooldown},
+		{ID: 6, Enabled: true, CooldownUntil: &expiredCooldown},
+	}, nil)
+	lease := mustTryAcquire(t, p, 1, nil)
+	defer lease.Release()
+
+	summary := p.Summary()
+	if summary.Keys != (KeyStatusCounts{Total: 6, Enabled: 5, Disabled: 1, AuthInvalid: 1, CoolingDown: 2, Ready: 1}) {
+		t.Fatalf("key counts = %#v", summary.Keys)
+	}
+	if summary.Active != 1 || summary.Queue != (QueueSummary{Capacity: 7}) {
+		t.Fatalf("active/queue = %d/%#v", summary.Active, summary.Queue)
+	}
+	if summary.EarliestCooldown == nil || !summary.EarliestCooldown.Equal(earlyCooldown) {
+		t.Fatalf("earliest cooldown = %v, want %v", summary.EarliestCooldown, earlyCooldown)
+	}
+	if summary.ShuttingDown {
+		t.Fatal("new pool reported shutting down")
+	}
+
+	p.Shutdown()
+	if !p.Summary().ShuttingDown {
+		t.Fatal("shutdown pool did not report shutting_down")
+	}
+}
+
 func TestLeaseReleaseIsIdempotent(t *testing.T) {
 	p := New(testSettings{}, fakeClock{})
 	p.LoadSnapshot(testKeys(1), nil)
@@ -232,3 +269,9 @@ func (fakeClock) NewTimer(time.Duration) *time.Timer { return time.NewTimer(time
 func (fakeClock) AfterFunc(time.Duration, func()) *time.Timer {
 	return time.NewTimer(time.Hour)
 }
+
+type summarySettings struct {
+	snapshot runtimeconfig.Snapshot
+}
+
+func (s summarySettings) Snapshot() runtimeconfig.Snapshot { return s.snapshot }

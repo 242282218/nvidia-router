@@ -41,7 +41,7 @@ type Dependencies struct {
 type App struct {
 	Dependencies    Dependencies
 	Pool            *pool.Pool
-	RuntimeSettings runtimeconfig.Provider
+	RuntimeSettings *runtimeconfig.Store
 	Server          *Server
 
 	db       *sql.DB
@@ -108,7 +108,10 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, adminSecurity, adminManagement)
+	app.handler = httpapi.NewRouter(
+		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
+		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool),
+	)
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }
