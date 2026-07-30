@@ -133,11 +133,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		cleanupCancel: cleanupCancel, cleanupDone: cleanupDone,
 		rootCancel: rootCancel,
 	}
-	app.handler = httpapi.NewRouter(
+	app.handler = shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
 		adminapi.NewStats(observabilityRepository, resolved.Clock),
-	)
+	))
 	worker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
 	go func() {
 		defer close(cleanupDone)
@@ -221,7 +221,6 @@ func closeAfterInitializationError(db *sql.DB, operationErr error) error {
 
 func (a *App) Serve(ctx context.Context) error {
 	err := a.Server.ListenAndServe(ctx)
-	a.beginShutdown(0)
 	if closeErr := a.Close(); closeErr != nil {
 		return fmt.Errorf("serve application: %w", errors.Join(err, closeErr))
 	}

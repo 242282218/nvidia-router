@@ -1,6 +1,10 @@
 package app
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 const defaultShutdownGrace = 60 * time.Second
 
@@ -37,6 +41,10 @@ func (a *App) resolveShutdownGrace() time.Duration {
 }
 
 func (a *App) finishShutdown() error {
+	var shutdownErr error
+	if a.Server != nil {
+		shutdownErr = a.Server.Shutdown(context.Background())
+	}
 	if a.shutdownTimer != nil {
 		a.shutdownTimer.Stop()
 	}
@@ -47,10 +55,7 @@ func (a *App) finishShutdown() error {
 		<-a.cleanupDone
 	}
 	if a.db == nil {
-		return nil
+		return shutdownErr
 	}
-	if err := a.db.Close(); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(shutdownErr, a.db.Close())
 }
