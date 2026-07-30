@@ -11,6 +11,7 @@ import (
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
+	"nvidia-router/internal/observability"
 	audiocollections "nvidia-router/internal/protocol/audio"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
@@ -55,6 +56,7 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, parseErr)
 		return
 	}
+	observability.SetModel(request.Context(), parsed.ModelID(), false)
 	model, err := h.models.Resolve(request.Context(), parsed.ModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
@@ -168,6 +170,7 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
+	observability.SetModel(request.Context(), parsed.PublicModelID(), true)
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))

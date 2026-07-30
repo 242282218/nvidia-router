@@ -16,6 +16,7 @@ func NewRouter(
 	health, chat, responses, embeddings, audio, speech, models http.Handler,
 	security AdminSecurity,
 	management, settings, runtimeSummary http.Handler,
+	additionalAdmin ...http.Handler,
 ) http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/health/", health)
@@ -23,7 +24,11 @@ func NewRouter(
 	root.Handle("/v1", dataRoutes)
 	root.Handle("/v1/", dataRoutes)
 	root.Handle("/admin/api/auth/", security)
-	securedManagement := security.RequireManagement(newAdminRouter(management, settings, runtimeSummary))
+	stats := http.NotFoundHandler()
+	if len(additionalAdmin) > 0 && additionalAdmin[0] != nil {
+		stats = additionalAdmin[0]
+	}
+	securedManagement := security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
 	root.HandleFunc("/admin/", frontendPlaceholder)
@@ -31,10 +36,12 @@ func NewRouter(
 	return root
 }
 
-func newAdminRouter(management, settings, runtimeSummary http.Handler) http.Handler {
+func newAdminRouter(management, settings, runtimeSummary, stats http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/admin/api/settings", settings)
 	mux.Handle("/admin/api/runtime/summary", runtimeSummary)
+	mux.Handle("/admin/api/stats", stats)
+	mux.Handle("/admin/api/errors", stats)
 	mux.Handle("/admin/api", management)
 	mux.Handle("/admin/api/", management)
 	return mux

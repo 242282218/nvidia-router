@@ -9,6 +9,7 @@ import (
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
+	"nvidia-router/internal/observability"
 	embeddingsprotocol "nvidia-router/internal/protocol/embeddings"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
@@ -45,6 +46,7 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		writeChatError(writer, err)
 		return
 	}
+	observability.SetModel(request.Context(), parsed.PublicModelID(), false)
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))

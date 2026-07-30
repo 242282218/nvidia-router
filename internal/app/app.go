@@ -24,6 +24,7 @@ import (
 	v1 "nvidia-router/internal/httpapi/v1"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/nvidiakey"
+	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
@@ -44,11 +45,13 @@ type App struct {
 	RuntimeSettings *runtimeconfig.Store
 	Server          *Server
 
-	db       *sql.DB
-	handler  http.Handler
-	shutting atomic.Bool
-	close    sync.Once
-	closeErr error
+	db            *sql.DB
+	handler       http.Handler
+	shutting      atomic.Bool
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
+	close         sync.Once
+	closeErr      error
 }
 
 func New(ctx context.Context, dependencies Dependencies) (*App, error) {
@@ -99,19 +102,35 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		adminapi.NewModels(models, nvidiaKeys, keyPool),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
-	chat := httpapi.DataMiddleware(accessKeys, v1.NewChat(models, attempts, nvidiaClient))
-	responses := httpapi.DataMiddleware(accessKeys, v1.NewResponses(models, attempts, nvidiaClient))
-	embeddings := httpapi.DataMiddleware(accessKeys, v1.NewEmbeddings(models, attempts, nvidiaClient))
-	audio := httpapi.DataMiddleware(accessKeys, v1.NewAudio(models, attempts, nvidiaClient))
-	speech := httpapi.DataMiddleware(accessKeys, v1.NewSpeech(models, attempts, nvidiaClient))
-	modelList := httpapi.DataMiddleware(accessKeys, v1.NewModels(models))
+	observabilityRepository := observability.NewRepository(db)
+	observe := func(next http.Handler) http.Handler {
+		guarded := httpapi.DataMiddleware(accessKeys, next)
+		return observability.HTTPMiddleware(observabilityRepository, resolved.Clock, resolved.Logger, guarded)
+	}
+	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
+	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
+	embeddings := observe(v1.NewEmbeddings(models, attempts, nvidiaClient))
+	audio := observe(v1.NewAudio(models, attempts, nvidiaClient))
+	speech := observe(v1.NewSpeech(models, attempts, nvidiaClient))
+	modelList := observe(v1.NewModels(models))
 
 	resolved.DB = db
-	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	cleanupDone := make(chan struct{})
+	app := &App{
+		Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings,
+		cleanupCancel: cleanupCancel, cleanupDone: cleanupDone,
+	}
 	app.handler = httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool),
+		adminapi.NewStats(observabilityRepository, resolved.Clock),
 	)
+	worker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
+	go func() {
+		defer close(cleanupDone)
+		worker.Run(cleanupCtx)
+	}()
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }
@@ -201,6 +220,12 @@ func (a *App) Serve(ctx context.Context) error {
 func (a *App) Close() error {
 	a.shutting.Store(true)
 	a.close.Do(func() {
+		if a.cleanupCancel != nil {
+			a.cleanupCancel()
+		}
+		if a.cleanupDone != nil {
+			<-a.cleanupDone
+		}
 		a.closeErr = a.db.Close()
 	})
 	if a.closeErr != nil {

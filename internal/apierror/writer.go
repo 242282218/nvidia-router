@@ -19,6 +19,9 @@ type publicError struct {
 }
 
 func (err Error) Write(writer http.ResponseWriter) {
+	if observer, ok := writer.(interface{ SetErrorCode(string) }); ok {
+		observer.SetErrorCode(err.Code)
+	}
 	if err.RetryAfter > 0 {
 		writer.Header().Set("Retry-After", strconv.FormatInt(int64((err.RetryAfter+time.Second-1)/time.Second), 10))
 	}

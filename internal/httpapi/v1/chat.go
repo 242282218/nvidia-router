@@ -12,6 +12,7 @@ import (
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/observability"
 	chatprotocol "nvidia-router/internal/protocol/chat"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
@@ -55,6 +56,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
+	observability.SetModel(request.Context(), parsed.PublicModelID(), parsed.Stream())
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))

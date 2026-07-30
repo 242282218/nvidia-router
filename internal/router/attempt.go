@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
+	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
 	"nvidia-router/internal/runtimeconfig"
 )
@@ -94,10 +96,13 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	defer cancel()
 
 	attempted := make(map[int64]struct{})
+	var totalQueue time.Duration
 	var lastFault *fault.Fault
 	for {
 		attemptBudget := budget.forAttempt(a.clock.Now())
+		queueStarted := a.clock.Now()
 		lease, err := a.acquire(requestCtx, attemptBudget, settings, modelID, attempted)
+		totalQueue += a.clock.Now().Sub(queueStarted)
 		if err != nil {
 			if lastFault != nil && (a.budgetExpired(requestCtx) || !a.clock.Now().Before(attemptBudget.FirstByteDeadline())) {
 				return AttemptResult{}, *lastFault
@@ -105,6 +110,7 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 			return AttemptResult{}, chooseAcquireError(err, lastFault)
 		}
 		attempted[lease.KeyID()] = struct{}{}
+		observability.SetAttempt(ctx, lease.KeyID(), len(attempted), totalQueue)
 
 		executeCtx := withBudget(requestCtx, attemptBudget)
 		response, commit, currentFault, err := a.executeLease(executeCtx, ctx, modelID, lease, execute)
@@ -112,6 +118,7 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 			return AttemptResult{}, err
 		}
 		if currentFault == nil {
+			observability.SetUpstreamRequestID(ctx, response.Header.Get("X-Request-ID"))
 			return AttemptResult{Response: response, Lease: lease, Attempts: len(attempted)}, nil
 		}
 		lastFault = currentFault

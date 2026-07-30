@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"nvidia-router/internal/apierror"
+	"nvidia-router/internal/observability"
 )
 
 type identityContextKey struct{}
@@ -35,6 +36,7 @@ func Middleware(service *Service, next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(request.Context(), identityContextKey{}, identity)
+		observability.SetAccessKey(ctx, identity.ID)
 		next.ServeHTTP(writer, request.WithContext(ctx))
 		service.RecordUse(ctx, identity.ID)
 	})
