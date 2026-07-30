@@ -50,6 +50,7 @@ type modelDTO struct {
 	SupportsReasoning    bool              `json:"supports_reasoning"`
 	ReasoningWireFormat  string            `json:"reasoning_wire_format"`
 	CapabilityVerifiedAt *time.Time        `json:"capability_verified_at,omitempty"`
+	BlockedByKeyIDs      []int64           `json:"blocked_by_key_ids"`
 }
 type selectionDTO struct {
 	PublicID            string            `json:"public_id"`
@@ -185,7 +186,20 @@ func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
 	return candidateDTO{v.UpstreamID, v.DisplayName, v.Kind, v.SupportsVision, v.SupportsTools, v.SupportsReasoning, v.ReasoningWireFormat}
 }
 func toModelDTO(v modelcatalog.Model) modelDTO {
-	return modelDTO{v.ID, v.PublicID, v.UpstreamID, v.DisplayName, v.Kind, v.Enabled, v.SupportsVision, v.SupportsTools, v.SupportsReasoning, v.ReasoningWireFormat, v.CapabilityVerifiedAt}
+	return modelDTO{
+		ID:                   v.ID,
+		PublicID:             v.PublicID,
+		UpstreamID:           v.UpstreamID,
+		DisplayName:          v.DisplayName,
+		Kind:                 v.Kind,
+		Enabled:              v.Enabled,
+		SupportsVision:       v.SupportsVision,
+		SupportsTools:        v.SupportsTools,
+		SupportsReasoning:    v.SupportsReasoning,
+		ReasoningWireFormat:  v.ReasoningWireFormat,
+		CapabilityVerifiedAt: v.CapabilityVerifiedAt,
+		BlockedByKeyIDs:      v.BlockedByKeyIDs,
+	}
 }
 func (v selectionDTO) selection() modelcatalog.Selection {
 	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat}

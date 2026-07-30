@@ -23,6 +23,7 @@ type Model struct {
 	SupportsReasoning    bool
 	ReasoningWireFormat  string
 	CapabilityVerifiedAt *time.Time
+	BlockedByKeyIDs      []int64
 }
 
 type Candidate struct {

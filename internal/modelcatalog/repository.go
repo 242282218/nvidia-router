@@ -78,19 +78,56 @@ func (r *Repository) List(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
-	defer rows.Close()
 	models := make([]Model, 0)
 	for rows.Next() {
 		model, err := scanModel(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
+		model.BlockedByKeyIDs = []int64{}
 		models = append(models, model)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterate models: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close model rows: %w", err)
+	}
+	if err := r.attachBlockedKeyIDs(ctx, models); err != nil {
+		return nil, err
+	}
 	return models, nil
+}
+
+func (r *Repository) attachBlockedKeyIDs(ctx context.Context, models []Model) error {
+	indexes := make(map[int64]int, len(models))
+	for index := range models {
+		indexes[models[index].ID] = index
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT model_id, nvidia_key_id
+		FROM nvidia_key_model_blocks
+		ORDER BY model_id, nvidia_key_id
+	`)
+	if err != nil {
+		return fmt.Errorf("list model key blocks: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var modelID, keyID int64
+		if err := rows.Scan(&modelID, &keyID); err != nil {
+			return fmt.Errorf("scan model key block: %w", err)
+		}
+		if index, ok := indexes[modelID]; ok {
+			models[index].BlockedByKeyIDs = append(models[index].BlockedByKeyIDs, keyID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate model key blocks: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) ListEnabled(ctx context.Context) ([]Model, error) {

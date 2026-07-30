@@ -375,3 +375,45 @@ func assertBlockCount(t *testing.T, db *sql.DB, want int) {
 		t.Fatalf("block count = %d, want %d", count, want)
 	}
 }
+
+func TestListIncludesBlockedNVIDIAKeyIDs(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	firstKeyID := insertNVIDIAKey(t, db)
+	secondResult, err := db.Exec(`
+		INSERT INTO nvidia_keys (
+			ciphertext, nonce, fingerprint, display_prefix, display_suffix, created_at, updated_at
+		) VALUES (x'04', x'05', x'06', 'prefix2', 'suffix2', '2026-07-30T04:00:00Z', '2026-07-30T04:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("insert second NVIDIA key: %v", err)
+	}
+	secondKeyID, err := secondResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("second NVIDIA key ID: %v", err)
+	}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "blocked-list", UpstreamID: "vendor/blocked-list", DisplayName: "Blocked List", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List before block: %v", err)
+	}
+	modelID := models[0].ID
+	status := 403
+	if err := service.BlockKeyModel(context.Background(), secondKeyID, modelID, "model_forbidden", &status); err != nil {
+		t.Fatalf("Block second key: %v", err)
+	}
+	if err := service.BlockKeyModel(context.Background(), firstKeyID, modelID, "model_forbidden", &status); err != nil {
+		t.Fatalf("Block first key: %v", err)
+	}
+
+	models, err = service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List after block: %v", err)
+	}
+	if got := models[0].BlockedByKeyIDs; !reflect.DeepEqual(got, []int64{firstKeyID, secondKeyID}) {
+		t.Fatalf("BlockedByKeyIDs = %v, want [%d %d]", got, firstKeyID, secondKeyID)
+	}
+}

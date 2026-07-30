@@ -59,9 +59,13 @@ type fakeCandidateKeys struct {
 func (f fakeCandidateKeys) FirstEnabledID(context.Context) (int64, error) { return f.id, f.err }
 
 func TestModelAPIUsesFirstKeyAndEnforcesAudioVerification(t *testing.T) {
-	models := &fakeModels{candidates: []modelcatalog.Candidate{{UpstreamID: "vendor/model", DisplayName: "Model", Kind: modelcatalog.KindChat}}, models: []modelcatalog.Model{{ID: 9, PublicID: "speech", UpstreamID: "vendor/speech", DisplayName: "Speech", Kind: modelcatalog.KindTTS}}}
+	models := &fakeModels{candidates: []modelcatalog.Candidate{{UpstreamID: "vendor/model", DisplayName: "Model", Kind: modelcatalog.KindChat}}, models: []modelcatalog.Model{{ID: 9, PublicID: "speech", UpstreamID: "vendor/speech", DisplayName: "Speech", Kind: modelcatalog.KindTTS, BlockedByKeyIDs: []int64{5}}}}
 	syncer := &fakeStateSync{}
 	handler := NewModels(models, fakeCandidateKeys{id: 5}, syncer)
+	listResponse := performAdminRequest(handler, http.MethodGet, "/admin/api/models", "")
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"blocked_by_key_ids":[5]`) {
+		t.Fatalf("model list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
 	response := performAdminRequest(handler, http.MethodGet, "/admin/api/models/candidates", "")
 	if response.Code != http.StatusOK || models.discoverKey != 5 || !strings.Contains(response.Body.String(), "vendor/model") {
 		t.Fatalf("candidates status=%d key=%d body=%s", response.Code, models.discoverKey, response.Body.String())
