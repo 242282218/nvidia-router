@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.24.0"
+  NODE_VERSION: "22.12.0"
+  PNPM_VERSION: "10.28.2"
+  GOLANGCI_LINT_VERSION: "v2.4.0"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint frontend
+        run: pnpm --dir web run lint
+
+      - name: Type-check frontend
+        run: pnpm --dir web run typecheck
+
+      - name: Test frontend
+        run: pnpm --dir web run test
+
+      - name: Build frontend
+        run: pnpm --dir web run build
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Run Go race tests
+        run: go test -race ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+
+      - name: Run golangci-lint
+        run: golangci-lint run ./...
+
+      - name: Scan tracked files for secrets
+        run: bash scripts/check-secrets.sh
+
+      # Live NVIDIA tests require an explicit operator invocation with runtime-only credentials.
+      # Standard CI intentionally never enables the live build tag.
+      - name: Build container image
+        run: docker build --tag nvidia-router:ci .
