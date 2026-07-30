@@ -95,11 +95,12 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	responses := httpapi.DataMiddleware(accessKeys, v1.NewResponses(models, attempts, nvidiaClient))
 	embeddings := httpapi.DataMiddleware(accessKeys, v1.NewEmbeddings(models, attempts, nvidiaClient))
 	audio := httpapi.DataMiddleware(accessKeys, v1.NewAudio(models, attempts, nvidiaClient))
+	speech := httpapi.DataMiddleware(accessKeys, v1.NewSpeech(models, attempts, nvidiaClient))
 	modelList := httpapi.DataMiddleware(accessKeys, v1.NewModels(models))
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, modelList)
+	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList)
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }

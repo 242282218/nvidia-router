@@ -119,3 +119,95 @@ func verifyMultipartAudio(request *http.Request) error {
 	}
 	return nil
 }
+
+// Speech proxies OpenAI Audio Speech requests as a binary stream. It does not
+// commit downstream headers until the upstream body has yielded audio.
+type Speech struct {
+	models   ModelResolver
+	attempts AttemptRunner
+	client   *nvidia.Client
+}
+
+func NewSpeech(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Speech {
+	return &Speech{models: models, attempts: attempts, client: client}
+}
+
+func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeChatError(writer, &apierror.Error{
+			Status: http.StatusMethodNotAllowed, Type: "invalid_request_error", Code: "method_not_allowed",
+			Message: "Only POST is supported for this endpoint.",
+		})
+		return
+	}
+	payload, err := readChatBody(writer, request)
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	parsed, err := audiocollections.ParseSpeech(payload)
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
+	if err != nil {
+		writeChatError(writer, modelError(err))
+		return
+	}
+	upstreamBody, err := parsed.MarshalFor(model)
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	result, err := h.attempts.Run(request.Context(), model.ID, true, h.execute(upstreamBody))
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	defer result.Release()
+	defer result.Response.Body.Close()
+
+	writer.Header().Set("Content-Type", safeAudioContentType(result.Response.Header.Get("Content-Type")))
+	writer.WriteHeader(result.Response.StatusCode)
+	buffer := make([]byte, 32<<10)
+	_, _ = io.CopyBuffer(writer, result.Response.Body, buffer)
+}
+
+func (h *Speech) execute(body []byte) router.ExecuteFunc {
+	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+		response, err := h.client.AudioSpeech(ctx, snapshotFromBudget(ctx), string(secret), body)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return response, nil
+		}
+		primeCtx := ctx
+		cancel := func() {}
+		if budget, ok := router.BudgetFromContext(ctx); ok {
+			primeCtx, cancel = context.WithDeadline(ctx, budget.FirstByteDeadline())
+		}
+		defer cancel()
+		if err := nvidia.PrimeAudioSpeech(primeCtx, response); err != nil {
+			if errors.Is(err, nvidia.ErrProtocol) {
+				return response, fault.Protocol(err)
+			}
+			return response, err
+		}
+		return response, nil
+	}
+}
+
+func safeAudioContentType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	switch mediaType {
+	case "audio/wav", "audio/mpeg", "audio/ogg", "audio/flac", "application/octet-stream":
+		return mediaType
+	default:
+		return "application/octet-stream"
+	}
+}

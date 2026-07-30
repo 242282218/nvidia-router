@@ -124,11 +124,19 @@ func newAudioTestApp(t *testing.T, upstream *mocknvidia.Server, upstreamSecrets 
 func seedAudioModel(t *testing.T, db *sql.DB) {
 	t.Helper()
 	// ASR/TTS require capability_verified_at to be enabled; set it here.
-	err := modelcatalog.NewRepository(db).SaveSelections(context.Background(), []modelcatalog.Selection{{
-		PublicID: "public-asr", UpstreamID: "vendor/asr", DisplayName: "Test ASR",
-		Kind: modelcatalog.KindASR, Enabled: true, ReasoningWireFormat: "none",
-		CapabilityVerifiedAt: timePtr(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)),
-	}}, time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
+	verifiedAt := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	err := modelcatalog.NewRepository(db).SaveSelections(context.Background(), []modelcatalog.Selection{
+		{
+			PublicID: "public-asr", UpstreamID: "vendor/asr", DisplayName: "Test ASR",
+			Kind: modelcatalog.KindASR, Enabled: true, ReasoningWireFormat: "none",
+			CapabilityVerifiedAt: timePtr(verifiedAt),
+		},
+		{
+			PublicID: "public-tts", UpstreamID: "vendor/tts", DisplayName: "Test TTS",
+			Kind: modelcatalog.KindTTS, Enabled: true, ReasoningWireFormat: "none",
+			CapabilityVerifiedAt: timePtr(verifiedAt),
+		},
+	}, verifiedAt)
 	if err != nil {
 		t.Fatalf("save audio model: %v", err)
 	}
@@ -166,4 +174,64 @@ func audioBody(model string, fileBytes []byte) (string, string) {
 	_, _ = part.Write(fileBytes)
 	_ = writer.Close()
 	return buf.String(), writer.FormDataContentType()
+}
+
+func TestSpeechAppProxiesBinaryAudio(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "audio/mpeg")
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: string([]byte{1, 2, 3}), Headers: headers})
+	t.Cleanup(upstream.Close)
+	application, accessToken := newAudioTestApp(t, upstream, []string{"upstream-key-1"})
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	status, contentType, body := postSpeech(t, server.URL, accessToken)
+	if status != http.StatusOK || contentType != "audio/mpeg" || !bytes.Equal(body, []byte{1, 2, 3}) {
+		t.Fatalf("response = %d %q %#v", status, contentType, body)
+	}
+	requests := upstream.Requests()
+	if len(requests) != 1 || requests[0].Path != "/v1/audio/speech" {
+		t.Fatalf("upstream requests = %#v", requests)
+	}
+}
+
+func TestSpeechAppRetriesEmptySuccessBeforeFirstByte(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "audio/wav")
+	upstream := mocknvidia.New(
+		mocknvidia.Script{Status: http.StatusOK, Headers: headers},
+		mocknvidia.Script{Status: http.StatusOK, Body: "audio", Headers: headers},
+	)
+	t.Cleanup(upstream.Close)
+	application, accessToken := newAudioTestApp(t, upstream, []string{"upstream-key-1", "upstream-key-2"})
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	status, contentType, body := postSpeech(t, server.URL, accessToken)
+	if status != http.StatusOK || contentType != "audio/wav" || string(body) != "audio" {
+		t.Fatalf("response = %d %q %q", status, contentType, body)
+	}
+	assertAuthorizationOrder(t, upstream.Requests(), "upstream-key-1", "upstream-key-2")
+}
+
+func postSpeech(t *testing.T, baseURL, accessToken string) (int, string, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/audio/speech", strings.NewReader(`{
+		"model":"public-tts","input":"sensitive input","voice":"alloy","response_format":"mp3"
+	}`))
+	if err != nil {
+		t.Fatalf("create speech request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("send speech request: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read speech response: %v", err)
+	}
+	return response.StatusCode, response.Header.Get("Content-Type"), body
 }
