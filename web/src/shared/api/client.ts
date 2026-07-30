@@ -1,0 +1,86 @@
+﻿import type { ApiRequestOptions, OpenAIError, OpenAIErrorResponse } from './types'
+
+
+export class ApiError extends Error {
+  readonly code: string | null
+  readonly param: string | null
+  readonly retryAfter: string | null
+  readonly status: number
+  readonly type: string
+
+  constructor(status: number, error: OpenAIError, retryAfter: string | null = null) {
+    super(error.message)
+    this.name = 'ApiError'
+    this.status = status
+    this.type = error.type
+    this.code = error.code
+    this.param = error.param
+    this.retryAfter = retryAfter
+  }
+}
+
+export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const method = options.method ?? 'GET'
+  const headers = new Headers(options.headers)
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body)
+
+  if (body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const response = await fetch(path, {
+    body,
+    credentials: 'same-origin',
+    headers,
+    method,
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    throw await parseApiError(response)
+  }
+  if (response.status === 204) {
+    return undefined as T
+  }
+
+  return (await response.json()) as T
+}
+
+async function parseApiError(response: Response): Promise<ApiError> {
+  const payload = await readJson(response)
+  if (isOpenAIErrorResponse(payload)) {
+    return new ApiError(response.status, payload.error, response.headers.get('Retry-After'))
+  }
+
+  return new ApiError(response.status, {
+    code: 'http_error',
+    message: response.statusText || '请求失败，请稍后重试。',
+    param: null,
+    type: 'api_error',
+  })
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    return null
+  }
+}
+
+function isOpenAIErrorResponse(value: unknown): value is OpenAIErrorResponse {
+  if (!isRecord(value) || !isRecord(value.error)) {
+    return false
+  }
+  const { code, message, param, type } = value.error
+  return (
+    (typeof code === 'string' || code === null) &&
+    typeof message === 'string' &&
+    (typeof param === 'string' || param === null) &&
+    typeof type === 'string'
+  )
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
