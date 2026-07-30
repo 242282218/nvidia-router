@@ -14,7 +14,7 @@ defineOptions({ name: 'AppShell' })
         管理端已登录。
       </p>
       <nav
-        class="mt-5 grid gap-3 sm:grid-cols-2"
+        class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
         aria-label="管理功能"
       >
         <RouterLink
@@ -30,6 +30,27 @@ defineOptions({ name: 'AppShell' })
           to="/models"
         >
           模型白名单
+        </RouterLink>
+        <RouterLink
+          data-testid="nav-access-keys"
+          class="rounded-lg border border-slate-700 px-4 py-3 text-sm hover:border-indigo-400 hover:text-indigo-200"
+          to="/access-keys"
+        >
+          Access Key
+        </RouterLink>
+        <RouterLink
+          data-testid="nav-runtime"
+          class="rounded-lg border border-slate-700 px-4 py-3 text-sm hover:border-indigo-400 hover:text-indigo-200"
+          to="/runtime"
+        >
+          运行状态和设置
+        </RouterLink>
+        <RouterLink
+          data-testid="nav-statistics"
+          class="rounded-lg border border-slate-700 px-4 py-3 text-sm hover:border-indigo-400 hover:text-indigo-200"
+          to="/statistics"
+        >
+          基础统计
         </RouterLink>
       </nav>
     </header>

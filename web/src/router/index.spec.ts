@@ -30,6 +30,45 @@ vi.mock('../features/models/api', () => ({
   },
 }))
 
+vi.mock('../features/access-keys/api', () => ({
+  accessKeysApi: {
+    list: vi.fn().mockResolvedValue({ data: [] }),
+    create: vi.fn(),
+    revoke: vi.fn(),
+  },
+}))
+
+vi.mock('../features/runtime/api', () => ({
+  runtimeApi: {
+    getSummary: vi.fn().mockResolvedValue({
+      data: {
+        keys: { total: 0, enabled: 0, disabled: 0, auth_invalid: 0, cooling_down: 0, ready: 0 },
+        active: 0,
+        queue: { length: 0, capacity: 100 },
+        shutting_down: false,
+      },
+    }),
+    getSettings: vi.fn().mockResolvedValue({
+      data: {
+        queue_capacity: 100,
+        queue_wait_timeout_ms: 60000,
+        connect_timeout_ms: 10000,
+        first_byte_timeout_ms: 60000,
+        nonstream_total_timeout_ms: 300000,
+        shutdown_grace_ms: 60000,
+      },
+    }),
+    updateSettings: vi.fn(),
+  },
+}))
+
+vi.mock('../features/statistics/api', () => ({
+  statisticsApi: {
+    getDaily: vi.fn().mockResolvedValue({ data: [] }),
+    getRecentErrors: vi.fn().mockResolvedValue({ data: [] }),
+  },
+}))
+
 function createSession(state: SessionState): SessionStore {
   return {
     changePassword: vi.fn(),
@@ -102,6 +141,9 @@ describe('application router integration', () => {
   it.each([
     ['nav-nvidia-keys', '/nvidia-keys', 'NVIDIA Key'],
     ['nav-models', '/models', '模型白名单'],
+    ['nav-access-keys', '/access-keys', 'Access Key'],
+    ['nav-runtime', '/runtime', '运行状态'],
+    ['nav-statistics', '/statistics', '基础统计'],
   ])('navigates from AppShell through %s', async (testId, expectedPath, expectedHeading) => {
     const session = createSession({ kind: 'authenticated', mustChangePassword: false })
     const router = createAppRouter(session, createMemoryHistory('/admin/'))
@@ -122,8 +164,8 @@ describe('application router integration', () => {
   })
 })
 
-describe('task 36 routes', () => {
-  it('registers only NVIDIA keys and models management routes', () => {
+describe('management routes', () => {
+  it('keeps task 36 routes and registers task 37 routes', () => {
     const router = createAppRouter(
       createSession({ kind: 'authenticated', mustChangePassword: false }),
       createMemoryHistory('/admin/'),
@@ -132,8 +174,8 @@ describe('task 36 routes', () => {
 
     expect(paths).toContain('/nvidia-keys')
     expect(paths).toContain('/models')
-    expect(paths).not.toContain('/access-keys')
-    expect(paths).not.toContain('/runtime')
-    expect(paths).not.toContain('/statistics')
+    expect(paths).toContain('/access-keys')
+    expect(paths).toContain('/runtime')
+    expect(paths).toContain('/statistics')
   })
 })
