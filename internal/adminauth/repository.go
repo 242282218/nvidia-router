@@ -14,9 +14,9 @@ import (
 const defaultAdminUsername = "admin"
 
 var (
-	errCurrentPasswordIncorrect = errors.New("current password is incorrect")
-	errPasswordTooShort         = errors.New("new password must be at least 12 characters")
-	errPasswordIsDefault        = errors.New("new password must not equal admin")
+	ErrCurrentPasswordIncorrect = errors.New("current password is incorrect")
+	ErrPasswordTooShort         = errors.New("new password must be at least 12 characters")
+	ErrPasswordIsDefault        = errors.New("new password must not equal admin")
 )
 
 type Repository struct {
@@ -57,6 +57,26 @@ func (r *Repository) EnsureAdmin(ctx context.Context) error {
 	return nil
 }
 
+func (r *Repository) VerifyCredentials(ctx context.Context, username, password string) (bool, error) {
+	var storedUsername, passwordHash string
+	if err := r.db.QueryRowContext(ctx, "SELECT username, password_hash FROM admins WHERE id = 1").Scan(&storedUsername, &passwordHash); err != nil {
+		return false, fmt.Errorf("load admin credentials: %w", err)
+	}
+	matched, err := VerifyPassword(password, passwordHash)
+	if err != nil {
+		return false, fmt.Errorf("verify admin password: %w", err)
+	}
+	return username == storedUsername && matched, nil
+}
+
+func (r *Repository) MustChangePassword(ctx context.Context) (bool, error) {
+	var mustChange bool
+	if err := r.db.QueryRowContext(ctx, "SELECT must_change_password FROM admins WHERE id = 1").Scan(&mustChange); err != nil {
+		return false, fmt.Errorf("load admin password state: %w", err)
+	}
+	return mustChange, nil
+}
+
 // ChangePassword updates the administrator password and revokes other active sessions.
 func (r *Repository) ChangePassword(ctx context.Context, currentPassword, newPassword, currentSessionID string) (returnErr error) {
 	if err := validateNewPassword(newPassword); err != nil {
@@ -86,7 +106,7 @@ func (r *Repository) ChangePassword(ctx context.Context, currentPassword, newPas
 		return fmt.Errorf("verify current password: %w", err)
 	}
 	if !matched {
-		return fmt.Errorf("verify current password: %w", errCurrentPasswordIncorrect)
+		return fmt.Errorf("verify current password: %w", ErrCurrentPasswordIncorrect)
 	}
 
 	newHash, err := HashPassword(newPassword)
@@ -163,10 +183,10 @@ func (r *Repository) ResetPassword(ctx context.Context, newPassword string) (ret
 
 func validateNewPassword(password string) error {
 	if password == defaultAdminUsername {
-		return errPasswordIsDefault
+		return ErrPasswordIsDefault
 	}
 	if utf8.RuneCountInString(password) < 12 {
-		return errPasswordTooShort
+		return ErrPasswordTooShort
 	}
 	return nil
 }

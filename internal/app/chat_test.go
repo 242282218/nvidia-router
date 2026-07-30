@@ -155,6 +155,7 @@ func newChatTestApp(
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	completeInitialPasswordChange(t, db)
 	appOwnsDB = true
 	t.Cleanup(func() { _ = application.Close() })
 	return application, createdAccessKey.Plaintext

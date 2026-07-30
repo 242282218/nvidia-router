@@ -205,10 +205,10 @@ func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T)
 		want            error
 		dontWant        error
 	}{
-		{name: "wrong current password", currentPassword: "wrong", newPassword: "a replacement password", want: errCurrentPasswordIncorrect},
-		{name: "short password", currentPassword: "admin", newPassword: "too-short", want: errPasswordTooShort},
-		{name: "four multi-byte characters", currentPassword: "admin", newPassword: "😀😀😀😀", want: errPasswordTooShort},
-		{name: "default password", currentPassword: "admin", newPassword: "admin", want: errPasswordIsDefault, dontWant: errPasswordTooShort},
+		{name: "wrong current password", currentPassword: "wrong", newPassword: "a replacement password", want: ErrCurrentPasswordIncorrect},
+		{name: "short password", currentPassword: "admin", newPassword: "too-short", want: ErrPasswordTooShort},
+		{name: "four multi-byte characters", currentPassword: "admin", newPassword: "😀😀😀😀", want: ErrPasswordTooShort},
+		{name: "default password", currentPassword: "admin", newPassword: "admin", want: ErrPasswordIsDefault, dontWant: ErrPasswordTooShort},
 	} {
 		t.Run(input.name, func(t *testing.T) {
 			err := repository.ChangePassword(context.Background(), input.currentPassword, input.newPassword, "active")

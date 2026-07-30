@@ -151,6 +151,13 @@ func openAppDatabase(t *testing.T) *sql.DB {
 	return db
 }
 
+func completeInitialPasswordChange(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec("UPDATE admins SET must_change_password = 0 WHERE id = 1"); err != nil {
+		t.Fatalf("complete initial password change: %v", err)
+	}
+}
+
 func httptestGet(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	response := httptest.NewRecorder()

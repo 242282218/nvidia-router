@@ -19,6 +19,7 @@ import (
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
 	"nvidia-router/internal/httpapi"
+	adminapi "nvidia-router/internal/httpapi/admin"
 	"nvidia-router/internal/httpapi/health"
 	v1 "nvidia-router/internal/httpapi/v1"
 	"nvidia-router/internal/modelcatalog"
@@ -90,6 +91,8 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
+	adminRepository := adminauth.NewRepository(db, resolved.Clock)
+	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys), adminauth.NewLoginLimiter(resolved.Clock))
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
 	chat := httpapi.DataMiddleware(accessKeys, v1.NewChat(models, attempts, nvidiaClient))
 	responses := httpapi.DataMiddleware(accessKeys, v1.NewResponses(models, attempts, nvidiaClient))
@@ -100,7 +103,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 
 	resolved.DB = db
 	app := &App{Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings}
-	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList)
+	app.handler = httpapi.NewRouter(health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, adminSecurity)
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
 	return app, nil
 }

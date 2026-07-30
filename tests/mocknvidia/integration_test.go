@@ -640,6 +640,9 @@ func newAppHarnessWithOptions(t *testing.T, options harnessOptions) *appHarness 
 	if err != nil {
 		t.Fatalf("create app: %v", err)
 	}
+	if _, err := db.Exec("UPDATE admins SET must_change_password = 0 WHERE id = 1"); err != nil {
+		t.Fatalf("complete initial password change: %v", err)
+	}
 	appOwnsDB = true
 	t.Cleanup(func() { _ = application.Close() })
 	server := httptest.NewServer(application.Handler())
