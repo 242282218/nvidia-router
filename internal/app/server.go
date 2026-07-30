@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/runtimeconfig"
@@ -16,6 +17,8 @@ type Server struct {
 	address    string
 	settings   runtimeconfig.Provider
 	onShutdown func()
+	graceMu    sync.RWMutex
+	grace      time.Duration
 }
 
 func NewServer(address string, handler http.Handler, settings runtimeconfig.Provider, onShutdown func()) *Server {
@@ -25,6 +28,18 @@ func NewServer(address string, handler http.Handler, settings runtimeconfig.Prov
 		settings:   settings,
 		onShutdown: onShutdown,
 	}
+}
+
+func (s *Server) setRootContext(ctx context.Context) {
+	if ctx != nil {
+		s.httpServer.BaseContext = func(net.Listener) context.Context { return ctx }
+	}
+}
+
+func (s *Server) setShutdownGrace(grace time.Duration) {
+	s.graceMu.Lock()
+	s.grace = grace
+	s.graceMu.Unlock()
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -66,5 +81,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 }
 
 func (s *Server) shutdownGrace() time.Duration {
-	return time.Duration(s.settings.Snapshot().ShutdownGraceMS) * time.Millisecond
+	s.graceMu.RLock()
+	grace := s.grace
+	s.graceMu.RUnlock()
+	if grace > 0 {
+		return grace
+	}
+	if s.settings == nil {
+		return defaultShutdownGrace
+	}
+	grace = time.Duration(s.settings.Snapshot().ShutdownGraceMS) * time.Millisecond
+	if grace <= 0 {
+		return defaultShutdownGrace
+	}
+	return grace
 }

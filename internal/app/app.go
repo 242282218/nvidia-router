@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"nvidia-router/internal/accesskey"
 	"nvidia-router/internal/adminauth"
@@ -51,6 +52,10 @@ type App struct {
 	shutting      atomic.Bool
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
+	rootCancel    context.CancelFunc
+	shutdownOnce  sync.Once
+	shutdownGrace time.Duration
+	shutdownTimer *time.Timer
 	close         sync.Once
 	closeErr      error
 }
@@ -122,9 +127,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	resolved.DB = db
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	cleanupDone := make(chan struct{})
+	rootCtx, rootCancel := context.WithCancel(context.Background())
 	app := &App{
 		Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings,
 		cleanupCancel: cleanupCancel, cleanupDone: cleanupDone,
+		rootCancel: rootCancel,
 	}
 	app.handler = httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
@@ -136,7 +143,8 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		defer close(cleanupDone)
 		worker.Run(cleanupCtx)
 	}()
-	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.shutting.Store(true) })
+	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.beginShutdown(0) })
+	app.Server.setRootContext(rootCtx)
 	return app, nil
 }
 
@@ -213,6 +221,7 @@ func closeAfterInitializationError(db *sql.DB, operationErr error) error {
 
 func (a *App) Serve(ctx context.Context) error {
 	err := a.Server.ListenAndServe(ctx)
+	a.beginShutdown(0)
 	if closeErr := a.Close(); closeErr != nil {
 		return fmt.Errorf("serve application: %w", errors.Join(err, closeErr))
 	}
@@ -223,15 +232,9 @@ func (a *App) Serve(ctx context.Context) error {
 }
 
 func (a *App) Close() error {
-	a.shutting.Store(true)
+	a.beginShutdown(0)
 	a.close.Do(func() {
-		if a.cleanupCancel != nil {
-			a.cleanupCancel()
-		}
-		if a.cleanupDone != nil {
-			<-a.cleanupDone
-		}
-		a.closeErr = a.db.Close()
+		a.closeErr = a.finishShutdown()
 	})
 	if a.closeErr != nil {
 		return fmt.Errorf("close router database: %w", a.closeErr)
