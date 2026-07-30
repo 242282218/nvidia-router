@@ -1,4 +1,4 @@
-﻿import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,28 @@ import App from '../App.vue'
 import type { SessionStore, SessionState } from '../features/auth/useSession'
 import { sessionKey } from '../features/auth/useSession'
 import { createAppRouter } from './index'
+
+vi.mock('../features/nvidia-keys/api', () => ({
+  nvidiaKeysApi: {
+    list: vi.fn().mockResolvedValue({ data: [] }),
+    importOne: vi.fn(),
+    importBatch: vi.fn(),
+    test: vi.fn(),
+    testAll: vi.fn(),
+    setEnabled: vi.fn(),
+    remove: vi.fn(),
+  },
+}))
+
+vi.mock('../features/models/api', () => ({
+  modelsApi: {
+    list: vi.fn().mockResolvedValue({ data: [] }),
+    candidates: vi.fn(),
+    save: vi.fn(),
+    patch: vi.fn(),
+    unblock: vi.fn(),
+  },
+}))
 
 function createSession(state: SessionState): SessionStore {
   return {
@@ -75,5 +97,43 @@ describe('application router integration', () => {
 
     expect(router.currentRoute.value.path).toBe(expectedPath)
     expect(wrapper.get('h1').text()).toBe(expectedHeading)
+  })
+
+  it.each([
+    ['nav-nvidia-keys', '/nvidia-keys', 'NVIDIA Key'],
+    ['nav-models', '/models', '模型白名单'],
+  ])('navigates from AppShell through %s', async (testId, expectedPath, expectedHeading) => {
+    const session = createSession({ kind: 'authenticated', mustChangePassword: false })
+    const router = createAppRouter(session, createMemoryHistory('/admin/'))
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        provide: { [sessionKey as symbol]: session },
+      },
+    })
+
+    await router.push('/')
+    await router.isReady()
+    await wrapper.get(`[data-testid="${testId}"]`).trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe(expectedPath)
+    expect(wrapper.get('h1').text()).toBe(expectedHeading)
+  })
+})
+
+describe('task 36 routes', () => {
+  it('registers only NVIDIA keys and models management routes', () => {
+    const router = createAppRouter(
+      createSession({ kind: 'authenticated', mustChangePassword: false }),
+      createMemoryHistory('/admin/'),
+    )
+    const paths = router.getRoutes().map((route) => route.path)
+
+    expect(paths).toContain('/nvidia-keys')
+    expect(paths).toContain('/models')
+    expect(paths).not.toContain('/access-keys')
+    expect(paths).not.toContain('/runtime')
+    expect(paths).not.toContain('/statistics')
   })
 })

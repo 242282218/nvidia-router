@@ -1,12 +1,9 @@
-﻿import {
-  createRouter,
-  createWebHistory,
-  type Router,
-  type RouterHistory,
-} from 'vue-router'
+import { createRouter, createWebHistory, type Router, type RouterHistory } from 'vue-router'
 
 import ChangePasswordView from '../features/auth/ChangePasswordView.vue'
 import LoginView from '../features/auth/LoginView.vue'
+import ModelsView from '../features/models/ModelsView.vue'
+import NvidiaKeysView from '../features/nvidia-keys/NvidiaKeysView.vue'
 import type { SessionStore } from '../features/auth/useSession'
 import AppShell from '../shared/components/AppShell.vue'
 
@@ -18,6 +15,8 @@ export function createAppRouter(
     history,
     routes: [
       { component: AppShell, path: '/' },
+      { component: NvidiaKeysView, path: '/nvidia-keys' },
+      { component: ModelsView, path: '/models' },
       { component: LoginView, path: '/login' },
       { component: ChangePasswordView, path: '/change-password' },
     ],
