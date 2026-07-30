@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -13,6 +14,7 @@ import (
 	"nvidia-router/internal/modelcatalog"
 	responsesprotocol "nvidia-router/internal/protocol/responses"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -53,14 +55,6 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	if stream {
-		// Streaming translation is wired in the Responses SSE state machine task.
-		writeChatError(writer, &apierror.Error{
-			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "not_implemented",
-			Message: "Streaming Responses are not implemented.",
-		})
-		return
-	}
 	model, err := h.models.Resolve(request.Context(), modelID, chatModelRequirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
@@ -76,7 +70,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	result, err := h.attempts.Run(request.Context(), model.ID, false, h.execute(upstreamBody, id, model))
+	result, err := h.attempts.Run(request.Context(), model.ID, stream, h.execute(upstreamBody, id, model, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -84,18 +78,26 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	defer result.Release()
 	defer result.Response.Body.Close()
 
+	if stream {
+		h.streamResponse(request.Context(), writer, result.Response, id, model.PublicID)
+		return
+	}
+
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
 	_, _ = io.Copy(writer, result.Response.Body)
 }
 
-func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.Model) router.ExecuteFunc {
+func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.Model, stream bool) router.ExecuteFunc {
 	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
-		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, false)
+		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {
 			return nil, err
 		}
-		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if stream || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			// Streaming: return the raw SSE response so streamResponse can drive the
+			// state machine after Attempt commits. Error responses pass through so
+			// Attempt can classify and fail over before any bytes reach the client.
 			return response, nil
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)
@@ -114,6 +116,134 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		response.ContentLength = int64(len(converted))
 		return response, nil
 	}
+}
+
+// streamResponse drives the Responses state machine over the upstream Chat SSE
+// and writes the translated Responses event sequence to the client. The first
+// event commits the response so later upstream failures cannot trigger a key
+// switch; an interruption after commit emits a stable response.failed terminal.
+func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, responseID, model string) {
+	commit := &router.CommitState{}
+	emitter := &responsesSSEEmitter{
+		encoder: sse.NewEncoder(commit.Wrap(writer)),
+		commit:  commit,
+		flusher: writer,
+		header:  false,
+	}
+	source := &chatDeltaSource{decoder: sse.NewDecoder(upstream.Body)}
+	cancelDone := make(chan struct{})
+	defer close(cancelDone)
+	var closeNotify <-chan bool
+	if notifier, ok := writer.(http.CloseNotifier); ok {
+		closeNotify = notifier.CloseNotify()
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = upstream.Body.Close()
+		case <-closeNotify:
+			_ = upstream.Body.Close()
+		case <-cancelDone:
+		}
+	}()
+	interrupted, err := responsesprotocol.Stream(source, emitter, responseID, model)
+	if err != nil {
+		// After commit the terminal is already written; before commit surface a
+		// public error since nothing has reached the client.
+		if !commit.Committed() {
+			writeChatError(writer, &apierror.Error{
+				Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
+				Message: "The server could not complete the stream.",
+			})
+		}
+		return
+	}
+	// ErrStreamInterrupted was already mapped by the state machine to a stable
+	// response.failed terminal plus a single [DONE], so nothing more to do.
+	_ = interrupted
+}
+
+// chatDeltaSource adapts the upstream SSE decoder to the state machine's
+// ChatDeltaSource by decoding each event's data payload with ParseChatDelta.
+// The terminal [DONE] marker is reported as end-of-stream so the state machine
+// finalises.
+type chatDeltaSource struct {
+	decoder *sse.Decoder
+}
+
+func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
+	for {
+		event, err := c.decoder.Decode()
+		if err == io.EOF {
+			return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamInterrupted
+		}
+		if err != nil {
+			return responsesprotocol.ChatDelta{}, fmt.Errorf("decode upstream SSE event: %w", err)
+		}
+		for _, data := range event.Data {
+			delta, done, perr := responsesprotocol.ParseChatDelta([]byte(data))
+			if perr != nil {
+				return responsesprotocol.ChatDelta{}, fmt.Errorf("parse chat delta: %w", perr)
+			}
+			if done {
+				// [DONE] marks end of stream; the state machine finalises, choosing
+				// response.completed or .failed depending on whether finish_reason
+				// was already observed.
+				return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamInterrupted
+			}
+			return delta, nil
+		}
+		// Comments or events with no data frames: skip and read the next.
+	}
+}
+
+// responsesSSEEmitter writes Responses events to the HTTP response and commits
+// on the first event. The done event is rendered as the final [DONE] marker.
+type responsesSSEEmitter struct {
+	encoder *sse.Encoder
+	commit  *router.CommitState
+	flusher http.ResponseWriter
+	header  bool
+}
+
+func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
+	if !e.header {
+		writeSSEHeaders(e.flusher)
+		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
+		e.header = true
+	}
+	if event.Event == "done" {
+		if err := e.encoder.Encode(sse.Event{Data: []string{"[DONE]"}}); err != nil {
+			return fmt.Errorf("encode done: %w", err)
+		}
+	} else {
+		payload, err := json.Marshal(event.Data)
+		if err != nil {
+			return fmt.Errorf("marshal responses event: %w", err)
+		}
+		if err := e.encoder.Encode(sse.Event{Event: event.Event, Data: []string{string(payload)}}); err != nil {
+			return fmt.Errorf("encode responses event: %w", err)
+		}
+	}
+	if flusher, ok := e.flusher.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func (e *responsesSSEEmitter) Commit() error {
+	if !e.header {
+		writeSSEHeaders(e.flusher)
+		e.header = true
+		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
+	}
+	return nil
+}
+
+func writeSSEHeaders(writer http.ResponseWriter) {
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("Connection", "keep-alive")
 }
 
 // extractResponsesModel pulls the model field so Resolve can locate the
