@@ -65,6 +65,7 @@ function legacyCopy(value: string): void {
     const copied = globalThis.document.execCommand('copy')
     if (!copied) throw new Error('legacy copy failed')
   } finally {
+    input.value = ''
     input.remove()
   }
 }
