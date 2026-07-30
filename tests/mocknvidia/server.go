@@ -107,12 +107,17 @@ func (s *Server) writeSSE(writer http.ResponseWriter, request *http.Request, scr
 	writer.WriteHeader(statusOrOK(script.Status))
 	flusher, _ := writer.(http.Flusher)
 	for _, chunk := range script.SSE {
-		if !waitForRequest(writer, request, chunk.Delay, s.markCanceled) {
+		if !waitForStreamDelay(writer, request, chunk.Delay, flusher, s.markCanceled) {
 			return
 		}
-		_, _ = writer.Write([]byte(chunk.Data))
-		if flusher != nil {
-			flusher.Flush()
+		if chunk.Data != "" {
+			if _, err := writer.Write([]byte(chunk.Data)); err != nil {
+				s.markCanceled()
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 }
@@ -135,6 +140,37 @@ func waitForRequest(writer http.ResponseWriter, request *http.Request, delay tim
 	case <-request.Context().Done():
 		canceled()
 		return false
+	}
+}
+
+// waitForStreamDelay sleeps before emitting an SSE chunk. Because httptest does
+// not cancel an in-flight HTTP/1.1 streaming request when the client disconnects,
+// we probe the connection with comment keepalives: a write failure proves the
+// client is gone and counts as a cancellation.
+func waitForStreamDelay(writer http.ResponseWriter, request *http.Request, delay time.Duration, flusher http.Flusher, canceled func()) bool {
+	if delay == 0 {
+		return true
+	}
+	deadline := time.NewTimer(delay)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return true
+		case <-request.Context().Done():
+			canceled()
+			return false
+		case <-ticker.C:
+			if _, err := writer.Write([]byte(": keepalive\n\n")); err != nil {
+				canceled()
+				return false
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
 	}
 }
 

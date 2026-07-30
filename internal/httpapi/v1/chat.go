@@ -15,6 +15,7 @@ import (
 	chatprotocol "nvidia-router/internal/protocol/chat"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -54,13 +55,6 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	if parsed.Stream() {
-		writeChatError(writer, &apierror.Error{
-			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "not_implemented",
-			Message: "Streaming Chat Completions are not implemented yet.",
-		})
-		return
-	}
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
@@ -71,7 +65,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	result, err := h.attempts.Run(request.Context(), model.ID, false, h.execute(upstreamBody))
+	stream := parsed.Stream()
+	result, err := h.attempts.Run(request.Context(), model.ID, stream, h.execute(upstreamBody, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -79,18 +74,28 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	defer result.Release()
 	defer result.Response.Body.Close()
 
+	if stream {
+		h.streamResponse(request.Context(), writer, result.Response)
+		return
+	}
+
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
 	_, _ = io.Copy(writer, result.Response.Body)
 }
 
-func (h *Chat) execute(body []byte) router.ExecuteFunc {
+func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
-		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, false)
+		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {
 			return nil, err
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return response, nil
+		}
+		if stream {
+			// For streaming, return the response directly without reading body.
+			// The SSE proxy will read it after Attempt commits.
 			return response, nil
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)
@@ -104,6 +109,24 @@ func (h *Chat) execute(body []byte) router.ExecuteFunc {
 		response.Body = io.NopCloser(bytes.NewReader(validated.Body))
 		response.ContentLength = int64(len(validated.Body))
 		return response, nil
+	}
+}
+
+func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
+	commit := &router.CommitState{}
+	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{CommitState: commit})
+	if err == nil || err == sse.ErrStreamInterrupted {
+		// Both clean completion and interrupted stream: connection already committed,
+		// client observes truncation. Nothing more to write.
+		return
+	}
+	// Context cancelled or other error after commit - nothing we can do.
+	// Before commit, writeChatError handles it.
+	if !commit.Committed() {
+		writeChatError(writer, &apierror.Error{
+			Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
+			Message: "The server could not complete the stream.",
+		})
 	}
 }
 

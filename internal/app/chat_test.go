@@ -189,6 +189,99 @@ func seedChatModel(t *testing.T, db *sql.DB) {
 	}
 }
 
+func TestChatAppStreamForwardsSSEEventsAndReleasesLease(t *testing.T) {
+	sseChunks := []mocknvidia.SSEChunk{
+		{Data: "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"},
+		{Data: "data: [DONE]\n\n"},
+	}
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, SSE: sseChunks})
+	t.Cleanup(upstream.Close)
+	application, accessToken := newChatTestApp(t, upstream, []string{"stream-key-1"}, true)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"public-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	ct := response.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), "[DONE]") {
+		t.Fatalf("[DONE] not found in stream response: %s", body)
+	}
+}
+
+func TestChatAppStreamCancelsOnClientDisconnect(t *testing.T) {
+	// Upstream sends chunks with delays to simulate a long stream
+	sseChunks := []mocknvidia.SSEChunk{
+		{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"chunk1\"}}]}\n\n"},
+		{Data: "", Delay: 2 * time.Second}, // Long delay - client should disconnect first
+	}
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, SSE: sseChunks})
+	t.Cleanup(upstream.Close)
+	application, accessToken := newChatTestApp(t, upstream, []string{"cancel-key-1"}, true)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"public-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return
+		}
+		// Read first chunk then cancel
+		buf := make([]byte, 128)
+		_, _ = response.Body.Read(buf)
+		cancel()
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not complete after cancel")
+	}
+	// Upstream detects the cancellation asynchronously once the router closes the
+	// upstream connection; poll briefly rather than checking a single instant.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if upstream.CanceledCount() > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if upstream.CanceledCount() == 0 {
+		t.Fatal("upstream did not detect client cancellation")
+	}
+}
+
 func postChat(t *testing.T, baseURL, accessToken, body string) (int, string) {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(body))
