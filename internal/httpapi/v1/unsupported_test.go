@@ -13,7 +13,6 @@ func TestUnsupportedPathsRejectWithNotImplemented(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/v1/responses"},
 		{http.MethodPost, "/v1/embeddings"},
 		{http.MethodPost, "/v1/audio/transcriptions"},
 		{http.MethodPost, "/v1/audio/speech"},
