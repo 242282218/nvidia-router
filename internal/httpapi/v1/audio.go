@@ -56,6 +56,7 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, parseErr)
 		return
 	}
+	defer parsed.Close()
 	observability.SetModel(request.Context(), parsed.ModelID(), false)
 	model, err := h.models.Resolve(request.Context(), parsed.ModelID(), parsed.Requirements())
 	if err != nil {
@@ -189,14 +190,19 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	defer result.Release()
 	defer result.Response.Body.Close()
 
-	writer.Header().Set("Content-Type", safeAudioContentType(result.Response.Header.Get("Content-Type")))
-	writer.WriteHeader(result.Response.StatusCode)
+	commit := result.Commit
+	if commit == nil {
+		commit = &router.CommitState{}
+	}
+	output := commit.Wrap(writer)
+	output.Header().Set("Content-Type", safeAudioContentType(result.Response.Header.Get("Content-Type")))
+	output.WriteHeader(result.Response.StatusCode)
 	buffer := make([]byte, 32<<10)
-	_, _ = io.CopyBuffer(writer, result.Response.Body, buffer)
+	_, _ = io.CopyBuffer(output, result.Response.Body, buffer)
 }
 
 func (h *Speech) execute(body []byte) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, _ int64, secret []byte, commit *router.CommitState) (*http.Response, error) {
 		response, err := h.client.AudioSpeech(ctx, snapshotFromBudget(ctx), string(secret), body)
 		if err != nil {
 			return nil, err
@@ -216,7 +222,9 @@ func (h *Speech) execute(body []byte) router.ExecuteFunc {
 			}
 			return response, err
 		}
+		commit.Commit()
 		return response, nil
+
 	}
 }
 

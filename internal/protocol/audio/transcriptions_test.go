@@ -54,6 +54,33 @@ func TestParseMultipartAcceptsFileAndPreservesFields(t *testing.T) {
 	}
 }
 
+func TestParseMultipartRejectsBodyLargerThanLimitEvenWithSmallFile(t *testing.T) {
+	body, contentType := multipartBody("public-asr", map[string][]byte{
+		"file":   {0x01},
+		"prompt": []byte(strings.Repeat("x", MaxAudioBodyBytes)),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", contentType)
+	if _, err := ParseMultipart(request); err == nil {
+		t.Fatal("expected whole multipart body limit rejection")
+	}
+}
+
+func TestParseMultipartSpillsLargeFileToReplayStorage(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x5a}, (1<<20)+1)
+	body, contentType := multipartBody("public-asr", map[string][]byte{"file": payload})
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", contentType)
+	parsed, err := ParseMultipart(request)
+	if err != nil {
+		t.Fatalf("ParseMultipart: %v", err)
+	}
+	defer parsed.Close()
+	if got := parsed.FileSize(); got != int64(len(payload)) {
+		t.Fatalf("file size = %d, want %d", got, len(payload))
+	}
+}
+
 func TestParseMultipartRejectsEmptyFile(t *testing.T) {
 	body, contentType := multipartBody("public-asr", map[string][]byte{"file": {}})
 	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)

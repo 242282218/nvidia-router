@@ -33,13 +33,27 @@ type ReplayableBody interface {
 // empty or the file cannot be created, an error is returned. The caller is
 // responsible for calling Close exactly once when the request finishes.
 func NewReplayableBody(payload []byte, tempDir string) (ReplayableBody, error) {
-	if int64(len(payload)) > maxReplayBytes {
+	return NewReplayableBodyFromReader(bytes.NewReader(payload), int64(len(payload)), tempDir)
+}
+
+// NewReplayableBodyFromReader captures a bounded reader without first loading a
+// large payload into memory. Small bodies stay in memory; larger bodies are
+// streamed to a 0600 temporary file.
+func NewReplayableBodyFromReader(reader io.Reader, size int64, tempDir string) (ReplayableBody, error) {
+	if size < 0 || size > maxReplayBytes {
 		return nil, fmt.Errorf("capture replayable body: %w", errBodyTooLarge)
 	}
-	if len(payload) <= replayMemoryThreshold {
-		return &memoryReplayBody{payload: append([]byte(nil), payload...)}, nil
+	if size <= replayMemoryThreshold {
+		payload, err := io.ReadAll(io.LimitReader(reader, size+1))
+		if err != nil {
+			return nil, fmt.Errorf("read replayable body: %w", err)
+		}
+		if int64(len(payload)) != size {
+			return nil, fmt.Errorf("read replayable body: expected %d bytes, got %d", size, len(payload))
+		}
+		return &memoryReplayBody{payload: payload}, nil
 	}
-	return newFileReplayBody(payload, tempDir)
+	return newFileReplayBodyFromReader(reader, size, tempDir)
 }
 
 // BodyTooLarge reports whether err is the sentinel returned for payloads that
@@ -73,6 +87,10 @@ type fileReplayBody struct {
 }
 
 func newFileReplayBody(payload []byte, tempDir string) (*fileReplayBody, error) {
+	return newFileReplayBodyFromReader(bytes.NewReader(payload), int64(len(payload)), tempDir)
+}
+
+func newFileReplayBodyFromReader(reader io.Reader, size int64, tempDir string) (*fileReplayBody, error) {
 	if tempDir == "" {
 		return nil, errors.New("capture replayable body: temp dir is required for file-backed body")
 	}
@@ -80,17 +98,25 @@ func newFileReplayBody(payload []byte, tempDir string) (*fileReplayBody, error) 
 	if err != nil {
 		return nil, fmt.Errorf("create replay temp file: %w", err)
 	}
-	written, err := file.Write(payload)
-	if err != nil {
+	if err := file.Chmod(0600); err != nil {
 		_ = file.Close()
 		_ = os.Remove(file.Name())
-		return nil, fmt.Errorf("write replay temp file: %w", err)
+		return nil, fmt.Errorf("set replay temp file permissions: %w", err)
+	}
+	written, err := io.Copy(file, io.LimitReader(reader, size+1))
+	if err != nil || written != size {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		if err != nil {
+			return nil, fmt.Errorf("write replay temp file: %w", err)
+		}
+		return nil, fmt.Errorf("write replay temp file: expected %d bytes, wrote %d", size, written)
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(file.Name())
 		return nil, fmt.Errorf("close replay temp file: %w", err)
 	}
-	return &fileReplayBody{path: file.Name(), size: int64(written)}, nil
+	return &fileReplayBody{path: file.Name(), size: written}, nil
 }
 
 func (b *fileReplayBody) Open() (io.ReadCloser, error) {

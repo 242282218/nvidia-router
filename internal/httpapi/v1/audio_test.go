@@ -218,13 +218,16 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	lease := &releaseTrackingLease{id: 13}
+	var commit *router.CommitState
 	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
-		response, err := execute(ctx, lease.id, []byte("first-key"), &router.CommitState{})
+		commit = &router.CommitState{}
+		response, err := execute(ctx, lease.id, []byte("first-key"), commit)
 		if err != nil {
 			response, err = execute(ctx, lease.id+1, []byte("second-key"), &router.CommitState{})
 		}
-		return router.AttemptResult{Response: response, Lease: lease, Attempts: transport.calls}, err
+		return router.AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: transport.calls}, err
 	})
+
 	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
 		return modelcatalog.Model{ID: 33, UpstreamID: "vendor/tts", Kind: modelcatalog.KindTTS, Enabled: true}, nil
 	})
@@ -238,6 +241,9 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 	}
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), []byte{0x7f}) {
 		t.Fatalf("response = %d %#v", response.Code, response.Body.Bytes())
+	}
+	if commit == nil || !commit.Committed() {
+		t.Fatal("TTS first-byte output did not commit Attempt state")
 	}
 }
 

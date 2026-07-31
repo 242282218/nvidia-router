@@ -368,7 +368,7 @@ func TestAudioMultipartTemporaryFilesAreRemovedOnEveryExit(t *testing.T) {
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response := httptest.NewRecorder()
 	harness.application.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_audio"`) {
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), `"code":"request_too_large"`) {
 		t.Fatalf("audio response = %d %s", response.Code, response.Body.String())
 	}
 	entries, err := os.ReadDir(tempRoot)

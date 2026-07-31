@@ -49,7 +49,17 @@ type StateSync interface {
 type AttemptResult struct {
 	Response *http.Response
 	Lease    pool.Lease
+	Commit   *CommitState
 	Attempts int
+}
+
+// Commit records that the upstream has produced a client-visible response.
+// Streaming handlers call it after priming the first byte, before any later
+// read error can be mistaken for a retryable pre-commit failure.
+func (s *CommitState) Commit() {
+	if s != nil {
+		s.committed.Store(true)
+	}
 }
 
 func (r AttemptResult) Release() {
@@ -119,7 +129,8 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		}
 		if currentFault == nil {
 			observability.SetUpstreamRequestID(ctx, response.Header.Get("X-Request-ID"))
-			return AttemptResult{Response: response, Lease: lease, Attempts: len(attempted)}, nil
+			return AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: len(attempted)}, nil
+
 		}
 		lastFault = currentFault
 		if !currentFault.Retryable || commit.Committed() || a.budgetExpired(requestCtx) {
