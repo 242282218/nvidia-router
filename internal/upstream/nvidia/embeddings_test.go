@@ -39,7 +39,7 @@ func TestEmbeddingsSendsWireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Embeddings: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if captured.method != http.MethodPost {
 		t.Fatalf("method = %q", captured.method)

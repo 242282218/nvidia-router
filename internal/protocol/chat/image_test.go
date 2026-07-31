@@ -59,7 +59,7 @@ func TestParseRejectsNonHTTPSImageURLs(t *testing.T) {
 	} {
 		t.Run(source, func(t *testing.T) {
 			_, err := Parse(imagePayload(source))
-			requireRequestError(t, err, "invalid_image_url", "messages[0].content[0].image_url.url")
+			_ = requireRequestError(t, err, "invalid_image_url", "messages[0].content[0].image_url.url")
 		})
 	}
 }
@@ -94,7 +94,7 @@ func TestParseRejectsInvalidDataImages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse(imagePayload(tt.source))
-			requireRequestError(t, err, "invalid_image_data", "messages[0].content[0].image_url.url")
+			_ = requireRequestError(t, err, "invalid_image_data", "messages[0].content[0].image_url.url")
 		})
 	}
 }
@@ -120,7 +120,7 @@ func TestParseEnforcesDecodedImageLimit(t *testing.T) {
 
 	t.Run("over limit", func(t *testing.T) {
 		_, err := Parse(imagePayload(dataImageURL(maxDecodedImageBytes + 1)))
-		requireRequestError(t, err, "image_too_large", "messages[0].content[0].image_url.url")
+		_ = requireRequestError(t, err, "image_too_large", "messages[0].content[0].image_url.url")
 	})
 }
 
@@ -136,7 +136,7 @@ func TestParseEnforcesTotalJSONLimit(t *testing.T) {
 	}
 
 	_, err := Parse(payload)
-	requireRequestError(t, err, "request_too_large", "body")
+	_ = requireRequestError(t, err, "request_too_large", "body")
 }
 
 func TestMarshalForRejectsImageOnNonVisionModel(t *testing.T) {
@@ -145,7 +145,7 @@ func TestMarshalForRejectsImageOnNonVisionModel(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	_, err = request.MarshalFor(chatModel())
-	requireRequestError(t, err, "model_capability_unsupported", "messages")
+	_ = requireRequestError(t, err, "model_capability_unsupported", "messages")
 }
 
 func TestParseValidatesImageContentShape(t *testing.T) {
@@ -164,7 +164,7 @@ func TestParseValidatesImageContentShape(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			payload := []byte(`{"model":"public-model","messages":[{"role":"user","content":` + tt.content + `}]}`)
 			_, err := Parse(payload)
-			requireRequestError(t, err, "invalid_parameter", tt.param)
+			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
 		})
 	}
 }
@@ -196,7 +196,7 @@ func TestParseRejectsKnownStringWhoseLastDuplicateIsNull(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse([]byte(tt.payload))
-			requireRequestError(t, err, "invalid_parameter", tt.param)
+			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
 		})
 	}
 }
@@ -256,7 +256,7 @@ func TestParseRejectsAmbiguousKnownMessageKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse([]byte(tt.payload))
-			requireRequestError(t, err, tt.code, tt.param)
+			_ = requireRequestError(t, err, tt.code, tt.param)
 		})
 	}
 }
@@ -279,7 +279,7 @@ func TestParseHandlesEscapedJSONDuringStrictTraversal(t *testing.T) {
 func TestParseRejectsEscapedDuplicateKnownKey(t *testing.T) {
 	payload := []byte(`{"model":"public-model","messages":[{"\u0072ole":"user","role":"assistant","content":"x"}]}`)
 	_, err := Parse(payload)
-	requireRequestError(t, err, "invalid_parameter", "messages[0].role")
+	_ = requireRequestError(t, err, "invalid_parameter", "messages[0].role")
 }
 
 func imagePayload(source string) []byte {

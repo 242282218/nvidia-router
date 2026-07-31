@@ -30,7 +30,7 @@ import (
 
 func TestNew(t *testing.T) {
 	db := openAppDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
 		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
@@ -73,7 +73,7 @@ func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
 		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("New: %v", err)
 	}
 	if app.proxy == nil {
@@ -91,7 +91,7 @@ func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
 
 func TestNewServesEmbeddedFrontendAndKeepsAPIPrefixesOutOfSPA(t *testing.T) {
 	db := openAppDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
 		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
@@ -122,7 +122,7 @@ func TestNewServesEmbeddedFrontendAndKeepsAPIPrefixesOutOfSPA(t *testing.T) {
 
 func TestNewRestoresPoolStateFromDatabase(t *testing.T) {
 	db := openAppDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
 	keyRepository := nvidiakey.NewRepository(db)
 	first, _, err := keyRepository.Create(context.Background(), []byte{1}, []byte{2}, []byte{3}, "key", "one", now)
@@ -345,7 +345,7 @@ func TestNewDoesNotCreateProxyManagerWhenDisabled(t *testing.T) {
 		Clock:  clock.RealClock{},
 	})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("New: %v", err)
 	}
 	if app.proxy != nil {
@@ -366,7 +366,7 @@ func TestNewProxyManagerUsesDefaultTransportWhenNil(t *testing.T) {
 		t.Fatalf("parse proxy URL: %v", err)
 	}
 	db := openAppDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
 		Config: config.Config{
 			DataDir:            t.TempDir(),
@@ -401,7 +401,7 @@ func TestNewProxyManagerUsesDefaultTransportWhenNil(t *testing.T) {
 
 func TestNewFailsWhenProxyBaseTransportIsCustomRoundTripper(t *testing.T) {
 	db := openAppDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
 		Config: config.Config{
 			DataDir:            t.TempDir(),
@@ -452,7 +452,7 @@ func TestAppCloseIsIdempotent(t *testing.T) {
 		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("New: %v", err)
 	}
 	// App.Close must be safe to call repeatedly: the proxy manager Close

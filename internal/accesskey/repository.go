@@ -41,7 +41,7 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list access keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	keys := make([]Key, 0)
 	for rows.Next() {

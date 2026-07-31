@@ -25,21 +25,13 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 	}
 
 	// Close upstream body when the client disconnects or the context is cancelled.
-	// request contexts cancel on client close for HTTP/2, and CloseNotify covers
-	// the HTTP/1.1 path; watchers race and the loser cleans up harmlessly.
+	// Request contexts cancel on client close, covering both HTTP/1.1 and HTTP/2.
 	cancelDone := make(chan struct{})
 	defer close(cancelDone)
-
-	var closeNotify <-chan bool
-	if notifier, ok := writer.(http.CloseNotifier); ok {
-		closeNotify = notifier.CloseNotify()
-	}
 
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = upstream.Body.Close()
-		case <-closeNotify:
 			_ = upstream.Body.Close()
 		case <-cancelDone:
 		}

@@ -23,7 +23,7 @@ func TestAppV1ModelsListsWhitelistAndRequiresAccessKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get models without key: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no-key status = %d, want 401", response.StatusCode)
 	}
@@ -32,7 +32,7 @@ func TestAppV1ModelsListsWhitelistAndRequiresAccessKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authed get: %v", err)
 	}
-	defer authed.Body.Close()
+	defer func() { _ = authed.Body.Close() }()
 	body, _ := io.ReadAll(authed.Body)
 	if authed.StatusCode != http.StatusOK {
 		t.Fatalf("authed status = %d, want 200; body=%s", authed.StatusCode, string(body))
@@ -56,7 +56,7 @@ func TestAppV1UnknownPathReturnsNotImplementedAndSkipsNVIDIA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get unknown: %v", err)
 	}
-	defer authed.Body.Close()
+	defer func() { _ = authed.Body.Close() }()
 	if authed.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", authed.StatusCode)
 	}
@@ -92,10 +92,10 @@ func TestAppV1UnknownPathsRequireAccessKeyBeforeUnsupportedResponse(t *testing.T
 				} `json:"error"`
 			}
 			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-				response.Body.Close()
+				_ = response.Body.Close()
 				t.Fatalf("decode %s response: %v", path, err)
 			}
-			response.Body.Close()
+			_ = response.Body.Close()
 			if response.StatusCode != http.StatusUnauthorized || payload.Error.Code != "invalid_api_key" {
 				t.Fatalf("%s auth=%q status/code = %d/%q, want 401/invalid_api_key", path, authorization, response.StatusCode, payload.Error.Code)
 			}
@@ -110,7 +110,7 @@ func TestAppV1UnknownPathsRequireAccessKeyBeforeUnsupportedResponse(t *testing.T
 		if err != nil {
 			t.Fatalf("authenticated request %s: %v", path, err)
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode != http.StatusNotImplemented {
 			t.Fatalf("authenticated %s status = %d, want 501", path, response.StatusCode)
 		}

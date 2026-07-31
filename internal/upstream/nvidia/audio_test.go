@@ -40,7 +40,7 @@ func TestAudioTranscriptionsSendsMultipart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AudioTranscriptions: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if captured.method != http.MethodPost {
 		t.Fatalf("method = %q", captured.method)
@@ -128,7 +128,7 @@ func TestAudioSpeechSendsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AudioSpeech: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if captured.method != http.MethodPost || captured.auth != "Bearer nvapi-secret" {
 		t.Fatalf("request = %q %q", captured.method, captured.auth)

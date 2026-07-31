@@ -111,7 +111,7 @@ func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
 		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
 	)
 	if response != nil && response.Body != nil {
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 	}
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("execute error = %v, want io.ErrUnexpectedEOF", err)
@@ -221,7 +221,7 @@ func TestChatExecutionPreservesResponseReadFailureClassification(t *testing.T) {
 		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
 	)
 	if response != nil {
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 	}
 	if !errors.Is(err, readErr) {
 		t.Fatalf("execute error = %v, want wrapped read error", err)

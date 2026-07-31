@@ -167,7 +167,7 @@ func TestRuntimeSummaryEndpointUsesPoolSnapshot(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("summary status = %d: %s", response.StatusCode, readResponse(t, response))
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var body struct {
 		Data struct {
 			Active int `json:"active"`
@@ -266,7 +266,7 @@ func sendRuntimeChat(client *http.Client, baseURL, accessToken string) chatRespo
 	if err != nil {
 		return chatResponse{err: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	return chatResponse{status: response.StatusCode, body: string(body), err: err}
 }

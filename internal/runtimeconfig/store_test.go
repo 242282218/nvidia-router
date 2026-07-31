@@ -14,7 +14,7 @@ func TestSnapshotIsSafeDuringConcurrentReadsAndUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	store, err := New(context.Background(), db)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -91,7 +91,7 @@ func TestStoreDoesNotReplaceSnapshotWhenTransactionFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store, err := New(context.Background(), db)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestStoreReplacesSnapshotAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store, err := New(context.Background(), db)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestStoreDoesNotReplaceSnapshotWhenSettingsRowIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store, err := New(context.Background(), db)
 	if err != nil {

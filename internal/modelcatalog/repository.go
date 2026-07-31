@@ -170,14 +170,14 @@ func (r *Repository) List(ctx context.Context) ([]Model, error) {
 	for rows.Next() {
 		model, err := scanModel(rows)
 		if err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		model.BlockedByKeyIDs = []int64{}
 		models = append(models, model)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, fmt.Errorf("iterate models: %w", err)
 	}
 	if err := rows.Close(); err != nil {
@@ -202,7 +202,7 @@ func (r *Repository) attachBlockedKeyIDs(ctx context.Context, models []Model) er
 	if err != nil {
 		return fmt.Errorf("list model key blocks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var modelID, keyID int64
 		if err := rows.Scan(&modelID, &keyID); err != nil {
@@ -223,7 +223,7 @@ func attachBlockedKeyIDsTx(ctx context.Context, tx *sql.Tx, model *Model) error 
 	if err != nil {
 		return fmt.Errorf("list model key blocks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	model.BlockedByKeyIDs = []int64{}
 	for rows.Next() {
 		var keyID int64
@@ -243,7 +243,7 @@ func (r *Repository) ListEnabled(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list enabled models: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	models := make([]Model, 0)
 	for rows.Next() {
 		model, err := scanModel(rows)
@@ -441,7 +441,7 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 	if err != nil {
 		return nil, fmt.Errorf("list NVIDIA key model blocks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	blocks := make([]keystate.ModelBlock, 0)
 	for rows.Next() {
 		var block keystate.ModelBlock

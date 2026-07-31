@@ -208,7 +208,7 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		if response == nil || response.Body == nil {
 			return ErrManualTestRequired
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return ErrManualTestRequired
 		}

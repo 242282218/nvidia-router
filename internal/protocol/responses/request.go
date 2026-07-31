@@ -196,7 +196,6 @@ func convertMessageItem(parsed responsesInputItem, index int) (chatMessage, bool
 
 func extractMessageText(parsed responsesInputItem, param string) (text string, usesVision, isString bool, err error) {
 	if len(parsed.Content) == 0 {
-		isString = true
 		return "", false, true, nil
 	}
 	var raw string

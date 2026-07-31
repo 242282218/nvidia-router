@@ -288,7 +288,7 @@ func TestProxyUnavailableTestLeavesKeyRowAndModelBlocksUntouched(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read model blocks: %v", err)
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		blocks := []string{}
 		for rows.Next() {
 			var reason string
@@ -434,7 +434,7 @@ func TestMarkFailurePersistsCooldownAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen database: %v", err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	persisted, err := NewRepository(reopened).ListSnapshots(context.Background())
 	if err != nil {
 		t.Fatalf("ListSnapshots after reopen: %v", err)

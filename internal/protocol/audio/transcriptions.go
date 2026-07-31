@@ -121,7 +121,7 @@ func (r Request) FileBytes() []byte {
 	if err != nil {
 		return nil
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	payload, err := io.ReadAll(reader)
 	if err != nil {
 		return nil

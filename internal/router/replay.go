@@ -86,10 +86,6 @@ type fileReplayBody struct {
 	size int64
 }
 
-func newFileReplayBody(payload []byte, tempDir string) (*fileReplayBody, error) {
-	return newFileReplayBodyFromReader(bytes.NewReader(payload), int64(len(payload)), tempDir)
-}
-
 func newFileReplayBodyFromReader(reader io.Reader, size int64, tempDir string) (*fileReplayBody, error) {
 	if tempDir == "" {
 		return nil, errors.New("capture replayable body: temp dir is required for file-backed body")

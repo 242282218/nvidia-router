@@ -68,7 +68,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	if err := json.NewDecoder(created.Body).Decode(&imported); err != nil {
 		t.Fatal(err)
 	}
-	created.Body.Close()
+	_ = created.Body.Close()
 	if imported.Key.ID == 0 {
 		t.Fatal("missing imported key id")
 	}
@@ -90,13 +90,13 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	if patched.StatusCode != http.StatusOK {
 		t.Fatalf("disable status=%d body=%s", patched.StatusCode, readResponse(t, patched))
 	}
-	patched.Body.Close()
+	_ = patched.Body.Close()
 	assertPoolAcquireFails(t, app, 0)
 	patched = authRequest(t, server.Client(), http.MethodPatch, server.URL+"/admin/api/nvidia-keys/"+itoa(imported.Key.ID), `{"enabled":true}`, session, server.URL)
 	if patched.StatusCode != http.StatusOK {
 		t.Fatalf("enable status=%d body=%s", patched.StatusCode, readResponse(t, patched))
 	}
-	patched.Body.Close()
+	_ = patched.Body.Close()
 
 	now := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	result, err := app.db.Exec(`INSERT INTO models(public_id,upstream_id,display_name,kind,enabled,reasoning_wire_format,created_at,updated_at) VALUES(?,?,?,?,1,'none',?,?)`, "chat", "vendor/chat", "Chat", "chat", now, now)
@@ -122,7 +122,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	if unblocked.StatusCode != http.StatusOK {
 		t.Fatalf("unblock status=%d body=%s", unblocked.StatusCode, readResponse(t, unblocked))
 	}
-	unblocked.Body.Close()
+	_ = unblocked.Body.Close()
 	lease, err = app.Pool.Acquire(context.Background(), modelID, nil)
 	if err != nil {
 		t.Fatalf("acquire after unblock: %v", err)
@@ -133,7 +133,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	if deleted.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status=%d body=%s", deleted.StatusCode, readResponse(t, deleted))
 	}
-	deleted.Body.Close()
+	_ = deleted.Body.Close()
 	assertPoolAcquireFails(t, app, modelID)
 }
 

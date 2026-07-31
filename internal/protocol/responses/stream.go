@@ -46,14 +46,14 @@ func (s *streamState) Convert(source ChatDeltaSource, emit Emitter, responseID, 
 
 	for {
 		delta, srcErr := source.Next()
-		switch {
-		case srcErr == nil:
+		switch srcErr {
+		case nil:
 			if err := s.applyDelta(delta, emit, responseID); err != nil {
 				return false, err
 			}
-		case srcErr == ErrStreamCompleted:
+		case ErrStreamCompleted:
 			return false, s.finalize(emit, responseID, model, false)
-		case srcErr == ErrStreamInterrupted:
+		case ErrStreamInterrupted:
 			// EOF/interruption before [DONE] is failed, even if the upstream sent
 			// finish_reason. A finish_reason is only a delta-level signal; [DONE]
 			// is the authoritative normal completion marker.

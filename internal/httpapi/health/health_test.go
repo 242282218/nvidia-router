@@ -29,7 +29,7 @@ func TestLiveReturnsExactOKResponse(t *testing.T) {
 
 func TestReadyReturnsServiceUnavailableWithoutOperationalDetails(t *testing.T) {
 	db := readyDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 1 WHERE id = 1"); err != nil {
 		t.Fatalf("require password change: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestReadyReturnsServiceUnavailableWhenDatabaseCannotBeReached(t *testing.T)
 
 func TestReadyReturnsServiceUnavailableWhenMigrationsAreUnavailable(t *testing.T) {
 	db := readyDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec("DROP TABLE schema_migrations"); err != nil {
 		t.Fatalf("drop migration ledger: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestReadyReturnsServiceUnavailableWhenMigrationsAreUnavailable(t *testing.T
 
 func TestReadyReturnsServiceUnavailableWhenSentinelIsUnavailable(t *testing.T) {
 	db := readyDatabase(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec("DELETE FROM crypto_sentinel WHERE id = 1"); err != nil {
 		t.Fatalf("delete sentinel: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestReadyReturnsServiceUnavailableForInvalidMigrationOrSentinel(t *testing.
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			db := readyDatabase(t)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if err := item.mutate(db); err != nil {
 				t.Fatalf("mutate ready prerequisite: %v", err)
 			}

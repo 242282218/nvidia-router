@@ -71,7 +71,7 @@ func (c *Client) Models(ctx context.Context, token string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		discardErrorBody(response.Body)
 		return nil, fmt.Errorf("get NVIDIA models: upstream returned HTTP %d", response.StatusCode)
@@ -94,7 +94,7 @@ func (c *Client) ValidateCredential(ctx context.Context, token string, now time.
 			State: ValidationTemporarilyUnavailable, SafeError: "NVIDIA models request failed", Fault: &classified,
 		}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	result := ValidationResult{RequestID: allowedRequestID(response.Header)}
 	if response.StatusCode == http.StatusOK {
 		models, parseErr := parseModels(response.Body)
@@ -148,21 +148,21 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 	if c.proxy == nil {
 		return c.doDirect(ctx, snapshot, build)
 	}
-	response, wrote, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
+	response, _, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
 	if !retryable {
 		return response, err
 	}
 	if ctx.Err() != nil {
 		return nil, err
 	}
-	response, wrote, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
+	response, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
 	if err == nil || response != nil {
 		return response, err
 	}
 	if ctx.Err() != nil {
 		return nil, err
 	}
-	if !retryable || wrote {
+	if !retryable {
 		return nil, err
 	}
 	return nil, xkproxy.NewTransportError(err)

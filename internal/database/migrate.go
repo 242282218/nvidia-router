@@ -91,7 +91,7 @@ func readMigrationLedger(ctx context.Context, db *sql.DB) (map[int]string, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	recorded := make(map[int]string)
 	for rows.Next() {

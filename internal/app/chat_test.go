@@ -211,7 +211,7 @@ func TestChatAppStreamForwardsSSEEventsAndReleasesLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", response.StatusCode)
@@ -261,7 +261,7 @@ func TestChatAppStreamCancelsOnClientDisconnect(t *testing.T) {
 		_, _ = response.Body.Read(buf)
 		cancel()
 		_, _ = io.Copy(io.Discard, response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 	}()
 
 	select {
@@ -296,7 +296,7 @@ func postChat(t *testing.T, baseURL, accessToken, body string) (int, string) {
 	if err != nil {
 		t.Fatalf("send chat request: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read chat response: %v", err)

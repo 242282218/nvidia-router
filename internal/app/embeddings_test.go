@@ -142,7 +142,7 @@ func postEmbeddings(t *testing.T, baseURL, accessToken, body string) (int, strin
 	if err != nil {
 		t.Fatalf("send embeddings request: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read embeddings response: %v", err)

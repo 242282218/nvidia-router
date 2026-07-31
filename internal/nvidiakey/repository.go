@@ -34,7 +34,7 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list NVIDIA keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	keys := make([]Key, 0)
 	for rows.Next() {
 		key, err := scanKey(rows)
@@ -209,7 +209,7 @@ func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot,
 	if err != nil {
 		return nil, fmt.Errorf("list NVIDIA key scheduling snapshots: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	snapshots := make([]keystate.KeySnapshot, 0)
 	for rows.Next() {
 		snapshot, err := scanSchedulingSnapshot(rows)

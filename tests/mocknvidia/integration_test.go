@@ -781,7 +781,7 @@ func (h *appHarness) doRequest(ctx context.Context, method, path, body string, e
 	if err != nil {
 		return httpResult{err: fmt.Errorf("send request: %w", err)}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		return httpResult{err: fmt.Errorf("read response: %w", err)}

@@ -75,7 +75,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer result.Release()
-	defer result.Response.Body.Close()
+	defer func() { _ = result.Response.Body.Close() }()
 
 	if stream {
 		h.streamResponse(request.Context(), writer, result.Response)

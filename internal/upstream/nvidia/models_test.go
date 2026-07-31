@@ -161,7 +161,7 @@ func TestMockServerQueuesResponsesAndDetectsStreamCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first request: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -169,7 +169,7 @@ func TestMockServerQueuesResponsesAndDetectsStreamCancellation(t *testing.T) {
 	response, err = server.Client().Do(request)
 	if err == nil {
 		_, _ = io.ReadAll(response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 	}
 	deadline := time.Now().Add(time.Second)
 	for server.CanceledCount() == 0 && time.Now().Before(deadline) {

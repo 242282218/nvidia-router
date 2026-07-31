@@ -78,7 +78,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	defer result.Release()
-	defer result.Response.Body.Close()
+	defer func() { _ = result.Response.Body.Close() }()
 
 	if stream {
 		h.streamResponse(request.Context(), writer, result.Response, id, model.PublicID)
@@ -141,15 +141,9 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 	source := &chatDeltaSource{decoder: sse.NewDecoder(upstream.Body)}
 	cancelDone := make(chan struct{})
 	defer close(cancelDone)
-	var closeNotify <-chan bool
-	if notifier, ok := writer.(http.CloseNotifier); ok {
-		closeNotify = notifier.CloseNotify()
-	}
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = upstream.Body.Close()
-		case <-closeNotify:
 			_ = upstream.Body.Close()
 		case <-cancelDone:
 		}

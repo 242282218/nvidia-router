@@ -92,7 +92,7 @@ func waitForLive(t *testing.T, endpoint string) {
 	for time.Now().Before(deadline) {
 		response, err := client.Get(endpoint)
 		if err == nil {
-			response.Body.Close()
+			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
 				return
 			}

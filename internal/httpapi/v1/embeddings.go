@@ -63,7 +63,7 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	defer result.Release()
-	defer result.Response.Body.Close()
+	defer func() { _ = result.Response.Body.Close() }()
 
 	if result.Response.StatusCode < http.StatusOK || result.Response.StatusCode >= http.StatusMultipleChoices {
 		writeChatError(writer, &apierror.Error{

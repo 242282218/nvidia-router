@@ -139,7 +139,7 @@ func TestClientWroteRequestThenDisconnectDoesNotRetireProxy(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		// Declare a body larger than what is sent, then drop the connection so
 		// the client observes a truncated body after the headers.
 		_, _ = buffered.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100\r\n\r\npartial")

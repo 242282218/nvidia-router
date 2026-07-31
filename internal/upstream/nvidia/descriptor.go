@@ -125,7 +125,7 @@ func (d Descriptor) NewRequest(endpoint Endpoint, stream bool, token string) (*h
 
 func (d Descriptor) Validate() error {
 	if d.AuthScheme != "Bearer" {
-		return fmt.Errorf("validate NVIDIA auth scheme: %w", errors.New("Bearer is required"))
+		return fmt.Errorf("validate NVIDIA auth scheme: %w", errors.New("bearer is required"))
 	}
 	endpoints := []struct {
 		name        string

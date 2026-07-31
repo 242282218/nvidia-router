@@ -14,7 +14,7 @@ func TestReplayableBodySmallStaysInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReplayableBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	if body.Size() != int64(len(payload)) {
 		t.Fatalf("size = %d", body.Size())
 	}
@@ -31,7 +31,7 @@ func TestReplayableBodyLargeSpillsToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReplayableBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	if body.Size() != int64(len(payload)) {
 		t.Fatalf("size = %d", body.Size())
 	}
@@ -48,7 +48,7 @@ func TestReplayableBodyReopenable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReplayableBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	for i := 0; i < 3; i++ {
 		assertReplayReads(t, body, string(payload))
 	}

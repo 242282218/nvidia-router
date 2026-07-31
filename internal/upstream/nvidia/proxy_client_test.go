@@ -63,7 +63,7 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if _, err := io.ReadAll(response.Body); err != nil {
 		t.Fatalf("read response: %v", err)
 	}

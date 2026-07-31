@@ -423,7 +423,7 @@ func sessionRevocations(t *testing.T, db *sql.DB) map[string]string {
 	if err != nil {
 		t.Fatalf("query session revocations: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	revocations := make(map[string]string)
 	for rows.Next() {

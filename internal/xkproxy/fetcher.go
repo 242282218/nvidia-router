@@ -68,7 +68,7 @@ func (f *fetcher) Fetch(ctx context.Context) (*url.URL, error) {
 	if err != nil {
 		return nil, newError(ReasonFetchFailed, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, newError(ReasonInvalidResponse, nil)
 	}

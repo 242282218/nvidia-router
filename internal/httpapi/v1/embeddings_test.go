@@ -123,9 +123,9 @@ func TestEmbeddingsExecutionSurfacesProtocolErrorForFailover(t *testing.T) {
 	response, err := NewEmbeddings(nil, nil, client).execute([]byte(`{"model":"m","input":"hi"}`))(
 		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
 	)
-	if response != nil {
-		defer response.Body.Close()
-	}
+		if response != nil {
+			defer func() { _ = response.Body.Close() }()
+		}
 	if err == nil {
 		t.Fatal("expected protocol error for malformed 2xx embeddings response")
 	}

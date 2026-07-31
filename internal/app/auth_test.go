@@ -96,7 +96,7 @@ func responseSessionCookie(t *testing.T, response *http.Response) *http.Cookie {
 
 func assertResponseSession(t *testing.T, response *http.Response, mustChange bool) {
 	t.Helper()
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var payload struct {
 		Authenticated      bool `json:"authenticated"`
 		MustChangePassword bool `json:"must_change_password"`
@@ -111,7 +111,7 @@ func assertResponseSession(t *testing.T, response *http.Response, mustChange boo
 
 func assertResponseError(t *testing.T, response *http.Response, status int, code string) {
 	t.Helper()
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != status {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status = %d, want %d: %s", response.StatusCode, status, body)
@@ -131,7 +131,7 @@ func assertResponseError(t *testing.T, response *http.Response, status int, code
 
 func readResponse(t *testing.T, response *http.Response) string {
 	t.Helper()
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read response: %v", err)

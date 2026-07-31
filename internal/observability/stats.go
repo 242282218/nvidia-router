@@ -24,7 +24,7 @@ func (r *Repository) ListDailyStats(ctx context.Context, since time.Time) ([]Dai
 	if err != nil {
 		return nil, fmt.Errorf("query daily stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := make([]DailyStat, 0)
 	for rows.Next() {
@@ -63,7 +63,7 @@ func (r *Repository) ListRecentErrors(ctx context.Context, limit int) ([]RecentE
 	if err != nil {
 		return nil, fmt.Errorf("query recent errors: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	errorsList := make([]RecentError, 0)
 	for rows.Next() {

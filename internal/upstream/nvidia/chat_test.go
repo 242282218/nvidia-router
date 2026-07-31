@@ -47,7 +47,7 @@ func TestChatSendsGoldenRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 
 	got := <-captured
 	if got.method != http.MethodPost || got.path != "/v1/chat/completions" {

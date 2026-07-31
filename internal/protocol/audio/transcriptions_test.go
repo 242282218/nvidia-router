@@ -76,7 +76,7 @@ func TestParseMultipartSpillsLargeFileToReplayStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseMultipart: %v", err)
 	}
-	defer parsed.Close()
+	defer func() { _ = parsed.Close() }()
 	if got := parsed.FileSize(); got != int64(len(payload)) {
 		t.Fatalf("file size = %d, want %d", got, len(payload))
 	}

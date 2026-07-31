@@ -97,7 +97,7 @@ func TestServeClosesDatabaseWhenListenerFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve listener: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	application := &App{
 		Server: NewServer(listener.Addr().String(), http.NotFoundHandler(), nil, nil),

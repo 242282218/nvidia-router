@@ -377,12 +377,6 @@ func (m *Manager) closeLeaseTransportsLocked(lease *lease) {
 	}
 }
 
-func (f *atomicFlag) isDone() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.done
-}
-
 func asProxyError(err error, fallback ErrorReason) *Error {
 	var proxyErr *Error
 	if errors.As(err, &proxyErr) {

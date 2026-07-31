@@ -46,7 +46,7 @@ func TestParsePreservesUnknownFieldsAndMarshalForMapsModel(t *testing.T) {
 
 func TestParseRejectsUnsupportedBeforeMissingRequiredFields(t *testing.T) {
 	_, err := Parse([]byte(`{"store":true}`))
-	requireRequestError(t, err, "unsupported_parameter", "store")
+	_ = requireRequestError(t, err, "unsupported_parameter", "store")
 }
 
 func TestParseValidatesRequiredAndKnownFieldTypes(t *testing.T) {
@@ -76,7 +76,7 @@ func TestParseValidatesRequiredAndKnownFieldTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse([]byte(tt.payload))
-			requireRequestError(t, err, tt.code, tt.param)
+			_ = requireRequestError(t, err, tt.code, tt.param)
 		})
 	}
 }
@@ -126,7 +126,7 @@ func TestParseRejectsDuplicateToolStringsEndingInNull(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse([]byte(tt.payload))
-			requireRequestError(t, err, "invalid_parameter", tt.param)
+			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
 		})
 	}
 }
@@ -162,7 +162,7 @@ func TestParseExtractsToolRequirementsFromMessages(t *testing.T) {
 			t.Fatal("message tool protocol did not require tool capability")
 		}
 		_, err = request.MarshalFor(chatModel())
-		requireRequestError(t, err, "model_capability_unsupported", "tools")
+		_ = requireRequestError(t, err, "model_capability_unsupported", "tools")
 	}
 }
 
@@ -206,7 +206,7 @@ func TestParseRejectsAmbiguousKnownToolKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Parse([]byte(tt.payload))
-			requireRequestError(t, err, "invalid_parameter", tt.param)
+			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
 		})
 	}
 }
@@ -240,7 +240,7 @@ func TestMarshalForRejectsUnsupportedModelCapabilities(t *testing.T) {
 			model.SupportsReasoning = false
 			model.ReasoningWireFormat = "none"
 			_, err = request.MarshalFor(model)
-			requireRequestError(t, err, "model_capability_unsupported", tt.param)
+			_ = requireRequestError(t, err, "model_capability_unsupported", tt.param)
 		})
 	}
 }
@@ -285,7 +285,7 @@ func TestMarshalForRejectsConflictingReasoningFields(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	_, err = request.MarshalFor(reasoningModel())
-	requireRequestError(t, err, "conflicting_reasoning_parameters", "reasoning_effort")
+	_ = requireRequestError(t, err, "conflicting_reasoning_parameters", "reasoning_effort")
 }
 
 func TestMarshalForRejectsDuplicateReasoningStringsEndingInNull(t *testing.T) {
@@ -305,7 +305,7 @@ func TestMarshalForRejectsDuplicateReasoningStringsEndingInNull(t *testing.T) {
 				t.Fatalf("Parse: %v", err)
 			}
 			_, err = request.MarshalFor(reasoningModel())
-			requireRequestError(t, err, "invalid_parameter", tt.param)
+			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
 		})
 	}
 }

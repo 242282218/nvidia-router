@@ -208,15 +208,6 @@ func (s *Server) serveError() error {
 	return err
 }
 
-func (s *Server) waitServeDone() {
-	s.lifecycleMu.Lock()
-	finished := s.serveFinished
-	s.lifecycleMu.Unlock()
-	if finished != nil {
-		<-finished
-	}
-}
-
 func (s *Server) shutdownGrace() time.Duration {
 	s.graceMu.RLock()
 	grace := s.grace

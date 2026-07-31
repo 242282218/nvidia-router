@@ -52,7 +52,7 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	parsed, parseErr := audiocollections.ParseMultipart(request, h.tempDir)
 	if parseErr == nil {
-		defer parsed.Close()
+		defer func() { _ = parsed.Close() }()
 	}
 	if err := removeMultipartFiles(request); err != nil {
 		writeChatError(writer, &apierror.Error{
@@ -82,7 +82,7 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer result.Release()
-	defer result.Response.Body.Close()
+	defer func() { _ = result.Response.Body.Close() }()
 
 	if result.Response.StatusCode < http.StatusOK || result.Response.StatusCode >= http.StatusMultipleChoices {
 		writeChatError(writer, &apierror.Error{
@@ -196,7 +196,7 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer result.Release()
-	defer result.Response.Body.Close()
+	defer func() { _ = result.Response.Body.Close() }()
 
 	commit := result.Commit
 	if commit == nil {

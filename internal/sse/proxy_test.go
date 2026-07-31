@@ -209,7 +209,7 @@ func TestProxyCancelOnContextDone(t *testing.T) {
 	// Infinite stream - should cancel via context
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		for {
 			_, err := pw.Write([]byte("data: chunk\n\n"))
 			if err != nil {

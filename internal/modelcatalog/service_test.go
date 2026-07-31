@@ -893,7 +893,6 @@ type fakeDiscoverer struct {
 	ttsContentType          string
 	ttsContentTypeSet       bool
 	ttsContentTypeHeaderSet bool
-	lastAudioModel          string
 	chatStarted             chan struct{}
 	chatRelease             chan struct{}
 }

@@ -19,7 +19,6 @@ type fakeModels struct {
 	candidates  []modelcatalog.Candidate
 	models      []modelcatalog.Model
 	saved       []modelcatalog.Selection
-	patched     modelcatalog.Selection
 	saveResult  *modelcatalog.MutationResult
 	discoverKey int64
 	cleared     [2]int64

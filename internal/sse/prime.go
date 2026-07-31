@@ -56,7 +56,7 @@ type captureReader struct {
 func (r *captureReader) Read(payload []byte) (int, error) {
 	read, err := r.reader.Read(payload)
 	if read > 0 {
-		_, _ = r.Buffer.Write(payload[:read])
+		_, _ = r.Write(payload[:read])
 	}
 	return read, err
 }

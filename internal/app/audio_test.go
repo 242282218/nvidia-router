@@ -159,7 +159,7 @@ func postAudio(t *testing.T, baseURL, accessToken, body, contentType string) (in
 	if err != nil {
 		t.Fatalf("send audio request: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read audio response: %v", err)
@@ -229,7 +229,7 @@ func postSpeech(t *testing.T, baseURL, accessToken string) (int, string, []byte)
 	if err != nil {
 		t.Fatalf("send speech request: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read speech response: %v", err)

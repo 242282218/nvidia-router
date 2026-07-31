@@ -27,7 +27,7 @@ func TestServerForceClosesAfterShutdownTimeout(t *testing.T) {
 		t.Fatalf("reserve listener: %v", err)
 	}
 	address := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	handlerStarted := make(chan struct{})
 	handlerDone := make(chan struct{})
 	server := NewServer(address, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
@@ -44,7 +44,7 @@ func TestServerForceClosesAfterShutdownTimeout(t *testing.T) {
 		for time.Now().Before(deadline) {
 			response, err := http.Get("http://" + address)
 			if err == nil {
-				response.Body.Close()
+				_ = response.Body.Close()
 				return
 			}
 			time.Sleep(10 * time.Millisecond)

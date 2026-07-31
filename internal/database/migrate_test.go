@@ -94,7 +94,7 @@ func TestVerifyMigrationsRejectsMissingOrChangedRecordedMigration(t *testing.T) 
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if _, err := db.Exec(mutate.sql); err != nil {
 				t.Fatalf("mutate migration ledger: %v", err)
 			}
@@ -110,7 +110,7 @@ func TestMigrateRejectsUnknownVersionBeforeApplyingMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, indexName := range []string{
 		"idx_admin_sessions_expires",
@@ -158,7 +158,7 @@ func TestVerifyMigrationsRejectsUnknownVersionWithoutChangingLedger(t *testing.T
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if _, err := db.Exec("INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (9001, 'future-checksum', 'future-time')"); err != nil {
 		t.Fatalf("insert unknown migration: %v", err)
@@ -191,7 +191,7 @@ func readTestMigrationLedger(t *testing.T, db *sql.DB) []migrationLedgerRow {
 	if err != nil {
 		t.Fatalf("read migration ledger: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ledger []migrationLedgerRow
 	for rows.Next() {
