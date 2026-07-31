@@ -57,7 +57,7 @@ func (r *Repository) ListRecentErrors(ctx context.Context, limit int) ([]RecentE
 		       http_status, error_code, upstream_request_id, created_at
 		FROM request_logs
 		WHERE outcome = ? AND error_code IS NOT NULL
-		ORDER BY created_at DESC, request_id DESC
+		ORDER BY julianday(created_at) DESC, request_id DESC
 		LIMIT ?
 	`, OutcomeFailure, limit)
 	if err != nil {

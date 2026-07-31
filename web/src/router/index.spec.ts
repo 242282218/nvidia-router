@@ -4,8 +4,10 @@ import { createMemoryHistory } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import type { AuthApi } from '../features/auth/api'
 import type { SessionStore, SessionState } from '../features/auth/useSession'
-import { sessionKey } from '../features/auth/useSession'
+import { createSessionStore, sessionKey } from '../features/auth/useSession'
+import { apiRequest } from '../shared/api/client'
 import { createAppRouter } from './index'
 
 vi.mock('../features/nvidia-keys/api', () => ({
@@ -72,6 +74,7 @@ vi.mock('../features/statistics/api', () => ({
 function createSession(state: SessionState): SessionStore {
   return {
     changePassword: vi.fn(),
+    dispose: vi.fn(),
     ensureLoaded: vi.fn().mockResolvedValue(undefined),
     login: vi.fn(),
     logout: vi.fn(),
@@ -109,6 +112,41 @@ describe('authentication router guard', () => {
 
     expect(router.currentRoute.value.path).toBe('/')
     expect((matchedComponent as { name?: string }).name).toBe('AppShell')
+  })
+
+  it('redirects an authenticated management page after any API returns 401 and cleans up on unmount', async () => {
+    const api: AuthApi = {
+      changePassword: vi.fn(),
+      getSession: vi.fn().mockResolvedValue({ authenticated: true, must_change_password: false }),
+      login: vi.fn(),
+      logout: vi.fn(),
+    }
+    const session = createSessionStore(api)
+    const router = createAppRouter(session, createMemoryHistory('/admin/'))
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        provide: { [sessionKey as symbol]: session },
+      },
+    })
+    let dispose: ReturnType<typeof vi.spyOn> | undefined
+
+    try {
+      await router.push('/models')
+      await router.isReady()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })))
+
+      await expect(apiRequest('/admin/api/models')).rejects.toMatchObject({ status: 401 })
+      await flushPromises()
+
+      expect(router.currentRoute.value.path).toBe('/login')
+      expect(session.dispose).toBeTypeOf('function')
+      dispose = vi.spyOn(session, 'dispose')
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+    expect(dispose).toHaveBeenCalledOnce()
   })
 })
 

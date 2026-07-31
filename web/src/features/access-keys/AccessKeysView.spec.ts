@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { accessKeysApi } from './api'
 import AccessKeysView from './AccessKeysView.vue'
+import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
+import type { AccessKeysResponse } from './types'
 
 vi.mock('./api', () => ({
   accessKeysApi: {
@@ -20,6 +22,14 @@ const listedKey = {
   last_used_at: '2026-07-30T09:30:00Z',
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(accessKeysApi.list).mockResolvedValue({ data: [listedKey] })
@@ -27,6 +37,68 @@ beforeEach(() => {
 })
 
 describe('AccessKeysView', () => {
+  it.each([
+    ['a non-array data field', { data: null }],
+    ['a non-numeric key id', { data: [{ ...listedKey, id: null }] }],
+  ])('shows a visible error for %s in a successful response', async (_name, response) => {
+    vi.mocked(accessKeysApi.list).mockResolvedValue(response as never)
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('Access Key 列表加载失败')
+    expect(wrapper.text()).not.toContain(listedKey.name)
+  })
+
+  it('keeps the newest list when an older request resolves last', async () => {
+    const first = deferred<AccessKeysResponse>()
+    const second = deferred<AccessKeysResponse>()
+    vi.mocked(accessKeysApi.list)
+      .mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const wrapper = mount(AccessKeysView)
+
+    wrapper.getComponent(CreateAccessKeyDialog).vm.$emit('created')
+    expect(accessKeysApi.list).toHaveBeenCalledTimes(2)
+
+    second.resolve({ data: [{ ...listedKey, id: 6, name: '新数据' }] })
+    await flushPromises()
+    first.resolve({ data: [{ ...listedKey, id: 5, name: '旧数据' }] })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('新数据')
+    expect(wrapper.text()).not.toContain('旧数据')
+  })
+
+  it('does not update list state after unmount', async () => {
+    const request = deferred<AccessKeysResponse>()
+    vi.mocked(accessKeysApi.list).mockReset().mockReturnValueOnce(request.promise)
+    const wrapper = mount(AccessKeysView)
+    const state = wrapper.vm as unknown as { keys: typeof listedKey[]; loading: boolean }
+
+    wrapper.unmount()
+    request.resolve({ data: [listedKey] })
+    await flushPromises()
+
+    expect(state.keys).toEqual([])
+    expect(state.loading).toBe(true)
+  })
+
+  it('does not start a post-mutation reload after unmount', async () => {
+    const revoke = deferred<void>()
+    vi.mocked(accessKeysApi.revoke).mockReset().mockReturnValueOnce(revoke.promise)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="revoke-access-key-4"]').trigger('click')
+    wrapper.unmount()
+    revoke.resolve(undefined)
+    await flushPromises()
+
+    expect(accessKeysApi.list).toHaveBeenCalledOnce()
+  })
+
   it('shows a newly created plaintext once, copies it, and cannot recover it after closing', async () => {
     const plaintext = 'nvr_once_only_secret'
     const writeText = vi.fn().mockResolvedValue(undefined)

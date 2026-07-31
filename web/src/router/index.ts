@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, type Router, type RouterHistory } from 'vue-router'
 
+import { watch } from 'vue'
+
 import ChangePasswordView from '../features/auth/ChangePasswordView.vue'
 import LoginView from '../features/auth/LoginView.vue'
 import AccessKeysView from '../features/access-keys/AccessKeysView.vue'
@@ -43,6 +45,20 @@ export function createAppRouter(
     }
     return true
   })
+
+  const install = router.install
+  router.install = (app) => {
+    const stopRedirect = watch(session.state, (state) => {
+      if (state.kind === 'anonymous' && router.currentRoute.value.path !== '/login') {
+        void router.replace('/login')
+      }
+    }, { flush: 'sync' })
+    app.onUnmount(() => {
+      stopRedirect()
+      session.dispose()
+    })
+    install.call(router, app)
+  }
 
   return router
 }

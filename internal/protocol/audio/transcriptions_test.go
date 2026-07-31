@@ -5,6 +5,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -78,6 +79,35 @@ func TestParseMultipartSpillsLargeFileToReplayStorage(t *testing.T) {
 	defer parsed.Close()
 	if got := parsed.FileSize(); got != int64(len(payload)) {
 		t.Fatalf("file size = %d, want %d", got, len(payload))
+	}
+}
+
+func TestParseMultipartUsesConfiguredTempDirForLargeFile(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x5a}, (1<<20)+1)
+	tempDir := t.TempDir()
+	body, contentType := multipartBody("public-asr", map[string][]byte{"file": payload})
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", contentType)
+	parsed, err := ParseMultipart(request, tempDir)
+	if err != nil {
+		t.Fatalf("ParseMultipart: %v", err)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("read configured temp dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("configured temp dir has no replay file")
+	}
+	if err := parsed.Close(); err != nil {
+		t.Fatalf("close parsed request: %v", err)
+	}
+	entries, err = os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("read configured temp dir after close: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("configured temp dir retains %d files after close", len(entries))
 	}
 }
 

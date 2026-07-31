@@ -38,7 +38,10 @@ func (r *Repository) Record(ctx context.Context, record RequestRecord) error {
 }
 
 func (r *Repository) DeleteRequestLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM request_logs WHERE created_at < ?", formatTime(cutoff))
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM request_logs
+		WHERE julianday(created_at) < julianday(?)
+	`, formatTime(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("delete expired request logs: %w", err)
 	}

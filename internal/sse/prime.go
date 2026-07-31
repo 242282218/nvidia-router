@@ -18,11 +18,17 @@ func Prime(ctx context.Context, response *http.Response) error {
 	captured := &captureReader{reader: response.Body}
 	result := make(chan error, 1)
 	go func() {
-		_, err := NewDecoder(captured).Decode()
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
+		decoder := NewDecoder(captured)
+		for {
+			event, err := decoder.Decode()
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			if err != nil || len(event.Data) > 0 {
+				result <- err
+				return
+			}
 		}
-		result <- err
 	}()
 
 	select {

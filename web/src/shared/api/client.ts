@@ -1,6 +1,8 @@
 ﻿import type { ApiRequestOptions, OpenAIError, OpenAIErrorResponse } from './types'
 
 
+export const SESSION_EXPIRED_EVENT = 'session-expired'
+
 export class ApiError extends Error {
   readonly code: string | null
   readonly param: string | null
@@ -37,6 +39,9 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+    }
     throw await parseApiError(response)
   }
   if (response.status === 204) {
@@ -81,6 +86,17 @@ function isOpenAIErrorResponse(value: unknown): value is OpenAIErrorResponse {
   )
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isDataArrayResponse<T>(
+  value: unknown,
+  isItem: (item: unknown) => item is T,
+): value is { data: T[] } {
+  return isRecord(value) && Array.isArray(value.data) && value.data.every(isItem)
+}
+
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }

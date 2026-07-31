@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { statisticsApi } from './api'
 import StatisticsView from './StatisticsView.vue'
+import type { DailyStatistic, RecentError } from './types'
 
 vi.mock('./api', () => ({
   statisticsApi: {
@@ -21,6 +22,16 @@ const base = {
   average_attempts: 1.25,
   prompt_tokens: 100,
   completion_tokens: 50,
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 beforeEach(() => {
@@ -57,6 +68,37 @@ beforeEach(() => {
 })
 
 describe('StatisticsView', () => {
+  it.each([
+    ['a non-array data field', { data: null }],
+    ['a null numeric aggregate', {
+      data: [{ ...base, dimension_type: 'global', dimension_id: 'all', average_duration_ms: null }],
+    }],
+  ])('shows a visible statistics error for %s in a successful response', async (_name, response) => {
+    vi.mocked(statisticsApi.getDaily).mockResolvedValue(response as never)
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('统计数据加载失败')
+    expect(wrapper.get('[data-testid="recent-errors"]').text()).toContain('req-safe')
+  })
+
+  it('shows a visible recent-errors error for a null numeric status in a successful response', async () => {
+    vi.mocked(statisticsApi.getRecentErrors).mockResolvedValue({
+      data: [{
+        request_id: 'req-invalid',
+        endpoint: '/v1/chat/completions',
+        http_status: null,
+        error_code: 'rate_limited',
+        created_at: '2026-07-30T09:00:00Z',
+      }],
+    } as never)
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="recent-errors"]').text()).toContain('最近错误加载失败')
+    expect(wrapper.text()).not.toContain('req-invalid')
+  })
+
   it('shows all four dimensions and only the planned aggregate metrics', async () => {
     const wrapper = mount(StatisticsView)
     await flushPromises()
@@ -98,6 +140,59 @@ describe('StatisticsView', () => {
       '2026-07-30-model-shared-id',
     ])
   })
+
+  it('does not update statistics state after unmount when requests resolve', async () => {
+    const daily = deferred<{ data: DailyStatistic[] }>()
+    const errors = deferred<{ data: RecentError[] }>()
+    vi.mocked(statisticsApi.getDaily).mockReset().mockReturnValueOnce(daily.promise as never)
+    vi.mocked(statisticsApi.getRecentErrors).mockReset().mockReturnValueOnce(errors.promise as never)
+    const wrapper = mount(StatisticsView)
+    const state = wrapper.vm as unknown as {
+      statistics: DailyStatistic[]
+      recentErrors: RecentError[]
+      statisticsError: string
+      errorsError: string
+      loading: boolean
+    }
+
+    wrapper.unmount()
+    daily.resolve({ data: [{ ...base, dimension_type: 'global', dimension_id: 'all' }] })
+    errors.resolve({ data: [] })
+    await flushPromises()
+
+    expect(state.statistics).toEqual([])
+    expect(state.recentErrors).toEqual([])
+    expect(state.statisticsError).toBe('')
+    expect(state.errorsError).toBe('')
+    expect(state.loading).toBe(true)
+  })
+
+  it('does not update error or loading state after unmount when requests reject', async () => {
+    const daily = deferred<never>()
+    const errors = deferred<never>()
+    vi.mocked(statisticsApi.getDaily).mockReset().mockReturnValueOnce(daily.promise as never)
+    vi.mocked(statisticsApi.getRecentErrors).mockReset().mockReturnValueOnce(errors.promise as never)
+    const wrapper = mount(StatisticsView)
+    const state = wrapper.vm as unknown as {
+      statistics: DailyStatistic[]
+      recentErrors: RecentError[]
+      statisticsError: string
+      errorsError: string
+      loading: boolean
+    }
+
+    wrapper.unmount()
+    daily.reject(new Error('daily failed'))
+    errors.reject(new Error('errors failed'))
+    await flushPromises()
+
+    expect(state.statistics).toEqual([])
+    expect(state.recentErrors).toEqual([])
+    expect(state.statisticsError).toBe('')
+    expect(state.errorsError).toBe('')
+    expect(state.loading).toBe(true)
+  })
+
   it('shows recent safe error metadata without request or response bodies', async () => {
     const wrapper = mount(StatisticsView)
     await flushPromises()

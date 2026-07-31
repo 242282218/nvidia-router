@@ -82,6 +82,19 @@ describe('apiRequest', () => {
     } satisfies Partial<ApiError>)
   })
 
+  it('dispatches a session-expired event for a 401 response', async () => {
+    const onSessionExpired = vi.fn()
+    window.addEventListener('session-expired', onSessionExpired)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })))
+
+    try {
+      await expect(apiRequest('/admin/api/models')).rejects.toMatchObject({ status: 401 })
+      expect(onSessionExpired).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('session-expired', onSessionExpired)
+    }
+  })
+
   it('never writes submitted secrets to Web Storage', async () => {
     const localSetItem = vi.spyOn(Storage.prototype, 'setItem')
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))

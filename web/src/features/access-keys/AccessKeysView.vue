@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { accessKeysApi } from './api'
 import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
 import type { AccessKey } from './types'
@@ -11,21 +11,50 @@ const loading = ref(false)
 const dialogOpen = ref(false)
 const busyId = ref<number | null>(null)
 const errorMessage = ref('')
+let loadSequence = 0
+let disposed = false
 
 onMounted(() => {
   void loadKeys()
 })
 
+onBeforeUnmount(() => {
+  disposed = true
+  loadSequence += 1
+})
+
 async function loadKeys(): Promise<void> {
+  if (disposed) return
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    keys.value = (await accessKeysApi.list()).data
+    const response: unknown = await accessKeysApi.list()
+    if (disposed || sequence !== loadSequence) return
+    if (!isDataArrayResponse(response, isAccessKey)) {
+      throw new TypeError('Invalid Access Key list response.')
+    }
+    keys.value = response.data
     errorMessage.value = ''
   } catch (error) {
+    if (disposed || sequence !== loadSequence) return
     errorMessage.value = error instanceof ApiError ? error.message : 'Access Key 列表加载失败。'
   } finally {
-    loading.value = false
+    if (!disposed && sequence === loadSequence) loading.value = false
   }
+}
+
+function isAccessKey(value: unknown): value is AccessKey {
+  return isRecord(value)
+    && isFiniteNumber(value.id)
+    && typeof value.name === 'string'
+    && typeof value.key_prefix === 'string'
+    && typeof value.created_at === 'string'
+    && isOptionalString(value.last_used_at)
+    && isOptionalString(value.revoked_at)
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
 }
 
 async function revokeKey(key: AccessKey): Promise<void> {
@@ -34,11 +63,13 @@ async function revokeKey(key: AccessKey): Promise<void> {
   errorMessage.value = ''
   try {
     await accessKeysApi.revoke(key.id)
+    if (disposed) return
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : 'Access Key 撤销失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 

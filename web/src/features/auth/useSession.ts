@@ -1,6 +1,6 @@
 ﻿import { inject, ref, type InjectionKey, type Ref } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, SESSION_EXPIRED_EVENT } from '../../shared/api/client'
 import { authApi, type AuthApi, type SessionResponse } from './api'
 
 export type SessionState =
@@ -11,6 +11,7 @@ export type SessionState =
 export interface SessionStore {
   state: Ref<SessionState>
   changePassword(currentPassword: string, newPassword: string): Promise<void>
+  dispose(): void
   ensureLoaded(): Promise<void>
   login(username: string, password: string): Promise<void>
   logout(): Promise<void>
@@ -23,12 +24,22 @@ export function createSessionStore(api: AuthApi = authApi): SessionStore {
   const state = ref<SessionState>({ kind: 'unknown' })
   let loading: Promise<void> | undefined
 
+  function expireSession(): void {
+    state.value = { kind: 'anonymous' }
+  }
+
+  window.addEventListener(SESSION_EXPIRED_EVENT, expireSession)
+
+  function dispose(): void {
+    window.removeEventListener(SESSION_EXPIRED_EVENT, expireSession)
+  }
+
   async function refresh(): Promise<void> {
     try {
       state.value = toSessionState(await api.getSession())
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        state.value = { kind: 'anonymous' }
+      if (state.value.kind === 'unknown' || (error instanceof ApiError && error.status === 401)) {
+        expireSession()
         return
       }
       throw error
@@ -58,7 +69,7 @@ export function createSessionStore(api: AuthApi = authApi): SessionStore {
     state.value = { kind: 'anonymous' }
   }
 
-  return { changePassword, ensureLoaded, login, logout, refresh, state }
+  return { changePassword, dispose, ensureLoaded, login, logout, refresh, state }
 }
 
 export function useSession(): SessionStore {

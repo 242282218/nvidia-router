@@ -31,6 +31,24 @@ func NewRepository(db *sql.DB, source clock.Clock) *Repository {
 	return &Repository{db: db, clock: source}
 }
 
+// DeleteExpiredOrRevoked removes sessions that can no longer authenticate.
+func (r *Repository) DeleteExpiredOrRevoked(ctx context.Context, cutoff time.Time) (int64, error) {
+	cutoffValue := cutoff.UTC().Format(time.RFC3339Nano)
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM admin_sessions
+		WHERE julianday(expires_at) <= julianday(?)
+		   OR (revoked_at IS NOT NULL AND julianday(revoked_at) <= julianday(?))
+	`, cutoffValue, cutoffValue)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired or revoked admin sessions: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted admin sessions: %w", err)
+	}
+	return deleted, nil
+}
+
 // EnsureAdmin creates the initial forced-change administrator when none exists.
 func (r *Repository) EnsureAdmin(ctx context.Context) error {
 	var exists int

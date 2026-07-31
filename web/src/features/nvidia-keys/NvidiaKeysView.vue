@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
 import KeyCards from './KeyCards.vue'
@@ -19,21 +19,68 @@ const loading = ref(false)
 const batchOpen = ref(false)
 const testDialogOpen = ref(false)
 const busyId = ref<number | null>(null)
+let loadSequence = 0
+let disposed = false
 
 onMounted(() => {
   void loadKeys()
 })
 
+onBeforeUnmount(() => {
+  disposed = true
+  loadSequence += 1
+})
+
 async function loadKeys(): Promise<void> {
+  if (disposed) return
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    keys.value = (await nvidiaKeysApi.list()).data
+    const response: unknown = await nvidiaKeysApi.list()
+    if (disposed || sequence !== loadSequence) return
+    if (!isDataArrayResponse(response, isNvidiaKey)) {
+      throw new TypeError('Invalid NVIDIA Key list response.')
+    }
+    keys.value = response.data
     errorMessage.value = ''
   } catch (error) {
+    if (disposed || sequence !== loadSequence) return
     errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 列表加载失败。'
   } finally {
-    loading.value = false
+    if (!disposed && sequence === loadSequence) loading.value = false
   }
+}
+
+function isNvidiaKey(value: unknown): value is NVIDIAKey {
+  return isRecord(value)
+    && isFiniteNumber(value.id)
+    && typeof value.masked === 'string'
+    && typeof value.enabled === 'boolean'
+    && typeof value.auth_invalid === 'boolean'
+    && isFiniteNumber(value.cooldown_level)
+    && isFiniteNumber(value.consecutive_failures)
+    && typeof value.created_at === 'string'
+    && typeof value.updated_at === 'string'
+    && ['cooldown_until', 'cooldown_reason', 'last_success_at', 'last_error_at', 'last_error_code']
+      .every((field) => value[field] === undefined || typeof value[field] === 'string')
+}
+
+function isImportResult(value: unknown): value is ImportResult {
+  return isRecord(value)
+    && typeof value.status === 'string'
+    && typeof value.masked === 'string'
+    && (value.line === undefined || isFiniteNumber(value.line))
+    && (value.reason === undefined || typeof value.reason === 'string')
+}
+
+function isKeyTestResult(value: unknown): value is KeyTestResult {
+  return isRecord(value)
+    && isFiniteNumber(value.id)
+    && typeof value.status === 'string'
+    && ['reason', 'request_id']
+      .every((field) => value[field] === undefined || typeof value[field] === 'string')
+    && (value.models === undefined
+      || (Array.isArray(value.models) && value.models.every((model) => typeof model === 'string')))
 }
 
 async function importOne(): Promise<void> {
@@ -47,12 +94,18 @@ async function importOne(): Promise<void> {
   }
   submitting.value = true
   try {
-    singleResult.value = await nvidiaKeysApi.importOne(value)
+    const result: unknown = await nvidiaKeysApi.importOne(value)
+    if (disposed) return
+    if (!isImportResult(result)) {
+      throw new TypeError('Invalid NVIDIA Key import response.')
+    }
+    singleResult.value = result
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 导入失败。'
   } finally {
-    submitting.value = false
+    if (!disposed) submitting.value = false
   }
 }
 
@@ -61,11 +114,13 @@ async function toggleKey(key: NVIDIAKey): Promise<void> {
   errorMessage.value = ''
   try {
     await nvidiaKeysApi.setEnabled(key.id, !key.enabled)
+    if (disposed) return
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '更新 NVIDIA Key 状态失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 
@@ -73,24 +128,35 @@ async function testKey(key: NVIDIAKey): Promise<void> {
   busyId.value = key.id
   errorMessage.value = ''
   try {
-    testResults.value = [await nvidiaKeysApi.test(key.id)]
+    const result: unknown = await nvidiaKeysApi.test(key.id)
+    if (disposed) return
+    if (!isKeyTestResult(result)) {
+      throw new TypeError('Invalid NVIDIA Key test response.')
+    }
+    testResults.value = [result]
     testDialogOpen.value = true
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 测试失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 
 async function testAll(): Promise<void> {
   errorMessage.value = ''
   try {
-    const response = await nvidiaKeysApi.testAll()
+    const response: unknown = await nvidiaKeysApi.testAll()
+    if (disposed) return
+    if (!isDataArrayResponse(response, isKeyTestResult)) {
+      throw new TypeError('Invalid NVIDIA Key test-all response.')
+    }
     testResults.value = response.data
     testDialogOpen.value = response.data.length > 0
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '批量测试失败。'
   }
 }
@@ -100,11 +166,13 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
   errorMessage.value = ''
   try {
     await nvidiaKeysApi.remove(key.id)
+    if (disposed) return
     await loadKeys()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '删除 NVIDIA Key 失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 </script>

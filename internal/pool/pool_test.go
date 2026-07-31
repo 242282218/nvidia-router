@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"testing"
@@ -160,6 +161,21 @@ func TestStateSyncAppliesPersistedFailureAndSuccess(t *testing.T) {
 	p.SetModelBlock(1, 100, false)
 	if got := mustTryAcquire(t, p, 100, nil).KeyID(); got != 1 {
 		t.Fatalf("success-cleared key selection = %d, want 1", got)
+	}
+}
+
+func TestApplySuccessClearsAuthInvalidForAcquireWithSnapshot(t *testing.T) {
+	p := New(testSettings{}, fakeClock{})
+	p.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true, AuthInvalid: true}}, nil)
+
+	p.ApplySuccess(1)
+	lease, err := p.AcquireWithSnapshot(context.Background(), 100, nil, runtimeconfig.Snapshot{})
+	if err != nil {
+		t.Fatalf("AcquireWithSnapshot after ApplySuccess: %v", err)
+	}
+	defer lease.Release()
+	if got := lease.KeyID(); got != 1 {
+		t.Fatalf("Lease.KeyID() = %d, want 1", got)
 	}
 }
 

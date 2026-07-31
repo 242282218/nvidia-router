@@ -44,22 +44,12 @@ func VerifyMigrations(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("load embedded migrations: %w", err)
 	}
-	rows, err := db.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations")
+	recorded, err := readMigrationLedger(ctx, db)
 	if err != nil {
 		return fmt.Errorf("read migration ledger: %w", err)
 	}
-	defer rows.Close()
-	recorded := make(map[int]string, len(migrations))
-	for rows.Next() {
-		var version int
-		var checksum string
-		if err := rows.Scan(&version, &checksum); err != nil {
-			return fmt.Errorf("scan migration ledger: %w", err)
-		}
-		recorded[version] = checksum
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate migration ledger: %w", err)
+	if err := validateMigrationVersions(recorded, migrations); err != nil {
+		return fmt.Errorf("verify migration ledger: %w", err)
 	}
 	if len(recorded) != len(migrations) {
 		return fmt.Errorf("verify migration ledger: expected %d migrations, found %d", len(migrations), len(recorded))
@@ -81,12 +71,59 @@ func migrateFS(db *sql.DB, migrationFS fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
 	}
+	recorded, err := readMigrationLedger(context.Background(), db)
+	if err != nil {
+		return fmt.Errorf("read migration ledger before apply: %w", err)
+	}
+	if err := validateMigrationVersions(recorded, migrations); err != nil {
+		return fmt.Errorf("validate migration ledger before apply: %w", err)
+	}
 	for _, item := range migrations {
 		if err := applyMigration(db, item); err != nil {
 			return fmt.Errorf("apply migration version %d (%s): %w", item.version, item.name, err)
 		}
 	}
 	return nil
+}
+
+func readMigrationLedger(ctx context.Context, db *sql.DB) (map[int]string, error) {
+	rows, err := db.QueryContext(ctx, "SELECT version, checksum FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	recorded := make(map[int]string)
+	for rows.Next() {
+		var version int
+		var checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return nil, fmt.Errorf("scan migration ledger: %w", err)
+		}
+		recorded[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate migration ledger: %w", err)
+	}
+	return recorded, nil
+}
+
+func validateMigrationVersions(recorded map[int]string, migrations []migration) error {
+	known := make(map[int]struct{}, len(migrations))
+	for _, item := range migrations {
+		known[item.version] = struct{}{}
+	}
+	unknown := make([]int, 0)
+	for version := range recorded {
+		if _, ok := known[version]; !ok {
+			unknown = append(unknown, version)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Ints(unknown)
+	return fmt.Errorf("unknown migration version %d: database records a migration not present in embedded migrations", unknown[0])
 }
 
 func loadMigrations(migrationFS fs.FS) ([]migration, error) {

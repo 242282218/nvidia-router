@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -117,6 +118,20 @@ func TestDecoderRejectsOversizedEvent(t *testing.T) {
 	}
 }
 
+func TestDecoderRejectsOversizedEventWithoutReadingFullPayload(t *testing.T) {
+	input := "data: " + strings.Repeat("x", MaxEventSize*2)
+	reader := &countingReader{reader: strings.NewReader(input)}
+
+	_, err := NewDecoder(reader).Decode()
+
+	if !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("Decode error = %v, want ErrEventTooLarge", err)
+	}
+	if reader.bytesRead >= len(input) {
+		t.Fatalf("Decode read %d bytes, want fewer than full payload %d", reader.bytesRead, len(input))
+	}
+}
+
 func TestDecoderHandlesIncompleteEventAtEOF(t *testing.T) {
 	input := "data: incomplete"
 	decoder := NewDecoder(strings.NewReader(input))
@@ -158,4 +173,15 @@ func TestDecoderHandlesColonInValue(t *testing.T) {
 	if err != nil || event.Data[0] != "key:value:more" {
 		t.Fatalf("event = %+v, err = %v", event, err)
 	}
+}
+
+type countingReader struct {
+	reader    io.Reader
+	bytesRead int
+}
+
+func (r *countingReader) Read(payload []byte) (int, error) {
+	read, err := r.reader.Read(payload)
+	r.bytesRead += read
+	return read, err
 }

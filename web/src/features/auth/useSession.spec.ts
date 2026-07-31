@@ -1,9 +1,8 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+﻿import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../shared/api/client'
 import type { AuthApi } from './api'
 import { createSessionStore } from './useSession'
-
 function createAuthApi(): AuthApi {
   return {
     changePassword: vi.fn(),
@@ -13,10 +12,24 @@ function createAuthApi(): AuthApi {
   }
 }
 
+type DisposableStore = ReturnType<typeof createSessionStore>
+
+const stores: DisposableStore[] = []
+
+function createStore(api: AuthApi): ReturnType<typeof createSessionStore> {
+  const store = createSessionStore(api) as DisposableStore
+  stores.push(store)
+  return store
+}
+
+afterEach(() => {
+  for (const store of stores.splice(0)) store.dispose()
+})
+
 describe('createSessionStore', () => {
   it('moves through unknown, anonymous, forced-change and authenticated states', async () => {
     const api = createAuthApi()
-    const store = createSessionStore(api)
+    const store = createStore(api)
     expect(store.state.value).toEqual({ kind: 'unknown' })
 
     vi.mocked(api.getSession).mockRejectedValueOnce(
@@ -52,10 +65,46 @@ describe('createSessionStore', () => {
       must_change_password: false,
     })
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
-    const store = createSessionStore(api)
+    const store = createStore(api)
 
     await store.login('admin', 'submitted-password')
 
     expect(storageWrite).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a 500 response', new ApiError(500, {
+      code: 'internal_error',
+      message: 'Session probe failed.',
+      param: null,
+      type: 'server_error',
+    })],
+    ['a network failure', new TypeError('Network request failed')],
+  ])('recovers the first session probe from %s as anonymous', async (_name, failure) => {
+    const api = createAuthApi()
+    vi.mocked(api.getSession).mockRejectedValueOnce(failure)
+    const store = createStore(api)
+
+    await expect(store.ensureLoaded()).resolves.toBeUndefined()
+    expect(store.state.value).toEqual({ kind: 'anonymous' })
+  })
+
+  it('becomes anonymous on session-expired and stops listening after dispose', async () => {
+    const api = createAuthApi()
+    vi.mocked(api.login).mockResolvedValue({
+      authenticated: true,
+      must_change_password: false,
+    })
+    const store = createStore(api)
+
+    await store.login('admin', 'submitted-password')
+    window.dispatchEvent(new Event('session-expired'))
+    expect(store.state.value).toEqual({ kind: 'anonymous' })
+
+    await store.login('admin', 'submitted-password')
+    expect(store.dispose).toBeTypeOf('function')
+    store.dispose()
+    window.dispatchEvent(new Event('session-expired'))
+    expect(store.state.value).toEqual({ kind: 'authenticated', mustChangePassword: false })
   })
 })

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { modelsApi } from './api'
 import ModelsView from './ModelsView.vue'
-import type { Model } from './types'
+import type { Model, ModelsResponse } from './types'
 
 vi.mock('./api', () => ({
   modelsApi: {
@@ -30,12 +30,132 @@ function makeModel(overrides: Partial<Model> = {}): Model {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(modelsApi.list).mockResolvedValue({ data: [] })
 })
 
 describe('ModelsView', () => {
+  it.each([
+    ['a non-array data field', { data: null }],
+    ['a non-numeric model id', { data: [makeModel({ id: null as never })] }],
+  ])('shows a visible error for %s in a successful response', async (_name, response) => {
+    vi.mocked(modelsApi.list).mockResolvedValue(response as never)
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('模型列表加载失败')
+    expect(wrapper.text()).not.toContain('Chat')
+  })
+
+  it.each([
+    ['a non-array data field', { data: null }],
+    ['an invalid candidate item', {
+      data: [{
+        upstream_id: 'vendor/invalid',
+        display_name: 'Invalid',
+        kind: 'chat',
+        supports_vision: false,
+        supports_tools: null,
+        supports_reasoning: false,
+      }],
+    }],
+  ])('shows a visible error for %s in a candidate response', async (_name, response) => {
+    vi.mocked(modelsApi.candidates).mockResolvedValue(response as never)
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="discover-models"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('候选模型发现失败')
+    expect(wrapper.find('[data-testid="save-candidates"]').exists()).toBe(false)
+  })
+
+  it('keeps the newest list when an older request resolves last', async () => {
+    const first = deferred<ModelsResponse>()
+    const second = deferred<ModelsResponse>()
+    vi.mocked(modelsApi.list)
+      .mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    vi.mocked(modelsApi.candidates).mockResolvedValue({
+      data: [{
+        upstream_id: 'vendor/new',
+        display_name: 'New candidate',
+        kind: 'chat',
+        supports_vision: false,
+        supports_tools: false,
+        supports_reasoning: false,
+      }],
+    })
+    vi.mocked(modelsApi.save).mockResolvedValue({ saved: 1 })
+    const wrapper = mount(ModelsView)
+
+    await wrapper.get('[data-testid="discover-models"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="candidate-vendor/new"]').setValue(true)
+    await wrapper.get('[data-testid="save-candidates"]').trigger('click')
+    expect(modelsApi.list).toHaveBeenCalledTimes(2)
+
+    second.resolve({ data: [makeModel({ id: 2, display_name: '新数据' })] })
+    await flushPromises()
+    first.resolve({ data: [makeModel({ display_name: '旧数据' })] })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('新数据')
+    expect(wrapper.text()).not.toContain('旧数据')
+  })
+
+  it('does not update list state after unmount', async () => {
+    const request = deferred<ModelsResponse>()
+    vi.mocked(modelsApi.list).mockReset().mockReturnValueOnce(request.promise)
+    const wrapper = mount(ModelsView)
+    const state = wrapper.vm as unknown as { models: Model[]; loading: boolean }
+
+    wrapper.unmount()
+    request.resolve({ data: [makeModel()] })
+    await flushPromises()
+
+    expect(state.models).toEqual([])
+    expect(state.loading).toBe(true)
+  })
+
+  it('does not start a post-save reload after unmount', async () => {
+    const save = deferred<{ saved: number }>()
+    vi.mocked(modelsApi.candidates).mockResolvedValue({
+      data: [{
+        upstream_id: 'vendor/late',
+        display_name: 'Late candidate',
+        kind: 'chat',
+        supports_vision: false,
+        supports_tools: false,
+        supports_reasoning: false,
+      }],
+    })
+    vi.mocked(modelsApi.save).mockReturnValueOnce(save.promise)
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="discover-models"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="candidate-vendor/late"]').setValue(true)
+    await wrapper.get('[data-testid="save-candidates"]').trigger('click')
+    wrapper.unmount()
+    save.resolve({ saved: 1 })
+    await flushPromises()
+
+    expect(modelsApi.list).toHaveBeenCalledOnce()
+  })
+
   it('renders desktop table and mobile cards with kind and capability flags', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       data: [makeModel({ kind: 'tts', enabled: false, supports_vision: false })],
@@ -105,6 +225,23 @@ describe('ModelsView', () => {
     await flushPromises()
 
     expect(modelsApi.patch).toHaveBeenCalledWith(5, { enabled: false })
+  })
+
+  it.each([
+    ['a null response', null],
+    ['an invalid model response', { ...makeModel(), id: null }],
+  ])('shows an error and keeps the model unchanged for %s from patch', async (_name, response) => {
+    vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 5 })] })
+    vi.mocked(modelsApi.patch).mockResolvedValue(response as never)
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="model-enable"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('更新模型状态失败')
+    expect(wrapper.get('[data-testid="model-cards"]').text()).toContain('Chat')
+    expect(wrapper.get('[data-testid="model-cards"]').text()).toContain('启用')
   })
 
   it('shows every key-model block and refreshes relations after manual recovery', async () => {

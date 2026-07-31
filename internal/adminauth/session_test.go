@@ -195,6 +195,130 @@ func TestSessionRevokeAllInvalidatesAllSessions(t *testing.T) {
 	assertInvalidSession(t, service, second.Token)
 }
 
+func TestRepositoryDeleteExpiredOrRevokedUsesInclusiveCutoff(t *testing.T) {
+	db := newTestDatabase(t)
+	repository := NewRepository(db, fixedClock{now: time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)})
+	for _, session := range []struct {
+		id        string
+		expiresAt string
+		revokedAt any
+	}{
+		{id: "expired-fraction", expiresAt: "2026-07-30T12:00:00.500Z"},
+		{id: "expired-second", expiresAt: "2026-07-30T12:00:00Z"},
+		{id: "revoked-old", expiresAt: "2026-08-01T00:00:00Z", revokedAt: "2026-07-30T12:00:00.499Z"},
+		{id: "revoked-boundary", expiresAt: "2026-08-01T00:00:00Z", revokedAt: "2026-07-30T12:00:00.500Z"},
+		{id: "active", expiresAt: "2026-08-01T00:00:00Z"},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO admin_sessions (id, token_digest, expires_at, created_at, last_seen_at, revoked_at)
+			VALUES (?, ?, ?, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', ?)
+		`, session.id, []byte(session.id), session.expiresAt, session.revokedAt); err != nil {
+			t.Fatalf("insert %s: %v", session.id, err)
+		}
+	}
+
+	deleted, err := repository.DeleteExpiredOrRevoked(context.Background(), time.Date(2026, 7, 30, 12, 0, 0, 500000000, time.UTC))
+	if err != nil {
+		t.Fatalf("DeleteExpiredOrRevoked: %v", err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4", deleted)
+	}
+	var remaining int
+	if err := db.QueryRow("SELECT COUNT(*) FROM admin_sessions").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining sessions: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining sessions = %d, want 1", remaining)
+	}
+}
+
+func TestSessionCleanupWorkerRunsAndStopsOnCancellation(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
+	repository := &sessionCleanupRepositoryStub{called: make(chan time.Time, 1)}
+	waitStarted := make(chan time.Duration, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := newSessionCleanupWorker(repository, func() time.Time { return now }, func(ctx context.Context, duration time.Duration) bool {
+		waitStarted <- duration
+		<-ctx.Done()
+		return false
+	}, nil)
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case cutoff := <-repository.called:
+		want := now
+		if !cutoff.Equal(want) {
+			t.Fatalf("cleanup cutoff = %s, want %s", cutoff, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup session cleanup was not run")
+	}
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("session cleanup worker did not schedule next run")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session cleanup worker did not stop after cancellation")
+	}
+}
+
+func TestSessionCleanupWorkerRetriesAfterFailureBeforeDailySchedule(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
+	repository := &retryingSessionCleanupRepository{errorsRemaining: 1}
+	waits := make([]time.Duration, 0, 2)
+	worker := newSessionCleanupWorker(repository, func() time.Time { return now }, func(_ context.Context, duration time.Duration) bool {
+		waits = append(waits, duration)
+		return len(waits) < 2
+	}, nil)
+
+	worker.Run(context.Background())
+
+	if repository.calls != 2 {
+		t.Fatalf("cleanup calls = %d, want 2", repository.calls)
+	}
+	if len(waits) != 2 {
+		t.Fatalf("wait calls = %d, want 2", len(waits))
+	}
+	if waits[0] != time.Minute {
+		t.Fatalf("retry wait = %s, want 1m", waits[0])
+	}
+	if want := 22*time.Hour + 30*time.Minute; waits[1] != want {
+		t.Fatalf("daily wait = %s, want %s", waits[1], want)
+	}
+}
+
+type retryingSessionCleanupRepository struct {
+	errorsRemaining int
+	calls           int
+}
+
+func (r *retryingSessionCleanupRepository) DeleteExpiredOrRevoked(context.Context, time.Time) (int64, error) {
+	r.calls++
+	if r.errorsRemaining > 0 {
+		r.errorsRemaining--
+		return 0, errors.New("temporary repository failure")
+	}
+	return 0, nil
+}
+
+type sessionCleanupRepositoryStub struct {
+	called chan time.Time
+}
+
+func (s *sessionCleanupRepositoryStub) DeleteExpiredOrRevoked(_ context.Context, cutoff time.Time) (int64, error) {
+	s.called <- cutoff
+	return 0, nil
+}
+
 func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)

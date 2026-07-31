@@ -169,6 +169,40 @@ func TestRepositoryDeleteRequestLogsBeforeKeepsBoundaryAndDailyStats(t *testing.
 	}
 }
 
+func TestRepositoryDeleteRequestLogsBeforeHandlesMixedRFC3339Precision(t *testing.T) {
+	db := openObservabilityDB(t)
+	repository := NewRepository(db)
+	for _, id := range []string{"fraction-old", "fraction-boundary", "second-new"} {
+		code := "test_error"
+		if err := repository.Record(context.Background(), RequestRecord{
+			RequestID: id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
+			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: time.Date(2026, 6, 30, 3, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("Record %s: %v", id, err)
+		}
+	}
+	for _, item := range []struct {
+		id string
+		at string
+	}{
+		{"fraction-old", "2026-06-30T03:00:00.949Z"},
+		{"fraction-boundary", "2026-06-30T03:00:00.950Z"},
+		{"second-new", "2026-06-30T03:00:01Z"},
+	} {
+		if _, err := db.Exec("UPDATE request_logs SET created_at = ? WHERE request_id = ?", item.at, item.id); err != nil {
+			t.Fatalf("update %s timestamp: %v", item.id, err)
+		}
+	}
+
+	deleted, err := repository.DeleteRequestLogsBefore(context.Background(), time.Date(2026, 6, 30, 3, 0, 0, 950000000, time.UTC))
+	if err != nil {
+		t.Fatalf("DeleteRequestLogsBefore: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+}
+
 func openObservabilityDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := database.Open(t.TempDir() + "/router.db")
@@ -318,6 +352,46 @@ func TestRepositoryListRecentErrorsReturnsOnlyAllowlistedFields(t *testing.T) {
 	}
 	if errorsList[0].ErrorCode != "fixed_error_2" || errorsList[0].HTTPStatus != 502 {
 		t.Fatalf("latest error = %#v", errorsList[0])
+	}
+}
+
+func TestRepositoryListRecentErrorsOrdersMixedRFC3339PrecisionByTime(t *testing.T) {
+	db := openObservabilityDB(t)
+	repository := NewRepository(db)
+	for _, id := range []string{"older-no-fraction", "later-fraction", "latest-no-fraction"} {
+		code := "test_error"
+		if err := repository.Record(context.Background(), RequestRecord{
+			RequestID: id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
+			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("Record %s: %v", id, err)
+		}
+	}
+	for _, item := range []struct {
+		id string
+		at string
+	}{
+		{"older-no-fraction", "2026-07-30T00:00:00Z"},
+		{"later-fraction", "2026-07-30T00:00:00.900Z"},
+		{"latest-no-fraction", "2026-07-30T00:00:01Z"},
+	} {
+		if _, err := db.Exec("UPDATE request_logs SET created_at = ? WHERE request_id = ?", item.at, item.id); err != nil {
+			t.Fatalf("update %s timestamp: %v", item.id, err)
+		}
+	}
+
+	items, err := repository.ListRecentErrors(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("ListRecentErrors: %v", err)
+	}
+	want := []string{"latest-no-fraction", "later-fraction", "older-no-fraction"}
+	if len(items) != len(want) {
+		t.Fatalf("recent error count = %d, want %d", len(items), len(want))
+	}
+	for index, item := range items {
+		if item.RequestID != want[index] {
+			t.Fatalf("recent error %d = %q, want %q", index, item.RequestID, want[index])
+		}
 	}
 }
 

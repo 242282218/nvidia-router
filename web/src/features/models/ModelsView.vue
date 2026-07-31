@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { modelsApi } from './api'
 import ModelCards from './ModelCards.vue'
 import ModelTable from './ModelTable.vue'
@@ -16,21 +16,64 @@ const saving = ref(false)
 const busyId = ref<number | null>(null)
 const errorMessage = ref('')
 const candidateMessage = ref('')
+let loadSequence = 0
+let disposed = false
 
 onMounted(() => {
   void loadModels()
 })
 
+onBeforeUnmount(() => {
+  disposed = true
+  loadSequence += 1
+})
+
 async function loadModels(): Promise<void> {
+  if (disposed) return
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    models.value = (await modelsApi.list()).data
+    const response: unknown = await modelsApi.list()
+    if (disposed || sequence !== loadSequence) return
+    if (!isDataArrayResponse(response, isModel)) {
+      throw new TypeError('Invalid model list response.')
+    }
+    models.value = response.data
     errorMessage.value = ''
   } catch (error) {
+    if (disposed || sequence !== loadSequence) return
     errorMessage.value = error instanceof ApiError ? error.message : '模型列表加载失败。'
   } finally {
-    loading.value = false
+    if (!disposed && sequence === loadSequence) loading.value = false
   }
+}
+
+function isModel(value: unknown): value is Model {
+  return isRecord(value)
+    && isFiniteNumber(value.id)
+    && typeof value.public_id === 'string'
+    && typeof value.upstream_id === 'string'
+    && typeof value.display_name === 'string'
+    && typeof value.kind === 'string'
+    && typeof value.enabled === 'boolean'
+    && typeof value.supports_vision === 'boolean'
+    && typeof value.supports_tools === 'boolean'
+    && typeof value.supports_reasoning === 'boolean'
+    && (value.blocked_by_key_ids === undefined
+      || (Array.isArray(value.blocked_by_key_ids) && value.blocked_by_key_ids.every(isFiniteNumber)))
+    && (value.capability_verified_at === undefined || typeof value.capability_verified_at === 'string')
+    && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
+}
+
+function isCandidate(value: unknown): value is Candidate {
+  return isRecord(value)
+    && typeof value.upstream_id === 'string'
+    && typeof value.display_name === 'string'
+    && typeof value.kind === 'string'
+    && typeof value.supports_vision === 'boolean'
+    && typeof value.supports_tools === 'boolean'
+    && typeof value.supports_reasoning === 'boolean'
+    && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
 }
 
 async function discover(): Promise<void> {
@@ -38,14 +81,20 @@ async function discover(): Promise<void> {
   candidateMessage.value = ''
   errorMessage.value = ''
   try {
-    candidates.value = (await modelsApi.candidates()).data
+    const response: unknown = await modelsApi.candidates()
+    if (disposed) return
+    if (!isDataArrayResponse(response, isCandidate)) {
+      throw new TypeError('Invalid model candidates response.')
+    }
+    candidates.value = response.data
     const configured = new Set(models.value.map((model) => model.upstream_id))
     selectedCandidates.value = Object.fromEntries(candidates.value.map((candidate) => [candidate.upstream_id, configured.has(candidate.upstream_id)]))
     candidateMessage.value = `发现 ${candidates.value.length} 个候选模型。`
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '候选模型发现失败。'
   } finally {
-    discovering.value = false
+    if (!disposed) discovering.value = false
   }
 }
 
@@ -66,12 +115,15 @@ async function saveCandidates(): Promise<void> {
   errorMessage.value = ''
   try {
     await modelsApi.save(selected)
+    if (disposed) return
     await loadModels()
+    if (disposed) return
     candidateMessage.value = `已保存 ${selected.length} 个模型。`
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '保存模型白名单失败。'
   } finally {
-    saving.value = false
+    if (!disposed) saving.value = false
   }
 }
 
@@ -79,12 +131,17 @@ async function toggleModel(model: Model): Promise<void> {
   busyId.value = model.id
   errorMessage.value = ''
   try {
-    const updated = await modelsApi.patch(model.id, { enabled: !model.enabled })
+    const updated: unknown = await modelsApi.patch(model.id, { enabled: !model.enabled })
+    if (disposed) return
+    if (!isModel(updated)) {
+      throw new TypeError('Invalid model patch response.')
+    }
     replaceModel(updated)
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '更新模型状态失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 
@@ -93,11 +150,13 @@ async function unblockModel(keyId: number, model: Model): Promise<void> {
   errorMessage.value = ''
   try {
     await modelsApi.unblock(keyId, model.id)
+    if (disposed) return
     await loadModels()
   } catch (error) {
+    if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '模型 block 恢复失败。'
   } finally {
-    busyId.value = null
+    if (!disposed) busyId.value = null
   }
 }
 

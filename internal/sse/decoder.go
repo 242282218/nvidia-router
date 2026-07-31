@@ -55,24 +55,29 @@ func (d *Decoder) Decode() (Event, error) {
 }
 
 func (d *Decoder) readLine() ([]byte, error) {
-	line, err := d.reader.ReadBytes('\n')
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("read SSE line: %w", err)
+	d.buffer.Reset()
+	for {
+		fragment, err := d.reader.ReadSlice('\n')
+		d.bytesRead += len(fragment)
+		if d.bytesRead > MaxEventSize {
+			return nil, ErrEventTooLarge
+		}
+		_, _ = d.buffer.Write(fragment)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("read SSE line: %w", err)
+		}
+
+		line := d.buffer.Bytes()
+		line = bytes.TrimSuffix(line, []byte("\r\n"))
+		line = bytes.TrimSuffix(line, []byte("\n"))
+		if err == io.EOF && len(line) == 0 {
+			return nil, io.EOF
+		}
+		return line, nil
 	}
-
-	d.bytesRead += len(line)
-	if d.bytesRead > MaxEventSize {
-		return nil, ErrEventTooLarge
-	}
-
-	line = bytes.TrimSuffix(line, []byte("\r\n"))
-	line = bytes.TrimSuffix(line, []byte("\n"))
-
-	if err == io.EOF && len(line) == 0 {
-		return nil, io.EOF
-	}
-
-	return line, nil
 }
 
 func (d *Decoder) parseLine(line []byte) error {

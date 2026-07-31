@@ -2,8 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { nvidiaKeysApi } from './api'
+import BatchImportDialog from './BatchImportDialog.vue'
 import NvidiaKeysView from './NvidiaKeysView.vue'
-import type { NVIDIAKey, SingleImportResponse } from './types'
+import type { KeyTestResult, NVIDIAKey, NVIDIAKeysResponse, SingleImportResponse } from './types'
 
 vi.mock('./api', () => ({
   nvidiaKeysApi: {
@@ -31,12 +32,129 @@ function makeKey(overrides: Partial<NVIDIAKey> = {}): NVIDIAKey {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [] })
 })
 
 describe('NvidiaKeysView', () => {
+  it.each([
+    ['a non-array data field', { data: null }],
+    ['a non-numeric key id', { data: [makeKey({ id: null as never })] }],
+  ])('shows a visible error for %s in a successful response', async (_name, response) => {
+    vi.mocked(nvidiaKeysApi.list).mockResolvedValue(response as never)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('NVIDIA Key 列表加载失败')
+    expect(wrapper.text()).not.toContain('nvapi…1234')
+  })
+
+  it('keeps the newest list when an older request resolves last', async () => {
+    const first = deferred<NVIDIAKeysResponse>()
+    const second = deferred<NVIDIAKeysResponse>()
+    vi.mocked(nvidiaKeysApi.list)
+      .mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const wrapper = mount(NvidiaKeysView)
+
+    wrapper.getComponent(BatchImportDialog).vm.$emit('imported')
+    expect(nvidiaKeysApi.list).toHaveBeenCalledTimes(2)
+
+    second.resolve({ data: [makeKey({ id: 8, masked: 'nvapi…new' })] })
+    await flushPromises()
+    first.resolve({ data: [makeKey({ masked: 'nvapi…old' })] })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('nvapi…new')
+    expect(wrapper.text()).not.toContain('nvapi…old')
+  })
+
+  it('does not update list state after unmount', async () => {
+    const request = deferred<NVIDIAKeysResponse>()
+    vi.mocked(nvidiaKeysApi.list).mockReset().mockReturnValueOnce(request.promise)
+    const wrapper = mount(NvidiaKeysView)
+    const state = wrapper.vm as unknown as { keys: NVIDIAKey[]; loading: boolean }
+
+    wrapper.unmount()
+    request.resolve({ data: [makeKey()] })
+    await flushPromises()
+
+    expect(state.keys).toEqual([])
+    expect(state.loading).toBe(true)
+  })
+
+  it('does not start a post-import reload after unmount', async () => {
+    const request = deferred<SingleImportResponse>()
+    vi.mocked(nvidiaKeysApi.importOne).mockReturnValueOnce(request.promise)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    await wrapper.get('[name="nvidia-key"]').setValue('nvapi-fixture-not-a-real-key')
+    await wrapper.get('[data-testid="single-import-form"]').trigger('submit')
+    wrapper.unmount()
+    request.resolve({ masked: 'nvapi…late', status: 'imported' })
+    await flushPromises()
+
+    expect(nvidiaKeysApi.list).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['a null response', null],
+    ['an invalid result item', { id: null, status: 'ok' }],
+  ])('shows an error and keeps the dialog closed for %s from a single-key test', async (_name, response) => {
+    vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
+    vi.mocked(nvidiaKeysApi.test).mockResolvedValue(response as never)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="key-card-test"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('NVIDIA Key 测试失败')
+    expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
+  })
+
+  it.each([
+    ['a null data field', { data: null }],
+    ['an invalid result item', { data: [{ id: null, status: 'ok' }] }],
+  ])('shows an error and keeps the dialog closed for %s from test-all', async (_name, response) => {
+    vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
+    vi.mocked(nvidiaKeysApi.testAll).mockResolvedValue(response as never)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="test-all-keys"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('批量测试失败')
+    expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
+  })
+
+  it('shows an error and does not render an invalid single import result', async () => {
+    vi.mocked(nvidiaKeysApi.importOne).mockResolvedValue({ masked: null, status: 'imported' } as never)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    await wrapper.get('[name="nvidia-key"]').setValue('nvapi-fixture-not-a-real-key')
+    await wrapper.get('[data-testid="single-import-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('NVIDIA Key 导入失败')
+    expect(wrapper.text()).not.toContain('imported')
+  })
+
   it('renders responsive key views with cooldown and recent error metadata, without secret actions', async () => {
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue({
       data: [makeKey({

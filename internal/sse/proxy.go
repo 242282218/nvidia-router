@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -52,7 +53,8 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 	writer.Header().Set("Connection", "keep-alive")
 
 	seenDone := false
-	firstEventWritten := false
+	firstDataWritten := false
+	var pending bytes.Buffer
 
 	for {
 		event, err := decoder.Decode()
@@ -68,6 +70,17 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 				return ctx.Err()
 			}
 			return fmt.Errorf("decode SSE event: %w", err)
+		}
+		if !firstDataWritten && len(event.Data) == 0 {
+			var encoded bytes.Buffer
+			if err := NewEncoder(&encoded).Encode(event); err != nil {
+				return fmt.Errorf("encode pending SSE event: %w", err)
+			}
+			if encoded.Len() > MaxEventSize-pending.Len() {
+				return ErrEventTooLarge
+			}
+			_, _ = pending.Write(encoded.Bytes())
+			continue
 		}
 
 		isDone := false
@@ -86,11 +99,17 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			seenDone = true
 		}
 
-		if !firstEventWritten {
-			if opts.CommitState != nil && !isDone {
-				opts.CommitState.Wrap(writer).WriteHeader(http.StatusOK)
+		if !firstDataWritten {
+			commitWriter := writer
+			if opts.CommitState != nil {
+				commitWriter = opts.CommitState.Wrap(writer)
 			}
-			firstEventWritten = true
+			commitWriter.WriteHeader(http.StatusOK)
+			firstDataWritten = true
+			if _, err := io.Copy(commitWriter, bytes.NewReader(pending.Bytes())); err != nil {
+				return fmt.Errorf("write pending SSE events: %w", err)
+			}
+			pending.Reset()
 		}
 
 		if err := encoder.Encode(event); err != nil {

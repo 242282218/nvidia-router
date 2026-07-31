@@ -206,6 +206,7 @@ func (p *Pool) ApplySuccess(keyID int64) {
 	if !ok {
 		return
 	}
+	state.snapshot.AuthInvalid = false
 	state.snapshot.CooldownUntil = nil
 	state.snapshot.CooldownLevel = 0
 	state.snapshot.ConsecutiveFailures = 0

@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { statisticsApi } from './api'
 import type { DailyStatistic, RecentError, StatisticsDimension } from './types'
 
@@ -17,6 +17,7 @@ const recentErrors = ref<RecentError[]>([])
 const loading = ref(false)
 const statisticsError = ref('')
 const errorsError = ref('')
+let disposed = false
 
 const statisticsByDimension = computed<Record<StatisticsDimension, DailyStatistic[]>>(() => ({
   global: statistics.value.filter((item) => item.dimension_type === 'global'),
@@ -29,28 +30,80 @@ onMounted(() => {
   void loadStatistics()
 })
 
+onBeforeUnmount(() => {
+  disposed = true
+})
+
 async function loadStatistics(): Promise<void> {
   loading.value = true
   await Promise.all([loadDaily(), loadRecentErrors()])
-  loading.value = false
+  if (!disposed) loading.value = false
 }
 
 async function loadDaily(): Promise<void> {
   try {
-    statistics.value = (await statisticsApi.getDaily(30)).data
+    const response: unknown = await statisticsApi.getDaily(30)
+    if (disposed) return
+    if (!isDataArrayResponse(response, isDailyStatistic)) {
+      throw new TypeError('Invalid statistics response.')
+    }
+    statistics.value = response.data
     statisticsError.value = ''
   } catch (error) {
+    if (disposed) return
     statisticsError.value = error instanceof ApiError ? error.message : '统计数据加载失败。'
   }
 }
 
 async function loadRecentErrors(): Promise<void> {
   try {
-    recentErrors.value = (await statisticsApi.getRecentErrors(50)).data
+    const response: unknown = await statisticsApi.getRecentErrors(50)
+    if (disposed) return
+    if (!isDataArrayResponse(response, isRecentError)) {
+      throw new TypeError('Invalid recent errors response.')
+    }
+    recentErrors.value = response.data
     errorsError.value = ''
   } catch (error) {
+    if (disposed) return
     errorsError.value = error instanceof ApiError ? error.message : '最近错误加载失败。'
   }
+}
+
+function isDailyStatistic(value: unknown): value is DailyStatistic {
+  if (!isRecord(value)
+    || typeof value.day !== 'string'
+    || !isStatisticsDimension(value.dimension_type)
+    || typeof value.dimension_id !== 'string') {
+    return false
+  }
+  return [
+    'request_count',
+    'success_count',
+    'failure_count',
+    'average_duration_ms',
+    'average_queue_ms',
+    'average_attempts',
+    'prompt_tokens',
+    'completion_tokens',
+  ].every((field) => isFiniteNumber(value[field]))
+}
+
+function isRecentError(value: unknown): value is RecentError {
+  return isRecord(value)
+    && typeof value.request_id === 'string'
+    && typeof value.endpoint === 'string'
+    && isFiniteNumber(value.http_status)
+    && typeof value.error_code === 'string'
+    && typeof value.created_at === 'string'
+    && ['model_id', 'upstream_request_id']
+      .every((field) => value[field] === undefined || typeof value[field] === 'string')
+    && ['nvidia_key_id', 'access_key_id']
+      .every((field) => value[field] === undefined || isFiniteNumber(value[field]))
+}
+
+function isStatisticsDimension(value: unknown): value is StatisticsDimension {
+  return value === 'global' || value === 'model' || value === 'nvidia_key' || value === 'access_key'
 }
 
 function successRate(item: DailyStatistic): string {

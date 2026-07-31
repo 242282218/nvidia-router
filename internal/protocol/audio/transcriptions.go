@@ -38,7 +38,11 @@ type Request struct {
 // rejected too. ParseMultipartForm's memory threshold is deliberately small;
 // the uploaded file is copied into the replay body without allocating file.Size
 // bytes in memory.
-func ParseMultipart(request *http.Request) (Request, error) {
+func ParseMultipart(request *http.Request, tempDirs ...string) (Request, error) {
+	tempDir := os.TempDir()
+	if len(tempDirs) > 0 && tempDirs[0] != "" {
+		tempDir = tempDirs[0]
+	}
 	request.Body = http.MaxBytesReader(nil, request.Body, MaxAudioBodyBytes)
 	if err := request.ParseMultipartForm(1 << 20); err != nil {
 		if isMaxBytesError(err) {
@@ -70,7 +74,7 @@ func ParseMultipart(request *http.Request) (Request, error) {
 	if err != nil {
 		return Request{}, invalidRequest("invalid_audio", "file", "The uploaded audio file could not be read.")
 	}
-	fileBody, err := router.NewReplayableBodyFromReader(fp, file.Size, os.TempDir())
+	fileBody, err := router.NewReplayableBodyFromReader(fp, file.Size, tempDir)
 	_ = fp.Close()
 	if err != nil {
 		return Request{}, invalidRequest("invalid_audio", "file", "The uploaded audio file could not be read.")
