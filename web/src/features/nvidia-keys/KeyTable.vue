@@ -70,6 +70,7 @@ function statusLabel(key: NVIDIAKey): string {
           </td>
           <td class="space-x-2 px-4 py-3 text-right">
             <button
+              :data-testid="`key-table-toggle-${key.id}`"
               class="rounded border border-slate-700 px-2 py-1 text-xs hover:border-slate-500 disabled:opacity-40"
               type="button"
               :disabled="busyId === key.id"
@@ -78,6 +79,7 @@ function statusLabel(key: NVIDIAKey): string {
               {{ key.enabled ? '停用' : '启用' }}
             </button>
             <button
+              :data-testid="`key-table-test-${key.id}`"
               class="rounded border border-slate-700 px-2 py-1 text-xs hover:border-slate-500 disabled:opacity-40"
               type="button"
               :disabled="busyId === key.id"

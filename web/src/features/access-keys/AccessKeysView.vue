@@ -103,6 +103,39 @@ function formatDate(value?: string): string {
           v-else
           class="overflow-x-auto"
         >
+          <div
+            data-testid="access-key-cards"
+            class="space-y-3 p-4 md:hidden"
+          >
+            <article
+              v-for="key in keys"
+              :key="`card-${key.id}`"
+              class="rounded-lg border border-slate-800 p-4"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <h2 class="font-medium">
+                    {{ key.name }}
+                  </h2>
+                  <p class="mt-1 font-mono text-xs text-indigo-200">
+                    {{ key.key_prefix }}
+                  </p>
+                </div>
+                <span :class="key.revoked_at ? 'text-slate-500' : 'text-emerald-300'">
+                  {{ key.revoked_at ? '已撤销' : '有效' }}
+                </span>
+              </div>
+              <button
+                :data-testid="`mobile-revoke-access-key-${key.id}`"
+                class="mt-4 w-full rounded border border-rose-700 px-3 py-2 text-sm text-rose-300 disabled:opacity-40"
+                type="button"
+                :disabled="Boolean(key.revoked_at) || busyId === key.id"
+                @click="revokeKey(key)"
+              >
+                撤销
+              </button>
+            </article>
+          </div>
           <table class="min-w-full text-left text-sm">
             <thead class="bg-slate-950/60 text-xs uppercase text-slate-400">
               <tr>

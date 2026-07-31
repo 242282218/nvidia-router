@@ -127,6 +127,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           </div>
           <div class="flex flex-wrap gap-2">
             <button
+              data-testid="open-batch-import"
               class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-slate-500"
               type="button"
               @click="batchOpen = true"

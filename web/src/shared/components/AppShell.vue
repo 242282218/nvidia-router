@@ -1,7 +1,17 @@
 <script setup lang="ts">
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
+
+import { useSession } from '../../features/auth/useSession'
 
 defineOptions({ name: 'AppShell' })
+
+const router = useRouter()
+const session = useSession()
+
+async function logout(): Promise<void> {
+  await session.logout()
+  await router.push('/login')
+}
 </script>
 
 <template>
@@ -10,9 +20,19 @@ defineOptions({ name: 'AppShell' })
       <h1 class="text-2xl font-semibold">
         NVIDIA API Router
       </h1>
-      <p class="mt-1 text-sm text-slate-400">
-        管理端已登录。
-      </p>
+      <div class="mt-1 flex flex-wrap items-center justify-between gap-3">
+        <p class="text-sm text-slate-400">
+          管理端已登录。
+        </p>
+        <button
+          data-testid="logout"
+          class="rounded border border-slate-700 px-3 py-1.5 text-sm hover:border-slate-500"
+          type="button"
+          @click="logout"
+        >
+          退出登录
+        </button>
+      </div>
       <nav
         class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
         aria-label="管理功能"
