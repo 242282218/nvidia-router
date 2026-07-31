@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -216,6 +217,87 @@ func TestManualUnblockUsesTargetChatEndpoint(t *testing.T) {
 	assertBlockCount(t, db, 0)
 }
 
+func TestVerifyAndUnblockAudioModelsMarksVerificationAndClearsBlock(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	for _, kind := range []Kind{KindASR, KindTTS} {
+		if err := service.SaveSelection(context.Background(), []Selection{{PublicID: string(kind), UpstreamID: "vendor/" + string(kind), DisplayName: string(kind), Kind: kind}}); err != nil {
+			t.Fatalf("save %s: %v", kind, err)
+		}
+		model, err := service.repository.Get(context.Background(), modelIDByPublicID(t, db, string(kind)))
+		if err != nil {
+			t.Fatalf("get %s: %v", kind, err)
+		}
+		status := 403
+		if err := service.BlockKeyModel(context.Background(), keyID, model.ID, "model_forbidden", &status); err != nil {
+			t.Fatalf("block %s: %v", kind, err)
+		}
+		verified, err := service.VerifyAndUnblock(context.Background(), keyID, model.ID)
+		if err != nil {
+			t.Fatalf("verify %s: %v", kind, err)
+		}
+		if verified.CapabilityVerifiedAt == nil {
+			t.Fatalf("%s missing capability verification", kind)
+		}
+		stored, err := service.repository.Get(context.Background(), model.ID)
+		if err != nil || stored.CapabilityVerifiedAt == nil {
+			t.Fatalf("stored %s verification = %v/%v", kind, stored.CapabilityVerifiedAt, err)
+		}
+		assertBlockCount(t, db, 0)
+		if kind == KindASR && discoverer.asrCalls != 1 {
+			t.Fatalf("ASR calls = %d", discoverer.asrCalls)
+		}
+		if kind == KindTTS && discoverer.ttsCalls != 1 {
+			t.Fatalf("TTS calls = %d", discoverer.ttsCalls)
+		}
+	}
+}
+
+func TestVerifyAndUnblockAudioFailureDoesNotWriteVerification(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	for _, kind := range []Kind{KindASR, KindTTS} {
+		publicID := "failed-" + string(kind)
+		if err := service.SaveSelection(context.Background(), []Selection{{PublicID: publicID, UpstreamID: "vendor/" + string(kind), DisplayName: string(kind), Kind: kind}}); err != nil {
+			t.Fatalf("save %s: %v", kind, err)
+		}
+		modelID := modelIDByPublicID(t, db, publicID)
+		status := 403
+		if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
+			t.Fatalf("block %s: %v", kind, err)
+		}
+		if kind == KindASR {
+			discoverer.asrResponse = `{"error":"bad"}`
+		} else {
+			discoverer.ttsResponse = ""
+			discoverer.ttsResponseSet = true
+		}
+		if _, err := service.VerifyAndUnblock(context.Background(), keyID, modelID); !errors.Is(err, ErrManualTestRequired) {
+			t.Fatalf("verify %s error = %v", kind, err)
+		}
+		stored, err := service.repository.Get(context.Background(), modelID)
+		if err != nil {
+			t.Fatalf("get failed %s: %v", kind, err)
+		}
+		if stored.CapabilityVerifiedAt != nil {
+			t.Fatalf("failed %s wrote verification %v", kind, stored.CapabilityVerifiedAt)
+		}
+		assertBlockCount(t, db, 1)
+		if err := service.UnblockKeyModel(context.Background(), keyID, modelID, true); err != nil {
+			t.Fatalf("cleanup %s: %v", kind, err)
+		}
+	}
+}
+
+func modelIDByPublicID(t *testing.T, db *sql.DB, publicID string) int64 {
+	t.Helper()
+	var id int64
+	if err := db.QueryRow("SELECT id FROM models WHERE public_id = ?", publicID).Scan(&id); err != nil {
+		t.Fatalf("model ID %s: %v", publicID, err)
+	}
+	return id
+}
+
 func TestModelsListingCannotVerifyAudioEndpointCapability(t *testing.T) {
 	service, db, _, discoverer := newCatalogTestService(t)
 	keyID := insertNVIDIAKey(t, db)
@@ -243,10 +325,11 @@ func TestModelsListingCannotVerifyAudioEndpointCapability(t *testing.T) {
 			t.Fatalf("BlockKeyModel(%s): %v", kind, err)
 		}
 		discoverer.models = []string{upstreamID}
-
-		if _, err := service.VerifyAndUnblock(context.Background(), keyID, model.ID); !errors.Is(err, ErrManualTestRequired) {
-			t.Fatalf("VerifyAndUnblock(%s) error = %v", kind, err)
+		if _, err := service.DiscoverCandidates(context.Background(), keyID); err != nil {
+			t.Fatalf("DiscoverCandidates(%s): %v", kind, err)
 		}
+		// Discovery alone is not the audit verification path. A successful
+		// endpoint probe is required before capability_verified_at is written.
 		stored, err := service.repository.Get(context.Background(), model.ID)
 		if err != nil {
 			t.Fatalf("Get(%s): %v", kind, err)
@@ -255,6 +338,7 @@ func TestModelsListingCannotVerifyAudioEndpointCapability(t *testing.T) {
 			t.Fatalf("%s capability verified by /models discovery: %v", kind, stored.CapabilityVerifiedAt)
 		}
 		assertBlockCount(t, db, 1)
+
 		if err := service.UnblockKeyModel(context.Background(), keyID, model.ID, true); err != nil {
 			t.Fatalf("cleanup block(%s): %v", kind, err)
 		}
@@ -344,11 +428,17 @@ func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([
 }
 
 type fakeDiscoverer struct {
-	models       []string
-	lastToken    string
-	modelsCalls  int
-	chatCalls    int
-	chatResponse string
+	models         []string
+	lastToken      string
+	modelsCalls    int
+	chatCalls      int
+	chatResponse   string
+	asrCalls       int
+	ttsCalls       int
+	asrResponse    string
+	ttsResponse    string
+	ttsResponseSet bool
+	lastAudioModel string
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
@@ -364,6 +454,30 @@ func (d *fakeDiscoverer) Chat(_ context.Context, _ runtimeconfig.Snapshot, _ str
 		body = `{"choices":[]}`
 	}
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+}
+
+func (d *fakeDiscoverer) AudioTranscriptions(_ context.Context, _ runtimeconfig.Snapshot, _ string, body []byte, contentType string) (*http.Response, error) {
+	d.asrCalls++
+	if !strings.Contains(contentType, "multipart/form-data") || !bytes.Contains(body, []byte("vendor/asr")) || !bytes.Contains(body, []byte("RIFF")) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`{"error":"invalid probe"}`)), Header: make(http.Header)}, nil
+	}
+	response := d.asrResponse
+	if response == "" {
+		response = `{"text":"ok"}`
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+}
+
+func (d *fakeDiscoverer) AudioSpeech(_ context.Context, _ runtimeconfig.Snapshot, _ string, body []byte) (*http.Response, error) {
+	d.ttsCalls++
+	if !bytes.Contains(body, []byte("vendor/tts")) || !bytes.Contains(body, []byte("Magpie-Multilingual.EN-US.Aria")) {
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`{"error":"invalid probe"}`)), Header: make(http.Header)}, nil
+	}
+	response := d.ttsResponse
+	if !d.ttsResponseSet {
+		response = "audio"
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 }
 
 type catalogClock struct{}

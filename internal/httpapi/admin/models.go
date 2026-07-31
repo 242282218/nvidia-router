@@ -19,6 +19,10 @@ type modelManager interface {
 	VerifyAndUnblock(context.Context, int64, int64) (modelcatalog.Model, error)
 }
 
+type modelVerificationDTO struct {
+	KeyID int64 `json:"key_id"`
+}
+
 type candidateKeySource interface {
 	FirstEnabledID(context.Context) (int64, error)
 }
@@ -85,6 +89,9 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.unblock(writer, request)
 	case strings.HasPrefix(request.URL.Path, "/admin/api/models/") && request.Method == http.MethodPatch:
 		h.patch(writer, request)
+	case strings.HasPrefix(request.URL.Path, "/admin/api/models/") && request.Method == http.MethodPost:
+		h.verify(writer, request)
+
 	default:
 		http.NotFound(writer, request)
 	}
@@ -160,6 +167,31 @@ func (h *Models) save(writer http.ResponseWriter, request *http.Request) {
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"saved": len(selections)})
 }
+func (h *Models) verify(writer http.ResponseWriter, request *http.Request) {
+	id, action, ok := parseIDRoute(request.URL.Path, "/admin/api/models/")
+	if !ok || (action != "verify" && action != "test") {
+		http.NotFound(writer, request)
+		return
+	}
+	var input modelVerificationDTO
+	if err := decodeJSON(writer, request, &input); err != nil || input.KeyID <= 0 {
+		if err == nil {
+			err = errors.New("key_id must be a positive integer")
+		}
+		writeInvalidRequest(writer, "The model verification request is invalid.", err)
+		return
+	}
+	model, err := h.service.VerifyAndUnblock(request.Context(), input.KeyID, id)
+	if err != nil {
+		h.writeModelError(writer, err)
+		return
+	}
+	if h.sync != nil {
+		h.sync.SetModelBlock(input.KeyID, id, false)
+	}
+	writeJSON(writer, http.StatusOK, toModelDTO(model))
+}
+
 func (h *Models) patch(writer http.ResponseWriter, request *http.Request) {
 	id, action, ok := parseIDRoute(request.URL.Path, "/admin/api/models/")
 	if !ok || action != "" {

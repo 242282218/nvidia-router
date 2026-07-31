@@ -5,9 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"nvidia-router/internal/clock"
@@ -38,6 +38,8 @@ type asrModelTester interface {
 type ttsModelTester interface {
 	AudioSpeech(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error)
 }
+
+const modelVerificationTimeout = 30 * time.Second
 
 type Service struct {
 	repository *Repository
@@ -151,7 +153,9 @@ func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (M
 	if err != nil {
 		return Model{}, fmt.Errorf("load model before manual test: %w", err)
 	}
-	if err := s.testTargetModel(ctx, keyID, model); err != nil {
+	verifyCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeout)
+	defer cancel()
+	if err := s.testTargetModel(verifyCtx, keyID, model); err != nil {
 		return Model{}, fmt.Errorf("manual model test: %w", err)
 	}
 	verified, err := s.repository.VerifyAndUnblock(ctx, keyID, modelID, s.clock.Now())
@@ -194,12 +198,16 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 			}
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
-			_ = writer.WriteField("model", model.UpstreamID)
+			if err := writer.WriteField("model", model.UpstreamID); err != nil {
+				return err
+			}
 			part, partErr := writer.CreateFormFile("file", "probe.wav")
 			if partErr != nil {
 				return partErr
 			}
-			_, _ = part.Write([]byte("probe"))
+			if _, err := part.Write(probeWAV); err != nil {
+				return err
+			}
 			if err = writer.Close(); err != nil {
 				return err
 			}
@@ -209,7 +217,7 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 			if !ok {
 				return ErrManualTestRequired
 			}
-			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "input": "ping", "voice": "default", "response_format": "wav"})
+			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "input": "ping", "voice": "Magpie-Multilingual.EN-US.Aria", "response_format": "wav"})
 			if marshalErr != nil {
 				return marshalErr
 			}
@@ -217,7 +225,7 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		default:
 			return ErrManualTestRequired
 		}
-		if err != nil || response == nil {
+		if err != nil || response == nil || response.Body == nil {
 			return ErrManualTestRequired
 		}
 		defer response.Body.Close()
@@ -232,17 +240,41 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		case KindASR:
 			_, err = nvidia.ValidateNonstreamAudio(response)
 		case KindTTS:
-			var payload []byte
-			payload, err = io.ReadAll(io.LimitReader(response.Body, 1))
-			if err == nil && len(payload) == 0 {
-				err = fmt.Errorf("empty audio response")
+			if response.Header != nil {
+				contentType := response.Header.Get("Content-Type")
+				if contentType != "" && !isAudioContentType(contentType) {
+					return ErrManualTestRequired
+				}
 			}
+			err = nvidia.PrimeAudioSpeech(ctx, response)
 		}
 		if err != nil {
 			return ErrManualTestRequired
 		}
 		return nil
 	})
+}
+
+// probeWAV is a minimal valid mono PCM WAV containing one silent sample. It is
+// deliberately generated in memory so verification never reads a caller file.
+func isAudioContentType(contentType string) bool {
+	mediaType := contentType
+	if index := strings.IndexByte(mediaType, ';'); index >= 0 {
+		mediaType = mediaType[:index]
+	}
+	switch strings.TrimSpace(strings.ToLower(mediaType)) {
+	case "audio/wav", "audio/x-wav", "audio/mpeg", "audio/ogg", "audio/flac", "application/octet-stream":
+		return true
+	default:
+		return false
+	}
+}
+
+var probeWAV = []byte{
+	'R', 'I', 'F', 'F', 0x26, 0x00, 0x00, 0x00, 'W', 'A', 'V', 'E',
+	'f', 'm', 't', ' ', 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+	0x40, 0x1f, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x02, 0x00, 0x10, 0x00,
+	'd', 'a', 't', 'a', 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
 }
 
 func (s *Service) ListEnabled(ctx context.Context) ([]Model, error) {

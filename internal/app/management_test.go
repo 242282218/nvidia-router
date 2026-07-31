@@ -109,6 +109,15 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	}
 	app.Pool.SetModelBlock(imported.Key.ID, modelID, true)
 	assertPoolAcquireFails(t, app, modelID)
+	crossOrigin := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/models/"+itoa(modelID)+"/test", `{"key_id":`+itoa(imported.Key.ID)+`}`, session, "https://attacker.example")
+	if crossOrigin.StatusCode != http.StatusForbidden || !strings.Contains(readResponse(t, crossOrigin), "invalid_origin") {
+		t.Fatalf("cross-origin verification status=%d", crossOrigin.StatusCode)
+	}
+	unauthenticated := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/models/"+itoa(modelID)+"/test", `{"key_id":`+itoa(imported.Key.ID)+`}`, nil, server.URL)
+	if unauthenticated.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated verification status=%d", unauthenticated.StatusCode)
+	}
+	assertPoolAcquireFails(t, app, modelID)
 	unblocked := authRequest(t, server.Client(), http.MethodDelete, server.URL+"/admin/api/key-model-blocks/"+itoa(imported.Key.ID)+"/"+itoa(modelID), "", session, server.URL)
 	if unblocked.StatusCode != http.StatusOK {
 		t.Fatalf("unblock status=%d body=%s", unblocked.StatusCode, readResponse(t, unblocked))

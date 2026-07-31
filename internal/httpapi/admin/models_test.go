@@ -80,6 +80,39 @@ func TestModelAPIUsesFirstKeyAndEnforcesAudioVerification(t *testing.T) {
 	}
 }
 
+func TestModelVerificationEndpointRequiresAllowlistedKeyIDAndSyncsOnlyOnSuccess(t *testing.T) {
+	models := &fakeModels{models: []modelcatalog.Model{{ID: 9, PublicID: "speech", Kind: modelcatalog.KindTTS}}}
+	syncer := &fakeStateSync{}
+	handler := NewModels(models, fakeCandidateKeys{}, syncer)
+
+	response := performAdminRequest(handler, http.MethodPost, "/admin/api/models/9/test", `{"key_id":5,"verified_at":"2026-07-31T00:00:00Z"}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
+		t.Fatalf("unknown field status=%d body=%s", response.Code, response.Body.String())
+	}
+	if models.cleared != [2]int64{} || len(syncer.blocks) != 0 {
+		t.Fatalf("failed verification changed state: cleared=%v blocks=%v", models.cleared, syncer.blocks)
+	}
+
+	response = performAdminRequest(handler, http.MethodPost, "/admin/api/models/9/test", `{"key_id":5}`)
+	if response.Code != http.StatusOK || models.cleared != [2]int64{5, 9} || len(syncer.blocks) != 1 || syncer.blocks[0] != [3]int64{5, 9, 0} {
+		t.Fatalf("verification status=%d cleared=%v blocks=%v body=%s", response.Code, models.cleared, syncer.blocks, response.Body.String())
+	}
+}
+
+func TestModelVerificationEndpointRejectsMalformedRoutesAndKeyIDs(t *testing.T) {
+	handler := NewModels(&fakeModels{}, fakeCandidateKeys{}, &fakeStateSync{})
+	for _, path := range []string{"/admin/api/models/9", "/admin/api/models/9/other", "/admin/api/models/0/test"} {
+		response := performAdminRequest(handler, http.MethodPost, path, `{"key_id":5}`)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("path %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	response := performAdminRequest(handler, http.MethodPost, "/admin/api/models/9/test", `{"key_id":0}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
+		t.Fatalf("key id status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestModelCandidatesReportsMissingKeyWithoutSecret(t *testing.T) {
 	handler := NewModels(&fakeModels{}, fakeCandidateKeys{err: errors.New("no key")}, &fakeStateSync{})
 	response := performAdminRequest(handler, http.MethodGet, "/admin/api/models/candidates", "")
