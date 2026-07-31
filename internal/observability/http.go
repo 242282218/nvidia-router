@@ -9,13 +9,21 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"nvidia-router/internal/clock"
 )
 
 const usageCaptureLimit = 2 << 20
+
+var usageCaptureEndpoints = map[string]struct{}{
+	"/v1/chat/completions": {},
+	"/v1/embeddings":       {},
+	"/v1/responses":        {},
+}
 
 type RequestRecorder interface {
 	Record(context.Context, RequestRecord) error
@@ -33,10 +41,10 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		ctx, state := WithRequestState(request.Context())
 		requestID := newRequestID()
 		writer.Header().Set("X-Request-ID", requestID)
-		tracked := newTrackingWriter(writer, ctx, started, source)
+		tracked := newTrackingWriter(writer, ctx, started, source, request.URL.Path)
 		next.ServeHTTP(tracked, request.WithContext(ctx))
 		metadata := state.Snapshot()
-		prompt, completion := parseUsage(tracked.body.Bytes(), tracked.captureComplete)
+		prompt, completion := parseUsage(tracked.body.Bytes(), tracked.captureComplete, tracked.captureEnabled, tracked.status, tracked.Header().Get("Content-Type"))
 		if metadata.PromptTokens == nil {
 			metadata.PromptTokens = prompt
 		}
@@ -79,16 +87,26 @@ type trackingWriter struct {
 	firstBodyAt     time.Time
 	status          int
 	body            bytes.Buffer
+	captureEnabled  bool
 	captureComplete bool
 }
 
-func newTrackingWriter(writer http.ResponseWriter, ctx context.Context, started time.Time, source clock.Clock) *trackingWriter {
-	return &trackingWriter{ResponseWriter: writer, ctx: ctx, clock: source, started: started, captureComplete: true}
+func newTrackingWriter(writer http.ResponseWriter, ctx context.Context, started time.Time, source clock.Clock, endpoint string) *trackingWriter {
+	_, captureEnabled := usageCaptureEndpoints[endpoint]
+	return &trackingWriter{
+		ResponseWriter:  writer,
+		ctx:             ctx,
+		clock:           source,
+		started:         started,
+		captureEnabled:  captureEnabled,
+		captureComplete: captureEnabled,
+	}
 }
 
 func (w *trackingWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
+		w.disableCaptureIfIneligible()
 	}
 	w.ResponseWriter.WriteHeader(status)
 }
@@ -96,6 +114,7 @@ func (w *trackingWriter) WriteHeader(status int) {
 func (w *trackingWriter) Write(payload []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
+		w.disableCaptureIfIneligible()
 	}
 	if w.firstBodyAt.IsZero() && len(payload) > 0 {
 		w.firstBodyAt = w.clock.Now()
@@ -112,6 +131,31 @@ func (w *trackingWriter) Write(payload []byte) (int, error) {
 	return w.ResponseWriter.Write(payload)
 }
 
+func (w *trackingWriter) disableCaptureIfIneligible() {
+	if w.status < http.StatusOK || w.status >= http.StatusMultipleChoices ||
+		!isJSONContentType(w.Header().Get("Content-Type")) {
+		w.captureEnabled = false
+		w.captureComplete = false
+		w.body.Reset()
+		return
+	}
+	if state, ok := w.ctx.Value(requestStateKey{}).(*RequestState); ok {
+		state.mu.Lock()
+		stream := state.IsStream
+		state.mu.Unlock()
+		if stream {
+			w.captureEnabled = false
+			w.captureComplete = false
+			w.body.Reset()
+		}
+	}
+}
+
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && strings.EqualFold(mediaType, "application/json")
+}
+
 func (w *trackingWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
@@ -124,8 +168,8 @@ func (w *trackingWriter) SetErrorCode(code string) {
 	SetErrorCode(w.ctx, code)
 }
 
-func parseUsage(payload []byte, complete bool) (*int64, *int64) {
-	if !complete || len(payload) == 0 {
+func parseUsage(payload []byte, complete, enabled bool, status int, contentType string) (*int64, *int64) {
+	if !enabled || !complete || len(payload) == 0 || status < http.StatusOK || status >= http.StatusMultipleChoices || !isJSONContentType(contentType) {
 		return nil, nil
 	}
 	var envelope struct {

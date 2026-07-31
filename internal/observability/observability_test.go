@@ -1,13 +1,19 @@
 package observability
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
+	"nvidia-router/internal/clock"
 	"nvidia-router/internal/database"
 )
 
@@ -312,5 +318,78 @@ func TestRepositoryListRecentErrorsReturnsOnlyAllowlistedFields(t *testing.T) {
 	}
 	if errorsList[0].ErrorCode != "fixed_error_2" || errorsList[0].HTTPStatus != 502 {
 		t.Fatalf("latest error = %#v", errorsList[0])
+	}
+}
+
+type observabilityRecorder struct {
+	record RequestRecord
+}
+
+func (r *observabilityRecorder) Record(_ context.Context, record RequestRecord) error {
+	r.record = record
+	return nil
+}
+
+func TestHTTPMiddlewareExtractsUsageFromEligibleJSON(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "chat-model", false)
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = writer.Write([]byte(`{"usage":{"prompt_tokens":12,"completion_tokens":7}}`))
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if recorder.record.PromptTokens == nil || *recorder.record.PromptTokens != 12 || recorder.record.CompletionTokens == nil || *recorder.record.CompletionTokens != 7 {
+		t.Fatalf("usage = %v/%v, want 12/7", recorder.record.PromptTokens, recorder.record.CompletionTokens)
+	}
+}
+
+func TestTrackingWriterDoesNotRetainSSEAudioOrLargeBodies(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		content  string
+		stream   bool
+		payload  []byte
+	}{
+		{name: "sse", endpoint: "/v1/chat/completions", content: "text/event-stream", stream: true, payload: []byte(`data: {"usage":{"prompt_tokens":1}}
+
+`)},
+		{name: "audio", endpoint: "/v1/audio/speech", content: "audio/mpeg", payload: bytes.Repeat([]byte("audio"), 32)},
+		{name: "large json", endpoint: "/v1/chat/completions", content: "application/json", payload: bytes.Repeat([]byte("x"), usageCaptureLimit+1)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, _ := WithRequestState(context.Background())
+			SetModel(ctx, "chat-model", test.stream)
+			response := httptest.NewRecorder()
+			tracking := newTrackingWriter(response, ctx, time.Now(), clock.RealClock{}, test.endpoint)
+			tracking.Header().Set("Content-Type", test.content)
+			if _, err := tracking.Write(test.payload); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if tracking.body.Len() != 0 || tracking.captureComplete {
+				t.Fatalf("retained body length/completeness = %d/%v, want 0/false", tracking.body.Len(), tracking.captureComplete)
+			}
+		})
+	}
+}
+
+func TestHTTPMiddlewareSkipsUsageForErrorJSON(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"usage":{"prompt_tokens":12,"completion_tokens":7}}`))
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if recorder.record.PromptTokens != nil || recorder.record.CompletionTokens != nil {
+		t.Fatalf("error response usage = %v/%v, want nil/nil", recorder.record.PromptTokens, recorder.record.CompletionTokens)
 	}
 }
