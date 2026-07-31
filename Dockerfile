@@ -23,9 +23,14 @@ RUN pnpm --dir web run build \
 
 FROM golang:1.24.0-bookworm AS go-build
 
+# Allow overriding the Go module proxy for networks where proxy.golang.org is
+# unreachable (e.g. mainland China): docker build --build-arg GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://proxy.golang.org,direct
+
 ENV CGO_ENABLED=0 \
     GOOS=linux \
-    GOTOOLCHAIN=local
+    GOTOOLCHAIN=local \
+    GOPROXY=${GOPROXY}
 
 WORKDIR /src
 
