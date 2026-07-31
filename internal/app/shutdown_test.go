@@ -135,10 +135,10 @@ func TestAppCloseClosesDatabaseAfterHTTPGraceTimeout(t *testing.T) {
 	settings := &shutdownTestSettings{snapshot: runtimeconfig.Snapshot{ShutdownGraceMS: 20}}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserve listener: %v", err)
+		t.Fatalf("bind listener: %v", err)
 	}
+	t.Cleanup(func() { _ = listener.Close() })
 	address := listener.Addr().String()
-	_ = listener.Close()
 	started := make(chan struct{})
 	server := NewServer(address, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		close(started)
@@ -147,7 +147,7 @@ func TestAppCloseClosesDatabaseAfterHTTPGraceTimeout(t *testing.T) {
 	application := &App{Server: server, db: db}
 
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.ListenAndServe(context.Background()) }()
+	go func() { serveDone <- server.ServeOn(listener, context.Background()) }()
 	go func() { _, _ = http.Get("http://" + address) }()
 	select {
 	case <-started:

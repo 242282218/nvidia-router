@@ -64,6 +64,16 @@ func (s *Server) setShutdownDeadline(deadline time.Time) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.address)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.address, err)
+	}
+	return s.ServeOn(listener, ctx)
+}
+
+// ServeOn serves HTTP on a caller-provided listener. Tests use it to bind a
+// fixed port without the listen/re-listen race of ListenAndServe.
+func (s *Server) ServeOn(listener net.Listener, ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -71,6 +81,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if s.shutdownStarted {
 		s.lifecycleMu.Unlock()
+		_ = listener.Close()
 		return nil
 	}
 	if s.serveStarted {
@@ -81,12 +92,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.serveFinished = serveFinished
 	s.serveStarted = true
 	s.lifecycleMu.Unlock()
-
-	listener, err := net.Listen("tcp", s.address)
-	if err != nil {
-		s.finishServe(fmt.Errorf("listen on %s: %w", s.address, err))
-		return s.serveError()
-	}
 
 	s.lifecycleMu.Lock()
 	if s.shutdownStarted {
