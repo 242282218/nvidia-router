@@ -177,9 +177,13 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 // finalises.
 type chatDeltaSource struct {
 	decoder *sse.Decoder
+	done    bool
 }
 
 func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
+	if c.done {
+		return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamCompleted
+	}
 	for {
 		event, err := c.decoder.Decode()
 		if err == io.EOF {
@@ -194,10 +198,10 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 				return responsesprotocol.ChatDelta{}, fmt.Errorf("parse chat delta: %w", perr)
 			}
 			if done {
-				// [DONE] marks end of stream; the state machine finalises, choosing
-				// response.completed or .failed depending on whether finish_reason
-				// was already observed.
-				return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamInterrupted
+				// [DONE] is the authoritative normal completion marker. Keep it
+				// distinct from EOF/interruption, and ignore duplicate markers.
+				c.done = true
+				return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamCompleted
 			}
 			return delta, nil
 		}

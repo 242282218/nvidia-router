@@ -29,9 +29,11 @@ type ChatDeltaSource interface {
 }
 
 // Convert runs the Responses stream state machine over Chat deltas and emits
-// the Responses event sequence to the emitter. It returns interrupted=true
-// when upstream ended before the terminal [DONE], so the HTTP layer can decide
-// between repair (when not yet committed) and a response.failed terminal.
+// the Responses event sequence to the emitter. ErrStreamCompleted is the only
+// normal completion signal; EOF/interruption before [DONE] returns
+// interrupted=true and emits response.failed. Other source errors are wrapped
+// after emitting one failed terminal so a committed client stream is closed
+// without triggering another key attempt.
 // Convert never records prompt or completion content beyond the deltas it
 // forwards inline.
 func (s *streamState) Convert(source ChatDeltaSource, emit Emitter, responseID, model string) (interrupted bool, err error) {
@@ -44,19 +46,27 @@ func (s *streamState) Convert(source ChatDeltaSource, emit Emitter, responseID, 
 
 	for {
 		delta, srcErr := source.Next()
-		if srcErr == ErrStreamInterrupted {
-			// Upstream ended before the terminal [DONE] without finish_reason:
-			// treated as an interruption unless the chat already signalled finish.
-			if !s.finished {
-				return true, s.finalize(emit, responseID, model, true)
+		switch {
+		case srcErr == nil:
+			if err := s.applyDelta(delta, emit, responseID); err != nil {
+				return false, err
 			}
+		case srcErr == ErrStreamCompleted:
 			return false, s.finalize(emit, responseID, model, false)
-		}
-		if srcErr != nil {
+		case srcErr == ErrStreamInterrupted:
+			// EOF/interruption before [DONE] is failed, even if the upstream sent
+			// finish_reason. A finish_reason is only a delta-level signal; [DONE]
+			// is the authoritative normal completion marker.
+			return true, s.finalize(emit, responseID, model, true)
+		default:
+			// Once the first event has committed the response, do not leave the
+			// client with an unterminated stream and never allow a second key
+			// attempt. Emit one failed terminal and preserve the read error.
+			finalErr := s.finalize(emit, responseID, model, true)
+			if finalErr != nil {
+				return false, fmt.Errorf("read chat delta: %w; finalize stream: %v", srcErr, finalErr)
+			}
 			return false, fmt.Errorf("read chat delta: %w", srcErr)
-		}
-		if err := s.applyDelta(delta, emit, responseID); err != nil {
-			return false, err
 		}
 	}
 }
@@ -169,6 +179,10 @@ func (s *streamState) applyToolCall(call ChatToolCallDelta, emit Emitter, respon
 // [DONE]. When interrupted, the terminal is response.failed so clients see a
 // stable completion rather than a truncated success.
 func (s *streamState) finalize(emit Emitter, responseID, model string, failed bool) error {
+	if s.finalized {
+		return nil
+	}
+	s.finalized = true
 	if err := s.closeOpenMessage(emit); err != nil {
 		return err
 	}
@@ -256,7 +270,7 @@ func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
 	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"output_index":    tool.outputIndex,
-		"item":            map[string]any{
+		"item": map[string]any{
 			"type":      "function_call",
 			"id":        tool.id,
 			"call_id":   tool.id,

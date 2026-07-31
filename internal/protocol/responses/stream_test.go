@@ -9,12 +9,15 @@ import (
 type fakeSource struct {
 	deltas []ChatDelta
 	i      int
-	err    error
+	end    error
 }
 
 func (f *fakeSource) Next() (ChatDelta, error) {
 	if f.i >= len(f.deltas) {
-		return ChatDelta{}, ErrStreamInterrupted
+		if f.end != nil {
+			return ChatDelta{}, f.end
+		}
+		return ChatDelta{}, ErrStreamCompleted
 	}
 	d := f.deltas[f.i]
 	f.i++
@@ -229,8 +232,8 @@ func TestStreamInterruptedBeforeFinishEmitsFailed(t *testing.T) {
 	// Upstream ends without finish_reason while a message is mid-stream.
 	source := &fakeSource{deltas: []ChatDelta{
 		{Content: "partial"},
-		// no finish; fakeSource returns errEOS after deltas exhausted
-	}}
+		// no finish; fakeSource reports interruption after deltas exhausted
+	}, end: ErrStreamInterrupted}
 	emit := &collectingEmitter{}
 	interrupted, err := newStreamState().Convert(source, emit, "resp_i", "public-chat")
 	if err != nil {
@@ -252,34 +255,67 @@ func TestStreamInterruptedBeforeFinishEmitsFailed(t *testing.T) {
 	assertMonoSeq(t, emit.events)
 }
 
-func TestStreamCleanEOFAfterFinishCompletes(t *testing.T) {
-	// Upstream signals finish_reason, then upstream closes cleanly.
+func TestStreamCleanDoneAfterFinishCompletes(t *testing.T) {
+	// Upstream signals finish_reason and then emits [DONE].
 	source := &fakeSource{deltas: []ChatDelta{
 		{Content: "hi"},
 		{FinishReason: "stop"},
-	}}
+	}, end: ErrStreamCompleted}
 	emit := &collectingEmitter{}
 	interrupted, err := newStreamState().Convert(source, emit, "resp_c", "public-chat")
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
 	if interrupted {
-		t.Fatal("expected clean completion after finish_reason, got interrupted")
+		t.Fatal("expected clean completion after [DONE], got interrupted")
 	}
 	if terminalCount(emit.events, "response.completed") != 1 {
 		t.Fatal("response.completed not emitted once")
 	}
 }
 
-func TestStreamUpstreamErrorPropagates(t *testing.T) {
-	expected := errors.New("boom")
+func TestStreamEOFAfterFinishStillFails(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "partial"},
+		{FinishReason: "stop"},
+	}, end: ErrStreamInterrupted}
+	emit := &collectingEmitter{}
+	interrupted, err := newStreamState().Convert(source, emit, "resp_eof", "public-chat")
+	if err != nil || !interrupted {
+		t.Fatalf("Convert = interrupted=%v err=%v, want interrupted EOF", interrupted, err)
+	}
+	if terminalCount(emit.events, "response.failed") != 1 || terminalCount(emit.events, "response.completed") != 0 {
+		t.Fatalf("terminals = failed=%d completed=%d", terminalCount(emit.events, "response.failed"), terminalCount(emit.events, "response.completed"))
+	}
+}
+
+func TestStreamDoneCompletesWithoutFinishReason(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{{Content: "complete"}}, end: ErrStreamCompleted}
+	emit := &collectingEmitter{}
+	interrupted, err := newStreamState().Convert(source, emit, "resp_done", "public-chat")
+	if err != nil || interrupted {
+		t.Fatalf("Convert = interrupted=%v err=%v, want clean completion", interrupted, err)
+	}
+	if terminalCount(emit.events, "response.completed") != 1 || terminalCount(emit.events, "response.failed") != 0 {
+		t.Fatalf("terminals = completed=%d failed=%d", terminalCount(emit.events, "response.completed"), terminalCount(emit.events, "response.failed"))
+	}
+	if terminalCount(emit.events, "done") != 1 {
+		t.Fatalf("done count = %d, want 1", terminalCount(emit.events, "done"))
+	}
+}
+
+func TestStreamMalformedAfterDeltaEmitsFailedTerminal(t *testing.T) {
+	expected := errors.New("malformed SSE")
 	source := &failingSource{err: expected}
 	emit := &collectingEmitter{}
 	if _, err := newStreamState().Convert(source, emit, "resp_x", "public-chat"); err == nil ||
-		!strings.Contains(err.Error(), "boom") {
-		t.Fatalf("Convert err = %v, want wrapped boom", err)
+		!strings.Contains(err.Error(), "malformed SSE") {
+		t.Fatalf("Convert err = %v, want wrapped malformed SSE", err)
 	}
-	if terminalCount(emit.events, "response.completed") != 0 && terminalCount(emit.events, "response.failed") != 0 {
-		t.Fatal("terminal should not be emitted on upstream error")
+	if terminalCount(emit.events, "response.failed") != 1 || terminalCount(emit.events, "done") != 1 {
+		t.Fatalf("terminals = failed=%d done=%d, want one each", terminalCount(emit.events, "response.failed"), terminalCount(emit.events, "done"))
+	}
+	if terminalCount(emit.events, "response.completed") != 0 {
+		t.Fatal("response.completed should not appear on malformed stream")
 	}
 }

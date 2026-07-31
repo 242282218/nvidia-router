@@ -203,6 +203,55 @@ func TestResponsesStreamEmitsFailedTerminalOnInterruption(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamDoneCompletesWithoutFinishReason(t *testing.T) {
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	response, _ := serveStreamResponses(t, sseBody)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "event: response.completed") || strings.Contains(body, "event: response.failed") {
+		t.Fatalf("unexpected terminal events:\n%s", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("[DONE] appeared %d times, want 1", strings.Count(body, "data: [DONE]"))
+	}
+}
+
+func TestResponsesStreamDuplicateDoneEmitsSingleTerminal(t *testing.T) {
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\n" +
+		"data: [DONE]\n\n" +
+		"data: [DONE]\n\n"
+	response, _ := serveStreamResponses(t, sseBody)
+
+	body := response.Body.String()
+	if strings.Count(body, "event: response.completed") != 1 || strings.Count(body, "event: response.failed") != 0 {
+		t.Fatalf("terminal event counts unexpected:\n%s", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("[DONE] appeared %d times, want 1", strings.Count(body, "data: [DONE]"))
+	}
+}
+
+func TestResponsesStreamMalformedAfterCommitEmitsFailedTerminal(t *testing.T) {
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n" +
+		"data: {not-json}\n\n"
+	response, _ := serveStreamResponses(t, sseBody)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Count(body, "event: response.failed") != 1 || strings.Count(body, "event: response.completed") != 0 {
+		t.Fatalf("terminal event counts unexpected:\n%s", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("[DONE] appeared %d times, want 1", strings.Count(body, "data: [DONE]"))
+	}
+}
+
 // serveStreamResponses wires a Responses handler against a scripted upstream// Chat SSE stream and returns the recorder alongside the tracked lease.
 func serveStreamResponses(t *testing.T, sseBody string) (*httptest.ResponseRecorder, *releaseTrackingLease) {
 	t.Helper()

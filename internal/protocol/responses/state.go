@@ -18,6 +18,11 @@ type Emitter interface {
 	Commit() error
 }
 
+// ErrStreamCompleted is returned by the SSE source when the upstream emitted
+// the terminal [DONE] marker. It is intentionally distinct from EOF so a
+// syntactically complete stream can complete even without finish_reason.
+var ErrStreamCompleted = sentinel("upstream stream completed with [DONE]")
+
 // ErrStreamInterrupted is returned by Stream when upstream ended before the
 // terminal [DONE], after the state machine already produced a stable sequence.
 // The HTTP layer maps it to repair-or-terminal decisions using the CommitState.
@@ -43,6 +48,7 @@ type streamState struct {
 	openTools      map[int]*toolItem
 	toolOrder      []int
 	finished       bool
+	finalized      bool
 }
 
 type toolItem struct {

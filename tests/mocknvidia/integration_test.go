@@ -532,6 +532,38 @@ func TestResponsesEventsToolArgumentsAndStoreRejection(t *testing.T) {
 		t.Fatalf("store:true reached upstream: before=%d after=%d", before, upstream.Count())
 	}
 }
+
+func TestResponsesCommittedMalformedStreamFailsWithoutRetry(t *testing.T) {
+	upstream := mocknvidia.New(
+		mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
+			{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"},
+			{Data: "data: {not-json}\n\n"},
+		}},
+		mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
+			{Data: "data: must-not-run\n\n"},
+			{Data: "data: [DONE]\n\n"},
+		}},
+	)
+	harness := newAppHarness(t, upstream, []string{"nvapi-responses-bad", "nvapi-responses-second"})
+
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/responses", `{
+		"model":"public-chat","input":"hello","stream":true
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("responses stream = %d %s", status, body)
+	}
+	if !strings.Contains(body, "event: response.failed") || strings.Contains(body, "event: response.completed") {
+		t.Fatalf("unexpected terminal events:\n%s", body)
+	}
+	if strings.Count(body, "event: response.failed") != 1 || strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("terminal counts failed=%d done=%d:\n%s", strings.Count(body, "event: response.failed"), strings.Count(body, "data: [DONE]"), body)
+	}
+	if strings.Contains(body, "must-not-run") {
+		t.Fatalf("second key response leaked into stream:\n%s", body)
+	}
+	assertAuthorizationOrder(t, upstream.Requests(), "nvapi-responses-bad")
+}
+
 func assertStatusSideEffect(t *testing.T, harness *appHarness, status int) {
 	t.Helper()
 	switch status {
