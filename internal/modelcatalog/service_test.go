@@ -289,6 +289,83 @@ func TestVerifyAndUnblockAudioFailureDoesNotWriteVerification(t *testing.T) {
 	}
 }
 
+func TestAudioVerificationRejectsMissingOrNonAudioContentType(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "missing", contentType: "audio/wav", body: ""},
+		{name: "empty", contentType: "", body: "audio"},
+		{name: "text", contentType: "text/plain", body: "audio"},
+		{name: "json", contentType: "application/json", body: "audio"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			service, db, _, discoverer := newCatalogTestService(t)
+			keyID := insertNVIDIAKey(t, db)
+			if err := service.SaveSelection(context.Background(), []Selection{{
+				PublicID: "tts-" + testCase.name, UpstreamID: "vendor/tts", DisplayName: "TTS", Kind: KindTTS,
+			}}); err != nil {
+				t.Fatalf("SaveSelection: %v", err)
+			}
+			modelID := modelIDByPublicID(t, db, "tts-"+testCase.name)
+			status := 403
+			if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
+				t.Fatalf("BlockKeyModel: %v", err)
+			}
+			discoverer.ttsContentType = testCase.contentType
+			discoverer.ttsContentTypeSet = true
+			discoverer.ttsResponse = testCase.body
+			discoverer.ttsResponseSet = true
+
+			if _, err := service.VerifyAndUnblock(context.Background(), keyID, modelID); !errors.Is(err, ErrManualTestRequired) {
+				t.Fatalf("VerifyAndUnblock error = %v, want manual test required", err)
+			}
+			stored, err := service.repository.Get(context.Background(), modelID)
+			if err != nil {
+				t.Fatalf("get failed model: %v", err)
+			}
+			if stored.CapabilityVerifiedAt != nil {
+				t.Fatalf("failed verification wrote timestamp %v", stored.CapabilityVerifiedAt)
+			}
+			assertBlockCount(t, db, 1)
+		})
+	}
+}
+
+func TestAudioVerificationAcceptsAnyAudioContentType(t *testing.T) {
+	for _, contentType := range []string{"audio/wav", "audio/m4a; charset=binary", "audio/*", "application/octet-stream"} {
+		t.Run(contentType, func(t *testing.T) {
+			service, db, _, discoverer := newCatalogTestService(t)
+			keyID := insertNVIDIAKey(t, db)
+			if err := service.SaveSelection(context.Background(), []Selection{{
+				PublicID: "tts", UpstreamID: "vendor/tts", DisplayName: "TTS", Kind: KindTTS,
+			}}); err != nil {
+				t.Fatalf("SaveSelection: %v", err)
+			}
+			modelID := modelIDByPublicID(t, db, "tts")
+			status := 403
+			if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
+				t.Fatalf("BlockKeyModel: %v", err)
+			}
+			discoverer.ttsContentType = contentType
+			discoverer.ttsContentTypeSet = true
+			discoverer.ttsResponse = "audio"
+			discoverer.ttsResponseSet = true
+
+			verified, err := service.VerifyAndUnblock(context.Background(), keyID, modelID)
+			if err != nil {
+				t.Fatalf("VerifyAndUnblock: %v", err)
+			}
+			if verified.CapabilityVerifiedAt == nil {
+				t.Fatal("successful verification did not set timestamp")
+			}
+			assertBlockCount(t, db, 0)
+		})
+	}
+}
+
 func modelIDByPublicID(t *testing.T, db *sql.DB, publicID string) int64 {
 	t.Helper()
 	var id int64
@@ -428,17 +505,19 @@ func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([
 }
 
 type fakeDiscoverer struct {
-	models         []string
-	lastToken      string
-	modelsCalls    int
-	chatCalls      int
-	chatResponse   string
-	asrCalls       int
-	ttsCalls       int
-	asrResponse    string
-	ttsResponse    string
-	ttsResponseSet bool
-	lastAudioModel string
+	models            []string
+	lastToken         string
+	modelsCalls       int
+	chatCalls         int
+	chatResponse      string
+	asrCalls          int
+	ttsCalls          int
+	asrResponse       string
+	ttsResponse       string
+	ttsResponseSet    bool
+	ttsContentType    string
+	ttsContentTypeSet bool
+	lastAudioModel    string
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
@@ -477,7 +556,11 @@ func (d *fakeDiscoverer) AudioSpeech(_ context.Context, _ runtimeconfig.Snapshot
 	if !d.ttsResponseSet {
 		response = "audio"
 	}
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	contentType := d.ttsContentType
+	if !d.ttsContentTypeSet {
+		contentType = "audio/wav"
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{"Content-Type": []string{contentType}}}, nil
 }
 
 type catalogClock struct{}

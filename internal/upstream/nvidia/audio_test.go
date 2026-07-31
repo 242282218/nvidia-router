@@ -87,6 +87,21 @@ func TestValidateNonstreamAudioAcceptsTextOrTranscript(t *testing.T) {
 	}
 }
 
+func TestValidateNonstreamAudioRequiresNonEmptyTranscript(t *testing.T) {
+	for _, body := range []string{
+		`{"text":""}`,
+		`{"text":"  "}`,
+		`{"transcript":""}`,
+		`{"transcript":"\t"}`,
+		`{}`,
+	} {
+		response := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+		if _, err := ValidateNonstreamAudio(response); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("body %s error = %v, want protocol error", body, err)
+		}
+	}
+}
+
 func TestAudioSpeechSendsJSON(t *testing.T) {
 	var captured struct {
 		auth, contentType, method string

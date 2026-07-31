@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -240,11 +241,8 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		case KindASR:
 			_, err = nvidia.ValidateNonstreamAudio(response)
 		case KindTTS:
-			if response.Header != nil {
-				contentType := response.Header.Get("Content-Type")
-				if contentType != "" && !isAudioContentType(contentType) {
-					return ErrManualTestRequired
-				}
+			if !isAudioContentType(response.Header.Get("Content-Type")) {
+				return ErrManualTestRequired
 			}
 			err = nvidia.PrimeAudioSpeech(ctx, response)
 		}
@@ -258,16 +256,12 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 // probeWAV is a minimal valid mono PCM WAV containing one silent sample. It is
 // deliberately generated in memory so verification never reads a caller file.
 func isAudioContentType(contentType string) bool {
-	mediaType := contentType
-	if index := strings.IndexByte(mediaType, ';'); index >= 0 {
-		mediaType = mediaType[:index]
-	}
-	switch strings.TrimSpace(strings.ToLower(mediaType)) {
-	case "audio/wav", "audio/x-wav", "audio/mpeg", "audio/ogg", "audio/flac", "application/octet-stream":
-		return true
-	default:
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
 		return false
 	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	return strings.HasPrefix(mediaType, "audio/") || mediaType == "application/octet-stream"
 }
 
 var probeWAV = []byte{

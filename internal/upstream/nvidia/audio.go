@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"nvidia-router/internal/runtimeconfig"
 )
@@ -78,7 +79,7 @@ func ValidateNonstreamAudio(response *http.Response) (ValidatedAudioResponse, er
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
 		return ValidatedAudioResponse{}, protocolError()
 	}
-	if !hasTextField(fields) && !hasTranscriptField(fields) {
+	if !nonEmptyStringField(fields, "text") && !nonEmptyStringField(fields, "transcript") {
 		return ValidatedAudioResponse{}, protocolError()
 	}
 
@@ -90,22 +91,13 @@ func ValidateNonstreamAudio(response *http.Response) (ValidatedAudioResponse, er
 	}, nil
 }
 
-func hasTextField(fields map[string]json.RawMessage) bool {
-	raw, ok := fields["text"]
+func nonEmptyStringField(fields map[string]json.RawMessage, name string) bool {
+	raw, ok := fields[name]
 	if !ok {
 		return false
 	}
 	var value string
-	return json.Unmarshal(raw, &value) == nil
-}
-
-func hasTranscriptField(fields map[string]json.RawMessage) bool {
-	raw, ok := fields["transcript"]
-	if !ok {
-		return false
-	}
-	var value string
-	return json.Unmarshal(raw, &value) == nil
+	return json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
 }
 
 // AudioSpeech sends a streaming TTS request. The response body is left open so
