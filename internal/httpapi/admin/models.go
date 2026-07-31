@@ -23,6 +23,11 @@ type candidateKeySource interface {
 	FirstEnabledID(context.Context) (int64, error)
 }
 
+type modelStateSync interface {
+	SetModelEnabled(int64, bool)
+	ClearModelBlocks(int64)
+}
+
 type Models struct {
 	service modelManager
 	keys    candidateKeySource
@@ -126,9 +131,32 @@ func (h *Models) save(writer http.ResponseWriter, request *http.Request) {
 	for _, item := range input.Models {
 		selections = append(selections, item.selection())
 	}
+	before, _ := h.service.List(request.Context())
+	previousKinds := make(map[string]modelcatalog.Kind, len(before))
+	for _, model := range before {
+		previousKinds[model.PublicID] = model.Kind
+	}
 	if err := h.service.SaveSelection(request.Context(), selections); err != nil {
 		h.writeModelError(writer, err)
 		return
+	}
+	if syncer, ok := h.sync.(modelStateSync); ok {
+		models, err := h.service.List(request.Context())
+		if err != nil {
+			writeInternalError(writer, err)
+			return
+		}
+		for _, selection := range selections {
+			for _, model := range models {
+				if model.PublicID != selection.PublicID {
+					continue
+				}
+				syncer.SetModelEnabled(model.ID, model.Enabled)
+				if previous, exists := previousKinds[model.PublicID]; exists && previous != model.Kind {
+					syncer.ClearModelBlocks(model.ID)
+				}
+			}
+		}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"saved": len(selections)})
 }
@@ -143,10 +171,25 @@ func (h *Models) patch(writer http.ResponseWriter, request *http.Request) {
 		writeInvalidRequest(writer, "The model update request is invalid.", err)
 		return
 	}
+	previousKind := modelcatalog.Kind("")
+	if models, listErr := h.service.List(request.Context()); listErr == nil {
+		for _, item := range models {
+			if item.ID == id {
+				previousKind = item.Kind
+				break
+			}
+		}
+	}
 	model, err := h.service.Patch(request.Context(), id, input)
 	if err != nil {
 		h.writeModelError(writer, err)
 		return
+	}
+	if syncer, ok := h.sync.(modelStateSync); ok {
+		syncer.SetModelEnabled(model.ID, model.Enabled)
+		if previousKind != "" && previousKind != model.Kind {
+			syncer.ClearModelBlocks(model.ID)
+		}
 	}
 	writeJSON(writer, http.StatusOK, toModelDTO(model))
 }

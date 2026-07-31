@@ -25,6 +25,22 @@ import (
 	"nvidia-router/internal/upstream/nvidia"
 )
 
+func TestFirstEnabledIDSkipsCoolingDownKeys(t *testing.T) {
+	service, db, _ := newNVIDIAKeyTestService(t, newFakeValidator())
+	first := insertKeyForDiscoveryTest(t, db)
+	second := insertKeyForDiscoveryTest(t, db)
+	if _, err := db.Exec(`UPDATE nvidia_keys SET cooldown_until = ? WHERE id = ?`, "2026-07-30T04:00:30Z", first); err != nil {
+		t.Fatalf("set cooldown: %v", err)
+	}
+	id, err := service.FirstEnabledID(context.Background())
+	if err != nil {
+		t.Fatalf("FirstEnabledID: %v", err)
+	}
+	if id != second {
+		t.Fatalf("FirstEnabledID = %d, want %d", id, second)
+	}
+}
+
 func TestImportAcceptsGenericPrintableTokensAndDeduplicates(t *testing.T) {
 	validator := newFakeValidator()
 	validToken := "generic-build-token-123456"
@@ -441,6 +457,19 @@ func createStateTestModel(t *testing.T, db *sql.DB) int64 {
 		t.Fatalf("ResolveEnabled: %v", err)
 	}
 	return model.ID
+}
+
+func insertKeyForDiscoveryTest(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	result, err := db.Exec(`INSERT INTO nvidia_keys (ciphertext, nonce, fingerprint, display_prefix, display_suffix, created_at, updated_at) VALUES (x'01', x'02', randomblob(16), 'p', 's', '2026-07-30T03:00:00Z', '2026-07-30T03:00:00Z')`)
+	if err != nil {
+		t.Fatalf("insert discovery key: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("discovery key id: %v", err)
+	}
+	return id
 }
 
 func newNVIDIAKeyTestService(t *testing.T, validator *fakeValidator) (*Service, *sql.DB, string) {

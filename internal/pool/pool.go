@@ -50,6 +50,7 @@ type Pool struct {
 	settings runtimeconfig.Provider
 	clock    clock.Clock
 	keys     map[int64]*keyState
+	models   map[int64]bool
 	order    []int64
 	cursor   int
 	waiters  waitQueue
@@ -64,6 +65,7 @@ func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
 		settings: settings,
 		clock:    source,
 		keys:     make(map[int64]*keyState),
+		models:   make(map[int64]bool),
 	}
 }
 
@@ -110,6 +112,20 @@ func (p *Pool) currentSnapshot() runtimeconfig.Snapshot {
 
 func isCoolingDown(until *time.Time, now time.Time) bool {
 	return until != nil && now.Before(*until)
+}
+
+func (p *Pool) SetModelEnabled(modelID int64, enabled bool) {
+	p.mu.Lock()
+	p.models[modelID] = enabled
+	p.unlockAndDispatch()
+}
+
+func (p *Pool) ClearModelBlocks(modelID int64) {
+	p.mu.Lock()
+	for _, state := range p.keys {
+		delete(state.blocks, modelID)
+	}
+	p.unlockAndDispatch()
 }
 
 func (p *Pool) LoadSnapshot(keys []keystate.KeySnapshot, blocks []keystate.ModelBlock) {
@@ -233,6 +249,9 @@ func (p *Pool) tryAcquire(modelID int64, attempted map[int64]struct{}) (Lease, b
 
 func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}) (Lease, unavailableState) {
 	now := p.clock.Now()
+	if enabled, known := p.models[modelID]; known && !enabled {
+		return nil, unavailableState{reason: UnavailableModelBlocked}
+	}
 	hasEnabled := false
 	hasUnblocked := false
 	hasReady := false

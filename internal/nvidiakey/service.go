@@ -51,7 +51,7 @@ func (s *Service) List(ctx context.Context) ([]Key, error) {
 }
 
 func (s *Service) FirstEnabledID(ctx context.Context) (int64, error) {
-	id, err := s.repository.FirstEnabledID(ctx)
+	id, err := s.repository.FirstEnabledID(ctx, s.clock.Now())
 	if err != nil {
 		return 0, fmt.Errorf("find NVIDIA key for model discovery: %w", err)
 	}

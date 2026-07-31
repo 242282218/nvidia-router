@@ -46,6 +46,15 @@ func (r *Repository) SaveSelections(ctx context.Context, selections []Selection,
 }
 
 func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now time.Time) error {
+	var previousKind sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM models WHERE public_id = ?`, selection.PublicID).Scan(&previousKind); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load existing model kind %q: %w", selection.PublicID, err)
+	}
+	if previousKind.Valid && Kind(previousKind.String) != selection.Kind {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM nvidia_key_model_blocks WHERE model_id = (SELECT id FROM models WHERE public_id = ?)`, selection.PublicID); err != nil {
+			return fmt.Errorf("clear model blocks after kind change %q: %w", selection.PublicID, err)
+		}
+	}
 	verifiedAt := optionalTimestamp(selection.CapabilityVerifiedAt)
 	timestamp := formatTimestamp(now)
 	if _, err := tx.ExecContext(ctx, `

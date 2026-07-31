@@ -67,6 +67,8 @@ func (s *fakeStateSync) UpsertKey(k keystate.KeySnapshot)                       
 func (s *fakeStateSync) RemoveKey(id int64)                                         { s.removed = append(s.removed, id) }
 func (*fakeStateSync) ApplySuccess(int64)                                           {}
 func (*fakeStateSync) ApplyFailure(int64, int64, interface{}, keystate.KeySnapshot) {}
+func (*fakeStateSync) SetModelEnabled(int64, bool)                                  {}
+func (*fakeStateSync) ClearModelBlocks(int64)                                       {}
 func (s *fakeStateSync) SetModelBlock(k, m int64, b bool) {
 	v := int64(0)
 	if b {

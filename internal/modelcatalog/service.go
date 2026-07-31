@@ -1,11 +1,17 @@
 package modelcatalog
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"time"
 
 	"nvidia-router/internal/clock"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -15,6 +21,22 @@ type SecretProvider interface {
 
 type ModelDiscoverer interface {
 	Models(context.Context, string) ([]string, error)
+}
+
+type chatModelTester interface {
+	Chat(context.Context, runtimeconfig.Snapshot, string, []byte, bool) (*http.Response, error)
+}
+
+type embeddingModelTester interface {
+	Embeddings(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error)
+}
+
+type asrModelTester interface {
+	AudioTranscriptions(context.Context, runtimeconfig.Snapshot, string, []byte, string) (*http.Response, error)
+}
+
+type ttsModelTester interface {
+	AudioSpeech(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error)
 }
 
 type Service struct {
@@ -129,28 +151,98 @@ func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (M
 	if err != nil {
 		return Model{}, fmt.Errorf("load model before manual test: %w", err)
 	}
-	if requiresVerification(model.Kind) {
-		return Model{}, ErrManualTestRequired
-	}
-	candidates, err := s.DiscoverCandidates(ctx, keyID)
-	if err != nil {
+	if err := s.testTargetModel(ctx, keyID, model); err != nil {
 		return Model{}, fmt.Errorf("manual model test: %w", err)
-	}
-	found := false
-	for _, candidate := range candidates {
-		if candidate.UpstreamID == model.UpstreamID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return Model{}, ErrManualTestRequired
 	}
 	verified, err := s.repository.VerifyAndUnblock(ctx, keyID, modelID, s.clock.Now())
 	if err != nil {
 		return Model{}, fmt.Errorf("verify model and clear block: %w", err)
 	}
 	return verified, nil
+}
+
+func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model) error {
+	return s.secrets.WithSecret(ctx, keyID, func(secret []byte) error {
+		var response *http.Response
+		var err error
+		snapshot := runtimeconfig.Snapshot{}
+		switch model.Kind {
+		case KindChat:
+			tester, ok := s.discoverer.(chatModelTester)
+			if !ok {
+				return ErrManualTestRequired
+			}
+			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "messages": []map[string]string{{"role": "user", "content": "ping"}}, "max_tokens": 1})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			response, err = tester.Chat(ctx, snapshot, string(secret), body, false)
+		case KindEmbedding:
+			tester, ok := s.discoverer.(embeddingModelTester)
+			if !ok {
+				return ErrManualTestRequired
+			}
+			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "input": "ping"})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			response, err = tester.Embeddings(ctx, snapshot, string(secret), body)
+		case KindASR:
+			tester, ok := s.discoverer.(asrModelTester)
+			if !ok {
+				return ErrManualTestRequired
+			}
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			_ = writer.WriteField("model", model.UpstreamID)
+			part, partErr := writer.CreateFormFile("file", "probe.wav")
+			if partErr != nil {
+				return partErr
+			}
+			_, _ = part.Write([]byte("probe"))
+			if err = writer.Close(); err != nil {
+				return err
+			}
+			response, err = tester.AudioTranscriptions(ctx, snapshot, string(secret), body.Bytes(), writer.FormDataContentType())
+		case KindTTS:
+			tester, ok := s.discoverer.(ttsModelTester)
+			if !ok {
+				return ErrManualTestRequired
+			}
+			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "input": "ping", "voice": "default", "response_format": "wav"})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			response, err = tester.AudioSpeech(ctx, snapshot, string(secret), body)
+		default:
+			return ErrManualTestRequired
+		}
+		if err != nil || response == nil {
+			return ErrManualTestRequired
+		}
+		defer response.Body.Close()
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return ErrManualTestRequired
+		}
+		switch model.Kind {
+		case KindChat:
+			_, err = nvidia.ValidateNonstreamChat(response)
+		case KindEmbedding:
+			_, err = nvidia.ValidateNonstreamEmbeddings(response)
+		case KindASR:
+			_, err = nvidia.ValidateNonstreamAudio(response)
+		case KindTTS:
+			var payload []byte
+			payload, err = io.ReadAll(io.LimitReader(response.Body, 1))
+			if err == nil && len(payload) == 0 {
+				err = fmt.Errorf("empty audio response")
+			}
+		}
+		if err != nil {
+			return ErrManualTestRequired
+		}
+		return nil
+	})
 }
 
 func (s *Service) ListEnabled(ctx context.Context) ([]Model, error) {

@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -132,6 +136,26 @@ func TestAudioModelsRequireVerificationBeforeEnable(t *testing.T) {
 	}
 }
 
+func TestChangingModelKindClearsModelBlocks(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	if err := service.SaveSelection(context.Background(), []Selection{{PublicID: "kind-block", UpstreamID: "vendor/kind-block", DisplayName: "Kind Block", Kind: KindChat, Enabled: true}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	model, err := service.Resolve(context.Background(), "kind-block", Requirements{Kind: KindChat})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	status := 403
+	if err := service.BlockKeyModel(context.Background(), keyID, model.ID, "model_forbidden", &status); err != nil {
+		t.Fatalf("BlockKeyModel: %v", err)
+	}
+	if _, err := service.Patch(context.Background(), model.ID, Patch{Kind: kindPointer(KindEmbedding)}); err != nil {
+		t.Fatalf("Patch kind: %v", err)
+	}
+	assertBlockCount(t, db, 0)
+}
+
 func TestChangingModelKindClearsCapabilityVerification(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	verifiedAt := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
@@ -167,6 +191,30 @@ func TestChangingModelKindClearsCapabilityVerification(t *testing.T) {
 }
 
 func kindPointer(kind Kind) *Kind { return &kind }
+
+func TestManualUnblockUsesTargetChatEndpoint(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	if err := service.SaveSelection(context.Background(), []Selection{{PublicID: "manual-chat", UpstreamID: "vendor/manual-chat", DisplayName: "Manual Chat", Kind: KindChat, Enabled: true}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	model, err := service.Resolve(context.Background(), "manual-chat", Requirements{Kind: KindChat})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	status := 403
+	if err := service.BlockKeyModel(context.Background(), keyID, model.ID, "model_forbidden", &status); err != nil {
+		t.Fatalf("BlockKeyModel: %v", err)
+	}
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+	if _, err := service.VerifyAndUnblock(context.Background(), keyID, model.ID); err != nil {
+		t.Fatalf("VerifyAndUnblock: %v", err)
+	}
+	if discoverer.chatCalls != 1 || discoverer.modelsCalls != 0 {
+		t.Fatalf("target calls chat/models = %d/%d, want 1/0", discoverer.chatCalls, discoverer.modelsCalls)
+	}
+	assertBlockCount(t, db, 0)
+}
 
 func TestModelsListingCannotVerifyAudioEndpointCapability(t *testing.T) {
 	service, db, _, discoverer := newCatalogTestService(t)
@@ -296,13 +344,26 @@ func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([
 }
 
 type fakeDiscoverer struct {
-	models    []string
-	lastToken string
+	models       []string
+	lastToken    string
+	modelsCalls  int
+	chatCalls    int
+	chatResponse string
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
 	d.lastToken = token
+	d.modelsCalls++
 	return append([]string(nil), d.models...), nil
+}
+
+func (d *fakeDiscoverer) Chat(_ context.Context, _ runtimeconfig.Snapshot, _ string, _ []byte, _ bool) (*http.Response, error) {
+	d.chatCalls++
+	body := d.chatResponse
+	if body == "" {
+		body = `{"choices":[]}`
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 }
 
 type catalogClock struct{}

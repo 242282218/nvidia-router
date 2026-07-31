@@ -84,6 +84,27 @@ func TestTryAcquireFiltersUnavailableKeys(t *testing.T) {
 	busy.Release()
 }
 
+func TestUpsertKeyPreservesModelBlocks(t *testing.T) {
+	p := New(testSettings{}, fakeClock{})
+	p.LoadSnapshot(testKeys(1), []keystate.ModelBlock{{KeyID: 1, ModelID: 100}})
+	p.UpsertKey(keystate.KeySnapshot{ID: 1, Enabled: true})
+	if _, ok := p.tryAcquire(100, nil); ok {
+		t.Fatal("UpsertKey cleared an existing model block")
+	}
+}
+
+func TestModelStateChangesSchedulingImmediately(t *testing.T) {
+	p := New(testSettings{}, fakeClock{})
+	p.LoadSnapshot(testKeys(1), nil)
+	p.SetModelEnabled(100, false)
+	if _, ok := p.tryAcquire(100, nil); ok {
+		t.Fatal("disabled model was acquired")
+	}
+	p.SetModelEnabled(100, true)
+	lease := mustTryAcquire(t, p, 100, nil)
+	lease.Release()
+}
+
 func TestStateSyncChangesSchedulingImmediately(t *testing.T) {
 	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
 	p := New(testSettings{}, fakeClock{now: now})

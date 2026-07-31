@@ -49,13 +49,14 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	return keys, nil
 }
 
-func (r *Repository) FirstEnabledID(ctx context.Context) (int64, error) {
+func (r *Repository) FirstEnabledID(ctx context.Context, now time.Time) (int64, error) {
 	var id int64
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT id FROM nvidia_keys
 		WHERE enabled = 1 AND auth_invalid = 0
+		  AND (cooldown_until IS NULL OR cooldown_until <= ?)
 		ORDER BY id LIMIT 1
-	`).Scan(&id); err != nil {
+	`, formatTimestamp(now)).Scan(&id); err != nil {
 		return 0, fmt.Errorf("find first enabled NVIDIA key: %w", err)
 	}
 	return id, nil

@@ -18,12 +18,16 @@ import (
 
 func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/models" {
+		switch request.URL.Path {
+		case "/v1/models":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"data":[{"id":"vendor/chat"}]}`)
+		case "/v1/chat/completions":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"ok"}}]}`)
+		default:
 			http.NotFound(writer, request)
-			return
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"data":[{"id":"vendor/chat"}]}`)
 	}))
 	t.Cleanup(upstream.Close)
 	baseURL, err := url.Parse(upstream.URL)
