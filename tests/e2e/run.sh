@@ -4,8 +4,11 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS_TMP_DIR="$(mktemp -d)"
 HARNESS_BIN="${HARNESS_TMP_DIR}/nvidia-router-e2e-harness"
+ARTIFACT_DIR="${E2E_ARTIFACT_DIR:-${ROOT_DIR}/web/test-results}"
 HARNESS_LOG="${HARNESS_TMP_DIR}/harness.log"
+HARNESS_ARTIFACT_LOG="${ARTIFACT_DIR}/harness.log"
 HARNESS_PID=""
+mkdir -p "${ARTIFACT_DIR}"
 
 print_harness_log() {
   if [[ -f "${HARNESS_LOG}" ]]; then
@@ -36,6 +39,9 @@ cleanup() {
   fi
   if (( status != 0 )); then
     print_harness_log
+  fi
+  if [[ -f "${HARNESS_LOG}" ]]; then
+    cp "${HARNESS_LOG}" "${HARNESS_ARTIFACT_LOG}"
   fi
   rm -rf "${HARNESS_TMP_DIR}"
   exit "${status}"
@@ -69,12 +75,14 @@ for _ in {1..100}; do
 done
 if [[ -z "${BASE_URL}" ]]; then
   printf 'E2E harness did not provide a base URL.\n' >&2
+  print_harness_log
   exit 1
 fi
 
 for _ in {1..100}; do
   if ! kill -0 "${HARNESS_PID}" 2>/dev/null; then
     printf 'E2E harness exited while waiting for health.\n' >&2
+    print_harness_log
     exit 1
   fi
   if curl --fail --silent "${BASE_URL}/health/live" >/dev/null; then
@@ -84,10 +92,12 @@ for _ in {1..100}; do
 done
 if ! kill -0 "${HARNESS_PID}" 2>/dev/null; then
   printf 'E2E harness exited before health became ready.\n' >&2
+  print_harness_log
   exit 1
 fi
 if ! curl --fail --silent "${BASE_URL}/health/live" >/dev/null; then
   printf 'E2E harness health check failed.\n' >&2
+  print_harness_log
   exit 1
 fi
 

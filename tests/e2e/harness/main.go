@@ -22,39 +22,54 @@ import (
 	"nvidia-router/internal/config"
 )
 
-const validModel = "meta/llama-3.1-8b-instruct"
+const (
+	validModel        = "meta/llama-3.1-8b-instruct"
+	validFixtureKey   = "fixture-second-valid-key-123456789"
+	allowedFixtureKey = "nvapi-fixture-not-a-real-key-123456789"
+)
 
 func main() {
+	if err := run(); err != nil {
+		panic(err)
+	}
+}
+
+func run() (runErr error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	tempDir, err := os.MkdirTemp("", "nvidia-router-e2e-")
 	if err != nil {
-		fatal(err)
+		return err
 	}
-	defer os.RemoveAll(tempDir)
 	dataDir := filepath.Join(tempDir, "data")
 	workDir := filepath.Join(tempDir, "tmp")
+	defer func() {
+		cleanupFiles(dataDir, workDir)
+		if err := os.RemoveAll(tempDir); runErr == nil && err != nil {
+			runErr = fmt.Errorf("remove e2e temp dir: %w", err)
+		}
+	}()
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
-		fatal(err)
+		return err
 	}
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
-		fatal(err)
+		return err
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(mockNVIDIA))
 	defer upstream.Close()
 	baseURL, err := url.Parse(upstream.URL)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	address, err := freeAddress()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	var masterKey [32]byte
 	if _, err := rand.Read(masterKey[:]); err != nil {
-		fatal(err)
+		return err
 	}
 
 	encodedMasterKey := base64.RawURLEncoding.EncodeToString(masterKey[:])
@@ -66,12 +81,12 @@ func main() {
 		"NVIDIA_ROUTER_NVIDIA_BASE_URL": baseURL.String(),
 	} {
 		if err := os.Setenv(name, value); err != nil {
-			fatal(fmt.Errorf("set %s: %w", name, err))
+			return fmt.Errorf("set %s: %w", name, err)
 		}
 	}
 	loadedConfig, err := config.LoadFromEnv(config.LoadOptions{AllowInsecureTestUpstream: true})
 	if err != nil {
-		fatal(fmt.Errorf("load e2e config: %w", err))
+		return fmt.Errorf("load e2e config: %w", err)
 	}
 	application, err := app.New(ctx, app.Dependencies{
 		Config:           loadedConfig,
@@ -79,16 +94,16 @@ func main() {
 		NVIDIAHTTPClient: upstream.Client(),
 	})
 	if err != nil {
-		fatal(err)
+		return err
 	}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- application.Serve(ctx) }()
 	fmt.Printf("http://%s\n", address)
 	if err := <-serveErr; err != nil && ctx.Err() == nil {
-		fatal(err)
+		return err
 	}
-	cleanupFiles(dataDir, workDir)
+	return nil
 }
 
 func freeAddress() (string, error) {
@@ -148,7 +163,7 @@ func mockNVIDIA(writer http.ResponseWriter, request *http.Request) {
 }
 
 func invalidCredential(token string) bool {
-	return token == "" || strings.Contains(strings.ToLower(token), "invalid")
+	return token != validFixtureKey && token != allowedFixtureKey
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
@@ -166,9 +181,4 @@ func cleanupFiles(dataDir, workDir string) {
 		_ = os.Remove(path)
 	}
 	_ = os.RemoveAll(workDir)
-}
-
-func fatal(err error) {
-	_, _ = fmt.Fprintf(os.Stderr, "e2e harness: %v\n", err)
-	os.Exit(1)
 }

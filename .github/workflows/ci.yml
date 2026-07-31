@@ -114,3 +114,14 @@ jobs:
 
       - name: Run management E2E
         run: bash tests/e2e/run.sh
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          if-no-files-found: warn
+          path: |
+            web/test-results
+            web/playwright-report
+            web/test-results/harness.log
