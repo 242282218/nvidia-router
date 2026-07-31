@@ -100,7 +100,9 @@ Audio 不能仅凭 `/v1/models` 列表、模型名称或 Mock 测试启用。只
 3. TTS 请求实际返回 HTTP `200`，且 Content-Type 为 `audio/*` 或 `application/octet-stream`，响应音频非空；
 4. 成功请求完成后，使用真实成功时间设置对应模型的 `capability_verified_at`，随后才允许启用 ASR/TTS 模型。
 
-当前公开管理 API、CLI 和页面没有提供把真实 Audio 成功结果写入 `capability_verified_at` 的受审计操作；模型 PATCH 也不接受该字段。因此当前不能声称 Audio 已完成验收，也不能通过直接修改 SQLite 或伪造时间戳绕过门禁。没有真实模型、endpoint、权限或音频素材时，Audio case 应明确记为 `SKIP`，`SKIP` 不是 `PASS`。
+Audio 验证由管理 API 受审计完成：`POST /admin/api/models/<id>/test`，兼容别名为 `/admin/api/models/<id>/verify`。请求体严格为 `{"key_id": <positive integer>}`；未知字段（包括 `verified_at` 和 `capability_verified_at`）返回 `400 invalid_request`。服务端使用对应加密 NVIDIA Key 真实调用模型 endpoint，成功后生成 UTC `capability_verified_at`，并在事务中清除该 Key 与模型的 block；失败不写入时间、不清 block，调用者不能提交验证时间。
+
+ASR/TTS 在验证时间为空时不能启用。验证成功后仍必须显式 `PATCH /admin/api/models/<id>`，提交 `{"enabled":true}`；验证接口不会自动启用模型。没有真实模型、endpoint、权限或音频素材时，Audio case 应明确记为 `SKIP`，`SKIP` 不是 `PASS`。
 
 ## 认证和健康接口
 

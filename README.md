@@ -113,6 +113,10 @@ docker compose run --rm --no-deps app admin reset-password --password '<new-pass
 
 所有未知的 `/v1/*` 路径返回结构化 HTTP `501`，不会转发到 NVIDIA。
 
+Audio 模型的真实能力验证使用 `POST /admin/api/models/<id>/test`，兼容别名为 `/admin/api/models/<id>/verify`。请求体只允许 `{"key_id": <positive integer>}`；未知字段返回 `400 invalid_request`。服务端使用对应加密 NVIDIA Key 真实调用模型 endpoint，成功后生成 UTC `capability_verified_at` 并事务清除 block；失败不写时间、不清 block，调用者不能提交 `verified_at`。ASR/TTS 验证前不能启用，验证后仍需显式 PATCH `{"enabled":true}`。
+
+真实联调见 [docs/NVIDIA真实联调说明.md](docs/NVIDIA真实联调说明.md)。`NVIDIA_ROUTER_LIVE_KEY` 只能从运行环境注入。`SKIP` 不是 PASS，命令成功退出也不能替代逐 case `status=PASS`；CI 负责 race、lint、secret scan、Compose 和 E2E，真实 NVIDIA 仍需显式注入运行时凭证。真实联调会产生 NVIDIA 费用并处理敏感数据，第一轮普通 HTTP 明文风险仍然存在。
+
 ## 开发和本地验证
 
 需要 Go、Node.js、pnpm；Docker 验证还需要 Docker Engine 和 Compose 插件。下面列出任务要求的命令及其在当前仓库中的真实入口和结果：

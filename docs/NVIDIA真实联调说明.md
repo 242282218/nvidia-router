@@ -63,13 +63,19 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 
 ### 4.1 何时执行
 
-- ASR：同时设置 `NVIDIA_ROUTER_LIVE_ASR_MODEL` 和 `NVIDIA_ROUTER_LIVE_ASR_FILE`，并确保模型已经在 `/v1/models` 中启用。测试调用 `POST /v1/audio/transcriptions`，上传 `file` 和 `model`，要求 HTTP `200`，且 JSON 中 `text` 或 `transcript` 至少一个非空。
+- ASR：同时设置 `NVIDIA_ROUTER_LIVE_ASR_MODEL` 和 `NVIDIA_ROUTER_LIVE_ASR_FILE`。测试调用 `POST /v1/audio/transcriptions`，上传 `file` 和 `model`，要求 HTTP `200`，且 JSON 中 `text` 或 `transcript` 至少一个非空。
 - TTS：设置 `NVIDIA_ROUTER_LIVE_TTS_MODEL`；`NVIDIA_ROUTER_LIVE_TTS_VOICE` 为空时测试代码使用 `alloy`。测试调用 `POST /v1/audio/speech`，要求 HTTP `200`、Content-Type 为 `audio/*` 或 `application/octet-stream`，且响应音频非空。
 - 账户没有对应真实模型、endpoint、权限或测试素材时，不要填一个猜测值强行运行。让该 Audio case 明确 SKIP，并记录“未启用模型/未完成真实能力验证”；SKIP 不是 PASS，也不能据此设置验证时间。
 
-### 4.2 设置 `capability_verified_at`
+### 4.2 管理 API 验证与启用顺序
 
-成功条件必须同时包括：实际账户、实际模型、实际 endpoint 请求成功，并且满足上面的响应断言。成功后，将对应模型的 `capability_verified_at` 设置为该次成功验证完成时间的 UTC 时间戳；随后才能启用 ASR/TTS 模型。验证失败、只发现模型、只通过 Mock，或仅返回一个可能支持的模型名称，都不能设置该字段。
+成功条件必须同时包括：实际账户、实际模型、实际 endpoint 请求成功，并且满足上面的响应断言。管理端提供以下受审计入口：
+
+- `POST /admin/api/models/<id>/test`；兼容别名为 `POST /admin/api/models/<id>/verify`。
+- 请求体严格为 `{"key_id": <positive integer>}`。未知字段（包括调用者提交 `verified_at` 或 `capability_verified_at`）返回 `400 invalid_request`。
+- 服务端读取对应的加密 NVIDIA Key，真实调用该模型 endpoint；成功后由服务端生成 UTC `capability_verified_at`，并在同一事务中清除该 Key 与模型的 block。
+- 验证失败不写入时间，也不清除 block。调用者不能指定验证时间。
+- ASR/TTS 在 `capability_verified_at` 为空时不能启用。验证成功后仍必须显式调用 `PATCH /admin/api/models/<id>`，提交 `{"enabled":true}`；验证接口不会隐式启用模型。
 
 当前仓库的管理模型 API 可用于发现和维护模型：
 
@@ -78,7 +84,7 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 - `GET /admin/api/models`：查看模型的 `kind`、`enabled` 和 `capability_verified_at`。
 - `PATCH /admin/api/models/<id>`：修改允许的模型字段和 `enabled` 状态。ASR/TTS 在验证时间为空时不能启用。
 
-需要特别注意：当前代码虽然在内部模型服务中提供 `SetCapabilityVerified`，但没有把“真实 ASR/TTS 成功后写入 `capability_verified_at`”暴露成管理 HTTP API、CLI 或页面操作；现有模型 PATCH 也不接受该字段。因此，本仓库当前不能通过已公开的管理操作完成这一步。不要直接修改 SQLite，也不要在文档或联调记录中伪造时间戳；若要启用 Audio，必须先提供受审计的管理操作，使用真实成功验证的 UTC 时间调用该能力。补齐该入口前，ASR/TTS 只能保持未验证、停用状态；这不是可以忽略的 PASS 条件。
+不要直接修改 SQLite，也不要在文档或联调记录中伪造时间戳。验证接口只负责真实探测、写入服务端时间和清 block；Audio 的启用仍由单独的 `PATCH` 明确完成。
 
 ## 5. 联调环境变量
 
@@ -108,7 +114,7 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 | --- | --- | --- |
 | `NVIDIA_ROUTER_LIVE_BASE_URL` | 必需 | 路由器地址，并用于健康检查和管理 API |
 | `NVIDIA_ROUTER_ADMIN_PASSWORD` | 必需 | 登录管理 API；不要使用占位值 |
-| `NVIDIA_ROUTER_LIVE_KEY` | 必需 | 原始 NVIDIA API Key；脚本导入后立即取消该变量 |
+| `NVIDIA_ROUTER_LIVE_KEY` | 必需 | 原始 NVIDIA API Key；只能来自运行环境，成功导入或识别后应立即取消该变量 |
 | `NVIDIA_ROUTER_LIVE_CHAT_MODEL` | 必需 | 传给 live test 的 Chat 模型 |
 | `NVIDIA_ROUTER_ADMIN_USERNAME` | 可选 | 管理员用户名；未设置时脚本使用 `admin` |
 | `NVIDIA_ROUTER_LIVE_RESPONSES_MODEL` | 可选 | 由 live test 使用；为空时回退 Chat 模型 |
@@ -118,15 +124,18 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 | `NVIDIA_ROUTER_LIVE_TTS_MODEL` | 可选 | 由 live test 使用 |
 | `NVIDIA_ROUTER_LIVE_TTS_VOICE` | 可选 | 由 live test 使用，空值默认为 `alloy` |
 
-脚本先用 `NVIDIA_ROUTER_LIVE_KEY` 调用管理 API 导入 NVIDIA Key，再创建名称类似 `live-nvidia-<UTC 时间>-<PID>` 的临时 Access Key，并把返回的明文只放入进程环境中的 `NVIDIA_ROUTER_LIVE_ACCESS_KEY`。脚本随后运行 Go live test，不把测试数据写入仓库。
+`NVIDIA_ROUTER_LIVE_KEY` 只能来自运行环境，不能写入仓库。完整脚本生命周期应为：导入或识别临时 NVIDIA Key，按需调用上述验证接口并显式启用 Audio，创建临时 Access Key，运行 live case，撤销 Access Key，删除脚本自己新导入的 NVIDIA Key，注销管理员会话。正常输出只允许 `case`、`status` 和 `duration`，不得输出秘密、请求/响应正文或测试原始日志。
+
+当前工作区的 `scripts/test/live-nvidia.sh` 尚未实现这套完整生命周期：它只检查已有可用 NVIDIA Key，未导入 `NVIDIA_ROUTER_LIVE_KEY`、未调用模型验证/启用接口，并直接输出 `go test -v` 原始日志。文档不能把这些未实现行为记为联调 PASS；完成脚本收尾后必须重新核对本节。
 
 ## 6. 临时凭证、失败清理和输出安全
 
 脚本在启动时注册 `EXIT` trap。无论 Go 测试失败、前置步骤失败，还是收到中断信号，清理逻辑都会尽力执行：
 
 1. 若临时 Access Key 已创建，调用 `DELETE /admin/api/access-keys/<id>` 撤销它；撤销失败会使脚本最终失败。
-2. 若管理员会话已建立，调用 `POST /admin/api/auth/logout` 注销会话；注销失败会使原本成功的脚本最终失败。
-3. `unset temporary_access_key NVIDIA_ROUTER_LIVE_ACCESS_KEY admin_session`，清除进程环境中的临时值。
+2. 删除脚本本次新导入的 NVIDIA Key；已有 Key 不得删除。
+3. 若管理员会话已建立，调用 `POST /admin/api/auth/logout` 注销会话；注销失败会使原本成功的脚本最终失败。
+4. `unset` 所有临时秘密、Cookie 和环境变量。
 
 清理结果会输出 `RevokeTemporaryAccessKey` 和 `AdminLogout` 的状态。脚本和 live test 的正常状态输出只应包含 case 名、`status` 和耗时；不得输出 NVIDIA Key、Access Key、管理员 Cookie、请求正文、响应正文、SSE 数据、音频内容或完整错误正文。发现终端、CI 日志或日志文件中有这些内容时，应立即停止传播并轮换相关凭证。
 
@@ -164,8 +173,9 @@ bash scripts/test/live-nvidia.sh
 - 任一必测 case 为 `SKIP`，结果只能记为“未完成真实联调”，不能记为 PASS。
 - 任一必测 case 为 `FAIL`，结果为 FAIL；先检查服务、白名单、模型权限、上游配额和 endpoint，再重新运行。
 - ASR/TTS 没有真实可用模型或 endpoint 时可以明确 `SKIP`，但必须说明未启用模型/未完成验证，且不能设置 `capability_verified_at`。
-- ASR/TTS 只有在真实请求和响应断言成功后，才允许进入能力验证流程；当前仓库缺少写入该字段的公开管理入口，因此不能声称 Audio 已完成验收。
+- ASR/TTS 只有在真实请求和响应断言成功后，才允许调用 `/test` 或 `/verify`；验证成功后仍需显式 PATCH `enabled=true`。
 - 文档命令的成功只代表命令本身成功，不替代 live case 的 PASS 证据。
+- CI 负责 race、lint、secret scan、Compose 和浏览器 E2E；真实 NVIDIA 联调不由普通 CI 自动提供凭证，必须显式注入运行时凭证。
 
 ## 9. 风险和注意事项
 
