@@ -291,14 +291,16 @@ func TestVerifyAndUnblockAudioFailureDoesNotWriteVerification(t *testing.T) {
 
 func TestAudioVerificationRejectsMissingOrNonAudioContentType(t *testing.T) {
 	cases := []struct {
-		name        string
-		contentType string
-		body        string
+		name              string
+		contentType       string
+		contentTypeHeader bool
+		body              string
 	}{
-		{name: "missing", contentType: "audio/wav", body: ""},
-		{name: "empty", contentType: "", body: "audio"},
-		{name: "text", contentType: "text/plain", body: "audio"},
-		{name: "json", contentType: "application/json", body: "audio"},
+		{name: "missing-header", body: "audio"},
+		{name: "empty-header", contentTypeHeader: true, body: "audio"},
+		{name: "empty-body", contentType: "audio/wav", contentTypeHeader: true},
+		{name: "text", contentType: "text/plain", contentTypeHeader: true, body: "audio"},
+		{name: "json", contentType: "application/json", contentTypeHeader: true, body: "audio"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -316,6 +318,7 @@ func TestAudioVerificationRejectsMissingOrNonAudioContentType(t *testing.T) {
 			}
 			discoverer.ttsContentType = testCase.contentType
 			discoverer.ttsContentTypeSet = true
+			discoverer.ttsContentTypeHeaderSet = testCase.contentTypeHeader
 			discoverer.ttsResponse = testCase.body
 			discoverer.ttsResponseSet = true
 
@@ -351,6 +354,7 @@ func TestAudioVerificationAcceptsAnyAudioContentType(t *testing.T) {
 			}
 			discoverer.ttsContentType = contentType
 			discoverer.ttsContentTypeSet = true
+			discoverer.ttsContentTypeHeaderSet = true
 			discoverer.ttsResponse = "audio"
 			discoverer.ttsResponseSet = true
 
@@ -505,19 +509,20 @@ func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([
 }
 
 type fakeDiscoverer struct {
-	models            []string
-	lastToken         string
-	modelsCalls       int
-	chatCalls         int
-	chatResponse      string
-	asrCalls          int
-	ttsCalls          int
-	asrResponse       string
-	ttsResponse       string
-	ttsResponseSet    bool
-	ttsContentType    string
-	ttsContentTypeSet bool
-	lastAudioModel    string
+	models                  []string
+	lastToken               string
+	modelsCalls             int
+	chatCalls               int
+	chatResponse            string
+	asrCalls                int
+	ttsCalls                int
+	asrResponse             string
+	ttsResponse             string
+	ttsResponseSet          bool
+	ttsContentType          string
+	ttsContentTypeSet       bool
+	ttsContentTypeHeaderSet bool
+	lastAudioModel          string
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
@@ -557,10 +562,14 @@ func (d *fakeDiscoverer) AudioSpeech(_ context.Context, _ runtimeconfig.Snapshot
 		response = "audio"
 	}
 	contentType := d.ttsContentType
+	header := make(http.Header)
 	if !d.ttsContentTypeSet {
 		contentType = "audio/wav"
+		header.Set("Content-Type", contentType)
+	} else if d.ttsContentTypeHeaderSet {
+		header.Set("Content-Type", contentType)
 	}
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: http.Header{"Content-Type": []string{contentType}}}, nil
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: header}, nil
 }
 
 type catalogClock struct{}
