@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const validKey = 'nvapi-valid-key-abcdefghijklmnopqrstuvwxyz'
-const secondValidKey = 'nvapi-second-key-abcdefghijklmnopqrstuvwxyz'
+const validKey = 'nvapi-fixture-not-a-real-key-123456789'
+const secondValidKey = 'fixture-second-valid-key-123456789'
 const invalidKey = 'invalid-key-value-that-is-long-enough'
 
 async function login(page: Page): Promise<void> {
@@ -35,7 +35,7 @@ test.describe('management resources', () => {
     await page.locator('input[name="nvidia-key"]').fill(validKey)
     await page.getByTestId('single-import-form').getByRole('button', { name: '导入' }).click()
     await expect(page.getByText('imported')).toBeVisible()
-    await expect(page.getByTestId('key-table')).toContainText('nvapi-va…wxyz')
+    await expect(page.getByTestId('key-table')).toContainText('nvapi-fi…6789')
 
     await page.getByTestId('open-batch-import').click()
     await page.locator('textarea[name="batch-keys"]').fill(`${invalidKey}\n${secondValidKey}`)
@@ -51,7 +51,7 @@ test.describe('management resources', () => {
     await page.goto('/admin/nvidia-keys')
     await page.locator('input[name="nvidia-key"]').fill(validKey)
     await page.getByTestId('single-import-form').getByRole('button', { name: '导入' }).click()
-    await expect(page.getByTestId('key-table')).toContainText('nvapi-va…wxyz')
+    await expect(page.getByTestId('key-table')).toContainText('nvapi-fi…6789')
     await page.getByTestId('test-all-keys').click()
     await expect(page.getByTestId('key-test-results')).toContainText('valid')
     await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click()
@@ -81,9 +81,10 @@ test.describe('management resources', () => {
     expect(plaintext).toMatch(/^nvr_/)
     await page.getByTestId('close-created-access-key').click()
     await expect(page.getByTestId('created-access-key')).toHaveCount(0)
-    await expect(page.getByTestId('access-key-cards').getByText('e2e-client')).toBeVisible()
+    const desktopAccessKeyRow = page.getByRole('row').filter({ hasText: 'e2e-client' })
+    await expect(desktopAccessKeyRow).toBeVisible()
     page.once('dialog', (dialog) => void dialog.accept())
-    await page.getByTestId('revoke-access-key-1').click()
+    await desktopAccessKeyRow.getByRole('button', { name: '撤销' }).click()
     await expect(page.getByText('已撤销')).toBeVisible()
   })
 })

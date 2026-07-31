@@ -92,15 +92,20 @@ func main() {
 }
 
 func freeAddress() (string, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", fmt.Errorf("reserve local port: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		address := listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			return "", fmt.Errorf("release local port: %w", err)
+		}
+		return address, nil
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		return "", fmt.Errorf("release local port: %w", err)
-	}
-	return address, nil
+	return "", fmt.Errorf("reserve local port after 5 attempts: %w", lastErr)
 }
 
 func mockNVIDIA(writer http.ResponseWriter, request *http.Request) {

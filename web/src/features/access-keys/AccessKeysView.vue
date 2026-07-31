@@ -136,7 +136,7 @@ function formatDate(value?: string): string {
               </button>
             </article>
           </div>
-          <table class="min-w-full text-left text-sm">
+          <table class="hidden min-w-full text-left text-sm md:table">
             <thead class="bg-slate-950/60 text-xs uppercase text-slate-400">
               <tr>
                 <th class="px-4 py-3">

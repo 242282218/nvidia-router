@@ -40,7 +40,7 @@ test.describe('runtime and responsive management UI', () => {
     await expect(page.getByTestId('key-table')).toBeHidden()
     const keyInput = page.locator('input[name="nvidia-key"]')
     if (await keyInput.isVisible()) {
-      await keyInput.fill('nvapi-mobile-key-abcdefghijklmnopqrstuvwxyz')
+      await keyInput.fill('nvapi-fixture-not-a-real-key-123456789')
       await page.getByTestId('single-import-form').getByRole('button', { name: '导入' }).click()
     }
     await expect(page.getByTestId('key-cards').locator('article').first()).toBeVisible()
