@@ -2,7 +2,7 @@
 
 ## 状态
 
-DONE_WITH_CONCERNS：脚本实现完成；Linux Bash 语法检查和真实 NVIDIA 联调受当前 Windows 环境与用户要求“不真实调用 NVIDIA”限制，未执行。
+BLOCKED：脚本实现和自审完成；当前环境没有可用 Linux Bash/Docker，且按要求不真实调用 NVIDIA，因此 Linux 语法、容器和真实上游联调没有可接受的 PASS 证据。没有因该阻断停止代码审查、静态验证或提交。
 
 ## 改动
 
@@ -24,6 +24,7 @@ DONE_WITH_CONCERNS：脚本实现完成；Linux Bash 语法检查和真实 NVIDI
 - PowerShell 静态断言：PASS，确认严格模式、三类 trap、导入/duplicate 分支、仅 `key_id` 的能力测试请求、启用 PATCH、0600 日志、过滤 case 输出和临时 NVIDIA Key 清理均存在。
 - PowerShell 清理顺序断言：PASS，顺序为撤销临时 Access Key、删除自有 NVIDIA Key、注销管理员会话、unset 秘密变量。
 - `bash -n scripts/test/live-nvidia.sh`：BLOCKED。当前 `C:\Windows\System32\bash.exe` 是 WSL 启动入口，未安装 Linux 发行版；没有可用的 Git Bash、Cygwin 或 shellcheck。
+- `docker`：BLOCKED。Docker CLI 不存在，因此没有执行 Docker/Compose 验证。
 - 真实 `scripts/test/live-nvidia.sh`：未执行，避免真实调用 NVIDIA；因此没有真实导入、Audio 能力验证、Access Key 撤销和上游 live PASS 证据。
 
 ## TDD 说明
@@ -39,5 +40,6 @@ DONE_WITH_CONCERNS：脚本实现完成；Linux Bash 语法检查和真实 NVIDI
 
 - 已确认工作区中原有的 `internal/web/dist/index.html` 与计划文件未被修改，也未修改 `tests/live`。
 - 清理失败会覆盖最终退出码为 1；duplicate Key 不会进入删除分支。
-- 仍有两个环境验证缺口：当前机器不能执行 `bash -n`，且没有真实 NVIDIA 路由器/凭证可进行端到端联调。未将这两项写成 PASS。
-- 当前工具未提供可调用的 subagent/luna 调度接口，本任务由当前代理完成，未伪造子代理结果。
+- 自审未发现新增高风险或中风险问题；提交 diff 的静态断言和 `git diff --check` 均通过。
+- 仍有三个环境验证缺口：当前机器不能执行 `bash -n`、没有 Docker/Compose、没有真实 NVIDIA 路由器/凭证可进行端到端联调。均记录为 BLOCKED，未写成 PASS。
+- 实现由 Luna 子智能体完成，主线已做静态契约复核；子智能体因环境检查无法完成 Linux/Docker 验证，相关结果保留为 BLOCKED。

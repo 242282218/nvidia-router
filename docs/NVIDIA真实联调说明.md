@@ -126,7 +126,7 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 
 `NVIDIA_ROUTER_LIVE_KEY` 只能来自运行环境，不能写入仓库。完整脚本生命周期应为：导入或识别临时 NVIDIA Key，按需调用上述验证接口并显式启用 Audio，创建临时 Access Key，运行 live case，撤销 Access Key，删除脚本自己新导入的 NVIDIA Key，注销管理员会话。正常输出只允许 `case`、`status` 和 `duration`，不得输出秘密、请求/响应正文或测试原始日志。
 
-当前工作区的 `scripts/test/live-nvidia.sh` 尚未实现这套完整生命周期：它只检查已有可用 NVIDIA Key，未导入 `NVIDIA_ROUTER_LIVE_KEY`、未调用模型验证/启用接口，并直接输出 `go test -v` 原始日志。文档不能把这些未实现行为记为联调 PASS；完成脚本收尾后必须重新核对本节。
+当前 `scripts/test/live-nvidia.sh` 已实现这套生命周期，但 Linux Bash、Docker、运行中的路由器和真实凭证仍需由受控环境提供。脚本本地静态检查通过或命令退出成功，都不能替代真实联调逐 case 的 PASS 证据。
 
 ## 6. 临时凭证、失败清理和输出安全
 
@@ -137,7 +137,7 @@ ASR 和 TTS 不是仅凭 `/v1/models` 列表即可启用的能力。只有对账
 3. 若管理员会话已建立，调用 `POST /admin/api/auth/logout` 注销会话；注销失败会使原本成功的脚本最终失败。
 4. `unset` 所有临时秘密、Cookie 和环境变量。
 
-清理结果会输出 `RevokeTemporaryAccessKey` 和 `AdminLogout` 的状态。脚本和 live test 的正常状态输出只应包含 case 名、`status` 和耗时；不得输出 NVIDIA Key、Access Key、管理员 Cookie、请求正文、响应正文、SSE 数据、音频内容或完整错误正文。发现终端、CI 日志或日志文件中有这些内容时，应立即停止传播并轮换相关凭证。
+清理结果会输出 `RevokeTemporaryAccessKey`、自有新 Key 才会输出的 `DeleteTemporaryNVIDIAKey` 和 `AdminLogout` 状态。脚本和 live test 的正常状态输出只应包含 case 名、`status` 和耗时；不得输出 NVIDIA Key、Access Key、管理员 Cookie、请求正文、响应正文、SSE 数据、音频内容或完整错误正文。发现终端、CI 日志或日志文件中有这些内容时，应立即停止传播并轮换相关凭证。
 
 ## 7. 运行命令
 
