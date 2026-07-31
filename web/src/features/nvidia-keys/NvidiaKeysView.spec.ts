@@ -71,7 +71,7 @@ describe('NvidiaKeysView', () => {
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
-    const secret = 'nvapi-single-secret-that-must-not-remain'
+    const secret = 'nvapi-fixture-not-a-real-key-123456789'
     await wrapper.get('[name="nvidia-key"]').setValue(secret)
     await wrapper.get('[data-testid="single-import-form"]').trigger('submit')
 
