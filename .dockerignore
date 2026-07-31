@@ -17,7 +17,6 @@
 **/*.m4a
 **/*.ogg
 **/*.flac
-**/audio
 **/coverage
 **/playwright-report
 **/test-results
