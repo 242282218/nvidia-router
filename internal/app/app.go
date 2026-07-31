@@ -47,17 +47,18 @@ type App struct {
 	RuntimeSettings *runtimeconfig.Store
 	Server          *Server
 
-	db            *sql.DB
-	handler       http.Handler
-	shutting      atomic.Bool
-	cleanupCancel context.CancelFunc
-	cleanupDone   chan struct{}
-	rootCancel    context.CancelFunc
-	shutdownOnce  sync.Once
-	shutdownGrace time.Duration
-	shutdownTimer *time.Timer
-	close         sync.Once
-	closeErr      error
+	db               *sql.DB
+	handler          http.Handler
+	shutting         atomic.Bool
+	cleanupCancel    context.CancelFunc
+	cleanupDone      chan struct{}
+	rootCancel       context.CancelFunc
+	shutdownOnce     sync.Once
+	shutdownGrace    time.Duration
+	shutdownTimer    *time.Timer
+	shutdownDeadline time.Time
+	close            sync.Once
+	closeErr         error
 }
 
 func New(ctx context.Context, dependencies Dependencies) (*App, error) {

@@ -88,6 +88,45 @@ func TestServeAndCloseCanRaceWithoutLeavingHTTPRunning(t *testing.T) {
 	}
 }
 
+func TestServeClosesDatabaseWhenListenerFails(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listener: %v", err)
+	}
+	defer listener.Close()
+
+	application := &App{
+		Server: NewServer(listener.Addr().String(), http.NotFoundHandler(), nil, nil),
+		db:     db,
+	}
+	if err := application.Serve(context.Background()); err == nil {
+		t.Fatal("Serve succeeded while listener address was occupied")
+	}
+	if err := db.Ping(); err == nil {
+		t.Fatal("database remained open after listener failure")
+	}
+}
+
+func TestShutdownUsesOneDeadlineAcrossAppAndServer(t *testing.T) {
+	server := NewServer("127.0.0.1:0", http.NotFoundHandler(), nil, nil)
+	application := &App{Server: server}
+	application.beginShutdown(100 * time.Millisecond)
+
+	if application.shutdownDeadline.IsZero() {
+		t.Fatal("application shutdown deadline was not initialized")
+	}
+	server.lifecycleMu.Lock()
+	serverDeadline := server.shutdownDeadline
+	server.lifecycleMu.Unlock()
+	if !serverDeadline.Equal(application.shutdownDeadline) {
+		t.Fatalf("server deadline = %v, app deadline = %v", serverDeadline, application.shutdownDeadline)
+	}
+}
+
 func TestAppCloseClosesDatabaseAfterHTTPGraceTimeout(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {

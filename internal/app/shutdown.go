@@ -18,6 +18,7 @@ func (a *App) beginShutdown(grace time.Duration) {
 			grace = defaultShutdownGrace
 		}
 		a.shutdownGrace = grace
+		a.shutdownDeadline = time.Now().Add(grace)
 		if a.Pool != nil {
 			a.Pool.Shutdown()
 		}
@@ -26,6 +27,7 @@ func (a *App) beginShutdown(grace time.Duration) {
 		}
 		if a.Server != nil {
 			a.Server.setShutdownGrace(grace)
+			a.Server.setShutdownDeadline(a.shutdownDeadline)
 		}
 		if a.rootCancel != nil {
 			a.shutdownTimer = time.AfterFunc(grace, a.rootCancel)
