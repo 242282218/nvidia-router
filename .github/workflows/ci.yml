@@ -81,6 +81,9 @@ jobs:
       - name: Build container image
         run: docker build --tag nvidia-router:ci .
 
+      - name: Run Compose acceptance
+        run: bash scripts/test/compose-acceptance.sh
+
   e2e:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
