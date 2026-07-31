@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +63,57 @@ func TestAppV1UnknownPathReturnsNotImplementedAndSkipsNVIDIA(t *testing.T) {
 	// NVIDIA was not contacted for an unsupported path.
 	if upstream.Count() != 0 {
 		t.Fatalf("NVIDIA contacted %d times for unsupported path", upstream.Count())
+	}
+}
+
+func TestAppV1UnknownPathsRequireAccessKeyBeforeUnsupportedResponse(t *testing.T) {
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: `{}`})
+	t.Cleanup(upstream.Close)
+	application, accessToken := newChatTestApp(t, upstream, []string{"upstream-key-1"}, true)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	for _, path := range []string{"/v1/unknown", "/v1/unknown/nested"} {
+		for _, authorization := range []string{"", "Bearer invalid"} {
+			request, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+			if err != nil {
+				t.Fatalf("create request: %v", err)
+			}
+			if authorization != "" {
+				request.Header.Set("Authorization", authorization)
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("request %s: %v", path, err)
+			}
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				response.Body.Close()
+				t.Fatalf("decode %s response: %v", path, err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusUnauthorized || payload.Error.Code != "invalid_api_key" {
+				t.Fatalf("%s auth=%q status/code = %d/%q, want 401/invalid_api_key", path, authorization, response.StatusCode, payload.Error.Code)
+			}
+		}
+
+		request, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatalf("create authenticated request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+accessToken)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("authenticated request %s: %v", path, err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("authenticated %s status = %d, want 501", path, response.StatusCode)
+		}
 	}
 }
 

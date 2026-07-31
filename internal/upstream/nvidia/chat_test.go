@@ -94,7 +94,7 @@ func TestChatErrorDoesNotExposeURLOrKey(t *testing.T) {
 	})}
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = endpoint
-	client, err := NewClient(httpClient, descriptor)
+	client, err := NewClient(httpClient, descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestChatErrorDoesNotExposeURLOrKey(t *testing.T) {
 }
 
 func TestValidateNonstreamChatPreservesBodyAndExtractsMetadata(t *testing.T) {
-	body := []byte(`{"id":"chat-1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4},"future":{"x":1}}`)
+	body := []byte(`{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":4},"future":{"x":1}}`)
 	response := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"X-Request-Id": []string{"request-123"}, "X-Secret": []string{"hidden"}},
@@ -139,8 +139,10 @@ func TestValidateNonstreamChatRejectsMalformedSuccess(t *testing.T) {
 		{name: "non JSON", body: "not-json private-body"},
 		{name: "array", body: `[]`},
 		{name: "missing choices", body: `{"id":"chat-1"}`},
+		{name: "empty choices", body: `{"choices":[]}`},
+		{name: "null first choice", body: `{"choices":[null]}`},
 		{name: "null choices", body: `{"choices":null}`},
-		{name: "non-array choices", body: `{"choices":{}}`},
+		{name: "non-array choices", body: `{"choices":"not-array"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -224,7 +226,7 @@ func newChatTestClient(t *testing.T, baseURL string, httpClient *http.Client) *C
 	t.Helper()
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = baseURL + "/v1/chat/completions"
-	client, err := NewClient(httpClient, descriptor)
+	client, err := NewClient(httpClient, descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

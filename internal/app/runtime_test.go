@@ -230,7 +230,7 @@ func (t *runtimeBudgetTransport) RoundTrip(request *http.Request) (*http.Respons
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{}]}`)),
 		Request:    request,
 	}, nil
 }

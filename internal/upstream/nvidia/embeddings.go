@@ -22,24 +22,21 @@ func (c *Client) Embeddings(
 	token string,
 	body []byte,
 ) (*http.Response, error) {
-	request, err := c.descriptor.NewRequest(c.descriptor.Embedding, false, token)
+	response, err := c.do(ctx, snapshot, func(ctx context.Context) (*http.Request, error) {
+		request, err := c.descriptor.NewRequest(c.descriptor.Embedding, false, token)
+		if err != nil {
+			return nil, safeError{"create NVIDIA embeddings request", err}
+		}
+		request = request.WithContext(ctx)
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		request.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+		request.ContentLength = int64(len(body))
+		return request, nil
+	})
 	if err != nil {
-		return nil, safeError{"create NVIDIA embeddings request", err}
-	}
-	request = request.WithContext(ctx)
-	request.Body = io.NopCloser(bytes.NewReader(body))
-	request.ContentLength = int64(len(body))
-
-	transport, _ := newAttemptTransport(c.httpClient.Transport, snapshot)
-	httpClient := *c.httpClient
-	httpClient.Transport = transport
-	response, err := httpClient.Do(request)
-	if err != nil {
-		closeIdleConnections(transport)
 		return nil, safeError{"send NVIDIA embeddings request", err}
-	}
-	if response.Body != nil {
-		response.Body = &attemptBody{ReadCloser: response.Body, transport: transport}
 	}
 	return response, nil
 }

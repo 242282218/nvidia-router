@@ -14,6 +14,7 @@ import (
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
 	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/xkproxy"
 )
 
 type ExecuteFunc func(
@@ -123,7 +124,7 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		observability.SetAttempt(ctx, lease.KeyID(), len(attempted), totalQueue)
 
 		executeCtx := withBudget(requestCtx, attemptBudget)
-		response, commit, currentFault, err := a.executeLease(executeCtx, ctx, modelID, lease, execute)
+		response, commit, currentFault, err := a.executeLease(executeCtx, requestCtx, modelID, lease, execute)
 		if err != nil {
 			return AttemptResult{}, err
 		}
@@ -189,9 +190,20 @@ func (a *Attempt) executeLease(
 		closeResponse(response)
 		return nil, commit, nil, fmt.Errorf("use NVIDIA key secret: %w", secretErr)
 	}
+	if executeErr != nil {
+		var proxyErr *xkproxy.Error
+		if errors.As(executeErr, &proxyErr) {
+			closeResponse(response)
+			return nil, commit, nil, executeErr
+		}
+	}
 	if executeErr == nil && response != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
 		if _, err := a.states.MarkSuccess(stateCtx, lease.KeyID()); err != nil {
 			closeResponse(response)
+			if stateErr := stateCtx.Err(); stateErr != nil && errors.Is(err, stateErr) {
+				classified := fault.Classify(nil, stateErr, false, a.clock.Now())
+				return nil, commit, &classified, nil
+			}
 			return nil, commit, nil, fmt.Errorf("persist successful NVIDIA key state: %w", err)
 		}
 		a.stateSync.ApplySuccess(lease.KeyID())
@@ -203,6 +215,9 @@ func (a *Attempt) executeLease(
 	closeResponse(response)
 	persisted, err := a.states.MarkFailure(stateCtx, lease.KeyID(), modelID, classified)
 	if err != nil {
+		if stateErr := stateCtx.Err(); stateErr != nil && errors.Is(err, stateErr) {
+			return nil, commit, &classified, nil
+		}
 		return nil, commit, nil, fmt.Errorf("persist failed NVIDIA key state: %w", err)
 	}
 	a.stateSync.ApplyFailure(lease.KeyID(), modelID, classified, persisted)

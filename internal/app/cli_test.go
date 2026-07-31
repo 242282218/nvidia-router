@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -47,6 +48,40 @@ func TestCLIServeStopsWhenContextIsCancelled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not stop after context cancellation")
+	}
+}
+
+func TestCLIResetPasswordHonorsCancelledContext(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
+	db := openCLIData(t, dataDir)
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	closeCLIDatabase(t, db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runCLIContext(ctx, []string{"admin", "reset-password", "--password", "new CLI recovery password"}, io.Discard, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled reset error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCLIBackupHonorsCancelledContext(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
+	db := openCLIData(t, dataDir)
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	closeCLIDatabase(t, db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runCLIContext(ctx, []string{"db", "backup", "--output", filepath.Join(t.TempDir(), "backup.db")}, io.Discard, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled backup error = %v, want context.Canceled", err)
 	}
 }
 

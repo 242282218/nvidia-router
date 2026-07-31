@@ -187,7 +187,7 @@ func newTestClient(t *testing.T, baseURL string, httpClient *http.Client) *Clien
 	t.Helper()
 	descriptor := DefaultDescriptor()
 	descriptor.Models.URL = baseURL + "/v1/models"
-	client, err := NewClient(httpClient, descriptor)
+	client, err := NewClient(httpClient, descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

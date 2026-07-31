@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"mime/multipart"
@@ -14,6 +15,7 @@ import (
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
+	"nvidia-router/internal/xkproxy"
 )
 
 type SecretProvider interface {
@@ -78,18 +80,24 @@ func (s *Service) DiscoverCandidates(ctx context.Context, keyID int64) ([]Candid
 }
 
 func (s *Service) SaveSelection(ctx context.Context, selections []Selection) error {
+	_, err := s.SaveSelectionResult(ctx, selections)
+	return err
+}
+
+func (s *Service) SaveSelectionResult(ctx context.Context, selections []Selection) (MutationResult, error) {
 	normalized := make([]Selection, len(selections))
 	for index, selection := range selections {
-		value, err := normalizeSelection(selection)
+		value, err := normalizeModelSelection(selection)
 		if err != nil {
-			return fmt.Errorf("validate selected model %q: %w", selection.PublicID, err)
+			return MutationResult{}, fmt.Errorf("validate selected model %q: %w", selection.PublicID, err)
 		}
 		normalized[index] = value
 	}
-	if err := s.repository.SaveSelections(ctx, normalized, s.clock.Now()); err != nil {
-		return fmt.Errorf("save model selection: %w", err)
+	result, err := s.repository.SaveSelectionsResult(ctx, normalized, s.clock.Now())
+	if err != nil {
+		return MutationResult{}, fmt.Errorf("save model selection: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 func (s *Service) List(ctx context.Context) ([]Model, error) {
@@ -101,52 +109,16 @@ func (s *Service) List(ctx context.Context) ([]Model, error) {
 }
 
 func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (Model, error) {
-	model, err := s.repository.Get(ctx, id)
+	updated, _, err := s.PatchResult(ctx, id, patch)
+	return updated, err
+}
+
+func (s *Service) PatchResult(ctx context.Context, id int64, patch Patch) (Model, Kind, error) {
+	model, previousKind, err := s.repository.Patch(ctx, id, patch, s.clock.Now())
 	if err != nil {
-		return Model{}, fmt.Errorf("load model before patch: %w", err)
+		return Model{}, "", fmt.Errorf("save model patch: %w", err)
 	}
-	selection := Selection{
-		PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName,
-		Kind: model.Kind, Enabled: model.Enabled, SupportsVision: model.SupportsVision,
-		SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning,
-		ReasoningWireFormat: model.ReasoningWireFormat, CapabilityVerifiedAt: model.CapabilityVerifiedAt,
-	}
-	if patch.DisplayName != nil {
-		selection.DisplayName = *patch.DisplayName
-	}
-	if patch.Kind != nil {
-		selection.Kind = *patch.Kind
-	}
-	if patch.Enabled != nil {
-		selection.Enabled = *patch.Enabled
-	}
-	if patch.SupportsVision != nil {
-		selection.SupportsVision = *patch.SupportsVision
-	}
-	if patch.SupportsTools != nil {
-		selection.SupportsTools = *patch.SupportsTools
-	}
-	if patch.SupportsReasoning != nil {
-		selection.SupportsReasoning = *patch.SupportsReasoning
-	}
-	if patch.ReasoningWireFormat != nil {
-		selection.ReasoningWireFormat = *patch.ReasoningWireFormat
-	}
-	if model.Kind != selection.Kind {
-		selection.CapabilityVerifiedAt = nil
-	}
-	normalized, err := normalizeSelection(selection)
-	if err != nil {
-		return Model{}, fmt.Errorf("validate model patch: %w", err)
-	}
-	if err := s.repository.SaveSelections(ctx, []Selection{normalized}, s.clock.Now()); err != nil {
-		return Model{}, fmt.Errorf("save model patch: %w", err)
-	}
-	updated, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return Model{}, fmt.Errorf("load patched model: %w", err)
-	}
-	return updated, nil
+	return model, previousKind, nil
 }
 
 func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (Model, error) {
@@ -159,7 +131,7 @@ func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (M
 	if err := s.testTargetModel(verifyCtx, keyID, model); err != nil {
 		return Model{}, fmt.Errorf("manual model test: %w", err)
 	}
-	verified, err := s.repository.VerifyAndUnblock(ctx, keyID, modelID, s.clock.Now())
+	verified, err := s.repository.VerifyAndUnblock(ctx, keyID, modelID, model.updatedAt, s.clock.Now())
 	if err != nil {
 		return Model{}, fmt.Errorf("verify model and clear block: %w", err)
 	}
@@ -226,7 +198,14 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		default:
 			return ErrManualTestRequired
 		}
-		if err != nil || response == nil || response.Body == nil {
+		if err != nil {
+			var proxyErr *xkproxy.Error
+			if errors.As(err, &proxyErr) {
+				return err
+			}
+			return ErrManualTestRequired
+		}
+		if response == nil || response.Body == nil {
 			return ErrManualTestRequired
 		}
 		defer response.Body.Close()
@@ -291,15 +270,6 @@ func (s *Service) Resolve(ctx context.Context, publicID string, requirements Req
 }
 
 func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) error {
-	if enabled {
-		model, err := s.repository.Get(ctx, id)
-		if err != nil {
-			return fmt.Errorf("load model before enabling: %w", err)
-		}
-		if requiresVerification(model.Kind) && model.CapabilityVerifiedAt == nil {
-			return ErrCapabilityUnverified
-		}
-	}
 	if err := s.repository.SetEnabled(ctx, id, enabled, s.clock.Now()); err != nil {
 		return fmt.Errorf("set model enabled state: %w", err)
 	}
@@ -307,12 +277,7 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 }
 
 func (s *Service) SetCapabilityVerified(ctx context.Context, id int64, verifiedAt *time.Time) error {
-	model, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("load model before setting capability verification: %w", err)
-	}
-	disable := verifiedAt == nil && requiresVerification(model.Kind)
-	if err := s.repository.SetCapabilityVerified(ctx, id, verifiedAt, disable, s.clock.Now()); err != nil {
+	if err := s.repository.SetCapabilityVerified(ctx, id, verifiedAt, s.clock.Now()); err != nil {
 		return fmt.Errorf("set model capability verification: %w", err)
 	}
 	return nil

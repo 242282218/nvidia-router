@@ -9,12 +9,15 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,7 +50,7 @@ type appHarness struct {
 }
 
 func TestUnknownChatFieldsReachNVIDIAUnchanged(t *testing.T) {
-	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[]}`})
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{"message":{"content":"ok"}}]}`})
 	harness := newAppHarness(t, upstream, []string{"nvapi-integration-1"})
 
 	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", `{
@@ -311,7 +314,7 @@ func TestCooldownRecovery(t *testing.T) {
 }
 
 func TestUnknownInterfaceAndImagePayloadBoundaries(t *testing.T) {
-	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[]}`})
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{"message":{"content":"ok"}}]}`})
 	harness := newAppHarness(t, upstream, []string{"nvapi-image"})
 
 	status, body, _ := harness.request(t, http.MethodPost, "/v1/unknown", `{}`)
@@ -612,6 +615,16 @@ type harnessOptions struct {
 	settings runtimeconfig.Snapshot
 	logger   *slog.Logger
 	prepare  func(*testing.T, *sql.DB, []int64, int64)
+
+	// Proxy mode (星空代理租约): when proxyFetchURL is set the App is
+	// configured with XKProxyAPIURL and all NVIDIA upstream traffic must flow
+	// through the CONNECT proxy selected by the fetch API. The NVIDIA upstream
+	// is then the TLS server created by newTLSNVIDIAUpstream instead of the
+	// plain HTTP mocknvidia server, because CONNECT tunneling only applies to
+	// HTTPS. tlsUpstream, when non-nil, is used as that TLS upstream so tests
+	// can inspect its request log; otherwise the harness creates one.
+	proxyFetchURL *url.URL
+	tlsUpstream   *tlsUpstreamFixture
 }
 
 func newAppHarness(t *testing.T, upstream *mocknvidia.Server, secrets []string) *appHarness {
@@ -664,10 +677,30 @@ func newAppHarnessWithOptions(t *testing.T, options harnessOptions) *appHarness 
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	config := config.Config{DataDir: root, MasterKey: masterKey, NVIDIABaseURL: baseURL}
+	nvidiaHTTPClient := upstream.Client()
+	if options.proxyFetchURL != nil {
+		// 星空代理模式：使用本地 TLS NVIDIA 上游（CONNECT 只对 HTTPS 有意义），
+		// 注入 XKProxyAPIURL。App 的 NVIDIAHTTPClient 使用 TLS 上游的 Client()，
+		// 其 Transport 信任该 TLS server 证书。
+		tlsUpstream := options.tlsUpstream
+		if tlsUpstream == nil {
+			tlsUpstream = newTLSNVIDIAUpstream(t)
+		}
+		baseURL, err = url.Parse(tlsUpstream.URL)
+		if err != nil {
+			t.Fatalf("parse TLS upstream URL: %v", err)
+		}
+		config.NVIDIABaseURL = baseURL
+		nvidiaHTTPClient = tlsUpstream.Client()
+		config.XKProxyAPIURL = options.proxyFetchURL
+		config.XKProxyTTL = 3 * time.Minute
+		config.XKProxyRenewBefore = 15 * time.Second
+	}
 	application, err := app.New(context.Background(), app.Dependencies{
-		Config: config.Config{DataDir: root, MasterKey: masterKey, NVIDIABaseURL: baseURL},
+		Config: config,
 		DB:     db, Logger: logger, Clock: clock.RealClock{},
-		NVIDIAHTTPClient: upstream.Client(),
+		NVIDIAHTTPClient: nvidiaHTTPClient,
 	})
 	if err != nil {
 		t.Fatalf("create app: %v", err)
@@ -813,4 +846,243 @@ func assertAuthorizationOrder(t *testing.T, requests []mocknvidia.Request, secre
 			t.Fatalf("request %d Authorization = %q, want Bearer %s", index+1, got, secret)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 星空代理（XKProxy）端到端 fixture
+//
+// 链路：App（XKProxyAPIURL）→ fetch API（返回 IP:PORT）→ CONNECT 代理 →
+// TLS NVIDIA 上游。fetch API 与 CONNECT 代理都是真实本地组件；TLS 上游用
+// httptest.NewTLSServer 自建，App 的 NVIDIAHTTPClient 信任其证书。
+// ---------------------------------------------------------------------------
+
+type tlsUpstreamRequest struct {
+	Method        string
+	Path          string
+	Authorization string
+	ContentType   string
+}
+
+type tlsUpstreamFixture struct {
+	*httptest.Server
+	mu       sync.Mutex
+	requests []tlsUpstreamRequest
+	// sseDelay delays the first SSE chunk after the response headers. Set it in
+	// tests that need a deterministic "headers arrived, first token pending"
+	// window (e.g. reproducing the proxy streaming context-cancel bug).
+	sseDelay time.Duration
+}
+
+// newTLSNVIDIAUpstream starts a minimal NVIDIA-compatible HTTPS upstream. Its
+// /v1/models, /v1/chat/completions, /v1/embeddings and /v1/audio/* endpoints
+// return valid JSON so every public v1 endpoint can be exercised end to end.
+func newTLSNVIDIAUpstream(t *testing.T) *tlsUpstreamFixture {
+	t.Helper()
+	fixture := &tlsUpstreamFixture{}
+	fixture.Server = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body []byte
+		if request.Body != nil {
+			body, _ = io.ReadAll(request.Body)
+		}
+		fixture.mu.Lock()
+		fixture.requests = append(fixture.requests, tlsUpstreamRequest{
+			Method:        request.Method,
+			Path:          request.URL.Path,
+			Authorization: request.Header.Get("Authorization"),
+			ContentType:   request.Header.Get("Content-Type"),
+		})
+		fixture.mu.Unlock()
+		switch request.URL.Path {
+		case "/v1/models":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"data":[{"id":"vendor/chat"},{"id":"vendor/embed"},{"id":"vendor/asr"},{"id":"vendor/tts"}]}`)
+		case "/v1/chat/completions":
+			if bytes.Contains(body, []byte(`"stream":true`)) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				writer.WriteHeader(http.StatusOK)
+				if flusher, ok := writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				if fixture.sseDelay > 0 {
+					time.Sleep(fixture.sseDelay)
+				}
+				_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"proxied-stream\"}}]}\n\n")
+				if flusher, ok := writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				_, _ = io.WriteString(writer, "data: [DONE]\n\n")
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"proxied-ok"}}],"usage":{"total_tokens":1}}`)
+		case "/v1/embeddings":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"data":[{"embedding":[0.1,0.2]}],"usage":{"total_tokens":1}}`)
+		case "/v1/audio/transcriptions":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"text":"proxied-transcript"}`)
+		case "/v1/audio/speech":
+			writer.Header().Set("Content-Type", "audio/wav")
+			_, _ = writer.Write(probeWAVBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(fixture.Close)
+	return fixture
+}
+
+func (f *tlsUpstreamFixture) requestsSnapshot() []tlsUpstreamRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tlsUpstreamRequest(nil), f.requests...)
+}
+
+func (f *tlsUpstreamFixture) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
+// proxyFixture bundles the fetch API, the local HTTP CONNECT proxy and the TLS
+// NVIDIA upstream that form the proxy chain. The fetch API serves the addresses
+// configured via setResponses in order (the last entry repeats); an empty list
+// makes every fetch fail with a non-IP body.
+type proxyFixture struct {
+	fetchServer  *httptest.Server
+	connectProxy *connectProxyFixture
+	upstream     *tlsUpstreamFixture
+
+	mu         sync.Mutex
+	fetchCalls int
+	responses  []string
+}
+
+// newProxyFixture wires the whole proxy chain: TLS NVIDIA upstream, a CONNECT
+// proxy forwarding tunnels to it, and a fetch API. Configure the fetch API's
+// responses before the first upstream request reaches the app.
+func newProxyFixture(t *testing.T) *proxyFixture {
+	t.Helper()
+	upstream := newTLSNVIDIAUpstream(t)
+	fixture := &proxyFixture{upstream: upstream}
+	fixture.connectProxy = newConnectProxyFixture(t, upstream.Listener.Addr().String())
+	fixture.fetchServer = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		fixture.mu.Lock()
+		index := fixture.fetchCalls
+		fixture.fetchCalls++
+		var body string
+		if len(fixture.responses) == 0 {
+			body = "not-an-ip-address"
+		} else if index >= len(fixture.responses) {
+			body = fixture.responses[len(fixture.responses)-1]
+		} else {
+			body = fixture.responses[index]
+		}
+		fixture.mu.Unlock()
+		_, _ = io.WriteString(writer, body)
+	}))
+	t.Cleanup(fixture.fetchServer.Close)
+	return fixture
+}
+
+// setResponses replaces the ordered fetch API responses.
+func (f *proxyFixture) setResponses(responses []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responses = append([]string(nil), responses...)
+}
+
+// proxyAddress is the CONNECT proxy's IP:PORT, ready to be served by the fetch API.
+func (f *proxyFixture) proxyAddress() string {
+	return f.connectProxy.address()
+}
+
+func (f *proxyFixture) fetchURL(t *testing.T) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(f.fetchServer.URL + "?qty=1")
+	if err != nil {
+		t.Fatalf("parse fetch URL: %v", err)
+	}
+	return parsed
+}
+
+// fetchCount reports how many times the fetch API was called.
+func (f *proxyFixture) fetchCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetchCalls
+}
+
+func (f *proxyFixture) connectCount() int32 { return f.connectProxy.connects.Load() }
+
+// connectProxyFixture is a minimal HTTP CONNECT proxy. Every CONNECT is counted
+// and the tunnel is forwarded to the configured target host.
+type connectProxyFixture struct {
+	listener net.Listener
+	server   *http.Server
+	target   string
+	connects atomic.Int32
+}
+
+func newConnectProxyFixture(t *testing.T, target string) *connectProxyFixture {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen connect proxy: %v", err)
+	}
+	proxy := &connectProxyFixture{listener: listener, target: target}
+	proxy.server = &http.Server{Handler: http.HandlerFunc(proxy.handle)}
+	go func() { _ = proxy.server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = proxy.server.Close()
+		_ = listener.Close()
+	})
+	return proxy
+}
+
+func (p *connectProxyFixture) address() string { return p.listener.Addr().String() }
+
+func (p *connectProxyFixture) handle(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodConnect {
+		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
+		return
+	}
+	p.connects.Add(1)
+	upstream, err := net.DialTimeout("tcp", p.target, time.Second)
+	if err != nil {
+		http.Error(writer, "upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	hijacker, ok := writer.(http.Hijacker)
+	if !ok {
+		_ = upstream.Close()
+		http.Error(writer, "hijack unsupported", http.StatusInternalServerError)
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		_ = upstream.Close()
+		return
+	}
+	_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if err := buffered.Flush(); err != nil {
+		_ = client.Close()
+		_ = upstream.Close()
+		return
+	}
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		_ = upstream.Close()
+		_ = client.Close()
+	}()
+	_, _ = io.Copy(client, upstream)
+	_ = client.Close()
+	_ = upstream.Close()
+}
+
+var probeWAVBytes = []byte{
+	'R', 'I', 'F', 'F', 0x26, 0x00, 0x00, 0x00, 'W', 'A', 'V', 'E',
+	'f', 'm', 't', ' ', 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+	0x40, 0x1f, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x02, 0x00, 0x10, 0x00,
+	'd', 'a', 't', 'a', 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
 }

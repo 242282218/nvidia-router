@@ -6,16 +6,18 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/xkproxy"
 )
 
 type modelManager interface {
 	DiscoverCandidates(context.Context, int64) ([]modelcatalog.Candidate, error)
-	SaveSelection(context.Context, []modelcatalog.Selection) error
+	SaveSelectionResult(context.Context, []modelcatalog.Selection) (modelcatalog.MutationResult, error)
 	List(context.Context) ([]modelcatalog.Model, error)
-	Patch(context.Context, int64, modelcatalog.Patch) (modelcatalog.Model, error)
+	PatchResult(context.Context, int64, modelcatalog.Patch) (modelcatalog.Model, modelcatalog.Kind, error)
 	VerifyAndUnblock(context.Context, int64, int64) (modelcatalog.Model, error)
 }
 
@@ -30,12 +32,14 @@ type candidateKeySource interface {
 type modelStateSync interface {
 	SetModelEnabled(int64, bool)
 	ClearModelBlocks(int64)
+	SetModelBlock(int64, int64, bool)
 }
 
 type Models struct {
-	service modelManager
-	keys    candidateKeySource
-	sync    StateSync
+	service    modelManager
+	keys       candidateKeySource
+	sync       modelStateSync
+	mutationMu sync.Mutex
 }
 
 type candidateDTO struct {
@@ -73,7 +77,7 @@ type selectionDTO struct {
 	ReasoningWireFormat string            `json:"reasoning_wire_format"`
 }
 
-func NewModels(service modelManager, keys candidateKeySource, syncer StateSync) *Models {
+func NewModels(service modelManager, keys candidateKeySource, syncer modelStateSync) *Models {
 	return &Models{service: service, keys: keys, sync: syncer}
 }
 
@@ -105,6 +109,11 @@ func (h *Models) candidates(writer http.ResponseWriter, request *http.Request) {
 	}
 	items, err := h.service.DiscoverCandidates(request.Context(), keyID)
 	if err != nil {
+		var proxyErr *xkproxy.Error
+		if errors.As(err, &proxyErr) {
+			writeAdminError(writer, http.StatusBadGateway, "upstream_proxy_unavailable", "The upstream proxy is temporarily unavailable.", nil)
+			return
+		}
 		writeAdminError(writer, http.StatusBadGateway, "upstream_error", "The NVIDIA model list could not be loaded.", err)
 		return
 	}
@@ -138,34 +147,24 @@ func (h *Models) save(writer http.ResponseWriter, request *http.Request) {
 	for _, item := range input.Models {
 		selections = append(selections, item.selection())
 	}
-	before, _ := h.service.List(request.Context())
-	previousKinds := make(map[string]modelcatalog.Kind, len(before))
-	for _, model := range before {
-		previousKinds[model.PublicID] = model.Kind
-	}
-	if err := h.service.SaveSelection(request.Context(), selections); err != nil {
+	h.mutationMu.Lock()
+	defer h.mutationMu.Unlock()
+	result, err := h.service.SaveSelectionResult(request.Context(), selections)
+	if err != nil {
 		h.writeModelError(writer, err)
 		return
 	}
-	if syncer, ok := h.sync.(modelStateSync); ok {
-		models, err := h.service.List(request.Context())
-		if err != nil {
-			writeInternalError(writer, err)
-			return
-		}
-		for _, selection := range selections {
-			for _, model := range models {
-				if model.PublicID != selection.PublicID {
-					continue
-				}
-				syncer.SetModelEnabled(model.ID, model.Enabled)
-				if previous, exists := previousKinds[model.PublicID]; exists && previous != model.Kind {
-					syncer.ClearModelBlocks(model.ID)
-				}
-			}
+	h.syncSavedModels(result)
+	writeJSON(writer, http.StatusOK, map[string]any{"saved": len(selections)})
+}
+
+func (h *Models) syncSavedModels(result modelcatalog.MutationResult) {
+	for _, model := range result.Models {
+		h.sync.SetModelEnabled(model.ID, model.Enabled)
+		if previous, exists := result.PreviousKinds[model.ID]; exists && previous != model.Kind {
+			h.sync.ClearModelBlocks(model.ID)
 		}
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"saved": len(selections)})
 }
 func (h *Models) verify(writer http.ResponseWriter, request *http.Request) {
 	id, action, ok := parseIDRoute(request.URL.Path, "/admin/api/models/")
@@ -186,9 +185,7 @@ func (h *Models) verify(writer http.ResponseWriter, request *http.Request) {
 		h.writeModelError(writer, err)
 		return
 	}
-	if h.sync != nil {
-		h.sync.SetModelBlock(input.KeyID, id, false)
-	}
+	h.sync.SetModelBlock(input.KeyID, id, false)
 	writeJSON(writer, http.StatusOK, toModelDTO(model))
 }
 
@@ -203,25 +200,16 @@ func (h *Models) patch(writer http.ResponseWriter, request *http.Request) {
 		writeInvalidRequest(writer, "The model update request is invalid.", err)
 		return
 	}
-	previousKind := modelcatalog.Kind("")
-	if models, listErr := h.service.List(request.Context()); listErr == nil {
-		for _, item := range models {
-			if item.ID == id {
-				previousKind = item.Kind
-				break
-			}
-		}
-	}
-	model, err := h.service.Patch(request.Context(), id, input)
+	h.mutationMu.Lock()
+	defer h.mutationMu.Unlock()
+	model, previousKind, err := h.service.PatchResult(request.Context(), id, input)
 	if err != nil {
 		h.writeModelError(writer, err)
 		return
 	}
-	if syncer, ok := h.sync.(modelStateSync); ok {
-		syncer.SetModelEnabled(model.ID, model.Enabled)
-		if previousKind != "" && previousKind != model.Kind {
-			syncer.ClearModelBlocks(model.ID)
-		}
+	h.sync.SetModelEnabled(model.ID, model.Enabled)
+	if previousKind != "" && previousKind != model.Kind {
+		h.sync.ClearModelBlocks(model.ID)
 	}
 	writeJSON(writer, http.StatusOK, toModelDTO(model))
 }
@@ -246,15 +234,24 @@ func (h *Models) unblock(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, toModelDTO(model))
 }
 func (h *Models) writeModelError(writer http.ResponseWriter, err error) {
+	var proxyErr *xkproxy.Error
+	if errors.As(err, &proxyErr) {
+		writeAdminError(writer, http.StatusBadGateway, "upstream_proxy_unavailable", "The upstream proxy is temporarily unavailable.", nil)
+		return
+	}
 	switch {
+	case errors.Is(err, modelcatalog.ErrInvalidModelSelection):
+		writeAdminError(writer, http.StatusBadRequest, "invalid_request", "The model selection is invalid.", err)
 	case errors.Is(err, modelcatalog.ErrCapabilityUnverified):
 		writeAdminError(writer, http.StatusBadRequest, "capability_unverified", "The model capability must be verified before it can be enabled.", err)
 	case errors.Is(err, modelcatalog.ErrManualTestRequired):
 		writeAdminError(writer, http.StatusBadRequest, "manual_test_required", "A successful manual model test is required.", err)
 	case errors.Is(err, modelcatalog.ErrModelNotFound):
 		writeAdminError(writer, http.StatusNotFound, "model_not_found", "The model was not found.", err)
+	case errors.Is(err, modelcatalog.ErrModelVersionConflict):
+		writeAdminError(writer, http.StatusConflict, "model_version_conflict", "The model changed while it was being verified.", err)
 	default:
-		writeInvalidRequest(writer, "The model request is invalid.", err)
+		writeInternalError(writer, err)
 	}
 }
 func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {

@@ -31,6 +31,7 @@ import (
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 	webui "nvidia-router/internal/web"
+	"nvidia-router/internal/xkproxy"
 )
 
 type Dependencies struct {
@@ -46,6 +47,7 @@ type App struct {
 	Pool            *pool.Pool
 	RuntimeSettings *runtimeconfig.Store
 	Server          *Server
+	proxy           *xkproxy.Manager
 
 	db               *sql.DB
 	handler          http.Handler
@@ -94,8 +96,33 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, closeAfterInitializationError(db, err)
 	}
-	nvidiaClient, err := nvidia.NewClient(resolved.NVIDIAHTTPClient, descriptor)
+	var proxy *xkproxy.Manager
+	if resolved.Config.XKProxyAPIURL != nil {
+		base := resolved.NVIDIAHTTPClient.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		baseTransport, ok := base.(*http.Transport)
+		if !ok {
+			return nil, closeAfterInitializationError(db, errors.New("initialize proxy manager: HTTP transport is required"))
+		}
+		proxy, err = xkproxy.New(
+			resolved.Config.XKProxyAPIURL,
+			resolved.Config.XKProxyTTL,
+			resolved.Config.XKProxyRenewBefore,
+			baseTransport,
+			resolved.Clock,
+			resolved.Logger,
+		)
+		if err != nil {
+			return nil, closeAfterInitializationError(db, fmt.Errorf("initialize proxy manager: %w", err))
+		}
+	}
+	nvidiaClient, err := nvidia.NewClient(resolved.NVIDIAHTTPClient, descriptor, settings, proxy)
 	if err != nil {
+		if proxy != nil {
+			proxy.Close()
+		}
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize NVIDIA client: %w", err))
 	}
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
@@ -117,11 +144,14 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
 	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
 	embeddings := observe(v1.NewEmbeddings(models, attempts, nvidiaClient))
-	audio := observe(v1.NewAudio(models, attempts, nvidiaClient))
+	audio := observe(v1.NewAudio(models, attempts, nvidiaClient, resolved.Config.TempDir))
 	speech := observe(v1.NewSpeech(models, attempts, nvidiaClient))
 	modelList := observe(v1.NewModels(models))
 	frontend, err := webui.NewEmbeddedHandler()
 	if err != nil {
+		if proxy != nil {
+			proxy.Close()
+		}
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize embedded frontend: %w", err))
 	}
 
@@ -131,18 +161,31 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	app := &App{
 		Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings,
+		proxy:         proxy,
 		cleanupCancel: cleanupCancel, cleanupDone: cleanupDone,
 		rootCancel: rootCancel,
 	}
+	unsupported := observe(v1.Unsupported)
 	app.handler = shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
-		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList,
+		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
 		adminapi.NewStats(observabilityRepository, resolved.Clock),
 	))
-	worker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
+	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
+	adminSessionWorker := adminauth.NewSessionCleanupWorker(adminRepository, resolved.Clock, resolved.Logger)
+	var cleanupWorkers sync.WaitGroup
+	cleanupWorkers.Add(2)
 	go func() {
-		defer close(cleanupDone)
-		worker.Run(cleanupCtx)
+		defer cleanupWorkers.Done()
+		observabilityWorker.Run(cleanupCtx)
+	}()
+	go func() {
+		defer cleanupWorkers.Done()
+		adminSessionWorker.Run(cleanupCtx)
+	}()
+	go func() {
+		cleanupWorkers.Wait()
+		close(cleanupDone)
 	}()
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.beginShutdown(0) })
 	app.Server.setRootContext(rootCtx)

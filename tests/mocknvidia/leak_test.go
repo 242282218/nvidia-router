@@ -51,6 +51,9 @@ func TestSecretsAndBodiesDoNotLeakIntoResponsesLogsOrSQLite(t *testing.T) {
 	if err := database.Backup(context.Background(), harness.db, backupPath); err != nil {
 		t.Fatalf("backup database for leak scan: %v", err)
 	}
+	if err := harness.application.Close(); err != nil {
+		t.Fatalf("close application before leak scan: %v", err)
+	}
 	artifacts := map[string][]byte{
 		"http_response": []byte(result.body),
 		"slog":          logs.Bytes(),

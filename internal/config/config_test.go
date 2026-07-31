@@ -2,8 +2,11 @@ package config
 
 import (
 	"encoding/base64"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadFromEnv(t *testing.T) {
@@ -103,6 +106,55 @@ func TestLoadFromEnv(t *testing.T) {
 			},
 			wantErr: "HTTPS",
 		},
+		{
+			name: "disables proxy when API URL is empty",
+			setenv: func(t *testing.T) {
+				t.Setenv("NVIDIA_ROUTER_MASTER_KEY", validMasterKey())
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_API_URL", "")
+			},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.XKProxyAPIURL != nil {
+					t.Fatalf("XKProxyAPIURL = %v, want nil", cfg.XKProxyAPIURL)
+				}
+				if cfg.XKProxyTTL != 0 {
+					t.Fatalf("XKProxyTTL = %v, want 0", cfg.XKProxyTTL)
+				}
+				if cfg.XKProxyRenewBefore != 0 {
+					t.Fatalf("XKProxyRenewBefore = %v, want 0", cfg.XKProxyRenewBefore)
+				}
+			},
+		},
+		{
+			name: "loads valid proxy configuration",
+			setenv: func(t *testing.T) {
+				t.Setenv("NVIDIA_ROUTER_MASTER_KEY", validMasterKey())
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_API_URL", "http://proxy.example.test/tools/XApi.ashx?qty=1&apikey=fixture&sign=fixture")
+			},
+			check: func(t *testing.T, cfg Config) {
+				proxyURL, ttl, renewBefore := proxyConfigFields(t, cfg)
+				if proxyURL.String() != "http://proxy.example.test/tools/XApi.ashx?qty=1&apikey=fixture&sign=fixture" {
+					t.Fatalf("proxy URL = %q", proxyURL)
+				}
+				if ttl != 3*time.Minute || renewBefore != 15*time.Second {
+					t.Fatalf("proxy durations = %v/%v", ttl, renewBefore)
+				}
+			},
+		},
+		{
+			name: "loads custom proxy durations",
+			setenv: func(t *testing.T) {
+				t.Setenv("NVIDIA_ROUTER_MASTER_KEY", validMasterKey())
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_API_URL", "https://proxy.example.test/x?qty=1")
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_TTL", "90s")
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE", "10s")
+			},
+			check: func(t *testing.T, cfg Config) {
+				_, ttl, renewBefore := proxyConfigFields(t, cfg)
+				if ttl != 90*time.Second || renewBefore != 10*time.Second {
+					t.Fatalf("proxy durations = %v/%v", ttl, renewBefore)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +177,82 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRejectsInvalidProxyConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		url   string
+		ttl   string
+		renew string
+		want  string
+	}{
+		{name: "relative URL", url: "/proxy?qty=1", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "missing host", url: "http:///proxy?qty=1", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "unsupported scheme", url: "ftp://proxy.example.test/?qty=1", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "userinfo", url: "http://user:pass@proxy.example.test/?qty=1", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "fragment", url: "http://proxy.example.test/?qty=1#fragment", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "missing qty", url: "http://proxy.example.test/", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "duplicate qty", url: "http://proxy.example.test/?qty=1&qty=1", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "wrong qty", url: "http://proxy.example.test/?qty=2", want: "NVIDIA_ROUTER_XK_PROXY_API_URL"},
+		{name: "short TTL", url: "http://proxy.example.test/?qty=1", ttl: "29s", want: "NVIDIA_ROUTER_XK_PROXY_TTL"},
+		{name: "long TTL", url: "http://proxy.example.test/?qty=1", ttl: "31m", want: "NVIDIA_ROUTER_XK_PROXY_TTL"},
+		{name: "invalid TTL", url: "http://proxy.example.test/?qty=1", ttl: "nope", want: "NVIDIA_ROUTER_XK_PROXY_TTL"},
+		{name: "zero renew window", url: "http://proxy.example.test/?qty=1", renew: "0s", want: "NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE"},
+		{name: "invalid renew format", url: "http://proxy.example.test/?qty=1", renew: "nope", want: "NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE"},
+		{name: "renew window reaches TTL", url: "http://proxy.example.test/?qty=1", ttl: "30s", renew: "30s", want: "NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("NVIDIA_ROUTER_MASTER_KEY", validMasterKey())
+			t.Setenv("NVIDIA_ROUTER_XK_PROXY_API_URL", test.url)
+			if test.ttl != "" {
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_TTL", test.ttl)
+			}
+			if test.renew != "" {
+				t.Setenv("NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE", test.renew)
+			}
+
+			_, err := LoadFromEnv(LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadFromEnv error = %v, want %q", err, test.want)
+			}
+			if strings.Contains(err.Error(), test.url) || strings.Contains(err.Error(), "apikey") || strings.Contains(err.Error(), "sign") {
+				t.Fatalf("proxy configuration error leaked sensitive URL/query: %v", err)
+			}
+		})
+	}
+}
+
+func proxyConfigFields(t *testing.T, cfg Config) (*url.URL, time.Duration, time.Duration) {
+	t.Helper()
+	value := reflect.ValueOf(cfg)
+	proxyField := value.FieldByName("XKProxyAPIURL")
+	if !proxyField.IsValid() {
+		t.Fatalf("XKProxyAPIURL field is missing")
+	}
+	proxyURL, ok := proxyField.Interface().(*url.URL)
+	if !ok || proxyURL == nil {
+		t.Fatalf("XKProxyAPIURL is missing or empty")
+	}
+	ttlField := value.FieldByName("XKProxyTTL")
+	if !ttlField.IsValid() {
+		t.Fatalf("XKProxyTTL field is missing")
+	}
+	ttl, ok := ttlField.Interface().(time.Duration)
+	if !ok {
+		t.Fatalf("XKProxyTTL is missing")
+	}
+	renewField := value.FieldByName("XKProxyRenewBefore")
+	if !renewField.IsValid() {
+		t.Fatalf("XKProxyRenewBefore field is missing")
+	}
+	renewBefore, ok := renewField.Interface().(time.Duration)
+	if !ok {
+		t.Fatalf("XKProxyRenewBefore is missing")
+	}
+	return proxyURL, ttl, renewBefore
+}
+
 func TestRequestBodyLimits(t *testing.T) {
 	if JSONBodyLimit != 32<<20 {
 		t.Fatalf("JSONBodyLimit = %d, want %d", JSONBodyLimit, 32<<20)
@@ -145,6 +273,9 @@ func clearConfigEnv(t *testing.T) {
 		"NVIDIA_ROUTER_TEMP_DIR",
 		"NVIDIA_ROUTER_MASTER_KEY",
 		"NVIDIA_ROUTER_NVIDIA_BASE_URL",
+		"NVIDIA_ROUTER_XK_PROXY_API_URL",
+		"NVIDIA_ROUTER_XK_PROXY_TTL",
+		"NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE",
 	} {
 		t.Setenv(name, "")
 	}

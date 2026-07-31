@@ -17,6 +17,7 @@ import (
 	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/pool"
 	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/xkproxy"
 )
 
 func TestAttemptTriesEachKeyOnceWithCapturedSettingsAndPerAttemptFirstByteBudget(t *testing.T) {
@@ -131,27 +132,35 @@ func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 }
 
 func TestAttemptSyncsOnlyAfterStateWriterSucceeds(t *testing.T) {
-	settings := &countingProvider{snapshot: attemptSettings()}
-	keyPool := newAttemptPool(settings, 1)
-	stateErr := errors.New("state transaction failed")
-	states := &failingStateWriter{err: stateErr}
-	syncer := &recordingStateSync{}
-	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
+	for _, status := range []int{http.StatusOK, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			settings := &countingProvider{snapshot: attemptSettings()}
+			keyPool := newAttemptPool(settings, 1)
+			stateErr := errors.New("state transaction failed")
+			states := &failingStateWriter{err: stateErr}
+			syncer := &recordingStateSync{}
+			attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
 
-	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
-		return attemptResponse(500, ""), nil
-	})
-	if !errors.Is(err, stateErr) {
-		t.Fatalf("Run error = %v, want state error", err)
+			_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+				return attemptResponse(status, ""), nil
+			})
+			if !errors.Is(err, stateErr) {
+				t.Fatalf("Run error = %v, want state error", err)
+			}
+			var upstreamFault fault.Fault
+			if errors.As(err, &upstreamFault) {
+				t.Fatalf("Run error = %+v, want internal state error", upstreamFault)
+			}
+			if syncer.calls.Load() != 0 {
+				t.Fatal("StateSync ran before failed transaction")
+			}
+			lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+			if acquireErr != nil {
+				t.Fatalf("Acquire after state failure: %v", acquireErr)
+			}
+			lease.Release()
+		})
 	}
-	if syncer.failures.Load() != 0 {
-		t.Fatal("StateSync ran before failed transaction")
-	}
-	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
-	if acquireErr != nil {
-		t.Fatalf("Acquire after state failure: %v", acquireErr)
-	}
-	lease.Release()
 }
 
 func TestAttemptCommittedErrorDoesNotTryAnotherKey(t *testing.T) {
@@ -172,6 +181,63 @@ func TestAttemptCommittedErrorDoesNotTryAnotherKey(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("Execute calls = %d, want 1", got)
 	}
+}
+
+func TestAttemptDoesNotPersistProxyFailureOrSwitchKey(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1, 2)
+	states := &countingStateWriter{}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
+
+	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		return nil, xkproxy.NewTransportError(errors.New("private proxy cause"))
+	})
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("Run error = %T %v, want proxy error", err, err)
+	}
+	if states.failures != 0 || states.successes != 0 {
+		t.Fatalf("state writes = success:%d failure:%d, want zero", states.successes, states.failures)
+	}
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	if acquireErr != nil {
+		t.Fatalf("Acquire after proxy failure: %v", acquireErr)
+	}
+	lease.Release()
+}
+
+func TestAttemptProxyFailureSkipsStateSyncAndModelBlockPropagation(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1, 2)
+	states := &countingStateWriter{}
+	syncer := &recordingStateSync{}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
+
+	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		return nil, xkproxy.NewTransportError(errors.New("private proxy cause"))
+	})
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("Run error = %T %v, want proxy error", err, err)
+	}
+	if states.failures != 0 || states.successes != 0 {
+		t.Fatalf("state writes = success:%d failure:%d, want zero", states.successes, states.failures)
+	}
+	// The attempt layer has no model-block concept of its own: model blocks are
+	// persisted inside MarkFailure and propagated to the in-memory pool through
+	// ApplyFailure. A proxy error must invoke neither the state writer nor the
+	// state sync, otherwise it would flip consecutive_failures/last_error_code
+	// and (re)create or refresh model blocks for the key.
+	if got := syncer.calls.Load(); got != 0 {
+		t.Fatalf("state sync calls = %d, want 0 (no ApplySuccess/ApplyFailure)", got)
+	}
+	// The key that hit the proxy error is released untouched and can be
+	// acquired again immediately.
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	if acquireErr != nil {
+		t.Fatalf("Acquire after proxy failure: %v", acquireErr)
+	}
+	lease.Release()
 }
 
 func TestAttemptReturnsLastFaultWhenCandidatesAreExhausted(t *testing.T) {
@@ -242,6 +308,70 @@ func TestAttemptClassifiesBudgetExpiryWhileWaitingForFirstKey(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("Execute calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestAttemptNonstreamStateCancellationDoesNotMaskTimeoutFault(t *testing.T) {
+	const (
+		totalTimeout = 50 * time.Millisecond
+		tolerance    = 100 * time.Millisecond
+	)
+	tests := []struct {
+		name    string
+		execute ExecuteFunc
+	}{
+		{
+			name: "success persistence",
+			execute: func(ctx context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+				<-ctx.Done()
+				return attemptResponse(http.StatusOK, ""), nil
+			},
+		},
+		{
+			name: "failure persistence",
+			execute: func(ctx context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings := &countingProvider{snapshot: attemptSettings()}
+			settings.snapshot.NonstreamTotalTimeoutMS = int(totalTimeout / time.Millisecond)
+			keyPool := newAttemptPool(settings, 1)
+			states := &blockingStateWriter{canceled: make(chan error, 1)}
+			attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			started := time.Now()
+			_, err := attempt.Run(ctx, 1, false, tt.execute)
+			elapsed := time.Since(started)
+			var timeoutFault fault.Fault
+			if !errors.As(err, &timeoutFault) {
+				t.Fatalf("Run error = %T %v, want timeout Fault", err, err)
+			}
+			if timeoutFault.HTTPStatus != http.StatusGatewayTimeout || timeoutFault.PublicCode != "upstream_timeout" {
+				t.Fatalf("timeout Fault = %+v", timeoutFault)
+			}
+			select {
+			case canceledErr := <-states.canceled:
+				if !errors.Is(canceledErr, context.DeadlineExceeded) {
+					t.Fatalf("state writer cancellation = %v, want context deadline exceeded", canceledErr)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("state writer was not called")
+			}
+			lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+			if acquireErr != nil {
+				t.Fatalf("Acquire after persistence cancellation: %v", acquireErr)
+			}
+			lease.Release()
+			if elapsed > totalTimeout+tolerance {
+				t.Fatalf("Run elapsed = %s, want at most %s", elapsed, totalTimeout+tolerance)
+			}
+		})
 	}
 }
 
@@ -350,6 +480,21 @@ func (w *attemptStateWriter) MarkFailure(_ context.Context, keyID, _ int64, f fa
 
 type failingStateWriter struct{ err error }
 
+type countingStateWriter struct {
+	successes int
+	failures  int
+}
+
+func (w *countingStateWriter) MarkSuccess(_ context.Context, keyID int64) (keystate.KeySnapshot, error) {
+	w.successes++
+	return keystate.KeySnapshot{ID: keyID, Enabled: true}, nil
+}
+
+func (w *countingStateWriter) MarkFailure(_ context.Context, keyID, _ int64, _ fault.Fault) (keystate.KeySnapshot, error) {
+	w.failures++
+	return keystate.KeySnapshot{ID: keyID, Enabled: true}, nil
+}
+
 func (w *failingStateWriter) MarkSuccess(context.Context, int64) (keystate.KeySnapshot, error) {
 	return keystate.KeySnapshot{}, w.err
 }
@@ -358,15 +503,33 @@ func (w *failingStateWriter) MarkFailure(context.Context, int64, int64, fault.Fa
 	return keystate.KeySnapshot{}, w.err
 }
 
+type blockingStateWriter struct {
+	canceled chan error
+}
+
+func (w *blockingStateWriter) MarkSuccess(ctx context.Context, _ int64) (keystate.KeySnapshot, error) {
+	return w.waitForCancellation(ctx)
+}
+
+func (w *blockingStateWriter) MarkFailure(ctx context.Context, _, _ int64, _ fault.Fault) (keystate.KeySnapshot, error) {
+	return w.waitForCancellation(ctx)
+}
+
+func (w *blockingStateWriter) waitForCancellation(ctx context.Context) (keystate.KeySnapshot, error) {
+	<-ctx.Done()
+	w.canceled <- ctx.Err()
+	return keystate.KeySnapshot{}, ctx.Err()
+}
+
 type recordingStateSync struct {
-	failures atomic.Int32
+	calls atomic.Int32
 }
 
 func (*recordingStateSync) LoadSnapshot([]keystate.KeySnapshot, []keystate.ModelBlock) {}
 func (*recordingStateSync) UpsertKey(keystate.KeySnapshot)                             {}
 func (*recordingStateSync) RemoveKey(int64)                                            {}
-func (*recordingStateSync) ApplySuccess(int64)                                         {}
+func (s *recordingStateSync) ApplySuccess(int64)                                       { s.calls.Add(1) }
 func (s *recordingStateSync) ApplyFailure(int64, int64, fault.Fault, keystate.KeySnapshot) {
-	s.failures.Add(1)
+	s.calls.Add(1)
 }
 func (*recordingStateSync) SetModelBlock(int64, int64, bool) {}

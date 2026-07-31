@@ -16,6 +16,7 @@ import (
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
+	"nvidia-router/internal/xkproxy"
 )
 
 func TestChatRejectsOversizedBody(t *testing.T) {
@@ -44,6 +45,14 @@ func TestChatReturnsModelNotFound(t *testing.T) {
 	assertChatError(t, response, http.StatusNotFound, "model_not_found")
 }
 
+func TestWriteChatErrorMapsProxyFailureToBadGateway(t *testing.T) {
+	response := httptest.NewRecorder()
+
+	writeChatError(response, xkproxy.NewTransportError(errors.New("private proxy cause")))
+
+	assertChatError(t, response, http.StatusBadGateway, "upstream_proxy_unavailable")
+}
+
 func TestChatStreamForwardsSSEEvents(t *testing.T) {
 	sseBody := "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -54,7 +63,7 @@ func TestChatStreamForwardsSSEEvents(t *testing.T) {
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -85,31 +94,77 @@ func TestChatStreamForwardsSSEEvents(t *testing.T) {
 	}
 }
 
-func TestChatMapsRequestAndPreservesValidatedResponse(t *testing.T) {
+func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(": keep-alive\n\n")),
+		}, nil
+	})}
+	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	response, err := NewChat(nil, nil, client).execute([]byte(`{}`), true)(
+		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
+	)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("execute error = %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.T) {
 	type capturedRequest struct {
 		header http.Header
 		body   []byte
 	}
-	captured := make(chan capturedRequest, 1)
-	responseBody := []byte(`{"id":"chat-1","choices":[],"future":{"kept":true}}`)
+	captured := make(chan capturedRequest, 2)
+	responseBody := []byte(`{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}],"future":{"kept":true}}`)
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, _ := io.ReadAll(request.Body)
 		captured <- capturedRequest{header: request.Header.Clone(), body: body}
 		writer.Header().Set("Content-Type", "application/json")
+		if request.Header.Get("Authorization") == "Bearer first-secret" {
+			_, _ = writer.Write([]byte(`{"id":"chat-1","choices":[]}`))
+			return
+		}
 		_, _ = writer.Write(responseBody)
 	}))
 	t.Cleanup(upstream.Close)
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	lease := &releaseTrackingLease{id: 7}
+	attempts := 0
+	protocolFailures := 0
 	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
-		response, err := execute(ctx, lease.id, []byte("upstream-secret"), &router.CommitState{})
-		return router.AttemptResult{Response: response, Lease: lease, Attempts: 1}, err
+		var lastErr error
+		for index, secret := range []string{"first-secret", "second-secret"} {
+			attempts++
+			response, err := execute(ctx, int64(index+1), []byte(secret), &router.CommitState{})
+			if err == nil {
+				return router.AttemptResult{Response: response, Lease: lease, Attempts: attempts}, nil
+			}
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			var classified fault.Fault
+			if !errors.As(err, &classified) || !classified.Retryable || classified.PublicCode != "upstream_protocol_error" {
+				return router.AttemptResult{}, err
+			}
+			protocolFailures++
+			lastErr = err
+		}
+		return router.AttemptResult{}, lastErr
 	})
 	resolver := modelResolverFunc(func(_ context.Context, publicID string, requirements modelcatalog.Requirements) (modelcatalog.Model, error) {
 		if publicID != "public-model" || requirements.Kind != modelcatalog.KindChat {
@@ -128,19 +183,24 @@ func TestChatMapsRequestAndPreservesValidatedResponse(t *testing.T) {
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), responseBody) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.Bytes())
 	}
+	if attempts != 2 || protocolFailures != 1 {
+		t.Fatalf("attempts = %d, protocol failures = %d; want 2, 1", attempts, protocolFailures)
+	}
 	if !lease.released {
 		t.Fatal("successful attempt lease was not released")
 	}
-	got := <-captured
-	if got.header.Get("Authorization") != "Bearer upstream-secret" {
-		t.Fatalf("Authorization = %q", got.header.Get("Authorization"))
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(got.body, &fields); err != nil {
-		t.Fatalf("decode upstream body: %v", err)
-	}
-	if string(fields["model"]) != `"vendor/model"` || string(fields["future"]) != `{"kept":true}` {
-		t.Fatalf("upstream fields = %s", got.body)
+	for _, wantAuthorization := range []string{"Bearer first-secret", "Bearer second-secret"} {
+		got := <-captured
+		if got.header.Get("Authorization") != wantAuthorization {
+			t.Fatalf("Authorization = %q, want %q", got.header.Get("Authorization"), wantAuthorization)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(got.body, &fields); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if string(fields["model"]) != `"vendor/model"` || string(fields["future"]) != `{"kept":true}` {
+			t.Fatalf("upstream fields = %s", got.body)
+		}
 	}
 }
 
@@ -153,7 +213,7 @@ func TestChatExecutionPreservesResponseReadFailureClassification(t *testing.T) {
 			Body:       readErrorBody{err: readErr},
 		}, nil
 	})}
-	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor())
+	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

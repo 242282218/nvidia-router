@@ -64,7 +64,7 @@ func TestEmbeddingsMapsModelAndPreservesValidatedResponse(t *testing.T) {
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestEmbeddingsExecutionSurfacesProtocolErrorForFailover(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"usage":{}}`)),
 		}, nil
 	})}
-	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor())
+	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

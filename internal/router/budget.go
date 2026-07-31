@@ -30,6 +30,10 @@ func (b Budget) ConnectTimeout() time.Duration {
 	return b.connectTimeout
 }
 
+func (b Budget) FirstByteTimeout() time.Duration {
+	return b.firstByteTimeout
+}
+
 func (b Budget) FirstByteDeadline() time.Time {
 	return b.firstByteDeadline
 }

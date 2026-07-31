@@ -5,12 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +25,7 @@ import (
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -164,6 +168,163 @@ func TestBatchImportPreservesLineNumbersAndOnlyPersistsValidKeys(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("persisted keys = %d, want 1", count)
+	}
+}
+
+func TestProxyUnavailableImportDoesNotPersistKey(t *testing.T) {
+	token := "proxy-unavailable-token-123"
+	validator := newFakeValidator()
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationProxyUnavailable}
+	service, db, _ := newNVIDIAKeyTestService(t, validator)
+
+	result, err := service.Import(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if result.Status != ImportStatusTemporarilyUnavailable || result.Reason != "proxy_temporarily_unavailable" {
+		t.Fatalf("result = %+v", result)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM nvidia_keys").Scan(&count); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("persisted keys = %d, want 0", count)
+	}
+}
+
+func TestProxyUnavailableKeyTestDoesNotWriteState(t *testing.T) {
+	validator := newFakeValidator()
+	service, _, _ := newNVIDIAKeyTestService(t, validator)
+	token := "proxy-existing-token-123"
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationValid}
+	imported, err := service.Import(context.Background(), token)
+	if err != nil || imported.Key == nil {
+		t.Fatalf("Import = %+v, %v", imported, err)
+	}
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationProxyUnavailable}
+
+	result, err := service.Test(context.Background(), imported.Key.ID)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if result.Status != "temporarily_unavailable" || result.Reason != "proxy_temporarily_unavailable" || result.Snapshot.ID != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	keys, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 1 || keys[0].CooldownUntil != nil || keys[0].AuthInvalid {
+		t.Fatalf("key state changed = %+v", keys)
+	}
+}
+
+func TestProxyUnavailableTestLeavesKeyRowAndModelBlocksUntouched(t *testing.T) {
+	validator := newFakeValidator()
+	service, db, _ := newNVIDIAKeyTestService(t, validator)
+	token := "proxy-mutation-token-123"
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationValid, Models: []string{"model-a"}}
+	imported, err := service.Import(context.Background(), token)
+	if err != nil || imported.Key == nil {
+		t.Fatalf("Import = %+v, %v", imported, err)
+	}
+	keyID := imported.Key.ID
+	// Seed non-default values on every key field the failure path could touch,
+	// plus one model block, so any accidental state write during the proxy
+	// error path is detected as a before/after diff.
+	if _, err := db.Exec(`
+		UPDATE nvidia_keys SET
+			auth_invalid = 1,
+			cooldown_until = '2026-07-29T03:00:00Z',
+			cooldown_reason = 'seed_reason',
+			cooldown_level = 2,
+			consecutive_failures = 3,
+			last_error_at = '2026-07-29T04:00:00Z',
+			last_error_code = 'seed_error',
+			updated_at = '2026-07-29T05:00:00Z'
+		WHERE id = ?
+	`, keyID); err != nil {
+		t.Fatalf("seed key state: %v", err)
+	}
+	modelID := createStateTestModel(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO nvidia_key_model_blocks (
+			nvidia_key_id, model_id, reason_code, upstream_status, first_seen_at, last_seen_at
+		) VALUES (?, ?, 'seed_block', 403, '2026-07-29T03:00:00Z', '2026-07-29T03:00:00Z')
+	`, keyID, modelID); err != nil {
+		t.Fatalf("seed model block: %v", err)
+	}
+
+	readKeyRow := func() []string {
+		t.Helper()
+		var (
+			authInvalid, cooldownLevel, consecutiveFailures           int
+			cooldownUntil, cooldownReason, lastErrorAt, lastErrorCode sql.NullString
+			updatedAt                                                 string
+		)
+		if err := db.QueryRow(`
+			SELECT auth_invalid, cooldown_until, cooldown_reason, cooldown_level,
+			       consecutive_failures, last_error_at, last_error_code, updated_at
+			FROM nvidia_keys WHERE id = ?
+		`, keyID).Scan(
+			&authInvalid, &cooldownUntil, &cooldownReason, &cooldownLevel,
+			&consecutiveFailures, &lastErrorAt, &lastErrorCode, &updatedAt,
+		); err != nil {
+			t.Fatalf("read key row: %v", err)
+		}
+		return []string{
+			strconv.Itoa(authInvalid), cooldownUntil.String, cooldownReason.String,
+			strconv.Itoa(cooldownLevel), strconv.Itoa(consecutiveFailures),
+			lastErrorAt.String, lastErrorCode.String, updatedAt,
+		}
+	}
+	readBlocks := func() []string {
+		t.Helper()
+		rows, err := db.Query(`
+			SELECT reason_code, upstream_status, first_seen_at, last_seen_at
+			FROM nvidia_key_model_blocks WHERE nvidia_key_id = ?
+		`, keyID)
+		if err != nil {
+			t.Fatalf("read model blocks: %v", err)
+		}
+		defer rows.Close()
+		blocks := []string{}
+		for rows.Next() {
+			var reason string
+			var status sql.NullInt64
+			var firstSeen, lastSeen string
+			if err := rows.Scan(&reason, &status, &firstSeen, &lastSeen); err != nil {
+				t.Fatalf("scan model block: %v", err)
+			}
+			blocks = append(blocks, fmt.Sprintf("%s/%d/%s/%s", reason, status.Int64, firstSeen, lastSeen))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate model blocks: %v", err)
+		}
+		return blocks
+	}
+
+	beforeRow, beforeBlocks := readKeyRow(), readBlocks()
+	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationProxyUnavailable}
+
+	result, err := service.Test(context.Background(), keyID)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if result.Status != "temporarily_unavailable" || result.Reason != "proxy_temporarily_unavailable" || result.Snapshot.ID != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+
+	afterRow, afterBlocks := readKeyRow(), readBlocks()
+	if !reflect.DeepEqual(beforeRow, afterRow) {
+		t.Fatalf("key row changed across proxy error\nbefore: %v\nafter:  %v", beforeRow, afterRow)
+	}
+	if !reflect.DeepEqual(beforeBlocks, afterBlocks) {
+		t.Fatalf("model blocks changed across proxy error\nbefore: %v\nafter:  %v", beforeBlocks, afterBlocks)
+	}
+	if len(afterBlocks) != 1 {
+		t.Fatalf("block count = %d, want 1", len(afterBlocks))
 	}
 }
 
@@ -374,6 +535,35 @@ func TestMarkSuccessClearsCooldownAndFailureCounters(t *testing.T) {
 	}
 }
 
+func TestMarkSuccessClearsAuthInvalid(t *testing.T) {
+	service, db, _, keyID := newImportedKeyForStateTest(t)
+	if _, err := db.Exec(`
+		UPDATE nvidia_keys SET
+			auth_invalid = 1,
+			cooldown_until = '2026-07-30T03:01:00Z',
+			cooldown_level = 2,
+			consecutive_failures = 3
+		WHERE id = ?
+	`, keyID); err != nil {
+		t.Fatalf("prepare invalid key state: %v", err)
+	}
+
+	if _, err := service.MarkSuccess(context.Background(), keyID); err != nil {
+		t.Fatalf("MarkSuccess: %v", err)
+	}
+	snapshots, err := NewRepository(db).ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
+	}
+	snapshot := snapshots[0]
+	if snapshot.AuthInvalid || snapshot.CooldownUntil != nil || snapshot.CooldownLevel != 0 || snapshot.ConsecutiveFailures != 0 {
+		t.Fatalf("success snapshot = %+v", snapshot)
+	}
+}
+
 func TestMarkFailureRollsBackWithoutSnapshot(t *testing.T) {
 	service, db, _, keyID := newImportedKeyForStateTest(t)
 	snapshot, err := service.MarkFailure(context.Background(), keyID, 999999, fault.Fault{
@@ -410,7 +600,7 @@ func TestManualTestUsesActualFaultMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rewrite descriptor: %v", err)
 	}
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -427,6 +617,12 @@ func TestManualTestUsesActualFaultMetadata(t *testing.T) {
 	if result.Snapshot.CooldownUntil == nil || !result.Snapshot.CooldownUntil.Equal(wantCooldown) {
 		t.Fatalf("cooldown = %v, want %v", result.Snapshot.CooldownUntil, wantCooldown)
 	}
+}
+
+type testNVIDIASettings struct{}
+
+func (testNVIDIASettings) Snapshot() runtimeconfig.Snapshot {
+	return runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
 }
 
 func newImportedKeyForStateTest(t *testing.T) (*Service, *sql.DB, string, int64) {

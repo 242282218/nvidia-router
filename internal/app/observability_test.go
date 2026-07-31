@@ -20,7 +20,7 @@ import (
 func TestAppRecordsRequestMetadataAndFourDimensions(t *testing.T) {
 	upstream := mocknvidia.New(mocknvidia.Script{
 		Status:  http.StatusOK,
-		Body:    `{"id":"chat-1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}`,
+		Body:    `{"id":"chat-1","choices":[{}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`,
 		Headers: http.Header{"X-Request-Id": []string{"upstream-safe-id"}},
 	})
 	t.Cleanup(upstream.Close)

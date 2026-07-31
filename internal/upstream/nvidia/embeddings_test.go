@@ -30,7 +30,7 @@ func TestEmbeddingsSendsWireFormat(t *testing.T) {
 
 	descriptor := DefaultDescriptor()
 	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
-	client, err := NewClient(upstream.Client(), descriptor)
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -64,10 +64,10 @@ func TestEmbeddingsSendsWireFormat(t *testing.T) {
 
 func TestValidateNonstreamEmbeddingsRejectsMalformed(t *testing.T) {
 	cases := map[string]string{
-		"not json":          `hello`,
-		"no data":           `{"usage":{}}`,
-		"data not array":    `{"data":{"x":1}}`,
-		"empty body":        `{}`,
+		"not json":       `hello`,
+		"no data":        `{"usage":{}}`,
+		"data not array": `{"data":{"x":1}}`,
+		"empty body":     `{}`,
 	}
 	for name, body := range cases {
 		response := &http.Response{

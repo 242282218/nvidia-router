@@ -17,7 +17,61 @@ import (
 	"nvidia-router/internal/database"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
+	"nvidia-router/internal/xkproxy"
 )
+
+func TestSaveSelectionRejectsInvalidModelFields(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	tests := []Selection{
+		{PublicID: "unsupported", UpstreamID: "vendor/model", DisplayName: "Model", Kind: Kind("unsupported")},
+		{PublicID: "empty-display", UpstreamID: "vendor/model", Kind: KindChat},
+	}
+	for _, selection := range tests {
+		if err := service.SaveSelection(context.Background(), []Selection{selection}); !errors.Is(err, ErrInvalidModelSelection) {
+			t.Errorf("selection %q error = %v, want ErrInvalidModelSelection", selection.PublicID, err)
+		}
+	}
+}
+
+func TestPatchRejectsInvalidModelSelectionSentinel(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "patch-invalid", UpstreamID: "vendor/patch-invalid", DisplayName: "Patch invalid", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	invalid := Kind("unsupported")
+	if _, err := service.Patch(context.Background(), result.Models[0].ID, Patch{Kind: &invalid}); !errors.Is(err, ErrInvalidModelSelection) {
+		t.Fatalf("Patch error = %v, want ErrInvalidModelSelection", err)
+	}
+}
+
+func TestSaveSelectionResultReportsPreviousKindOnlyForExistingModel(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	selection := Selection{PublicID: "mutation-result", UpstreamID: "vendor/mutation-result", DisplayName: "Mutation result", Kind: KindChat, Enabled: true}
+
+	first, err := service.SaveSelectionResult(context.Background(), []Selection{selection})
+	if err != nil {
+		t.Fatalf("first SaveSelectionResult: %v", err)
+	}
+	if len(first.Models) != 1 {
+		t.Fatalf("first result models = %d, want 1", len(first.Models))
+	}
+	modelID := first.Models[0].ID
+	if _, exists := first.PreviousKinds[modelID]; exists {
+		t.Fatalf("first result PreviousKinds[%d] exists = %q, want absent", modelID, first.PreviousKinds[modelID])
+	}
+
+	selection.Kind = KindEmbedding
+	second, err := service.SaveSelectionResult(context.Background(), []Selection{selection})
+	if err != nil {
+		t.Fatalf("second SaveSelectionResult: %v", err)
+	}
+	if got := second.PreviousKinds[modelID]; got != KindChat {
+		t.Fatalf("second result PreviousKinds[%d] = %q, want %q", modelID, got, KindChat)
+	}
+}
 
 func TestDiscoverCandidatesDoesNotMutateWhitelist(t *testing.T) {
 	service, db, secrets, discoverer := newCatalogTestService(t)
@@ -46,6 +100,17 @@ func TestDiscoverCandidatesDoesNotMutateWhitelist(t *testing.T) {
 		t.Fatalf("DiscoverCandidates second key: %v", err)
 	}
 	assertModelCount(t, db, 1)
+}
+
+func TestDiscoverCandidatesPreservesProxyError(t *testing.T) {
+	service, _, _, discoverer := newCatalogTestService(t)
+	discoverer.modelsErr = xkproxy.NewTransportError(errors.New("private proxy cause"))
+
+	_, err := service.DiscoverCandidates(context.Background(), 11)
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("DiscoverCandidates error = %T %v, want *xkproxy.Error", err, err)
+	}
 }
 
 func TestWhitelistMapsPublicIDAndDisablesImmediately(t *testing.T) {
@@ -78,6 +143,214 @@ func TestWhitelistMapsPublicIDAndDisablesImmediately(t *testing.T) {
 	}
 	if _, err := service.Resolve(context.Background(), "chat-public", Requirements{Kind: KindChat}); !errors.Is(err, ErrModelNotFound) {
 		t.Fatalf("Resolve disabled error = %v", err)
+	}
+}
+
+func TestPatchConcurrentChangesPreserveBothFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "router.db")
+	primaryDB, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open primary DB: %v", err)
+	}
+	primaryDB.SetMaxOpenConns(2)
+	t.Cleanup(func() {
+		if err := primaryDB.Close(); err != nil {
+			t.Errorf("Close primary DB: %v", err)
+		}
+	})
+	blockerDB, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open blocker DB: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := blockerDB.Close(); err != nil {
+			t.Errorf("Close blocker DB: %v", err)
+		}
+	})
+	service := NewService(NewRepository(primaryDB), &fakeSecrets{}, &fakeDiscoverer{}, nvidia.DefaultDescriptor(), catalogClock{})
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "concurrent", UpstreamID: "vendor/concurrent", DisplayName: "Original", Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	modelID := models[0].ID
+	blockerTx, err := blockerDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Begin blocker transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := blockerTx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Errorf("Rollback blocker transaction: %v", err)
+		}
+	})
+
+	var displayName = "Updated name"
+	var enabled = true
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		_, patchErr := service.Patch(context.Background(), modelID, Patch{DisplayName: &displayName})
+		errs <- patchErr
+	}()
+	go func() {
+		<-start
+		_, patchErr := service.Patch(context.Background(), modelID, Patch{Enabled: &enabled})
+		errs <- patchErr
+	}()
+	close(start)
+	deadline := time.NewTimer(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for primaryDB.Stats().InUse != 2 {
+		select {
+		case <-deadline.C:
+			if err := blockerTx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				t.Fatalf("Rollback blocker transaction after deadline: %v", err)
+			}
+			for range 2 {
+				<-errs
+			}
+			t.Fatal("PATCH calls did not both reach blocked transaction stage before deadline")
+		case <-ticker.C:
+		}
+	}
+	if err := blockerTx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("Rollback blocker transaction: %v", err)
+	}
+	patchErrors := make([]error, 0, 2)
+	for range 2 {
+		patchErrors = append(patchErrors, <-errs)
+	}
+	for _, patchErr := range patchErrors {
+		if patchErr != nil {
+			t.Fatalf("Patch: %v", patchErr)
+		}
+	}
+
+	updated, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List updated model: %v", err)
+	}
+	if updated[0].DisplayName != displayName || !updated[0].Enabled {
+		t.Fatalf("concurrent patch lost update: %+v", updated[0])
+	}
+}
+
+func TestConcurrentModelUpdatesAdvanceRevision(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "revision-concurrent", UpstreamID: "vendor/revision-concurrent", DisplayName: "Revision", Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	model := models[0]
+	verifiedAt := time.Date(2026, 7, 30, 5, 0, 0, 0, time.UTC)
+	const updatesPerMethod = 32
+	start := make(chan struct{})
+	errs := make(chan error, updatesPerMethod*2)
+	for range updatesPerMethod {
+		go func() {
+			<-start
+			errs <- service.SetEnabled(context.Background(), model.ID, false)
+		}()
+		go func() {
+			<-start
+			errs <- service.SetCapabilityVerified(context.Background(), model.ID, &verifiedAt)
+		}()
+	}
+	close(start)
+	for range updatesPerMethod * 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent model update: %v", err)
+		}
+	}
+
+	updated, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List updated model: %v", err)
+	}
+	wantRevision := model.updatedAt.Add(updatesPerMethod * 2 * time.Nanosecond)
+	if !updated[0].updatedAt.Equal(wantRevision) {
+		t.Fatalf("updated_at = %s, want %s after %d concurrent updates", updated[0].updatedAt, wantRevision, updatesPerMethod*2)
+	}
+}
+
+func TestVerifyAndUnblockMapsExistingModelConditionalUpdateMissToConflict(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	verifiedAt := time.Date(2026, 7, 30, 5, 0, 0, 0, time.UTC)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "conditional-conflict", UpstreamID: "vendor/conditional-conflict", DisplayName: "Conditional", Kind: KindTTS,
+		Enabled: true, CapabilityVerifiedAt: &verifiedAt,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	model := models[0]
+	if _, err := db.Exec("UPDATE models SET updated_at = ? WHERE id = ?", "2026-07-30T04:00:00.000Z", model.ID); err != nil {
+		t.Fatalf("rewrite model revision: %v", err)
+	}
+
+	_, err = service.repository.VerifyAndUnblock(context.Background(), 1, model.ID, model.updatedAt, verifiedAt)
+	if !errors.Is(err, ErrModelVersionConflict) {
+		t.Fatalf("VerifyAndUnblock error = %v, want model version conflict", err)
+	}
+}
+
+func TestVerifyAndUnblockRejectsModelChangedDuringTest(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "verify-race", UpstreamID: "vendor/verify-race", DisplayName: "Verify race", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	modelID := models[0].ID
+	keyID := insertNVIDIAKey(t, db)
+	status := 403
+	if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
+		t.Fatalf("BlockKeyModel: %v", err)
+	}
+	discoverer.chatStarted = make(chan struct{})
+	discoverer.chatRelease = make(chan struct{})
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+	verifyErr := make(chan error, 1)
+	go func() {
+		_, verifyErrValue := service.VerifyAndUnblock(context.Background(), keyID, modelID)
+		verifyErr <- verifyErrValue
+	}()
+	<-discoverer.chatStarted
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "verify-race", UpstreamID: "vendor/changed", DisplayName: "Verify race", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("change model during test: %v", err)
+	}
+	close(discoverer.chatRelease)
+	if err := <-verifyErr; err == nil || !strings.Contains(err.Error(), "model version conflict") {
+		t.Fatalf("VerifyAndUnblock error = %v, want model version conflict", err)
+	}
+	assertBlockCount(t, db, 1)
+	var verifiedAt sql.NullString
+	if err := db.QueryRow("SELECT capability_verified_at FROM models WHERE id = ?", modelID).Scan(&verifiedAt); err != nil {
+		t.Fatalf("query capability verification: %v", err)
+	}
+	if verifiedAt.Valid {
+		t.Fatalf("capability_verified_at = %q, want unset", verifiedAt.String)
 	}
 }
 
@@ -134,6 +407,50 @@ func TestAudioModelsRequireVerificationBeforeEnable(t *testing.T) {
 		if err := service.SetEnabled(context.Background(), model.ID, true); !errors.Is(err, ErrCapabilityUnverified) {
 			t.Fatalf("enable unverified %s error = %v", kind, err)
 		}
+	}
+}
+
+func TestRepositorySetEnabledRejectsUnverifiedAudioModel(t *testing.T) {
+	_, db, _, _ := newCatalogTestService(t)
+	repository := NewRepository(db)
+	now := time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC)
+	result, err := repository.SaveSelectionsResult(context.Background(), []Selection{{
+		PublicID: "repository-unverified-asr", UpstreamID: "vendor/repository-unverified-asr",
+		DisplayName: "Repository unverified ASR", Kind: KindASR, ReasoningWireFormat: "none",
+	}}, now)
+	if err != nil {
+		t.Fatalf("SaveSelectionsResult: %v", err)
+	}
+
+	err = repository.SetEnabled(context.Background(), result.Models[0].ID, true, now)
+	if !errors.Is(err, ErrCapabilityUnverified) {
+		t.Fatalf("SetEnabled error = %v, want ErrCapabilityUnverified", err)
+	}
+}
+
+func TestRepositorySetCapabilityVerifiedDisablesUnverifiedAudioModel(t *testing.T) {
+	_, db, _, _ := newCatalogTestService(t)
+	repository := NewRepository(db)
+	now := time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC)
+	verifiedAt := now.Add(-time.Hour)
+	result, err := repository.SaveSelectionsResult(context.Background(), []Selection{{
+		PublicID: "repository-verified-asr", UpstreamID: "vendor/repository-verified-asr",
+		DisplayName: "Repository verified ASR", Kind: KindASR, Enabled: true, ReasoningWireFormat: "none",
+		CapabilityVerifiedAt: &verifiedAt,
+	}}, now)
+	if err != nil {
+		t.Fatalf("SaveSelectionsResult: %v", err)
+	}
+
+	if err := repository.SetCapabilityVerified(context.Background(), result.Models[0].ID, nil, now); err != nil {
+		t.Fatalf("SetCapabilityVerified: %v", err)
+	}
+	var enabled int
+	if err := db.QueryRow("SELECT enabled FROM models WHERE id = ?", result.Models[0].ID).Scan(&enabled); err != nil {
+		t.Fatalf("load enabled state: %v", err)
+	}
+	if enabled != 0 {
+		t.Fatalf("enabled = %d, want 0", enabled)
 	}
 }
 
@@ -286,6 +603,58 @@ func TestVerifyAndUnblockAudioFailureDoesNotWriteVerification(t *testing.T) {
 		if err := service.UnblockKeyModel(context.Background(), keyID, modelID, true); err != nil {
 			t.Fatalf("cleanup %s: %v", kind, err)
 		}
+	}
+}
+
+func TestVerifyAndUnblockProxyErrorWritesNothing(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "proxy-block", UpstreamID: "vendor/proxy-block", DisplayName: "Proxy Block", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	modelID := modelIDByPublicID(t, db, "proxy-block")
+	status := 403
+	if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
+		t.Fatalf("BlockKeyModel: %v", err)
+	}
+	discoverer.chatErr = xkproxy.NewTransportError(errors.New("private proxy cause"))
+
+	_, err := service.VerifyAndUnblock(context.Background(), keyID, modelID)
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("VerifyAndUnblock error = %T %v, want *xkproxy.Error", err, err)
+	}
+	if errors.Is(err, ErrManualTestRequired) {
+		t.Fatalf("VerifyAndUnblock mapped proxy error to manual test required: %v", err)
+	}
+	if discoverer.chatCalls != 1 {
+		t.Fatalf("chat calls = %d, want 1", discoverer.chatCalls)
+	}
+	// The proxy failure must leave every verification artifact untouched:
+	// capability_verified_at stays unset, the key-model block survives, and no
+	// NVIDIA key state is written.
+	stored, err := service.repository.Get(context.Background(), modelID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.CapabilityVerifiedAt != nil {
+		t.Fatalf("proxy error wrote capability_verified_at = %v", stored.CapabilityVerifiedAt)
+	}
+	assertBlock(t, db, keyID, modelID, "model_forbidden", 403)
+	assertBlockCount(t, db, 1)
+	var authInvalid, consecutiveFailures, cooldownLevel int
+	var lastErrorCode sql.NullString
+	if err := db.QueryRow(`
+		SELECT auth_invalid, consecutive_failures, cooldown_level, last_error_code
+		FROM nvidia_keys WHERE id = ?
+	`, keyID).Scan(&authInvalid, &consecutiveFailures, &cooldownLevel, &lastErrorCode); err != nil {
+		t.Fatalf("query NVIDIA key state: %v", err)
+	}
+	if authInvalid != 0 || consecutiveFailures != 0 || cooldownLevel != 0 || lastErrorCode.Valid {
+		t.Fatalf("NVIDIA key state mutated by proxy error = invalid:%d failures:%d cooldown:%d error:%v",
+			authInvalid, consecutiveFailures, cooldownLevel, lastErrorCode)
 	}
 }
 
@@ -510,10 +879,12 @@ func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([
 
 type fakeDiscoverer struct {
 	models                  []string
+	modelsErr               error
 	lastToken               string
 	modelsCalls             int
 	chatCalls               int
 	chatResponse            string
+	chatErr                 error
 	asrCalls                int
 	ttsCalls                int
 	asrResponse             string
@@ -523,16 +894,28 @@ type fakeDiscoverer struct {
 	ttsContentTypeSet       bool
 	ttsContentTypeHeaderSet bool
 	lastAudioModel          string
+	chatStarted             chan struct{}
+	chatRelease             chan struct{}
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
 	d.lastToken = token
 	d.modelsCalls++
+	if d.modelsErr != nil {
+		return nil, d.modelsErr
+	}
 	return append([]string(nil), d.models...), nil
 }
 
 func (d *fakeDiscoverer) Chat(_ context.Context, _ runtimeconfig.Snapshot, _ string, _ []byte, _ bool) (*http.Response, error) {
 	d.chatCalls++
+	if d.chatErr != nil {
+		return nil, d.chatErr
+	}
+	if d.chatStarted != nil {
+		close(d.chatStarted)
+		<-d.chatRelease
+	}
 	body := d.chatResponse
 	if body == "" {
 		body = `{"choices":[]}`

@@ -98,6 +98,10 @@ func (s *Service) Test(ctx context.Context, id int64) (TestResult, error) {
 		result.Status = "invalid"
 	case nvidia.ValidationTemporarilyUnavailable:
 		result.Status = "temporarily_unavailable"
+	case nvidia.ValidationProxyUnavailable:
+		result.Status = "temporarily_unavailable"
+		result.Reason = "proxy_temporarily_unavailable"
+		return result, nil
 	default:
 		result.Status = "indeterminate"
 	}

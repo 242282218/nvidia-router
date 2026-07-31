@@ -76,7 +76,21 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run ./...
 
-      - name: Scan tracked files for secrets
+      - name: Check shell scripts
+        run: |
+          bash -n scripts/test/live-nvidia.sh
+          bash -n scripts/test/live-xkproxy.sh
+          bash -n scripts/test/compose-acceptance.sh
+          bash -n scripts/check-secrets.sh
+
+      - name: Run Live parser self-test
+        run: |
+          NVIDIA_ROUTER_LIVE_SELF_TEST=1 bash scripts/test/live-nvidia.sh
+          NVIDIA_ROUTER_XK_PROXY_LIVE_SELF_TEST=1 bash scripts/test/live-xkproxy.sh
+          NVIDIA_ROUTER_COMPOSE_SELF_TEST=1 bash scripts/test/compose-acceptance.sh
+          NVIDIA_ROUTER_SECRET_SCAN_SELF_TEST=1 bash scripts/check-secrets.sh
+
+      - name: Scan Docker build context for secrets
         run: bash scripts/check-secrets.sh
 
       # Live NVIDIA tests require an explicit operator invocation with runtime-only credentials.

@@ -22,6 +22,9 @@ func (a *App) beginShutdown(grace time.Duration) {
 		if a.Pool != nil {
 			a.Pool.Shutdown()
 		}
+		if a.proxy != nil {
+			a.proxy.Close()
+		}
 		if a.cleanupCancel != nil {
 			a.cleanupCancel()
 		}

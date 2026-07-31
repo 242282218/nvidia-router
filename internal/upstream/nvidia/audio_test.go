@@ -31,7 +31,7 @@ func TestAudioTranscriptionsSendsMultipart(t *testing.T) {
 
 	descriptor := DefaultDescriptor()
 	descriptor.ASR.URL = upstream.URL + "/v1/audio/transcriptions"
-	client, err := NewClient(upstream.Client(), descriptor)
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestAudioSpeechSendsJSON(t *testing.T) {
 
 	descriptor := DefaultDescriptor()
 	descriptor.TTS.URL = upstream.URL + "/v1/audio/speech"
-	client, err := NewClient(upstream.Client(), descriptor)
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

@@ -44,6 +44,147 @@ response_body() {
   printf '%s' "${response%$'\n'*}"
 }
 
+validate_live_results() {
+  local log_path="$1"
+  python3 - "$log_path" <<'PY'
+import re
+import sys
+
+required = {
+    "Models", "ChatNonstream", "ChatStream", "ResponsesNonstream",
+    "ResponsesStream", "Embedding", "ASR", "TTS",
+}
+records = {}
+pattern = re.compile(r"^case=([^ ]+) status=(PASS|FAIL|SKIP) duration=([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))$")
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            marker = line.find("case=")
+            if marker < 0:
+                continue
+            match = pattern.fullmatch(line[marker:].rstrip("\r\n"))
+            if match is None:
+                raise ValueError("malformed case result")
+            name, status, duration = match.groups()
+            if name not in required or name in records:
+                raise ValueError("unknown or duplicate case result")
+            if name in required - {"ASR", "TTS"} and status != "PASS":
+                raise ValueError("required case did not pass")
+            if name in {"ASR", "TTS"} and status not in {"PASS", "SKIP"}:
+                raise ValueError("optional audio case has invalid status")
+            records[name] = (status, duration)
+except (OSError, ValueError):
+    raise SystemExit(1)
+
+if set(records) != required:
+    raise SystemExit(1)
+
+for name in ("Models", "ChatNonstream", "ChatStream", "ResponsesNonstream", "ResponsesStream", "Embedding", "ASR", "TTS"):
+    status, duration = records[name]
+    print(f"case={name} status={status} duration={duration}")
+
+if records["ASR"][0] == "SKIP" or records["TTS"][0] == "SKIP":
+    raise SystemExit(2)
+PY
+}
+
+live_result_status() {
+  local parser_status="$1"
+  local go_status="$2"
+
+  if (( go_status != 0 || parser_status == 1 )); then
+    return 1
+  fi
+  return "$parser_status"
+}
+
+run_live_parser_self_test() {
+  local fixture
+  local summary
+  local result
+  local expected
+  local actual
+
+  fixture="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-live-fixture.XXXXXX")"
+  summary="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-live-summary.XXXXXX")"
+  chmod 600 "$fixture" "$summary"
+  trap 'rm -f -- "$fixture" "$summary"' RETURN
+
+  assert_result() {
+    expected="$1"
+    result="$2"
+    printf '%s\n' "$result" >"$fixture"
+    set +e
+    validate_live_results "$fixture" >"$summary"
+    actual=$?
+    set -e
+    if [[ "$actual" != "$expected" ]] || grep -Eq 'reason=|request|response|secret' "$summary"; then
+      return 1
+    fi
+  }
+
+  local all_pass='case=Models status=PASS duration=1ms
+case=ChatNonstream status=PASS duration=1ms
+case=ChatStream status=PASS duration=1ms
+case=ResponsesNonstream status=PASS duration=1ms
+case=ResponsesStream status=PASS duration=1ms
+case=Embedding status=PASS duration=1ms
+case=ASR status=PASS duration=1ms
+case=TTS status=PASS duration=1ms'
+  local all_skip='case=Models status=SKIP duration=1ms
+case=ChatNonstream status=SKIP duration=1ms
+case=ChatStream status=SKIP duration=1ms
+case=ResponsesNonstream status=SKIP duration=1ms
+case=ResponsesStream status=SKIP duration=1ms
+case=Embedding status=SKIP duration=1ms
+case=ASR status=SKIP duration=1ms
+case=TTS status=SKIP duration=1ms'
+
+  # The old exit-code-only rule incorrectly accepted this zero-exit fake output.
+  if ! assert_result 1 "$all_skip"; then
+    return 1
+  fi
+  if ! assert_result 0 "$all_pass"; then
+    return 1
+  fi
+  if ! assert_result 2 "${all_pass/ASR status=PASS/ASR status=SKIP}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/Embedding status=PASS/Embedding status=SKIP}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/ChatStream status=PASS/ChatStream status=FAIL}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/$'case=Models status=PASS duration=1ms\n'/case=Models status=PASS duration=1ms\ncase=Models status=PASS duration=1ms\n}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/case=Embedding status=PASS/case=Embedding status=UNKNOWN}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/case=TTS status=PASS/case=Other status=PASS}"; then
+    return 1
+  fi
+  if ! assert_result 1 "${all_pass/$'case=Embedding status=PASS duration=1ms\n'/}"; then
+    return 1
+  fi
+  if ! assert_result 2 "${all_pass/TTS status=PASS/TTS status=SKIP}"; then
+    return 1
+  fi
+  if ! assert_result 1 'case=Configuration status=SKIP duration=0s reason=missing-config'; then
+    return 1
+  fi
+  if ! assert_result 0 "$all_pass"; then
+    return 1
+  fi
+  if live_result_status 0 1; then
+    return 1
+  fi
+
+  printf 'case=LiveParserSelfTest status=PASS duration=0s\n'
+}
+
 validate_primary_models() {
   local body="$1"
   printf '%s' "$body" | \
@@ -158,6 +299,11 @@ enable_audio_model() {
   unset payload response
   [[ "$status" == '200' ]]
 }
+
+if [[ "${NVIDIA_ROUTER_LIVE_SELF_TEST:-0}" == '1' ]]; then
+  run_live_parser_self_test
+  exit $?
+fi
 
 cleanup() {
   local exit_code=$?
@@ -610,16 +756,24 @@ set +e
 go test -tags=live ./tests/live -v >"$live_log" 2>&1
 live_status=$?
 set -e
-live_cases="$(grep -Eo 'case=[^[:space:]]+ status=(PASS|FAIL|SKIP) duration=[^[:space:]]+' "$live_log" || true)"
-if [[ -n "$live_cases" ]]; then
-  printf '%s\n' "$live_cases"
-fi
+set +e
+validate_live_results "$live_log"
+parser_status=$?
+set -e
 unset live_cases NVIDIA_ROUTER_LIVE_ACCESS_KEY temporary_access_key
 rm -f -- "$live_log"
 live_log=''
-if (( live_status == 0 )); then
+set +e
+live_status_result=0
+live_result_status "$parser_status" "$live_status"
+live_status_result=$?
+set -e
+if (( live_status_result == 0 )); then
   report 'LiveGoTest' 'PASS' "$started"
+elif (( live_status_result == 2 )); then
+  report 'LiveGoTest' 'INCOMPLETE' "$started"
+  exit 2
 else
   report 'LiveGoTest' 'FAIL' "$started"
-  exit "$live_status"
+  exit 1
 fi

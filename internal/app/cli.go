@@ -48,10 +48,10 @@ func runCLIContext(ctx context.Context, args []string, stdout, _ io.Writer) erro
 		return nil
 	}
 	if len(args) == 4 && args[0] == "admin" && args[1] == "reset-password" && args[2] == "--password" {
-		return runAdminPasswordReset(context.Background(), args[3], stdout)
+		return runAdminPasswordReset(ctx, args[3], stdout)
 	}
 	if len(args) == 4 && args[0] == "db" && args[1] == "backup" && args[2] == "--output" {
-		return runDatabaseBackup(context.Background(), args[3], stdout)
+		return runDatabaseBackup(ctx, args[3], stdout)
 	}
 	if len(args) == 1 && args[0] == "serve" {
 		return runServe(ctx)

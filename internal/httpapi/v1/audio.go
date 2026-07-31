@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
@@ -26,10 +27,15 @@ type Audio struct {
 	models   ModelResolver
 	attempts AttemptRunner
 	client   *nvidia.Client
+	tempDir  string
 }
 
-func NewAudio(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Audio {
-	return &Audio{models: models, attempts: attempts, client: client}
+func NewAudio(models ModelResolver, attempts AttemptRunner, client *nvidia.Client, tempDirs ...string) *Audio {
+	tempDir := os.TempDir()
+	if len(tempDirs) > 0 && tempDirs[0] != "" {
+		tempDir = tempDirs[0]
+	}
+	return &Audio{models: models, attempts: attempts, client: client, tempDir: tempDir}
 }
 
 func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -44,7 +50,10 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	parsed, parseErr := audiocollections.ParseMultipart(request)
+	parsed, parseErr := audiocollections.ParseMultipart(request, h.tempDir)
+	if parseErr == nil {
+		defer parsed.Close()
+	}
 	if err := removeMultipartFiles(request); err != nil {
 		writeChatError(writer, &apierror.Error{
 			Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
@@ -56,7 +65,6 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, parseErr)
 		return
 	}
-	defer parsed.Close()
 	observability.SetModel(request.Context(), parsed.ModelID(), false)
 	model, err := h.models.Resolve(request.Context(), parsed.ModelID(), parsed.Requirements())
 	if err != nil {

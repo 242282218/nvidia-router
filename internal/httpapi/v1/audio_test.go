@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,7 +67,7 @@ func TestAudioMapsModelAndPreservesValidatedResponse(t *testing.T) {
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.ASR.URL = upstream.URL + "/v1/audio/transcriptions"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -108,6 +110,62 @@ func TestAudioMapsModelAndPreservesValidatedResponse(t *testing.T) {
 	}
 }
 
+func TestAudioCleansReplayFileWhenMultipartCleanupFails(t *testing.T) {
+	t.Setenv("GODEBUG", "multipartfiles=distinct")
+	tempDir := t.TempDir()
+	largePayload := bytes.Repeat([]byte{0x5a}, (1<<20)+1)
+	body, contentType := multipartBodyAudioFiles("public-asr", [][]byte{largePayload, largePayload})
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", contentType)
+	if err := request.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("ParseMultipartForm: %v", err)
+	}
+	files := request.MultipartForm.File["file"]
+	if len(files) != 2 {
+		t.Fatalf("file parts = %d, want 2", len(files))
+	}
+	second, err := files[1].Open()
+	if err != nil {
+		t.Fatalf("open second file: %v", err)
+	}
+	named, ok := second.(interface{ Name() string })
+	if !ok {
+		_ = second.Close()
+		t.Fatal("large multipart file is not backed by a named file")
+	}
+	path := named.Name()
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second file: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove second multipart file: %v", err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("replace second multipart file with directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	if err := os.WriteFile(filepath.Join(path, "keep"), []byte("keep"), 0o600); err != nil {
+		t.Fatalf("make replacement directory non-empty: %v", err)
+	}
+
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{}, modelcatalog.ErrModelKindMismatch
+	})
+	handler := NewAudio(resolver, nil, nil, tempDir)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response status = %d, want 500", response.Code)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("read configured temp dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("configured temp dir retains %d replay files", len(entries))
+	}
+}
+
 func multipartBodyAudio(model string, parts map[string][]byte) (*bytes.Buffer, string) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -121,6 +179,18 @@ func multipartBodyAudio(model string, parts map[string][]byte) (*bytes.Buffer, s
 		} else {
 			_ = writer.WriteField(name, string(data))
 		}
+	}
+	_ = writer.Close()
+	return &buf, writer.FormDataContentType()
+}
+
+func multipartBodyAudioFiles(model string, files [][]byte) (*bytes.Buffer, string) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	_ = writer.WriteField("model", model)
+	for _, data := range files {
+		part, _ := writer.CreateFormFile("file", "audio.wav")
+		_, _ = part.Write(data)
 	}
 	_ = writer.Close()
 	return &buf, writer.FormDataContentType()
@@ -159,7 +229,7 @@ func TestSpeechMapsModelPrimesBodyAndFiltersContentType(t *testing.T) {
 
 			descriptor := nvidia.DefaultDescriptor()
 			descriptor.TTS.URL = upstream.URL + "/v1/audio/speech"
-			client, err := nvidia.NewClient(upstream.Client(), descriptor)
+			client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 			if err != nil {
 				t.Fatalf("NewClient: %v", err)
 			}
@@ -213,7 +283,7 @@ func TestSpeechRejectsOversizedJSON(t *testing.T) {
 
 func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 	transport := &speechInterruptTransport{}
-	client, err := nvidia.NewClient(&http.Client{Transport: transport}, nvidia.DefaultDescriptor())
+	client, err := nvidia.NewClient(&http.Client{Transport: transport}, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

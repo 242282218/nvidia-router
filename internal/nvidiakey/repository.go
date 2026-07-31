@@ -228,6 +228,7 @@ func (r *Repository) markSuccess(ctx context.Context, keyID int64, now time.Time
 	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE nvidia_keys SET
+				auth_invalid = 0,
 				cooldown_until = NULL,
 				cooldown_reason = NULL,
 				cooldown_level = 0,

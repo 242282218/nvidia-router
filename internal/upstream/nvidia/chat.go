@@ -31,24 +31,21 @@ func (c *Client) Chat(
 	body []byte,
 	stream bool,
 ) (*http.Response, error) {
-	request, err := c.descriptor.NewRequest(c.descriptor.Chat, stream, token)
+	response, err := c.do(ctx, snapshot, func(ctx context.Context) (*http.Request, error) {
+		request, err := c.descriptor.NewRequest(c.descriptor.Chat, stream, token)
+		if err != nil {
+			return nil, safeError{"create NVIDIA chat request", err}
+		}
+		request = request.WithContext(ctx)
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		request.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+		request.ContentLength = int64(len(body))
+		return request, nil
+	})
 	if err != nil {
-		return nil, safeError{"create NVIDIA chat request", err}
-	}
-	request = request.WithContext(ctx)
-	request.Body = io.NopCloser(bytes.NewReader(body))
-	request.ContentLength = int64(len(body))
-
-	transport, _ := newAttemptTransport(c.httpClient.Transport, snapshot)
-	httpClient := *c.httpClient
-	httpClient.Transport = transport
-	response, err := httpClient.Do(request)
-	if err != nil {
-		closeIdleConnections(transport)
 		return nil, safeError{"send NVIDIA chat request", err}
-	}
-	if response.Body != nil {
-		response.Body = &attemptBody{ReadCloser: response.Body, transport: transport}
 	}
 	return response, nil
 }
@@ -81,7 +78,7 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 		return ValidatedChatResponse{}, protocolError()
 	}
 	choices, exists := fields["choices"]
-	if !exists || !isJSONArray(choices) {
+	if !exists || !hasValidChatChoices(choices) {
 		return ValidatedChatResponse{}, protocolError()
 	}
 
@@ -92,6 +89,15 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 			Usage:     fields["usage"],
 		},
 	}, nil
+}
+
+func hasValidChatChoices(value json.RawMessage) bool {
+	var items []json.RawMessage
+	if json.Unmarshal(value, &items) != nil || len(items) == 0 {
+		return false
+	}
+	first := bytes.TrimSpace(items[0])
+	return len(first) > 0 && first[0] == '{'
 }
 
 func isJSONArray(value json.RawMessage) bool {

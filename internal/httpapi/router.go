@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-
-	v1 "nvidia-router/internal/httpapi/v1"
 )
 
 type AdminSecurity interface {
@@ -13,7 +11,7 @@ type AdminSecurity interface {
 }
 
 func NewRouter(
-	health, chat, responses, embeddings, audio, speech, models http.Handler,
+	health, chat, responses, embeddings, audio, speech, models, unsupported http.Handler,
 	security AdminSecurity,
 	management, settings, runtimeSummary, frontend http.Handler,
 	additionalAdmin ...http.Handler,
@@ -21,7 +19,7 @@ func NewRouter(
 	root := http.NewServeMux()
 	root.Handle("/health", NoStoreMiddleware(health))
 	root.Handle("/health/", NoStoreMiddleware(health))
-	dataRoutes := NoStoreMiddleware(security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models)))
+	dataRoutes := NoStoreMiddleware(security.RequirePasswordChanged(newV1Router(chat, responses, embeddings, audio, speech, models, unsupported)))
 	root.Handle("/v1", dataRoutes)
 	root.Handle("/v1/", dataRoutes)
 	root.Handle("/admin/api/auth/", NoStoreMiddleware(security))
@@ -48,9 +46,9 @@ func newAdminRouter(management, settings, runtimeSummary, stats http.Handler) ht
 	return mux
 }
 
-func newV1Router(chat, responses, embeddings, audio, speech, models http.Handler) http.Handler {
+func newV1Router(chat, responses, embeddings, audio, speech, models, unsupported http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1", v1.Unsupported)
+	mux.Handle("/v1", unsupported)
 	mux.Handle("/v1/chat/completions", chat)
 	mux.Handle("/v1/responses", responses)
 	mux.Handle("/v1/embeddings", embeddings)
@@ -58,6 +56,6 @@ func newV1Router(chat, responses, embeddings, audio, speech, models http.Handler
 	mux.Handle("/v1/audio/speech", speech)
 	mux.Handle("/v1/models", models)
 	// Fallback for any other /v1/* path must come after the concrete routes above.
-	mux.Handle("/v1/", v1.Unsupported)
+	mux.Handle("/v1/", unsupported)
 	return mux
 }

@@ -1,6 +1,15 @@
 package modelcatalog
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	ErrModelVersionConflict  = errors.New("model version conflict")
+	ErrInvalidModelSelection = errors.New("invalid model selection")
+)
 
 type Kind string
 
@@ -24,6 +33,12 @@ type Model struct {
 	ReasoningWireFormat  string
 	CapabilityVerifiedAt *time.Time
 	BlockedByKeyIDs      []int64
+	updatedAt            time.Time
+}
+
+type MutationResult struct {
+	Models        []Model
+	PreviousKinds map[int64]Kind
 }
 
 type Candidate struct {
@@ -65,4 +80,12 @@ type Patch struct {
 	SupportsTools       *bool   `json:"supports_tools,omitempty"`
 	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
 	ReasoningWireFormat *string `json:"reasoning_wire_format,omitempty"`
+}
+
+func normalizeModelSelection(selection Selection) (Selection, error) {
+	normalized, err := normalizeSelection(selection)
+	if err == nil || errors.Is(err, ErrCapabilityUnverified) {
+		return normalized, err
+	}
+	return Selection{}, fmt.Errorf("%w: %v", ErrInvalidModelSelection, err)
 }

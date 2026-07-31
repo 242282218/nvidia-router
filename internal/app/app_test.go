@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,8 @@ import (
 	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/nvidiakey"
+	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/xkproxy"
 )
 
 func TestNew(t *testing.T) {
@@ -46,6 +49,43 @@ func TestNew(t *testing.T) {
 	response := httptestGet(t, app.Handler(), "/health/live")
 	if response.Code != http.StatusOK {
 		t.Fatalf("live status = %d", response.Code)
+	}
+}
+
+func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
+	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "192.0.2.10:8000")
+	}))
+	t.Cleanup(proxyAPI.Close)
+	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	db := openAppDatabase(t)
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			DataDir:            t.TempDir(),
+			MasterKey:          [32]byte{1},
+			XKProxyAPIURL:      proxyURL,
+			XKProxyTTL:         3 * time.Minute,
+			XKProxyRenewBefore: 15 * time.Second,
+		},
+		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
+	})
+	if err != nil {
+		db.Close()
+		t.Fatalf("New: %v", err)
+	}
+	if app.proxy == nil {
+		t.Fatal("proxy manager was not created")
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err = app.proxy.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("Acquire after Close error = %T %v, want manager closed", err, err)
 	}
 }
 
@@ -294,4 +334,158 @@ func runCLIProcess(t *testing.T, args ...string) (string, string, error) {
 	err := command.Run()
 
 	return stdout.String(), stderr.String(), err
+}
+
+func TestNewDoesNotCreateProxyManagerWhenDisabled(t *testing.T) {
+	db := openAppDatabase(t)
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
+	if err != nil {
+		db.Close()
+		t.Fatalf("New: %v", err)
+	}
+	if app.proxy != nil {
+		t.Fatal("proxy manager was created although XKProxyAPIURL is unset")
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestNewProxyManagerUsesDefaultTransportWhenNil(t *testing.T) {
+	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "192.0.2.10:8000")
+	}))
+	t.Cleanup(proxyAPI.Close)
+	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	db := openAppDatabase(t)
+	defer db.Close()
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			DataDir:            t.TempDir(),
+			MasterKey:          [32]byte{1},
+			XKProxyAPIURL:      proxyURL,
+			XKProxyTTL:         3 * time.Minute,
+			XKProxyRenewBefore: 15 * time.Second,
+		},
+		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if app.proxy == nil {
+		t.Fatal("proxy manager was not created")
+	}
+	// No NVIDIAHTTPClient was injected, so resolveDependencies supplies
+	// http.DefaultClient, whose Transport field is nil. New must fall back to
+	// http.DefaultTransport when wiring the proxy manager base transport;
+	// xkproxy.New requires a concrete *http.Transport, so a missing fallback
+	// would have made New fail with "HTTP transport is required". Reaching
+	// this point with a live proxy manager therefore proves the fallback, and
+	// the manager's base transport must be http.DefaultTransport itself.
+	base := reflect.ValueOf(app.proxy).Elem().FieldByName("base")
+	if base.Kind() != reflect.Pointer || base.IsNil() {
+		t.Fatalf("proxy manager base transport = %v, want a non-nil *http.Transport", base.Kind())
+	}
+	if base.Pointer() != reflect.ValueOf(http.DefaultTransport).Pointer() {
+		t.Fatalf("proxy manager base transport pointer = %#x, want http.DefaultTransport %#x", base.Pointer(), reflect.ValueOf(http.DefaultTransport).Pointer())
+	}
+}
+
+func TestNewFailsWhenProxyBaseTransportIsCustomRoundTripper(t *testing.T) {
+	db := openAppDatabase(t)
+	defer db.Close()
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			DataDir:            t.TempDir(),
+			MasterKey:          [32]byte{1},
+			XKProxyAPIURL:      mustURL(t, "http://192.0.2.99/tools/XApi.ashx?qty=1&apikey=secret&sign=secret"),
+			XKProxyTTL:         3 * time.Minute,
+			XKProxyRenewBefore: 15 * time.Second,
+		},
+		DB:               db,
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:            clock.RealClock{},
+		NVIDIAHTTPClient: &http.Client{Transport: customRoundTripper{}},
+	})
+	if err == nil {
+		t.Fatal("New succeeded with a custom non-*http.Transport base RoundTripper")
+	}
+	if app != nil {
+		t.Fatal("New returned a non-nil app alongside an error")
+	}
+	if !strings.Contains(err.Error(), "transport") {
+		t.Fatalf("New error = %v, want mention of transport", err)
+	}
+	for _, leaked := range []string{"192.0.2.99", "apikey", "sign", "/tools/XApi.ashx", "XApi"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("New error leaked %q: %v", leaked, err)
+		}
+	}
+}
+
+func TestAppCloseIsIdempotent(t *testing.T) {
+	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "192.0.2.10:8000")
+	}))
+	t.Cleanup(proxyAPI.Close)
+	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	db := openAppDatabase(t)
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			DataDir:            t.TempDir(),
+			MasterKey:          [32]byte{1},
+			XKProxyAPIURL:      proxyURL,
+			XKProxyTTL:         3 * time.Minute,
+			XKProxyRenewBefore: 15 * time.Second,
+		},
+		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
+	})
+	if err != nil {
+		db.Close()
+		t.Fatalf("New: %v", err)
+	}
+	// App.Close must be safe to call repeatedly: the proxy manager Close
+	// inside is guarded by the manager's own closed flag, and App's
+	// shutdown work runs only once (spec 14.6).
+	if err := app.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("third Close: %v", err)
+	}
+	// The proxy manager itself must also tolerate repeated Close calls.
+	app.proxy.Close()
+	app.proxy.Close()
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return parsed
+}
+
+// customRoundTripper is a minimal http.RoundTripper that is not a
+// *http.Transport, used to verify New rejects a proxy base transport of the
+// wrong concrete type.
+type customRoundTripper struct{}
+
+func (customRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
 }

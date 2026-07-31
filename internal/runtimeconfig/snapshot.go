@@ -1,6 +1,9 @@
 package runtimeconfig
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Snapshot is the runtime configuration read once at the beginning of a request.
 type Snapshot struct {
@@ -10,6 +13,8 @@ type Snapshot struct {
 	FirstByteTimeoutMS      int
 	NonstreamTotalTimeoutMS int
 	ShutdownGraceMS         int
+	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
+	FirstByteDeadline time.Time
 }
 
 // ValidationError identifies the setting that violates the database range check.

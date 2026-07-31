@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
+	"time"
 )
 
 const (
@@ -19,14 +21,19 @@ const (
 	defaultDataDir       = "/data"
 	defaultTempDir       = "/tmp"
 	defaultNVIDIABaseURL = "https://integrate.api.nvidia.com"
+	defaultXKProxyTTL    = 3 * time.Minute
+	defaultXKProxyRenew  = 15 * time.Second
 )
 
 type Config struct {
-	ListenAddress string
-	DataDir       string
-	TempDir       string
-	MasterKey     [32]byte
-	NVIDIABaseURL *url.URL
+	ListenAddress      string
+	DataDir            string
+	TempDir            string
+	MasterKey          [32]byte
+	NVIDIABaseURL      *url.URL
+	XKProxyAPIURL      *url.URL
+	XKProxyTTL         time.Duration
+	XKProxyRenewBefore time.Duration
 }
 
 type LoadOptions struct {
@@ -46,14 +53,64 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load NVIDIA base URL: %w", err)
 	}
+	xkProxyURL, xkProxyTTL, xkProxyRenewBefore, err := loadXKProxyConfig()
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
-		ListenAddress: valueOrDefault("NVIDIA_ROUTER_LISTEN_ADDR", defaultListenAddress),
-		DataDir:       valueOrDefault("NVIDIA_ROUTER_DATA_DIR", defaultDataDir),
-		TempDir:       valueOrDefault("NVIDIA_ROUTER_TEMP_DIR", defaultTempDir),
-		MasterKey:     masterKey,
-		NVIDIABaseURL: nvidiaBaseURL,
+		ListenAddress:      valueOrDefault("NVIDIA_ROUTER_LISTEN_ADDR", defaultListenAddress),
+		DataDir:            valueOrDefault("NVIDIA_ROUTER_DATA_DIR", defaultDataDir),
+		TempDir:            valueOrDefault("NVIDIA_ROUTER_TEMP_DIR", defaultTempDir),
+		MasterKey:          masterKey,
+		NVIDIABaseURL:      nvidiaBaseURL,
+		XKProxyAPIURL:      xkProxyURL,
+		XKProxyTTL:         xkProxyTTL,
+		XKProxyRenewBefore: xkProxyRenewBefore,
 	}, nil
+}
+
+func loadXKProxyConfig() (*url.URL, time.Duration, time.Duration, error) {
+	const urlEnv = "NVIDIA_ROUTER_XK_PROXY_API_URL"
+	rawURL := os.Getenv(urlEnv)
+	if rawURL == "" {
+		return nil, 0, 0, nil
+	}
+
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.Fragment != "" {
+		return nil, 0, 0, proxyConfigError(urlEnv, "must be an absolute URL without userinfo or fragment")
+	}
+	scheme := strings.ToLower(parsedURL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, 0, 0, proxyConfigError(urlEnv, "scheme must be http or https")
+	}
+	values, err := url.ParseQuery(parsedURL.RawQuery)
+	if err != nil || len(values["qty"]) != 1 || values.Get("qty") != "1" {
+		return nil, 0, 0, proxyConfigError(urlEnv, "query parameter qty must appear exactly once with value 1")
+	}
+
+	ttl, err := loadDuration("NVIDIA_ROUTER_XK_PROXY_TTL", defaultXKProxyTTL)
+	if err != nil || ttl < 30*time.Second || ttl > 30*time.Minute {
+		return nil, 0, 0, proxyConfigError("NVIDIA_ROUTER_XK_PROXY_TTL", "must be between 30s and 30m")
+	}
+	renewBefore, err := loadDuration("NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE", defaultXKProxyRenew)
+	if err != nil || renewBefore <= 0 || renewBefore >= ttl {
+		return nil, 0, 0, proxyConfigError("NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE", "must be greater than 0 and less than TTL")
+	}
+	return parsedURL, ttl, renewBefore, nil
+}
+
+func loadDuration(name string, defaultValue time.Duration) (time.Duration, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return defaultValue, nil
+	}
+	return time.ParseDuration(value)
+}
+
+func proxyConfigError(name, reason string) error {
+	return fmt.Errorf("%s: %s", name, reason)
 }
 
 func valueOrDefault(name, defaultValue string) string {

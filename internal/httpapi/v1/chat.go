@@ -18,6 +18,7 @@ import (
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
+	"nvidia-router/internal/xkproxy"
 )
 
 type ModelResolver interface {
@@ -160,14 +161,10 @@ func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {
 	if !ok {
 		return runtimeconfig.Snapshot{}
 	}
-	remaining := time.Until(budget.FirstByteDeadline())
-	firstByteTimeoutMS := int((remaining + time.Millisecond - 1) / time.Millisecond)
-	if firstByteTimeoutMS < 1 {
-		firstByteTimeoutMS = 1
-	}
 	return runtimeconfig.Snapshot{
 		ConnectTimeoutMS:   int(budget.ConnectTimeout() / time.Millisecond),
-		FirstByteTimeoutMS: firstByteTimeoutMS,
+		FirstByteTimeoutMS: int(budget.FirstByteTimeout() / time.Millisecond),
+		FirstByteDeadline:  budget.FirstByteDeadline(),
 	}
 }
 
@@ -190,6 +187,14 @@ func modelError(err error) error {
 }
 
 func writeChatError(writer http.ResponseWriter, err error) {
+	var proxyErr *xkproxy.Error
+	if errors.As(err, &proxyErr) {
+		apierror.Error{
+			Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_proxy_unavailable",
+			Message: "The upstream proxy is temporarily unavailable.",
+		}.Write(writer)
+		return
+	}
 	var publicError *apierror.Error
 	if errors.As(err, &publicError) {
 		publicError.Write(writer)

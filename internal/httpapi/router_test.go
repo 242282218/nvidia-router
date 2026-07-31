@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	v1 "nvidia-router/internal/httpapi/v1"
 )
 
 func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
@@ -11,7 +13,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	})
 	security := fakeAdminSecurity{}
-	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, security, http.NotFoundHandler(), ok, ok, http.NotFoundHandler())
+	router := NewRouter(ok, ok, ok, ok, ok, ok, ok, v1.Unsupported, security, http.NotFoundHandler(), ok, ok, http.NotFoundHandler())
 
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech", "/v1/models"} {
 		response := httptest.NewRecorder()
@@ -27,7 +29,7 @@ func TestRouterDoesNotRouteAPIPathsToFrontend(t *testing.T) {
 
 func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	notFound := http.NotFoundHandler()
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, v1.Unsupported, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
 
 	for _, path := range []string{"/v1", "/v1/some/unknown"} {
 		response := httptest.NewRecorder()
@@ -41,6 +43,17 @@ func TestRouterFallbackRejectsUnknownV1Paths(t *testing.T) {
 	}
 }
 
+func TestNewRouterPanicsWhenUnsupportedHandlerIsNil(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewRouter did not panic for nil unsupported handler")
+		}
+	}()
+
+	notFound := http.NotFoundHandler()
+	NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, nil, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
+}
+
 func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 	notFound := http.NotFoundHandler()
 	settings := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -51,7 +64,7 @@ func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 		writer.WriteHeader(http.StatusOK)
 	})
 	router := NewRouter(
-		notFound, notFound, notFound, notFound, notFound, notFound, notFound,
+		notFound, notFound, notFound, notFound, notFound, notFound, notFound, v1.Unsupported,
 		fakeAdminSecurity{}, notFound, settings, runtimeSummary, notFound,
 	)
 
@@ -85,7 +98,7 @@ func TestRouterAddsNoStoreToAPIHealthAndAuthResponsesWithoutSPAHTML(t *testing.T
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("SPA INDEX MARKER"))
 	})
-	router := NewRouter(api, api, api, api, api, api, api, fakeAdminSecurity{}, api, api, api, frontend)
+	router := NewRouter(api, api, api, api, api, api, api, v1.Unsupported, fakeAdminSecurity{}, api, api, api, frontend)
 
 	for _, path := range []string{"/v1/models", "/admin/api/auth/session", "/admin/api/settings", "/health/live"} {
 		response := httptest.NewRecorder()
@@ -120,7 +133,7 @@ func TestNoStoreMiddlewareAppendsWithoutReplacingCacheDirectives(t *testing.T) {
 func TestRouterSeparatesAuthAndProtectedAdminAPI(t *testing.T) {
 	notFound := http.NotFoundHandler()
 
-	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
+	router := NewRouter(notFound, notFound, notFound, notFound, notFound, notFound, notFound, v1.Unsupported, fakeAdminSecurity{}, notFound, notFound, notFound, notFound)
 
 	authResponse := httptest.NewRecorder()
 	router.ServeHTTP(authResponse, httptest.NewRequest(http.MethodGet, "/admin/api/auth/session", nil))

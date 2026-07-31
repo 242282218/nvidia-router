@@ -118,7 +118,7 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		_ = response.Body.Close()
 		converted, err := responsesprotocol.FromChat(validated.Body, responsesID, model)
 		if err != nil {
-			return response, err
+			return response, fault.Protocol(fmt.Errorf("convert NVIDIA chat response: %w", err))
 		}
 		response.Body = io.NopCloser(bytes.NewReader(converted))
 		response.ContentLength = int64(len(converted))
@@ -192,8 +192,8 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 		if err != nil {
 			return responsesprotocol.ChatDelta{}, fmt.Errorf("decode upstream SSE event: %w", err)
 		}
-		for _, data := range event.Data {
-			delta, done, perr := responsesprotocol.ParseChatDelta([]byte(data))
+		if len(event.Data) > 0 {
+			delta, done, perr := responsesprotocol.ParseChatDelta([]byte(sse.JoinData(event.Data)))
 			if perr != nil {
 				return responsesprotocol.ChatDelta{}, fmt.Errorf("parse chat delta: %w", perr)
 			}

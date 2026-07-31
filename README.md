@@ -77,6 +77,13 @@ docker compose stop app
 | `NVIDIA_ROUTER_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `NVIDIA_ROUTER_TEMP_DIR` | `/tmp` | 请求临时资源目录 |
 | `NVIDIA_ROUTER_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | NVIDIA 上游 HTTPS 地址 |
+| `NVIDIA_ROUTER_XK_PROXY_API_URL` | 空 | 星空代理提取 URL；为空时直连，非空时所有 NVIDIA 请求强制走代理 |
+| `NVIDIA_ROUTER_XK_PROXY_TTL` | `3m` | 单个代理 IP 的物理租期，支持 `30s` 至 `30m` |
+| `NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE` | `15s` | 进入该窗口后不再接收新请求，必须小于 TTL |
+
+星空代理按需懒提取：没有 NVIDIA 上游流量时不会消耗 IP，同一租约会复用连接池。代理配置启用后不会静默回退直连；提取、CONNECT 或代理传输失败会返回临时不可用。API URL 同时包含供应商凭据，只能通过运行时环境变量注入，不得写入仓库、日志或管理 API。
+
+回滚代理功能：删除 `NVIDIA_ROUTER_XK_PROXY_API_URL` 后重启应用，服务恢复 NVIDIA 直连，不需要数据库回滚。
 
 ## CLI
 
@@ -116,6 +123,8 @@ docker compose run --rm --no-deps app admin reset-password --password '<new-pass
 Audio 模型的真实能力验证使用 `POST /admin/api/models/<id>/test`，兼容别名为 `/admin/api/models/<id>/verify`。请求体只允许 `{"key_id": <positive integer>}`；未知字段返回 `400 invalid_request`。服务端使用对应加密 NVIDIA Key 真实调用模型 endpoint，成功后生成 UTC `capability_verified_at` 并事务清除 block；失败不写时间、不清 block，调用者不能提交 `verified_at`。ASR/TTS 验证前不能启用，验证后仍需显式 PATCH `{"enabled":true}`。
 
 真实联调见 [docs/NVIDIA真实联调说明.md](docs/NVIDIA真实联调说明.md)。`NVIDIA_ROUTER_LIVE_KEY` 只能从运行环境注入。`SKIP` 不是 PASS，命令成功退出也不能替代逐 case `status=PASS`；CI 负责 race、lint、secret scan、Compose 和 E2E，真实 NVIDIA 仍需显式注入运行时凭证。真实联调会产生 NVIDIA 费用并处理敏感数据，第一轮普通 HTTP 明文风险仍然存在。
+
+星空代理的真实租约和热连接验证见 [docs/星空代理真实联调说明.md](docs/星空代理真实联调说明.md)。
 
 ## 开发和本地验证
 

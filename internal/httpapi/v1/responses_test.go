@@ -3,13 +3,17 @@ package v1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
+	responsesprotocol "nvidia-router/internal/protocol/responses"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -23,7 +27,7 @@ func TestResponsesNonStreamText(t *testing.T) {
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -82,6 +86,85 @@ func TestResponsesNonStreamText(t *testing.T) {
 	}
 }
 
+func TestResponsesRetriesProtocolFailureFromNonstreamConversion(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Header.Get("Authorization") == "Bearer first-secret" {
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":{"unexpected":true}}}]}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	lease := &releaseTrackingLease{id: 2}
+	attempts := 0
+	protocolFailures := 0
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		var lastErr error
+		for index, secret := range []string{"first-secret", "second-secret"} {
+			attempts++
+			response, err := execute(ctx, int64(index+1), []byte(secret), &router.CommitState{})
+			if err == nil {
+				return router.AttemptResult{Response: response, Lease: lease, Attempts: attempts}, nil
+			}
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			var classified fault.Fault
+			if !errors.As(err, &classified) || !classified.Retryable || classified.PublicCode != "upstream_protocol_error" {
+				return router.AttemptResult{}, err
+			}
+			protocolFailures++
+			lastErr = err
+		}
+		return router.AttemptResult{}, lastErr
+	})
+	resolver := modelResolverFunc(func(_ context.Context, _ string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"public-chat","input":"x"}`))
+
+	NewResponses(resolver, runner, client).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"text":"ok"`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if attempts != 2 || protocolFailures != 1 {
+		t.Fatalf("attempts = %d, protocol failures = %d; want 2, 1", attempts, protocolFailures)
+	}
+	if !lease.released {
+		t.Fatal("successful attempt lease was not released")
+	}
+}
+
+func TestResponsesDoesNotRetryClientRequestError(t *testing.T) {
+	attempts := 0
+	runner := attemptRunnerFunc(func(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error) {
+		attempts++
+		return router.AttemptResult{}, nil
+	})
+	resolver := modelResolverFunc(func(_ context.Context, _ string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"public-chat","input":42}`))
+
+	NewResponses(resolver, runner, nil).ServeHTTP(response, request)
+
+	assertChatError(t, response, http.StatusBadRequest, "invalid_parameter")
+	if attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", attempts)
+	}
+}
+
 func TestResponsesReusesAttemptForResolvedModel(t *testing.T) {
 	upstreamChat := []byte(`{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -91,7 +174,7 @@ func TestResponsesReusesAttemptForResolvedModel(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, _ := nvidia.NewClient(upstream.Client(), descriptor)
+	client, _ := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 
 	var resolvedModelID int64 = 42
 	lease := &releaseTrackingLease{id: 9}
@@ -157,6 +240,25 @@ func TestResponsesStreamEmitsResponsesEventSequence(t *testing.T) {
 	ct := response.Header().Get("Content-Type")
 	if !strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+}
+
+func TestChatDeltaSourceJoinsMultilineEventData(t *testing.T) {
+	input := "data: {\"choices\":[{\n" +
+		"data: \"delta\":{\"content\":\"hello\"}\n" +
+		"data: }]}\n\n" +
+		"data: [DONE]\n\n"
+	source := &chatDeltaSource{decoder: sse.NewDecoder(strings.NewReader(input))}
+
+	delta, err := source.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if delta.Content != "hello" {
+		t.Fatalf("content = %q, want hello", delta.Content)
+	}
+	if _, err := source.Next(); !errors.Is(err, responsesprotocol.ErrStreamCompleted) {
+		t.Fatalf("terminal error = %v, want ErrStreamCompleted", err)
 	}
 }
 
@@ -263,7 +365,7 @@ func serveStreamResponses(t *testing.T, sseBody string) (*httptest.ResponseRecor
 
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, err := nvidia.NewClient(upstream.Client(), descriptor)
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -322,7 +424,7 @@ func TestResponsesDoesNotLeakUpstreamModel(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, _ := nvidia.NewClient(upstream.Client(), descriptor)
+	client, _ := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	lease := &releaseTrackingLease{id: 1}
 	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
 		response, err := execute(ctx, lease.id, []byte("upstream-secret"), &router.CommitState{})
@@ -352,7 +454,7 @@ func TestResponsesForwardsUpstreamErrorStatus(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	descriptor := nvidia.DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
-	client, _ := nvidia.NewClient(upstream.Client(), descriptor)
+	client, _ := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	lease := &releaseTrackingLease{id: 1}
 	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
 		response, err := execute(ctx, lease.id, []byte("secret"), &router.CommitState{})

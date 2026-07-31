@@ -35,6 +35,8 @@ func validationStatus(state nvidia.ValidationState) (ImportStatus, string) {
 		return ImportStatusInvalid, "invalid_credential"
 	case nvidia.ValidationTemporarilyUnavailable:
 		return ImportStatusTemporarilyUnavailable, "validation_temporarily_unavailable"
+	case nvidia.ValidationProxyUnavailable:
+		return ImportStatusTemporarilyUnavailable, "proxy_temporarily_unavailable"
 	case nvidia.ValidationIndeterminate:
 		return ImportStatusIndeterminate, "validation_indeterminate"
 	default:
