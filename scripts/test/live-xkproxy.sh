@@ -3,6 +3,10 @@
 set -euo pipefail
 umask 077
 
+# Keep proxy smoke tests on the preferred model unless the caller overrides it.
+export NVIDIA_ROUTER_LIVE_CHAT_MODEL="${NVIDIA_ROUTER_LIVE_CHAT_MODEL:-nvidia/minimaxai/minimax-m3}"
+export NVIDIA_ROUTER_LIVE_RESPONSES_MODEL="${NVIDIA_ROUTER_LIVE_RESPONSES_MODEL:-$NVIDIA_ROUTER_LIVE_CHAT_MODEL}"
+
 report() {
   local case_name="$1"
   local status="$2"

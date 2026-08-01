@@ -4,6 +4,10 @@ set -euo pipefail
 
 umask 077
 
+# Keep live smoke tests on the preferred model unless the caller overrides it.
+export NVIDIA_ROUTER_LIVE_CHAT_MODEL="${NVIDIA_ROUTER_LIVE_CHAT_MODEL:-nvidia/minimaxai/minimax-m3}"
+export NVIDIA_ROUTER_LIVE_RESPONSES_MODEL="${NVIDIA_ROUTER_LIVE_RESPONSES_MODEL:-$NVIDIA_ROUTER_LIVE_CHAT_MODEL}"
+
 admin_session=''
 temporary_access_id=''
 temporary_access_key=''
