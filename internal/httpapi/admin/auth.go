@@ -130,7 +130,7 @@ func (a *Auth) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	a.limiter.RecordSuccess(ip)
-	http.SetCookie(writer, adminauth.SessionCookie(created.Token))
+	http.SetCookie(writer, a.sessions.MakeSessionCookie(created.Token))
 	writeSession(writer, mustChange)
 }
 
@@ -167,7 +167,7 @@ func (a *Auth) changePassword(writer http.ResponseWriter, request *http.Request)
 		writePasswordChangeError(writer, errors.Join(err, cleanupErr))
 		return
 	}
-	http.SetCookie(writer, adminauth.SessionCookie(replacement.Token))
+	http.SetCookie(writer, a.sessions.MakeSessionCookie(replacement.Token))
 	writeSession(writer, false)
 
 }
@@ -181,7 +181,7 @@ func (a *Auth) logout(writer http.ResponseWriter, request *http.Request) {
 		writeInternalError(writer, err)
 		return
 	}
-	http.SetCookie(writer, adminauth.ClearSessionCookie())
+	http.SetCookie(writer, a.sessions.MakeClearSessionCookie())
 	writer.WriteHeader(http.StatusNoContent)
 }
 
@@ -193,7 +193,7 @@ func (a *Auth) revokeAll(writer http.ResponseWriter, request *http.Request) {
 		writeInternalError(writer, err)
 		return
 	}
-	http.SetCookie(writer, adminauth.ClearSessionCookie())
+	http.SetCookie(writer, a.sessions.MakeClearSessionCookie())
 	writer.WriteHeader(http.StatusNoContent)
 }
 

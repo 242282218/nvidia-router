@@ -56,27 +56,41 @@ func TestValidateOriginRequiresSameOriginForUnsafeMethods(t *testing.T) {
 	}
 }
 
-func TestValidateOriginIgnoresForwardedHeaders(t *testing.T) {
-	t.Run("valid direct origin remains valid", func(t *testing.T) {
+func TestValidateOriginTrustsForwardedProto(t *testing.T) {
+	t.Run("same origin behind HTTPS proxy", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://admin.example.test/admin", nil)
+		req.Host = "admin.example.test"
+		req.Header.Set("Origin", "https://admin.example.test")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		if err := ValidateOrigin(req); err != nil {
+			t.Fatalf("ValidateOrigin: expected trusted X-Forwarded-Proto to match, got %v", err)
+		}
+	})
+	t.Run("cross-origin still rejected behind proxy", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://admin.example.test/admin", nil)
+		req.Host = "admin.example.test"
+		req.Header.Set("Origin", "https://other.example.test")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		if err := ValidateOrigin(req); !errors.Is(err, ErrInvalidOrigin) {
+			t.Fatalf("ValidateOrigin rejected cross-origin: want ErrInvalidOrigin, got %v", err)
+		}
+	})
+	t.Run("ignores Forwarded header", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "http://admin.example.test/admin", nil)
 		req.Host = "admin.example.test"
 		req.Header.Set("Origin", "http://admin.example.test")
 		req.Header.Set("Forwarded", "proto=https;host=proxy.example.test")
-		req.Header.Set("X-Forwarded-Proto", "https")
-		req.Header.Set("X-Forwarded-Host", "proxy.example.test")
 		if err := ValidateOrigin(req); err != nil {
-			t.Fatalf("ValidateOrigin trusted forged forwarding headers: %v", err)
+			t.Fatalf("ValidateOrigin: should have used Origin.Host for matching, not Forwarded header: %v", err)
 		}
 	})
-	t.Run("proxy-matching origin remains invalid", func(t *testing.T) {
+	t.Run("direct TLS still works", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "http://admin.example.test/admin", nil)
 		req.Host = "admin.example.test"
-		req.Header.Set("Origin", "https://proxy.example.test")
-		req.Header.Set("Forwarded", "proto=https;host=proxy.example.test")
-		req.Header.Set("X-Forwarded-Proto", "https")
-		req.Header.Set("X-Forwarded-Host", "proxy.example.test")
-		if err := ValidateOrigin(req); !errors.Is(err, ErrInvalidOrigin) {
-			t.Fatalf("ValidateOrigin error = %v, want ErrInvalidOrigin", err)
+		req.Header.Set("Origin", "https://admin.example.test")
+		req.TLS = &tls.ConnectionState{}
+		if err := ValidateOrigin(req); err != nil {
+			t.Fatalf("ValidateOrigin: %v", err)
 		}
 	})
 }

@@ -24,9 +24,10 @@ const (
 var ErrInvalidSession = errors.New("invalid admin session")
 
 type SessionService struct {
-	db    *sql.DB
-	clock clock.Clock
-	keys  *crypto.KeySet
+	db     *sql.DB
+	clock  clock.Clock
+	keys   *crypto.KeySet
+	secure bool
 }
 
 type CreatedSession struct {
@@ -40,11 +41,81 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-func NewSessionService(db *sql.DB, source clock.Clock, keys *crypto.KeySet) *SessionService {
+func NewSessionService(db *sql.DB, source clock.Clock, keys *crypto.KeySet, secure bool) *SessionService {
 	if source == nil {
 		source = clock.RealClock{}
 	}
-	return &SessionService{db: db, clock: source, keys: keys}
+	return &SessionService{db: db, clock: source, keys: keys, secure: secure}
+}
+
+// SessionCookie returns a new session cookie for secure=false deployments.
+// Use SecureSessionCookie when the admin UI is served over HTTPS.
+func SessionCookie(token string) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(sessionLifetime.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   false,
+	}
+}
+
+// SecureSessionCookie returns a new session cookie with Secure=true
+// for deployments where the admin UI is served over HTTPS.
+func SecureSessionCookie(token string) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(sessionLifetime.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   true,
+	}
+}
+
+// ClearSessionCookie returns a session-clearing cookie for secure=false deployments.
+func ClearSessionCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   false,
+	}
+}
+
+// ClearSecureSessionCookie returns a session-clearing cookie with Secure=true.
+func ClearSecureSessionCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   true,
+	}
+}
+
+// MakeSessionCookie returns the appropriate session cookie based on the
+// service's secure flag.
+func (s *SessionService) MakeSessionCookie(token string) *http.Cookie {
+	if s.secure {
+		return SecureSessionCookie(token)
+	}
+	return SessionCookie(token)
+}
+
+// MakeClearSessionCookie returns the appropriate clearing cookie based on the
+// service's secure flag.
+func (s *SessionService) MakeClearSessionCookie() *http.Cookie {
+	if s.secure {
+		return ClearSecureSessionCookie()
+	}
+	return ClearSessionCookie()
 }
 
 func (s *SessionService) Create(ctx context.Context) (CreatedSession, error) {
@@ -116,30 +187,6 @@ func (s *SessionService) RevokeAll(ctx context.Context) error {
 		return fmt.Errorf("revoke all admin sessions: %w", err)
 	}
 	return nil
-}
-
-func SessionCookie(token string) *http.Cookie {
-	return &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(sessionLifetime.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		// The initial service is explicitly HTTP-only; task 42 owns HTTPS deployment hardening.
-		Secure: false,
-	}
-}
-
-func ClearSessionCookie() *http.Cookie {
-	return &http.Cookie{
-		Name:     sessionCookieName,
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Secure:   false,
-	}
 }
 
 func randomRawURL(size int) (string, error) {

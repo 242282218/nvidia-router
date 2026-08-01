@@ -171,7 +171,7 @@ func newAuthFixture(t *testing.T) authFixture {
 	if err := repository.EnsureAdmin(context.Background()); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
-	sessions := adminauth.NewSessionService(db, testClock, keys)
+	sessions := adminauth.NewSessionService(db, testClock, keys, false)
 	return authFixture{auth: NewAuth(repository, sessions, adminauth.NewLoginLimiter(testClock))}
 }
 

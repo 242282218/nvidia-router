@@ -17,7 +17,7 @@ func TestSessionCreateStoresOnlyDigestAndAuthenticates(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	keys := newSessionTestKeySet(t)
-	service := NewSessionService(db, fixedClock{now: now}, keys)
+	service := NewSessionService(db, fixedClock{now: now}, keys, false)
 
 	created, err := service.Create(context.Background())
 	if err != nil {
@@ -64,7 +64,7 @@ func TestSessionCreateReturnsPersistedFullLifetimeAtUTCSecondPrecision(t *testin
 	db := newTestDatabase(t)
 	localZone := time.FixedZone("UTC+8", 8*60*60)
 	now := time.Date(2026, time.July, 29, 20, 0, 0, 987654321, localZone)
-	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
 
 	created, err := service.Create(context.Background())
 	if err != nil {
@@ -91,7 +91,7 @@ func TestSessionCreateReturnsPersistedFullLifetimeAtUTCSecondPrecision(t *testin
 func TestSessionAuthenticateUpdatesLastSeenWithoutExtendingExpiry(t *testing.T) {
 	db := newTestDatabase(t)
 	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
-	service := NewSessionService(db, testClock, newSessionTestKeySet(t))
+	service := NewSessionService(db, testClock, newSessionTestKeySet(t), false)
 	created, err := service.Create(context.Background())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -122,7 +122,7 @@ func TestSessionAuthenticateUpdatesLastSeenWithoutExtendingExpiry(t *testing.T) 
 func TestSessionAuthenticateRejectsRevocationBeforeFinalTouch(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
-	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
 	created, err := service.Create(context.Background())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -156,7 +156,7 @@ func TestSessionAuthenticateRejectsRevocationBeforeFinalTouch(t *testing.T) {
 func TestSessionAuthenticationRejectsRevokedAndExpiredSessions(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
-	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
 
 	revoked, err := service.Create(context.Background())
 	if err != nil {
@@ -179,7 +179,7 @@ func TestSessionAuthenticationRejectsRevokedAndExpiredSessions(t *testing.T) {
 
 func TestSessionRevokeAllInvalidatesAllSessions(t *testing.T) {
 	db := newTestDatabase(t)
-	service := NewSessionService(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)}, newSessionTestKeySet(t), false)
 	first, err := service.Create(context.Background())
 	if err != nil {
 		t.Fatalf("Create first session: %v", err)
@@ -326,7 +326,7 @@ func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
 	if err := repository.EnsureAdmin(context.Background()); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
-	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
 	firstOld, err := service.Create(context.Background())
 	if err != nil {
 		t.Fatalf("Create first old session: %v", err)
@@ -353,7 +353,7 @@ func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
 
 func TestSessionAuthenticationSeparatesInvalidCredentialsFromDatabaseFailures(t *testing.T) {
 	db := newTestDatabase(t)
-	service := NewSessionService(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)}, newSessionTestKeySet(t))
+	service := NewSessionService(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)}, newSessionTestKeySet(t), false)
 	assertInvalidSession(t, service, "not-a-session-token")
 	unknownToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, sessionTokenBytes))
 	assertInvalidSession(t, service, unknownToken)

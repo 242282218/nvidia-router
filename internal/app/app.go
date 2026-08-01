@@ -129,7 +129,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
-	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys), adminauth.NewLoginLimiter(resolved.Clock))
+	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, false), adminauth.NewLoginLimiter(resolved.Clock))
 	adminManagement := adminapi.NewManagement(
 		adminapi.NewNVIDIAKeys(nvidiaKeys, keyPool),
 		adminapi.NewAccessKeys(accessKeys),

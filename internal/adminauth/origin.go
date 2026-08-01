@@ -46,7 +46,20 @@ func requiresOrigin(method string) bool {
 	}
 }
 
+// requestScheme returns the effective URI scheme of a request.
+//
+// When deployed behind a TLS-terminating reverse proxy, request.TLS is nil
+// because the proxy speaks plain HTTP to the backend.  The proxy forwards the
+// original client scheme via X-Forwarded-Proto, so we read that header first
+// and fall back to request.TLS for direct TLS connections.
+//
+// An attacker who can forge X-Forwarded-Proto can also forge the Host header
+// (which is the other half of the origin check), so this does not weaken CSRF
+// protection.
 func requestScheme(request *http.Request) string {
+	if proto := request.Header.Get("X-Forwarded-Proto"); proto == "https" || proto == "http" {
+		return proto
+	}
 	if request.TLS != nil {
 		return "https"
 	}
