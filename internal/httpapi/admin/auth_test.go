@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,14 @@ func TestAuthGuardsDataAndManagementRoutes(t *testing.T) {
 	if managementSameOrigin.Code != http.StatusNoContent {
 		t.Fatalf("management POST status = %d, want 204: %s", managementSameOrigin.Code, managementSameOrigin.Body.String())
 	}
+}
+
+func TestAuthRejectsOversizedBodyWithJSON413(t *testing.T) {
+	fixture := newAuthFixture(t)
+	body := `{"username":"` + strings.Repeat("x", maxAuthBodyBytes+1) + `","password":"admin"}`
+	response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
+
+	assertAPIError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
 }
 
 const sameOrigin = "http://example.com"

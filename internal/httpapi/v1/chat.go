@@ -21,6 +21,15 @@ import (
 	"nvidia-router/internal/xkproxy"
 )
 
+// maxConcurrentBodyReads bounds how many requests may be reading their body at
+// once. Each body can be up to 32 MiB, so without a cap a burst of concurrent
+// /v1 requests would buffer N x 32 MiB before pool admission ever applies.
+const maxConcurrentBodyReads = 16
+
+// bodyReadSemaphore gates body reads ahead of pool admission so request
+// concurrency cannot bypass the pool's resource limits.
+var bodyReadSemaphore = make(chan struct{}, maxConcurrentBodyReads)
+
 type ModelResolver interface {
 	Resolve(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error)
 }
@@ -138,7 +147,22 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 }
 
 func readChatBody(writer http.ResponseWriter, request *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, config.JSONBodyLimit))
+	// Acquire the read slot before touching the body; a burst of requests must
+	// not buffer N x 32 MiB while waiting for pool admission. Refuse with 429
+	// when saturated instead of queueing goroutines behind slow uploads.
+	select {
+	case bodyReadSemaphore <- struct{}{}:
+		defer func() { <-bodyReadSemaphore }()
+	default:
+		return nil, &apierror.Error{
+			Status: http.StatusTooManyRequests, Type: "server_error", Code: "server_busy",
+			Message: "The server is busy reading request bodies, try again later.",
+		}
+	}
+	// Pass a nil writer to MaxBytesReader so the handler alone writes the
+	// JSON error body; a non-nil writer would emit a plain-text 413 first and
+	// corrupt the JSON response contract.
+	body, err := io.ReadAll(http.MaxBytesReader(nil, request.Body, config.JSONBodyLimit))
 	if err == nil {
 		return body, nil
 	}

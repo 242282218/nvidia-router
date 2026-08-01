@@ -108,6 +108,33 @@ func TestFetcherRejectsInvalidResponsesWithoutLeakingDetails(t *testing.T) {
 	}
 }
 
+func TestFetcherDoesNotFollowRedirects(t *testing.T) {
+	var server *httptest.Server
+	nextHit := false
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/valid" {
+			nextHit = true
+			_, _ = io.WriteString(writer, "192.0.2.10:8080")
+			return
+		}
+		writer.Header().Set("Location", server.URL+"/valid")
+		writer.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := newFetcher(fetcherURL(t, server.URL)).Fetch(context.Background())
+	if err == nil {
+		t.Fatal("Fetch succeeded, redirect was followed")
+	}
+	var proxyErr *Error
+	if !errors.As(err, &proxyErr) || proxyErr.Reason() != ReasonInvalidResponse {
+		t.Fatalf("error = %v, want ReasonInvalidResponse", err)
+	}
+	if nextHit {
+		t.Fatal("redirect target was requested")
+	}
+}
+
 func TestFetcherHonorsParentCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

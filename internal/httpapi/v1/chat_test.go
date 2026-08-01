@@ -33,6 +33,34 @@ func TestChatRejectsOversizedBody(t *testing.T) {
 	assertChatError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
 }
 
+func TestChatRejectsBodyWhenReadSlotSaturated(t *testing.T) {
+	// Saturate the body-read semaphore so the handler must refuse instead of
+	// buffering another up-to-32MiB body ahead of pool admission.
+	acquired := 0
+	for {
+		select {
+		case bodyReadSemaphore <- struct{}{}:
+			acquired++
+		default:
+			goto saturated
+		}
+	}
+saturated:
+	t.Cleanup(func() {
+		for ; acquired > 0; acquired-- {
+			<-bodyReadSemaphore
+		}
+	})
+
+	handler := NewChat(nil, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(validChatRequest(false)))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assertChatError(t, response, http.StatusTooManyRequests, "server_busy")
+}
+
 func TestChatReturnsModelNotFound(t *testing.T) {
 	handler := NewChat(modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
 		return modelcatalog.Model{}, modelcatalog.ErrModelNotFound

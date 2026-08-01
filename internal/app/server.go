@@ -32,8 +32,17 @@ type Server struct {
 }
 
 func NewServer(address string, handler http.Handler, settings runtimeconfig.Provider, onShutdown func()) *Server {
+	// ReadHeaderTimeout bounds slowloris header-stalling; IdleTimeout closes
+	// keep-alive connections that linger without a new request. WriteTimeout
+	// and ReadTimeout are deliberately left zero so SSE long-streams and
+	// streaming request bodies are not cut off by a fixed deadline.
 	return &Server{
-		httpServer: &http.Server{Addr: address, Handler: handler},
+		httpServer: &http.Server{
+			Addr:              address,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		},
 		address:    address,
 		settings:   settings,
 		onShutdown: onShutdown,

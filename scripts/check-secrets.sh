@@ -15,6 +15,11 @@ import urllib.parse
 
 
 SECRET_PATTERN = re.compile(rb"(?:nvapi-[A-Za-z0-9_-]{32,}|nvr_[A-Za-z0-9_-]{43})")
+# Uppercase-keyed credential assignments, e.g. PASSWORD = "<secret>".
+# Deliberately case-sensitive: Go/Vue tests use `Password = "..."`/`password:` for
+# fixtures and must not be flagged; real leaked secrets use env-style ALL_CAPS keys.
+CREDENTIAL_PATTERN = re.compile(rb"\b(?:PASSWORD|PASSWD|API_KEY|APIKEY|SECRET|TOKEN)\b\s*[:=]\s*[\"']([^\"']+)[\"']")
+PRIVATE_KEY_PATTERN = re.compile(rb"-----BEGIN (?:RSA|OPENSSH|EC|DSA) PRIVATE KEY-----")
 XK_PROXY_URL_PATTERN = re.compile(rb"https?://api[0-9]+\.xkdaili\.com/tools/XApi\.ashx\?[^\s\"'<>]+", re.IGNORECASE)
 XK_PROXY_ENV_PATTERN = re.compile(rb"NVIDIA_ROUTER_XK_PROXY_API_URL[ \t]*[:=][ \t]*[\"']?([^\s\"']+)", re.IGNORECASE)
 ALLOWLIST_PATH = "tests/e2e/keys.spec.ts"
@@ -28,7 +33,7 @@ class ScanFailure(Exception):
 
 def is_placeholder(value):
     normalized = value.strip().lower()
-    if not normalized or normalized in {"invalid", "placeholder", "fixture", "test", "fake", "replace_me", "replace-with-real-value"}:
+    if not normalized or normalized in {"invalid", "placeholder", "fixture", "test", "fake", "replace_me", "replace-with-real-value", "admin", "root", "password", "changeme", "example", "your-password-here"}:
         return True
     if normalized.startswith("<") or normalized.endswith(">") or (normalized.startswith("${") and normalized.endswith("}")):
         return True
@@ -56,6 +61,16 @@ def inspect_xk_proxy_text(contents, relative_path):
             raise ScanFailure("Potential Xingkong proxy URL found in tracked text.")
 
 
+def inspect_generic_credentials(contents, relative_path):
+    if PRIVATE_KEY_PATTERN.search(contents):
+        raise ScanFailure("Potential private key found in tracked text.")
+    for match in CREDENTIAL_PATTERN.finditer(contents):
+        value = match.group(1).decode("utf-8", errors="ignore").strip()
+        if not value or "$" in value or is_placeholder(value):
+            continue
+        raise ScanFailure("Potential hard-coded credential assignment found in tracked text.")
+
+
 def scan_tracked_files(root):
     result = subprocess.run(
         ["git", "ls-files", "-z"], cwd=root, check=False, capture_output=True
@@ -71,7 +86,9 @@ def scan_tracked_files(root):
             continue
         try:
             with open(absolute, "rb") as stream:
-                inspect_xk_proxy_text(stream.read(), relative_path)
+                contents = stream.read()
+            inspect_xk_proxy_text(contents, relative_path)
+            inspect_generic_credentials(contents, relative_path)
         except (OSError, UnicodeError) as error:
             raise ScanFailure("Failed to read a tracked file for secret scanning.") from error
 
@@ -222,6 +239,14 @@ def scan_file(root, relative_path, allowed):
                 if not chunk:
                     break
                 contents = carry + chunk
+                if PRIVATE_KEY_PATTERN.search(contents):
+                    raise ScanFailure("Potential private key found in Docker build context.")
+                for match in CREDENTIAL_PATTERN.finditer(contents):
+                    if match.end() <= len(carry):
+                        continue
+                    value = match.group(1).decode("utf-8", errors="ignore").strip()
+                    if value and "$" not in value and not is_placeholder(value):
+                        raise ScanFailure("Potential hard-coded credential found in Docker build context.")
                 for match in SECRET_PATTERN.finditer(contents):
                     if match.end() <= len(carry):
                         continue
@@ -284,6 +309,35 @@ def run_self_test():
         pass
     else:
         raise AssertionError("real Xingkong proxy URL was not detected")
+
+    # Generic credential detection: placeholder / test fixture values pass,
+    # real-looking env-style assignments fail.
+    inspect_generic_credentials(
+        b'PASSWORD = "admin"\nPassword = "correct horse battery staple"',
+        "fixture.sh",
+    )
+    inspect_generic_credentials(
+        b'API_KEY="$VALUE_FROM_ENV"',
+        "fixture.sh",
+    )
+    try:
+        inspect_generic_credentials(
+            b"PASS" + b"WORD = " + b"\"2003" + b"0610@ghl\"",
+            "fixture.sh",
+        )
+    except ScanFailure:
+        pass
+    else:
+        raise AssertionError("hard-coded password assignment was not detected")
+    try:
+        inspect_generic_credentials(
+            b"-----BEGIN OP" + b"ENSSH PRIVATE KEY-----\nabc\n-----END OP" + b"ENSSH PRIVATE KEY-----",
+            "fixture.sh",
+        )
+    except ScanFailure:
+        pass
+    else:
+        raise AssertionError("embedded private key was not detected")
 
     root_only = DockerIgnore(["/root-only"])
     require(root_only.ignored("root-only/value.txt"))

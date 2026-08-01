@@ -232,10 +232,19 @@ func (a *Auth) recordLoginFailure(ctx context.Context, ip string) {
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, destination any) error {
-	request.Body = http.MaxBytesReader(writer, request.Body, maxAuthBodyBytes)
+	// nil writer keeps MaxBytesReader from writing a plain-text 413 itself;
+	// the caller writes the unified JSON error body instead.
+	request.Body = http.MaxBytesReader(nil, request.Body, maxAuthBodyBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return &apierror.Error{
+				Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large",
+				Message: "The request body exceeds the 64 KiB limit.",
+			}
+		}
 		return fmt.Errorf("decode JSON body: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
@@ -262,6 +271,13 @@ func writeSession(writer http.ResponseWriter, mustChange bool) {
 }
 
 func writeInvalidRequest(writer http.ResponseWriter, message string, cause error) {
+	var apiErr *apierror.Error
+	if errors.As(cause, &apiErr) {
+		// Preserve structured errors such as 413 request_too_large returned by
+		// decodeJSON instead of flattening them into a generic 400.
+		apiErr.Write(writer)
+		return
+	}
 	apierror.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request", Message: message, Cause: cause}.Write(writer)
 }
 

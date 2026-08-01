@@ -54,7 +54,14 @@ func newFetcher(apiURL *url.URL) *fetcher {
 	transport.Proxy = nil
 	copyURL := *apiURL
 	return &fetcher{
-		client: &http.Client{Transport: transport, Timeout: 5 * time.Second},
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   5 * time.Second,
+			// Do not follow redirects: a hijacked or malicious upstream could
+			// redirect the lease request to an attacker-controlled host and
+			// route subsequent traffic there. 3xx is an invalid response.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		apiURL: &copyURL,
 	}
 }
