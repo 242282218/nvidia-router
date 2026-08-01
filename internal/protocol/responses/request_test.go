@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -143,6 +144,75 @@ func TestToChatMapsToolsAndToolChoiceAndReasoning(t *testing.T) {
 	}
 	if upstream := stringConcat(got); !stringContains(upstream, "vendor/chat") {
 		t.Fatalf("upstream id not mapped; got=%s", string(got))
+	}
+}
+
+func TestToChatConvertsNamedToolChoiceShape(t *testing.T) {
+	body := `{"model":"public-chat","input":"x","tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":{"type":"function","name":"f"}}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	var chat map[string]json.RawMessage
+	if err := json.Unmarshal(got, &chat); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	var choice struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(chat["tool_choice"], &choice); err != nil {
+		t.Fatalf("decode tool_choice: %v; got=%s", err, string(chat["tool_choice"]))
+	}
+	if choice.Type != "function" || choice.Function.Name != "f" {
+		t.Fatalf("tool_choice = %#v, want function/f", choice)
+	}
+}
+
+func TestToChatPassesThroughChatToolChoiceShape(t *testing.T) {
+	body := `{"model":"public-chat","input":"x","tool_choice":{"type":"function","function":{"name":"f"}}}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	if got := string(got); !stringContains(got, `{"name":"f"}`) {
+		t.Fatalf("chat-shaped tool_choice was rewritten; got=%s", got)
+	}
+}
+
+func TestToChatForwardsSamplingParameters(t *testing.T) {
+	body := `{"model":"public-chat","input":"x","temperature":0,"top_p":0.5,"seed":42,"stop":["\n","END"],"presence_penalty":1,"frequency_penalty":0.2}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	var chat map[string]json.RawMessage
+	if err := json.Unmarshal(got, &chat); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	for _, key := range []string{"temperature", "top_p", "seed", "stop", "presence_penalty", "frequency_penalty"} {
+		if _, ok := chat[key]; !ok {
+			t.Fatalf("missing sampling field %q; got=%s", key, string(got))
+		}
+	}
+	var temperature float64
+	if err := json.Unmarshal(chat["temperature"], &temperature); err != nil || temperature != 0 {
+		t.Fatalf("temperature = %v, want 0 forwarded (not default)", chat["temperature"])
+	}
+}
+
+func TestToChatOmitsSamplingParametersWhenAbsent(t *testing.T) {
+	body := `{"model":"public-chat","input":"x"}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	for _, key := range []string{"temperature", "top_p", "seed", "stop"} {
+		if containsKey(t, got, key) {
+			t.Fatalf("unexpected sampling field %q; got=%s", key, string(got))
+		}
 	}
 }
 

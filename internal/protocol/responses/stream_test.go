@@ -77,6 +77,42 @@ func terminalCount(events []EmittedEvent, name string) int {
 	return count
 }
 
+func TestParseChatDeltaConcatenatesContentParts(t *testing.T) {
+	data := `{"choices":[{"delta":{"content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}]}}]}`
+	delta, done, err := ParseChatDelta([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseChatDelta: %v", err)
+	}
+	if done {
+		t.Fatal("unexpected done marker")
+	}
+	if delta.Content != "Hello" {
+		t.Fatalf("content = %q, want %q", delta.Content, "Hello")
+	}
+}
+
+func TestParseChatDeltaIgnoresUntextContentParts(t *testing.T) {
+	data := `{"choices":[{"delta":{"content":[{"type":"refusal","text":""},{"type":"text","text":"ok"}]}}]}`
+	delta, _, err := ParseChatDelta([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseChatDelta: %v", err)
+	}
+	if delta.Content != "ok" {
+		t.Fatalf("content = %q, want %q", delta.Content, "ok")
+	}
+}
+
+func TestParseChatDeltaPlainStringStillParses(t *testing.T) {
+	data := `{"choices":[{"delta":{"content":"hi","reasoning_content":"think"}}]}`
+	delta, _, err := ParseChatDelta([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseChatDelta: %v", err)
+	}
+	if delta.Content != "hi" || delta.Reasoning != "think" {
+		t.Fatalf("delta = %#v, want content hi reasoning think", delta)
+	}
+}
+
 func TestStreamTextEventSequence(t *testing.T) {
 	source := &fakeSource{deltas: []ChatDelta{
 		{Content: "He"},

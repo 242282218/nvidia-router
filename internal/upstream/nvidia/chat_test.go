@@ -65,22 +65,61 @@ func TestChatSendsGoldenRequest(t *testing.T) {
 	assertGoldenChatBody(t, got.body)
 }
 
-func TestChatCreatesAttemptScopedTransport(t *testing.T) {
+func TestChatDirectTransportPoolReusesBySettings(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport)
-	firstTransport, firstDialer := newAttemptTransport(base, runtimeconfig.Snapshot{ConnectTimeoutMS: 125})
-	secondTransport, secondDialer := newAttemptTransport(base, runtimeconfig.Snapshot{ConnectTimeoutMS: 875})
+	pool := newDirectTransportPool(base)
 
-	if firstTransport == secondTransport || firstTransport == base || secondTransport == base {
-		t.Fatal("attempt transports were shared")
+	first := pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 125, FirstByteTimeoutMS: 500})
+	reused := pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 125, FirstByteTimeoutMS: 500})
+	other := pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 875, FirstByteTimeoutMS: 900})
+
+	if first != reused {
+		t.Fatal("identical settings must share the pooled transport")
 	}
-	if firstDialer == nil || firstDialer.Timeout != 125*time.Millisecond {
-		t.Fatalf("first dialer = %#v", firstDialer)
+	if first == other || first == base || other == base {
+		t.Fatal("different settings must not share transports with the base")
 	}
-	if secondDialer == nil || secondDialer.Timeout != 875*time.Millisecond {
-		t.Fatalf("second dialer = %#v", secondDialer)
+	firstTransport := first.(*http.Transport)
+	otherTransport := other.(*http.Transport)
+	if firstTransport.DialContext == nil || otherTransport.DialContext == nil {
+		t.Fatal("pooled transports are missing DialContext")
 	}
-	if firstTransport.(*http.Transport).DialContext == nil || secondTransport.(*http.Transport).DialContext == nil {
-		t.Fatal("attempt transport is missing DialContext")
+	if firstTransport.ResponseHeaderTimeout != 500*time.Millisecond ||
+		otherTransport.ResponseHeaderTimeout != 900*time.Millisecond {
+		t.Fatalf("ResponseHeaderTimeout not applied: %s / %s",
+			firstTransport.ResponseHeaderTimeout, otherTransport.ResponseHeaderTimeout)
+	}
+}
+
+func TestChatDirectTransportPoolEvictsLeastRecentlyUsed(t *testing.T) {
+	base := http.DefaultTransport.(*http.Transport)
+	pool := newDirectTransportPool(base)
+
+	// Insert a first key, then a second, then reuse the first so it becomes
+	// the most recently used; the second key is now the LRU.
+	firstKey := directTransportKey{connectMS: 100, firstByteMS: 200}
+	second := pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 300, FirstByteTimeoutMS: 400})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 100, FirstByteTimeoutMS: 200})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 100, FirstByteTimeoutMS: 200})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 600})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 700, FirstByteTimeoutMS: 800})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 900, FirstByteTimeoutMS: 1000})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 1100, FirstByteTimeoutMS: 1200})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 1300, FirstByteTimeoutMS: 1400})
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 1500, FirstByteTimeoutMS: 1600})
+	// Ninth distinct key pushes the pool past capacity and evicts the LRU.
+	pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 1700, FirstByteTimeoutMS: 1800})
+
+	if len(pool.items) != maxPooledDirectTransports {
+		t.Fatalf("pool size = %d, want %d", len(pool.items), maxPooledDirectTransports)
+	}
+	for key, item := range pool.items {
+		if item.transport == second {
+			t.Fatalf("LRU transport was not evicted (key=%v)", key)
+		}
+	}
+	if _, reused := pool.items[firstKey]; !reused {
+		t.Fatal("recently used transport was evicted instead of the LRU")
 	}
 }
 

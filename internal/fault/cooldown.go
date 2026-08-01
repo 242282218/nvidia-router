@@ -26,6 +26,11 @@ func CalculateCooldown(f Fault, level int, random RandomSource) (time.Duration, 
 	if f.HTTPStatus == 429 {
 		nextLevel := nextCooldownLevel(level)
 		if f.retryAfterValid || f.RetryAfter > 0 {
+			// Cap an explicit Retry-After so a single response cannot park a key
+			// for years; the exponential backoff cap is the safety ceiling.
+			if f.RetryAfter > maximumRateLimitCooldown {
+				return maximumRateLimitCooldown, nextLevel
+			}
 			return f.RetryAfter, nextLevel
 		}
 		base := rateLimitCooldown(level)

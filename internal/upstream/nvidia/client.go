@@ -25,6 +25,7 @@ type Client struct {
 	descriptor Descriptor
 	settings   runtimeconfig.Provider
 	proxy      *xkproxy.Manager
+	directPool *directTransportPool
 }
 
 type requestFactory func(context.Context) (*http.Request, error)
@@ -63,7 +64,13 @@ func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimec
 			return nil, errors.New("new NVIDIA client: proxy mode requires an HTTP transport")
 		}
 	}
-	return &Client{httpClient: httpClient, descriptor: descriptor, settings: settings, proxy: proxy}, nil
+	return &Client{
+		httpClient: httpClient,
+		descriptor: descriptor,
+		settings:   settings,
+		proxy:      proxy,
+		directPool: newDirectTransportPool(httpClient.Transport),
+	}, nil
 }
 
 func (c *Client) Models(ctx context.Context, token string) ([]string, error) {
@@ -187,18 +194,10 @@ func (c *Client) doDirect(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	if err != nil {
 		return nil, err
 	}
-	transport, _ := newAttemptTransport(c.httpClient.Transport, snapshot)
+	transport := c.directPool.Get(snapshot)
 	httpClient := *c.httpClient
 	httpClient.Transport = transport
-	response, err := httpClient.Do(request)
-	if err != nil {
-		closeIdleConnections(transport)
-		return nil, err
-	}
-	if response.Body != nil {
-		response.Body = &attemptBody{ReadCloser: response.Body, transport: transport}
-	}
-	return response, nil
+	return httpClient.Do(request)
 }
 
 func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, bool, bool, error) {

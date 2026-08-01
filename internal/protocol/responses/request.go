@@ -79,6 +79,7 @@ func ToChat(body []byte, model modelcatalog.Model) ([]byte, error) {
 	if err := mapMaxOutputTokens(fields, chat); err != nil {
 		return nil, err
 	}
+	mapSamplingParameters(fields, chat)
 	if stream, ok := fields["stream"]; ok {
 		chat["stream"] = stream
 	} else {
@@ -306,6 +307,24 @@ func mapToolChoice(fields map[string]json.RawMessage, chat map[string]json.RawMe
 	if !ok {
 		return nil
 	}
+	// Responses uses {"type":"function","name":"..."} while Chat Completions
+	// requires {"type":"function","function":{"name":"..."}}; string values
+	// ("auto"/"none"/"required") and the Chat shape pass through unchanged.
+	var choice struct {
+		Type     string          `json:"type"`
+		Name     string          `json:"name"`
+		Function json.RawMessage `json:"function"`
+	}
+	if json.Unmarshal(raw, &choice) == nil && choice.Type == "function" && choice.Name != "" && len(choice.Function) == 0 {
+		converted, err := json.Marshal(map[string]any{
+			"type":     "function",
+			"function": map[string]string{"name": choice.Name},
+		})
+		if err == nil {
+			chat["tool_choice"] = converted
+			return nil
+		}
+	}
 	chat["tool_choice"] = raw
 	return nil
 }
@@ -348,6 +367,18 @@ func mapMaxOutputTokens(fields map[string]json.RawMessage, chat map[string]json.
 	encoded, _ := json.Marshal(*value)
 	chat["max_tokens"] = encoded
 	return nil
+}
+
+// mapSamplingParameters forwards sampling controls verbatim so responses
+// requests get the same generation behaviour a chat request would; dropping
+// them silently (e.g. temperature: 0 becoming the default) changes output
+// without the client knowing.
+func mapSamplingParameters(fields map[string]json.RawMessage, chat map[string]json.RawMessage) {
+	for _, name := range []string{"temperature", "top_p", "seed", "stop", "presence_penalty", "frequency_penalty", "stream_options"} {
+		if raw, ok := fields[name]; ok {
+			chat[name] = raw
+		}
+	}
 }
 
 func requiredModel(fields map[string]json.RawMessage) (string, error) {

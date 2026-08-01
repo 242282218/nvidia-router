@@ -1,0 +1,60 @@
+package sse
+
+import (
+	"errors"
+	"io"
+	"sync"
+	"time"
+)
+
+// ErrStreamIdle reports that the upstream stopped sending bytes for the whole
+// idle window, so the connection is presumed dead rather than merely slow.
+// Callers treat it like any post-commit truncation: the client already has a
+// committed response, so nothing more can be written.
+var ErrStreamIdle = errors.New("upstream stream idle for too long")
+
+// WithIdleTimeout wraps body so a stalled upstream cannot pin a lease forever.
+// Any Read that returns data restarts the window; when the window expires the
+// underlying body is closed, which unblocks the in-flight Read with an error.
+// A non-positive idle returns body unchanged.
+func WithIdleTimeout(body io.ReadCloser, idle time.Duration) io.ReadCloser {
+	if idle <= 0 {
+		return body
+	}
+	wrapper := &idleReadCloser{ReadCloser: body, idle: idle}
+	wrapper.timer = time.AfterFunc(idle, func() {
+		wrapper.mu.Lock()
+		wrapper.expired = true
+		wrapper.mu.Unlock()
+		_ = body.Close()
+	})
+	return wrapper
+}
+
+type idleReadCloser struct {
+	io.ReadCloser
+	idle    time.Duration
+	timer   *time.Timer
+	mu      sync.Mutex
+	expired bool
+}
+
+func (r *idleReadCloser) Read(payload []byte) (int, error) {
+	read, err := r.ReadCloser.Read(payload)
+	if read > 0 {
+		// Any byte is progress; keep-alive comments and deltas both count.
+		r.timer.Reset(r.idle)
+	}
+	r.mu.Lock()
+	expired := r.expired
+	r.mu.Unlock()
+	if err != nil && expired {
+		return read, ErrStreamIdle
+	}
+	return read, err
+}
+
+func (r *idleReadCloser) Close() error {
+	r.timer.Stop()
+	return r.ReadCloser.Close()
+}

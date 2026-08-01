@@ -141,8 +141,15 @@ func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
 	if response != nil && response.Body != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
-	if !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("execute error = %v, want io.ErrUnexpectedEOF", err)
+	// A 200 with no data events is an upstream protocol defect: it must be
+	// classified Protocol (not a retryable connection error) so the attempt
+	// loop does not cool down healthy keys.
+	var classified fault.Fault
+	if !errors.As(err, &classified) {
+		t.Fatalf("execute error = %T %v, want fault.Fault", err, err)
+	}
+	if classified.PublicCode != "upstream_protocol_error" || classified.Scope != fault.ScopeUpstreamGlobal {
+		t.Fatalf("classified = %#v, want upstream_protocol_error global", classified)
 	}
 }
 

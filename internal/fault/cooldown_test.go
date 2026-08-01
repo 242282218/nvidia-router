@@ -64,6 +64,26 @@ func TestCooldownJitterAndFixedTransientDelay(t *testing.T) {
 	}
 }
 
+func TestCooldownCapsExplicitRetryAfter(t *testing.T) {
+	oversized := Fault{HTTPStatus: 429, Retryable: true, RetryAfter: 24 * time.Hour, retryAfterValid: true}
+	got, nextLevel := CalculateCooldown(oversized, 1, RandomFunc(func() float64 { return 0 }))
+	if got != maximumRateLimitCooldown || nextLevel != 2 {
+		t.Fatalf("oversized Retry-After cooldown = %s, next %d; want cap %s, 2", got, nextLevel, maximumRateLimitCooldown)
+	}
+
+	exact := Fault{HTTPStatus: 429, Retryable: true, RetryAfter: maximumRateLimitCooldown, retryAfterValid: true}
+	got, _ = CalculateCooldown(exact, 0, nil)
+	if got != maximumRateLimitCooldown {
+		t.Fatalf("exact-cap Retry-After cooldown = %s", got)
+	}
+
+	zero := Fault{HTTPStatus: 429, Retryable: true, RetryAfter: 0, retryAfterValid: true}
+	got, _ = CalculateCooldown(zero, 0, nil)
+	if got != 0 {
+		t.Fatalf("zero Retry-After cooldown = %s, want 0 (already past)", got)
+	}
+}
+
 func TestClassifierPreservesPastRetryAfterAsZeroCooldown(t *testing.T) {
 	now := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
 	response := responseForClassifier(429, "", now.Add(-time.Minute).Format(http.TimeFormat))

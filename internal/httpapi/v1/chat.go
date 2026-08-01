@@ -107,7 +107,10 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 		}
 		if stream {
 			if err := primeSSE(ctx, response); err != nil {
-				if errors.Is(err, sse.ErrEventTooLarge) {
+				if errors.Is(err, sse.ErrEventTooLarge) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					// A 200 with an empty/non-SSE body is an upstream protocol
+					// defect, not a connection blip; classify it as Protocol so
+					// the attempt loop does not cool down every healthy key.
 					return response, fault.Protocol(err)
 				}
 				return response, err
@@ -241,9 +244,18 @@ func writeChatError(writer http.ResponseWriter, err error) {
 func primeSSE(ctx context.Context, response *http.Response) error {
 	primeCtx := ctx
 	cancel := func() {}
+	var idle time.Duration
 	if budget, ok := router.BudgetFromContext(ctx); ok {
 		primeCtx, cancel = context.WithDeadline(ctx, budget.FirstByteDeadline())
+		idle = budget.FirstByteTimeout()
 	}
 	defer cancel()
-	return sse.Prime(primeCtx, response)
+	if err := sse.Prime(primeCtx, response); err != nil {
+		return err
+	}
+	// After the headers are committed a stalled upstream would pin the lease
+	// forever; wrap the body so silence beyond the first-byte window returns
+	// ErrStreamIdle instead of blocking the decode loop indefinitely.
+	response.Body = sse.WithIdleTimeout(response.Body, idle)
+	return nil
 }

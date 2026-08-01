@@ -23,10 +23,10 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Role      string                   `json:"role"`
-				Content   json.RawMessage           `json:"content"`
-				Reasoning json.RawMessage           `json:"reasoning_content"`
-				ToolCalls []chatChunkToolCall       `json:"tool_calls"`
+				Role      string              `json:"role"`
+				Content   json.RawMessage     `json:"content"`
+				Reasoning json.RawMessage     `json:"reasoning_content"`
+				ToolCalls []chatChunkToolCall `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason json.RawMessage `json:"finish_reason"`
 		} `json:"choices"`
@@ -56,7 +56,7 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 }
 
 type chatChunkToolCall struct {
-	Index    int `json:"index"`
+	Index    int    `json:"index"`
 	ID       string `json:"id"`
 	Function struct {
 		Name      string `json:"name"`
@@ -65,8 +65,10 @@ type chatChunkToolCall struct {
 }
 
 // decodeStringField returns the string value of a JSON field that may be a
-// string, null or absent; non-string representations are ignored because the
-// state machine only consumes inline text deltas.
+// string, null or absent. When the field is an array of content parts (the
+// OpenAI-compatible shape some upstreams stream, e.g.
+// [{"type":"text","text":"..."}]), the text parts are concatenated so content
+// deltas are not silently dropped.
 func decodeStringField(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
@@ -75,5 +77,15 @@ func decodeStringField(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &asString) == nil {
 		return asString
 	}
-	return ""
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var builder strings.Builder
+	for _, part := range parts {
+		builder.WriteString(part.Text)
+	}
+	return builder.String()
 }

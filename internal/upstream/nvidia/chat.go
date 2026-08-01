@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/runtimeconfig"
@@ -62,6 +63,72 @@ func newAttemptTransport(base http.RoundTripper, snapshot runtimeconfig.Snapshot
 		return clone, dialer
 	}
 	return &attemptRoundTripper{base: base}, dialer
+}
+
+// maxPooledDirectTransports bounds the direct-mode transport cache. The key
+// space is small (timeout combinations), but a misconfigured or churning
+// settings table must not grow the map without bound.
+const maxPooledDirectTransports = 8
+
+// directTransportKey identifies a transport by the timeout settings baked into
+// it, so requests with identical settings share keep-alive connections.
+type directTransportKey struct {
+	connectMS   int
+	firstByteMS int
+}
+
+// directTransportPool reuses attempt-scoped transports instead of cloning a
+// fresh transport (and tearing its connection pool down) on every request.
+type directTransportPool struct {
+	mu    sync.Mutex
+	base  http.RoundTripper
+	items map[directTransportKey]*pooledTransport
+	clock uint64
+}
+
+type pooledTransport struct {
+	transport http.RoundTripper
+	// lastUsed is a monotonic counter, not a wall-clock timestamp, so LRU
+	// ordering is exact even when several requests land in the same nanosecond.
+	lastUsed uint64
+}
+
+func newDirectTransportPool(base http.RoundTripper) *directTransportPool {
+	return &directTransportPool{base: base, items: make(map[directTransportKey]*pooledTransport)}
+}
+
+// Get returns the shared transport for the snapshot's timeout settings,
+// creating it on first use. LRU eviction keeps the pool bounded.
+func (p *directTransportPool) Get(snapshot runtimeconfig.Snapshot) http.RoundTripper {
+	key := directTransportKey{connectMS: snapshot.ConnectTimeoutMS, firstByteMS: snapshot.FirstByteTimeoutMS}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if item, ok := p.items[key]; ok {
+		p.clock++
+		item.lastUsed = p.clock
+		return item.transport
+	}
+	transport, _ := newAttemptTransport(p.base, snapshot)
+	p.clock++
+	item := &pooledTransport{transport: transport, lastUsed: p.clock}
+	p.items[key] = item
+	if len(p.items) > maxPooledDirectTransports {
+		p.evictLeastRecentlyUsed()
+	}
+	return transport
+}
+
+func (p *directTransportPool) evictLeastRecentlyUsed() {
+	var oldestKey directTransportKey
+	var oldest uint64
+	for key, item := range p.items {
+		if oldest == 0 || item.lastUsed < oldest {
+			oldestKey = key
+			oldest = item.lastUsed
+		}
+	}
+	closeIdleConnections(p.items[oldestKey].transport)
+	delete(p.items, oldestKey)
 }
 
 func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, error) {
@@ -128,17 +195,6 @@ func (t *attemptRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 
 func (t *attemptRoundTripper) CloseIdleConnections() {
 	closeIdleConnections(t.base)
-}
-
-type attemptBody struct {
-	io.ReadCloser
-	transport http.RoundTripper
-}
-
-func (b *attemptBody) Close() error {
-	err := b.ReadCloser.Close()
-	closeIdleConnections(b.transport)
-	return err
 }
 
 func closeIdleConnections(transport http.RoundTripper) {
