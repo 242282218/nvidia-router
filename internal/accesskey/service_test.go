@@ -72,6 +72,40 @@ func TestCreateReturnsPlaintextOnceAndPersistsOnlyDigest(t *testing.T) {
 	}
 }
 
+func TestAuthenticateRejectsExpiredKeyAndPolicyUpdatesInvalidateCache(t *testing.T) {
+	source := newManualClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	service, db := newTestServiceWithClock(t, filepath.Join(t.TempDir(), "router.db"), source)
+	created, err := service.Create(context.Background(), "expiring")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := service.Authenticate(context.Background(), created.Plaintext); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	expires := source.Now().Add(time.Minute)
+	if err := service.UpdatePolicy(context.Background(), created.Key.ID, &expires, 7, 11, 2); err != nil {
+		t.Fatalf("UpdatePolicy: %v", err)
+	}
+	identity, err := service.Authenticate(context.Background(), created.Plaintext)
+	if err != nil {
+		t.Fatalf("Authenticate after policy update: %v", err)
+	}
+	if identity.RPMLimit != 7 || identity.TPMLimit != 11 || identity.MaxConcurrent != 2 {
+		t.Fatalf("identity policy = %+v", identity)
+	}
+	source.Advance(time.Minute)
+	if _, err := service.Authenticate(context.Background(), created.Plaintext); !errors.Is(err, ErrInvalidAccessKey) {
+		t.Fatalf("expired Authenticate error = %v, want ErrInvalidAccessKey", err)
+	}
+	var stored string
+	if err := db.QueryRow("SELECT expires_at FROM access_keys WHERE id = ?", created.Key.ID).Scan(&stored); err != nil {
+		t.Fatalf("query expiration: %v", err)
+	}
+	if stored == "" {
+		t.Fatal("expiration was not persisted")
+	}
+}
+
 func TestAuthenticateRejectsMalformedAndRevokedKeys(t *testing.T) {
 	service, _ := newTestService(t, filepath.Join(t.TempDir(), "router.db"))
 	created, err := service.Create(context.Background(), "phone")

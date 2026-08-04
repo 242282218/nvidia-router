@@ -21,6 +21,7 @@ type RequestState struct {
 	PromptTokens      *int64
 	CompletionTokens  *int64
 	UpstreamRequestID *string
+	UsageRecorder     func(*int64, *int64)
 }
 
 func WithRequestState(ctx context.Context) (context.Context, *RequestState) {
@@ -67,6 +68,33 @@ func SetUsage(ctx context.Context, prompt, completion *int64) {
 		state.PromptTokens = prompt
 		state.CompletionTokens = completion
 	})
+}
+
+func RecordUsage(ctx context.Context, prompt, completion *int64) {
+	state, ok := ctx.Value(requestStateKey{}).(*RequestState)
+	if !ok {
+		return
+	}
+	var recorder func(*int64, *int64)
+	state.mu.Lock()
+	recorder = state.UsageRecorder
+	state.mu.Unlock()
+	if recorder != nil {
+		recorder(prompt, completion)
+	}
+}
+
+func SetUsageRecorder(ctx context.Context, recorder func(*int64, *int64)) {
+	updateState(ctx, func(state *RequestState) { state.UsageRecorder = recorder })
+}
+
+func UsageFromContext(ctx context.Context) (*int64, *int64) {
+	state, ok := ctx.Value(requestStateKey{}).(*RequestState)
+	if !ok {
+		return nil, nil
+	}
+	snapshot := state.Snapshot()
+	return snapshot.PromptTokens, snapshot.CompletionTokens
 }
 
 func (s *RequestState) Snapshot() RequestState {

@@ -51,7 +51,7 @@ func (r *Repository) Create(ctx context.Context, name string, digest []byte, pre
 
 func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	rows, err := r.read().QueryContext(ctx, `
-		SELECT id, name, key_prefix, created_at, last_used_at, revoked_at
+		SELECT id, name, key_prefix, created_at, last_used_at, revoked_at, expires_at, rpm_limit, tpm_limit, max_concurrent
 		FROM access_keys
 		ORDER BY id
 	`)
@@ -76,16 +76,22 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 
 func (r *Repository) Authenticate(ctx context.Context, digest []byte) (AccessKeyIdentity, error) {
 	var identity AccessKeyIdentity
+	var expiresAt sql.NullString
 	err := r.read().QueryRowContext(ctx, `
-		SELECT id, key_prefix
+		SELECT id, key_prefix, expires_at, rpm_limit, tpm_limit, max_concurrent
 		FROM access_keys
 		WHERE key_digest = ? AND revoked_at IS NULL
-	`, digest).Scan(&identity.ID, &identity.Prefix)
+	`, digest).Scan(&identity.ID, &identity.Prefix, &expiresAt, &identity.RPMLimit, &identity.TPMLimit, &identity.MaxConcurrent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccessKeyIdentity{}, ErrInvalidAccessKey
 	}
 	if err != nil {
 		return AccessKeyIdentity{}, fmt.Errorf("authenticate access key: %w", err)
+	}
+	var parseErr error
+	identity.ExpiresAt, parseErr = parseOptionalTime(expiresAt)
+	if parseErr != nil {
+		return AccessKeyIdentity{}, fmt.Errorf("parse access key expiration: %w", parseErr)
 	}
 	return identity, nil
 }
@@ -114,6 +120,28 @@ func (r *Repository) UpdateLastUsed(ctx context.Context, id int64, usedAt time.T
 	return nil
 }
 
+func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET expires_at = ?, rpm_limit = ?, tpm_limit = ?, max_concurrent = ? WHERE id = ? AND revoked_at IS NULL`, optionalTime(expiresAt), rpm, tpm, maxConcurrent, id)
+	if err != nil {
+		return fmt.Errorf("update access key policy: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated access key count: %w", err)
+	}
+	if changed == 0 {
+		return ErrAccessKeyNotFound
+	}
+	return nil
+}
+
+func optionalTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return formatTime(*value)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -123,7 +151,8 @@ func scanKey(row rowScanner) (Key, error) {
 	var createdAt string
 	var lastUsedAt sql.NullString
 	var revokedAt sql.NullString
-	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsedAt, &revokedAt); err != nil {
+	var expiresAt sql.NullString
+	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsedAt, &revokedAt, &expiresAt, &key.RPMLimit, &key.TPMLimit, &key.MaxConcurrent); err != nil {
 		return Key{}, fmt.Errorf("scan access key: %w", err)
 	}
 	parsedCreatedAt, err := parseTime(createdAt)
@@ -136,6 +165,9 @@ func scanKey(row rowScanner) (Key, error) {
 	}
 	if key.RevokedAt, err = parseOptionalTime(revokedAt); err != nil {
 		return Key{}, fmt.Errorf("parse access key revoked time: %w", err)
+	}
+	if key.ExpiresAt, err = parseOptionalTime(expiresAt); err != nil {
+		return Key{}, fmt.Errorf("parse access key expiration: %w", err)
 	}
 	return key, nil
 }

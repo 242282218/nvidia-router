@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/observability"
@@ -35,8 +36,16 @@ func Middleware(service *Service, next http.Handler) http.Handler {
 			return
 		}
 
+		if err := service.BeginRequest(identity); err != nil {
+			apierror.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "access_key_rate_limited", Message: "The access key rate limit has been exceeded.", RetryAfter: time.Minute}.Write(writer)
+			return
+		}
 		ctx := context.WithValue(request.Context(), identityContextKey{}, identity)
+		observability.SetUsageRecorder(ctx, func(prompt, completion *int64) {
+			service.ChargeUsage(identity, prompt, completion)
+		})
 		observability.SetAccessKey(ctx, identity.ID)
+		defer service.EndRequest(identity)
 		next.ServeHTTP(writer, request.WithContext(ctx))
 		service.RecordUse(ctx, identity.ID)
 	})

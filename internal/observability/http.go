@@ -68,6 +68,7 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		if metadata.CompletionTokens == nil {
 			metadata.CompletionTokens = completion
 		}
+		RecordUsage(ctx, metadata.PromptTokens, metadata.CompletionTokens)
 		status := tracked.status
 		if status == 0 {
 			status = http.StatusOK

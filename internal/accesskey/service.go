@@ -22,13 +22,17 @@ const (
 	lastUsedWriteMinimum = time.Minute
 )
 
-var ErrInvalidAccessKey = errors.New("invalid access key")
+var (
+	ErrInvalidAccessKey  = errors.New("invalid access key")
+	ErrAccessKeyNotFound = errors.New("access key not found")
+)
 
 type Service struct {
 	repository *Repository
 	keys       *crypto.KeySet
 	clock      clock.Clock
 	cache      *cache
+	limiter    *limiter
 
 	usageMu      sync.Mutex
 	lastRecorded map[int64]time.Time
@@ -44,6 +48,7 @@ func NewService(repository *Repository, keys *crypto.KeySet, source clock.Clock)
 		keys:         keys,
 		clock:        source,
 		cache:        newCache(defaultCacheTTL, defaultCacheEntries),
+		limiter:      newLimiter(),
 		lastRecorded: make(map[int64]time.Time),
 		pending:      make(map[int64]struct{}),
 	}
@@ -88,14 +93,65 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 
 	now := s.clock.Now()
 	if identity, ok := s.cache.lookup(digest, now); ok {
+		if identity.ExpiresAt != nil && !now.Before(*identity.ExpiresAt) {
+			s.cache.invalidate()
+			return AccessKeyIdentity{}, ErrInvalidAccessKey
+		}
 		return identity, nil
 	}
 	identity, err := s.repository.Authenticate(ctx, digest)
 	if err != nil {
 		return AccessKeyIdentity{}, fmt.Errorf("authenticate access key: %w", err)
 	}
+	if identity.ExpiresAt != nil && !now.Before(*identity.ExpiresAt) {
+		return AccessKeyIdentity{}, ErrInvalidAccessKey
+	}
 	s.cache.store(digest, identity, now)
 	return identity, nil
+}
+
+func (s *Service) BeginRequest(identity AccessKeyIdentity) error {
+	return s.limiter.begin(identity.ID, identity.RPMLimit, identity.TPMLimit, identity.MaxConcurrent, s.clock.Now())
+}
+
+func (s *Service) ChargeUsage(identity AccessKeyIdentity, prompt, completion *int64) {
+	if prompt == nil && completion == nil {
+		return
+	}
+	s.limiter.charge(identity.ID, identity.TPMLimit, valueOrZero(prompt), valueOrZero(completion), s.clock.Now())
+}
+
+func (s *Service) EndRequest(identity AccessKeyIdentity) {
+	s.limiter.release(identity.ID)
+}
+
+func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int) error {
+	if id <= 0 {
+		return fmt.Errorf("update access key policy: invalid id")
+	}
+	if rpm < 0 || rpm > 100000 || tpm < 0 || tpm > 1000000000 || maxConcurrent < 0 || maxConcurrent > 10000 {
+		return fmt.Errorf("update access key policy: limit is out of range")
+	}
+	if expiresAt != nil {
+		expiry := expiresAt.UTC()
+		if !expiry.After(s.clock.Now().UTC()) {
+			return fmt.Errorf("update access key policy: expiration must be in the future")
+		}
+		expiresAt = &expiry
+	}
+	if err := s.repository.UpdatePolicy(ctx, id, expiresAt, rpm, tpm, maxConcurrent); err != nil {
+		return fmt.Errorf("update access key policy: %w", err)
+	}
+	// Policy changes must not wait for the authentication cache TTL.
+	s.cache.invalidate()
+	return nil
+}
+
+func valueOrZero(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func (s *Service) Revoke(ctx context.Context, id int64) error {
