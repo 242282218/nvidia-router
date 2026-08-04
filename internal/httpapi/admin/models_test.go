@@ -259,6 +259,7 @@ type modelSyncFake struct {
 
 func (*modelSyncFake) LoadSnapshot([]keystate.KeySnapshot, []keystate.ModelBlock) {}
 func (*modelSyncFake) UpsertKey(keystate.KeySnapshot)                             {}
+func (*modelSyncFake) SetKeyEnabled(int64, bool)                                  {}
 func (*modelSyncFake) RemoveKey(int64)                                            {}
 func (*modelSyncFake) ApplySuccess(int64)                                         {}
 func (*modelSyncFake) ApplyFailure(int64, int64, interface{}, keystate.KeySnapshot) {

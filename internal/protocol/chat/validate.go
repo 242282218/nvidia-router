@@ -10,6 +10,7 @@ import (
 
 var validRoles = map[string]struct{}{
 	"system":    {},
+	"developer": {},
 	"user":      {},
 	"assistant": {},
 	"tool":      {},

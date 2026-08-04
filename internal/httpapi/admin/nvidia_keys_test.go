@@ -60,6 +60,17 @@ type fakeStateSync struct {
 	upserts []keystate.KeySnapshot
 	removed []int64
 	blocks  [][3]int64
+	// enabled records SetKeyEnabled calls as {keyID, 0|1} so tests can assert the
+	// admin path uses the narrow update instead of a full snapshot overwrite.
+	enabled [][2]int64
+}
+
+func (s *fakeStateSync) SetKeyEnabled(keyID int64, on bool) {
+	v := int64(0)
+	if on {
+		v = 1
+	}
+	s.enabled = append(s.enabled, [2]int64{keyID, v})
 }
 
 func (*fakeStateSync) LoadSnapshot([]keystate.KeySnapshot, []keystate.ModelBlock)   {}
@@ -112,8 +123,8 @@ func TestNVIDIAKeyAPIUsesAllowlistedDTOAndSynchronizesState(t *testing.T) {
 	}
 
 	response = performAdminRequest(handler, http.MethodPatch, "/admin/api/nvidia-keys/7", `{"enabled":false}`)
-	if response.Code != http.StatusOK || len(syncer.upserts) != 2 || syncer.upserts[1].Enabled {
-		t.Fatalf("patch response=%d sync=%+v", response.Code, syncer.upserts)
+	if response.Code != http.StatusOK || len(syncer.enabled) != 1 || syncer.enabled[0] != [2]int64{7, 0} {
+		t.Fatalf("patch response=%d enabled_calls=%v", response.Code, syncer.enabled)
 	}
 	response = performAdminRequest(handler, http.MethodDelete, "/admin/api/nvidia-keys/7", "")
 	if response.Code != http.StatusNoContent || len(syncer.removed) != 1 || syncer.removed[0] != 7 {

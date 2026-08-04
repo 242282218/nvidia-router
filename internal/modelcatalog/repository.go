@@ -458,7 +458,7 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 
 const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, enabled,
 	supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
-	capability_verified_at, updated_at FROM models`
+	capability_verified_at, created_at, updated_at FROM models`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -493,9 +493,9 @@ func applyPatch(selection *Selection, patch Patch) {
 func scanModel(row rowScanner) (Model, error) {
 	var model Model
 	var enabled, vision, tools, reasoning int
-	var verifiedAt, updatedAt sql.NullString
+	var verifiedAt, createdAt, updatedAt sql.NullString
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
-		&enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &verifiedAt, &updatedAt); err != nil {
+		&enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &verifiedAt, &createdAt, &updatedAt); err != nil {
 		return Model{}, err
 	}
 	model.Enabled = enabled == 1
@@ -508,6 +508,13 @@ func scanModel(row rowScanner) (Model, error) {
 			return Model{}, fmt.Errorf("parse model capability verification time: %w", err)
 		}
 		model.CapabilityVerifiedAt = &parsed
+	}
+	if createdAt.Valid {
+		parsed, err := time.Parse(time.RFC3339, createdAt.String)
+		if err != nil {
+			return Model{}, fmt.Errorf("parse model creation time: %w", err)
+		}
+		model.CreatedAt = parsed
 	}
 	if updatedAt.Valid {
 		parsed, err := time.Parse(time.RFC3339Nano, updatedAt.String)

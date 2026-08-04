@@ -67,10 +67,26 @@ func newAttemptTransport(base http.RoundTripper, snapshot runtimeconfig.Snapshot
 			}
 		}
 		clone.ResponseHeaderTimeout = time.Duration(snapshot.FirstByteTimeoutMS) * time.Millisecond
+		// Every NVIDIA key targets the same upstream host, so MaxIdleConnsPerHost
+		// is the real concurrency ceiling. Cloning http.DefaultTransport inherits
+		// its default of 2, which made direct mode rebuild connections under load
+		// while the proxy path already used 32. Keep both paths symmetric.
+		clone.MaxIdleConns = directMaxIdleConns
+		clone.MaxIdleConnsPerHost = directMaxIdleConnsPerHost
+		clone.IdleConnTimeout = directIdleConnTimeout
+		clone.ForceAttemptHTTP2 = true
 		return clone, dialer
 	}
 	return &attemptRoundTripper{base: base}, dialer
 }
+
+// Direct-mode connection pool sizing, mirroring xkproxy's proxy transports so
+// the two paths behave the same under concurrency.
+const (
+	directMaxIdleConns        = 64
+	directMaxIdleConnsPerHost = 32
+	directIdleConnTimeout     = 60 * time.Second
+)
 
 // maxPooledDirectTransports bounds the direct-mode transport cache. The key
 // space is small (timeout combinations), but a misconfigured or churning

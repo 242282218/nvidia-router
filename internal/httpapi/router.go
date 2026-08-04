@@ -31,6 +31,11 @@ func NewRouter(
 	if len(additionalAdmin) > 1 && additionalAdmin[1] != nil {
 		monitoring = additionalAdmin[1]
 	}
+	metrics := http.NotFoundHandler()
+	if len(additionalAdmin) > 2 && additionalAdmin[2] != nil {
+		metrics = additionalAdmin[2]
+	}
+	root.Handle("/metrics", NoStoreMiddleware(metrics))
 	securedManagement := NoStoreMiddleware(security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats, monitoring)))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)

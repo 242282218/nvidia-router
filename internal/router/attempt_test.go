@@ -668,6 +668,7 @@ type recordingStateSync struct {
 
 func (*recordingStateSync) LoadSnapshot([]keystate.KeySnapshot, []keystate.ModelBlock) {}
 func (*recordingStateSync) UpsertKey(keystate.KeySnapshot)                             {}
+func (*recordingStateSync) SetKeyEnabled(int64, bool)                                  {}
 func (*recordingStateSync) RemoveKey(int64)                                            {}
 func (s *recordingStateSync) ApplySuccess(int64)                                       { s.calls.Add(1) }
 func (s *recordingStateSync) ApplyFailure(int64, int64, fault.Fault, keystate.KeySnapshot) {

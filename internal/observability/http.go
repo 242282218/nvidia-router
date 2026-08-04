@@ -17,7 +17,17 @@ import (
 	"nvidia-router/internal/clock"
 )
 
+// usageCaptureLimit bounds the buffered copy of a non-streaming JSON body.
+// The whole body is needed because the usage object may appear anywhere in it.
 const usageCaptureLimit = 2 << 20
+
+// usageTailCaptureLimit bounds the buffered tail of an SSE stream. Usage only
+// ever arrives in a trailing event and lastSSEEventData scans backwards, so
+// retaining the whole stream was pure overhead: a long generation held up to
+// usageCaptureLimit of heap per in-flight request purely to read two integers,
+// and any stream that exceeded that limit dropped its usage entirely. A bounded
+// tail is both far cheaper and strictly more capable.
+const usageTailCaptureLimit = 64 << 10
 
 var usageCaptureEndpoints = map[string]struct{}{
 	"/v1/chat/completions": {},
@@ -113,6 +123,9 @@ type trackingWriter struct {
 	body            bytes.Buffer
 	captureEnabled  bool
 	captureComplete bool
+	// tailCapture keeps only the trailing window of an SSE body instead of the
+	// whole stream. It is decided from Content-Type once the status is known.
+	tailCapture bool
 }
 
 func newTrackingWriter(writer http.ResponseWriter, ctx context.Context, started time.Time, source clock.Clock, endpoint string) *trackingWriter {
@@ -144,12 +157,16 @@ func (w *trackingWriter) Write(payload []byte) (int, error) {
 		w.firstBodyAt = w.clock.Now()
 	}
 	if w.captureComplete {
-		remaining := usageCaptureLimit - w.body.Len()
-		if len(payload) <= remaining {
-			_, _ = w.body.Write(payload)
+		if w.tailCapture {
+			w.appendTail(payload)
 		} else {
-			w.captureComplete = false
-			w.body.Reset()
+			remaining := usageCaptureLimit - w.body.Len()
+			if len(payload) <= remaining {
+				_, _ = w.body.Write(payload)
+			} else {
+				w.captureComplete = false
+				w.body.Reset()
+			}
 		}
 	}
 	return w.ResponseWriter.Write(payload)
@@ -169,6 +186,27 @@ func (w *trackingWriter) disableCaptureIfIneligible() {
 		w.body.Reset()
 		return
 	}
+	w.tailCapture = strings.EqualFold(mediaType, "text/event-stream")
+}
+
+// appendTail keeps the last usageTailCaptureLimit bytes of the stream. It trims
+// at an event boundary so the retained window starts on a whole event; a
+// half-event at the front would be skipped by lastSSEEventData anyway, but
+// trimming keeps the buffer's contents meaningful on inspection.
+func (w *trackingWriter) appendTail(payload []byte) {
+	_, _ = w.body.Write(payload)
+	if w.body.Len() <= usageTailCaptureLimit {
+		return
+	}
+	retained := w.body.Bytes()[w.body.Len()-usageTailCaptureLimit:]
+	if boundary := bytes.Index(retained, []byte("\n\n")); boundary >= 0 {
+		retained = retained[boundary+2:]
+	}
+	// Copy before Reset: retained aliases the buffer's storage.
+	kept := make([]byte, len(retained))
+	copy(kept, retained)
+	w.body.Reset()
+	_, _ = w.body.Write(kept)
 }
 
 func isUsageMediaType(mediaType string) bool {

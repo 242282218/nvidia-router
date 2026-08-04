@@ -62,7 +62,7 @@ func TestParseValidatesRequiredAndKnownFieldTypes(t *testing.T) {
 		{name: "messages type", payload: `{"model":"m","messages":{}}`, code: "invalid_parameter", param: "messages"},
 		{name: "messages empty", payload: `{"model":"m","messages":[]}`, code: "invalid_parameter", param: "messages"},
 		{name: "role missing", payload: `{"model":"m","messages":[{"content":"x"}]}`, code: "missing_required_parameter", param: "messages[0].role"},
-		{name: "role invalid", payload: `{"model":"m","messages":[{"role":"developer","content":"x"}]}`, code: "invalid_parameter", param: "messages[0].role"},
+		{name: "role invalid", payload: `{"model":"m","messages":[{"role":"moderator","content":"x"}]}`, code: "invalid_parameter", param: "messages[0].role"},
 		{name: "stream type", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"stream":"true"}`, code: "invalid_parameter", param: "stream"},
 		{name: "stream null", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"stream":null}`, code: "invalid_parameter", param: "stream"},
 		{name: "store null", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"store":null}`, code: "invalid_parameter", param: "store"},

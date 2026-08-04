@@ -15,8 +15,17 @@ import (
 // value set request_log_retention_days through the admin settings surface.
 const DefaultRequestLogRetentionDays = 30
 
+// DailyStatsRetentionDays bounds aggregate growth. daily_stats had no cleanup
+// path, so it grew as day x dimension without limit. The window is far longer
+// than the request-log window on purpose: the aggregates exist to answer
+// questions after the per-request rows are gone. It is a constant rather than a
+// setting because it needs no per-deployment tuning to stop unbounded growth,
+// and a two-year window is longer than the maximum request-log retention (365).
+const DailyStatsRetentionDays = 730
+
 type cleanupRepository interface {
 	DeleteRequestLogsBefore(context.Context, time.Time) (int64, error)
+	DeleteDailyStatsBefore(context.Context, time.Time) (int64, error)
 }
 
 type cleanupSettingsProvider interface {
@@ -90,6 +99,16 @@ func (w *CleanupWorker) cleanup(ctx context.Context) {
 		return
 	}
 	w.logger.Info("request metadata cleanup completed", "deleted", deleted, "retention_days", retentionDays)
+
+	// Aggregates get their own, much longer window. A failure here is logged and
+	// does not affect the request-log pass that already succeeded.
+	statsCutoff := now.AddDate(0, 0, -DailyStatsRetentionDays)
+	statsDeleted, err := w.repository.DeleteDailyStatsBefore(ctx, statsCutoff)
+	if err != nil {
+		w.logger.Error("daily stats cleanup failed", "error", err)
+		return
+	}
+	w.logger.Info("daily stats cleanup completed", "deleted", statsDeleted, "retention_days", DailyStatsRetentionDays)
 }
 
 // retentionDays reads the live runtime settings and falls back to the

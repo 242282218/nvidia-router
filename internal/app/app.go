@@ -22,6 +22,7 @@ import (
 	"nvidia-router/internal/httpapi"
 	adminapi "nvidia-router/internal/httpapi/admin"
 	"nvidia-router/internal/httpapi/health"
+	metricsapi "nvidia-router/internal/httpapi/metrics"
 	v1 "nvidia-router/internal/httpapi/v1"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/nvidiakey"
@@ -191,10 +192,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	unsupported := observe(v1.Unsupported)
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
+	metricsHandler := metricsapi.New(keyPool, observabilityRepository)
 	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load).WithReader(reader), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
-		statsHandler, monitoringHandler,
+		statsHandler, monitoringHandler, metricsHandler,
 	)))
 	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger, settings)
 	adminSessionWorker := adminauth.NewSessionCleanupWorker(adminRepository, resolved.Clock, resolved.Logger)

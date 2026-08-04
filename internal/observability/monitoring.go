@@ -30,6 +30,14 @@ type MonitoringQuery struct {
 	Filter MonitoringFilter
 }
 
+// MetricsSummary is the aggregate, label-free subset safe to expose on the
+// unauthenticated Prometheus endpoint. It contains no model, key, or request IDs.
+type MetricsSummary struct {
+	Requests  int64
+	Successes int64
+	Failures  int64
+}
+
 type MonitoringSummary struct {
 	RequestCount       int64   `json:"request_count"`
 	SuccessCount       int64   `json:"success_count"`

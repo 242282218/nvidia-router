@@ -52,15 +52,17 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	dto := make([]modelDTO, 0, len(models))
-	created := time.Now().Unix()
 	for _, model := range models {
 		if !model.Enabled {
 			continue
 		}
 		dto = append(dto, modelDTO{
-			ID:      model.PublicID,
-			Object:  "model",
-			Created: created,
+			ID:     model.PublicID,
+			Object: "model",
+			// Created must be stable per model. It previously used time.Now(),
+			// so every listing returned different values for the same models
+			// and clients could not diff or cache the catalog.
+			Created: modelCreatedUnix(model.CreatedAt),
 			OwnedBy: "nvidia",
 		})
 	}
@@ -83,4 +85,18 @@ func writeModelsError(writer http.ResponseWriter, err error) {
 		Message: "The server could not list models.",
 		Cause:   err,
 	}.Write(writer)
+}
+
+// processStart is the fallback creation time for a model row whose created_at is
+// zero. The column is NOT NULL so this only happens for synthetic values, but
+// emitting a zero time.Time would put a negative epoch on the wire, which is
+// worse than the unstable timestamp this replaced. A process-scoped constant
+// keeps the field stable across requests.
+var processStart = time.Now().Unix()
+
+func modelCreatedUnix(createdAt time.Time) int64 {
+	if createdAt.IsZero() {
+		return processStart
+	}
+	return createdAt.Unix()
 }

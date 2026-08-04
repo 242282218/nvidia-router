@@ -396,11 +396,19 @@ type cleanupSettingsStub struct {
 func (s cleanupSettingsStub) Snapshot() runtimeconfig.Snapshot { return s.snapshot }
 
 type cleanupRepositoryStub struct {
-	called chan time.Time
+	called      chan time.Time
+	statsCalled chan time.Time
 }
 
 func (s *cleanupRepositoryStub) DeleteRequestLogsBefore(_ context.Context, cutoff time.Time) (int64, error) {
 	s.called <- cutoff
+	return 0, nil
+}
+
+func (s *cleanupRepositoryStub) DeleteDailyStatsBefore(_ context.Context, cutoff time.Time) (int64, error) {
+	if s.statsCalled != nil {
+		s.statsCalled <- cutoff
+	}
 	return 0, nil
 }
 

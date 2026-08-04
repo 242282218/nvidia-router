@@ -99,6 +99,44 @@ func (r *Repository) DeleteRequestLogsBefore(ctx context.Context, cutoff time.Ti
 	return count, nil
 }
 
+// DeleteDailyStatsBefore prunes aggregate rows older than cutoff. daily_stats
+// previously had no cleanup at all: row count grows as day x dimension, so every
+// distinct model, NVIDIA key and access key added a row per day forever. The
+// retention is deliberately much longer than request_logs, because surviving
+// request-log deletion is the whole point of the aggregates.
+func (r *Repository) DeleteDailyStatsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM daily_stats
+		WHERE day < ?
+	`, cutoff.UTC().Format("2006-01-02"))
+	if err != nil {
+		return 0, fmt.Errorf("delete expired daily stats: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted daily stats: %w", err)
+	}
+	return count, nil
+}
+
+// MetricsSummary returns label-free global request counters for Prometheus.
+// It reads pre-aggregated daily_stats rather than scanning request_logs.
+func (r *Repository) MetricsSummary(ctx context.Context) (MetricsSummary, error) {
+	var summary MetricsSummary
+	err := r.read().QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(request_count), 0),
+		       COALESCE(SUM(success_count), 0),
+	       COALESCE(SUM(failure_count), 0)
+		FROM daily_stats
+		WHERE dimension_type = ? AND dimension_id = ?`,
+		DimensionGlobal, GlobalDimensionID,
+	).Scan(&summary.Requests, &summary.Successes, &summary.Failures)
+	if err != nil {
+		return MetricsSummary{}, fmt.Errorf("load metrics summary: %w", err)
+	}
+	return summary, nil
+}
+
 type dimension struct {
 	typeName string
 	id       string

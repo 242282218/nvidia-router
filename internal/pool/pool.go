@@ -14,6 +14,7 @@ import (
 type StateSync interface {
 	LoadSnapshot(keys []keystate.KeySnapshot, blocks []keystate.ModelBlock)
 	UpsertKey(key keystate.KeySnapshot)
+	SetKeyEnabled(keyID int64, enabled bool)
 	RemoveKey(keyID int64)
 	ApplySuccess(keyID int64)
 	ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keystate.KeySnapshot)
@@ -169,6 +170,23 @@ func (p *Pool) UpsertKey(key keystate.KeySnapshot) {
 			return
 		}
 	}
+}
+
+// SetKeyEnabled applies only the admin-owned Enabled flag. UpsertKey replaces
+// the whole snapshot, which loses in-memory cooldown when an admin toggle and a
+// concurrent failure race: both write the DB in order, but the memory-apply
+// order is not guaranteed, so a full overwrite arriving second reverts the
+// cooldown in memory while the DB keeps it, and the key gets scheduled during
+// its own cooldown. ApplyFailure already merges for the same reason.
+func (p *Pool) SetKeyEnabled(keyID int64, enabled bool) {
+	p.mu.Lock()
+	defer p.unlockAndDispatch()
+
+	state, ok := p.keys[keyID]
+	if !ok {
+		return
+	}
+	state.snapshot.Enabled = enabled
 }
 
 func (p *Pool) RemoveKey(keyID int64) {

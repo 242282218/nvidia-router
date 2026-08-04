@@ -15,6 +15,7 @@ import (
 
 type StateSync interface {
 	UpsertKey(keystate.KeySnapshot)
+	SetKeyEnabled(int64, bool)
 	RemoveKey(int64)
 	SetModelBlock(int64, int64, bool)
 }
@@ -184,7 +185,7 @@ func (h *NVIDIAKeys) keyRoute(writer http.ResponseWriter, request *http.Request)
 			writeInternalError(writer, err)
 			return
 		}
-		h.sync.UpsertKey(snapshot)
+		h.sync.SetKeyEnabled(id, snapshot.Enabled)
 		writeJSON(writer, http.StatusOK, map[string]any{"id": id, "enabled": snapshot.Enabled})
 	case http.MethodDelete:
 		if err := h.service.Delete(request.Context(), id); err != nil {

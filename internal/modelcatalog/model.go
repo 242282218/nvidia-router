@@ -32,6 +32,10 @@ type Model struct {
 	SupportsReasoning    bool
 	ReasoningWireFormat  string
 	CapabilityVerifiedAt *time.Time
+	// CreatedAt backs the OpenAI /v1/models "created" field. The column
+	// already existed but was never read, so the handler substituted
+	// time.Now() and the value changed on every request.
+	CreatedAt            time.Time
 	BlockedByKeyIDs      []int64
 	updatedAt            time.Time
 }
