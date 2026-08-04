@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
@@ -18,6 +18,10 @@ vi.mock('./api', () => ({
 }))
 
 describe('BatchImportDialog', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
   it('shows safe line results, clears immediately, and notifies the parent after success', async () => {
     let resolveRequest: ((value: BatchImportResponse) => void) | undefined
     vi.mocked(nvidiaKeysApi.importBatch).mockReturnValue(
@@ -25,7 +29,10 @@ describe('BatchImportDialog', () => {
         resolveRequest = resolve
       }) as ReturnType<typeof nvidiaKeysApi.importBatch>,
     )
-    const wrapper = mount(BatchImportDialog, { props: { open: true } })
+    const wrapper = mount(BatchImportDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: false } },
+    })
     const secret = 'nvapi-secret-that-must-not-remain'
 
     await wrapper.get('textarea').setValue(`first\n${secret}`)
@@ -51,5 +58,46 @@ describe('BatchImportDialog', () => {
     expect(rows[1]?.text()).toContain('imported')
     expect(wrapper.emitted('imported')).toHaveLength(1)
     expect(wrapper.html()).not.toContain(secret)
+    expect(nvidiaKeysApi.test).not.toHaveBeenCalled()
+    expect(nvidiaKeysApi.testAll).not.toHaveBeenCalled()
+    expect(wrapper.get('button[type="submit"]').text()).toContain('导入')
+  })
+
+  it('keeps import loading separate from key testing', async () => {
+    let resolveRequest: ((value: BatchImportResponse) => void) | undefined
+    vi.mocked(nvidiaKeysApi.importBatch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveRequest = resolve
+      }) as ReturnType<typeof nvidiaKeysApi.importBatch>,
+    )
+    const wrapper = mount(BatchImportDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: false } },
+    })
+
+    await wrapper.get('textarea').setValue('valid-token-123456')
+    await wrapper.get('form').trigger('submit')
+
+    const submitButton = wrapper.get('button[type="submit"]')
+    expect(submitButton.attributes('disabled')).toBeDefined()
+    expect(submitButton.text()).toContain('导入中')
+    expect(nvidiaKeysApi.test).not.toHaveBeenCalled()
+    expect(nvidiaKeysApi.testAll).not.toHaveBeenCalled()
+
+    resolveRequest?.({ data: [] })
+    await flushPromises()
+    expect(submitButton.attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not submit empty input', async () => {
+    const wrapper = mount(BatchImportDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: false } },
+    })
+
+    await wrapper.get('form').trigger('submit')
+
+    expect(nvidiaKeysApi.importBatch).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('至少一行')
   })
 })

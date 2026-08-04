@@ -42,8 +42,16 @@ type idleReadCloser struct {
 func (r *idleReadCloser) Read(payload []byte) (int, error) {
 	read, err := r.ReadCloser.Read(payload)
 	if read > 0 {
-		// Any byte is progress; keep-alive comments and deltas both count.
-		r.timer.Reset(r.idle)
+		// Any byte is progress; keep-alive comments and deltas both
+		// count. Only reset when the idle callback has not already
+		// fired: once expired, the stream is being torn down and a
+		// late Reset would resurrect the timer racing the callback's
+		// body.Close, double-closing the underlying body.
+		r.mu.Lock()
+		if !r.expired {
+			r.timer.Reset(r.idle)
+		}
+		r.mu.Unlock()
 	}
 	r.mu.Lock()
 	expired := r.expired
@@ -55,6 +63,11 @@ func (r *idleReadCloser) Read(payload []byte) (int, error) {
 }
 
 func (r *idleReadCloser) Close() error {
-	r.timer.Stop()
+	r.mu.Lock()
+	if !r.expired {
+		r.timer.Stop()
+	}
+	r.expired = true
+	r.mu.Unlock()
 	return r.ReadCloser.Close()
 }

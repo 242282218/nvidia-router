@@ -36,7 +36,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	}
 
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}, NVIDIABaseURL: baseURL},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}, NVIDIABaseURL: baseURL},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	}
 	server := httptest.NewServer(app.Handler())
 	t.Cleanup(server.Close)
-	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, server.URL)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	if login.StatusCode != http.StatusOK {
 		t.Fatalf("login: %s", readResponse(t, login))
 	}

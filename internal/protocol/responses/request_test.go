@@ -182,6 +182,60 @@ func TestToChatPassesThroughChatToolChoiceShape(t *testing.T) {
 	}
 }
 
+// nonReasoningModel mirrors chatModel but with reasoning disabled so that the
+// mapReasoning capability gate is observable from tests.
+func nonReasoningModel() modelcatalog.Model {
+	m := chatModel()
+	m.SupportsReasoning = false
+	m.ReasoningWireFormat = "none"
+	return m
+}
+
+// TestToChatRejectsReasoningEffortOnUnsupportedModel locks in the fix for the
+// audit finding that reasoning_effort bypassed the capability check that the
+// structured `reasoning` object honoured: both field shapes must refuse on a
+// model that does not advertise reasoning support.
+func TestToChatRejectsReasoningEffortOnUnsupportedModel(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "native reasoning_effort", body: `{"model":"public-chat","input":"hi","reasoning_effort":"high"}`},
+		{name: "structured reasoning", body: `{"model":"public-chat","input":"hi","reasoning":{"effort":"high"}}`},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ToChat([]byte(tt.body), nonReasoningModel())
+			if err == nil {
+				t.Fatalf("expected error on non-reasoning model, got nil; body=%s", tt.body)
+			}
+			publicError, ok := err.(*apierror.Error)
+			if !ok {
+				t.Fatalf("expected *apierror.Error, got %T: %v", err, err)
+			}
+			if publicError.Code != "unsupported_responses_feature" {
+				t.Fatalf("code = %q, want unsupported_responses_feature; body=%s", publicError.Code, tt.body)
+			}
+			if publicError.Status != 400 {
+				t.Fatalf("status = %d, want 400", publicError.Status)
+			}
+		})
+	}
+}
+
+// TestToChatPassesReasoningEffortOnSupportedModel keeps the OpenAI-native path
+// working when the model advertises reasoning: callers sending reasoning_effort
+// directly should still see it forwarded to the upstream chat request.
+func TestToChatPassesReasoningEffortOnSupportedModel(t *testing.T) {
+	got, err := ToChat([]byte(`{"model":"public-chat","input":"hi","reasoning_effort":"high"}`), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	if !containsKey(t, got, "reasoning_effort") {
+		t.Fatalf("reasoning_effort not forwarded; got=%s", string(got))
+	}
+}
+
 func TestToChatForwardsSamplingParameters(t *testing.T) {
 	body := `{"model":"public-chat","input":"x","temperature":0,"top_p":0.5,"seed":42,"stop":["\n","END"],"presence_penalty":1,"frequency_penalty":0.2}`
 	got, err := ToChat([]byte(body), chatModel())
@@ -235,6 +289,104 @@ func TestToChatRejectsNonChatModelKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-chat model")
 	}
+}
+
+// TestToChatMapsTextFormatJSONObject locks in the fix that a Responses
+// text.format json_object request is forwarded as a chat response_format.
+// Without the mapping the structured-output request degrades to plain text
+// with no error and the client parser fails downstream.
+func TestToChatMapsTextFormatJSONObject(t *testing.T) {
+	got, err := ToChat([]byte(`{"model":"public-chat","input":"x","text":{"format":{"type":"json_object"}}}`), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	var chat map[string]json.RawMessage
+	if err := json.Unmarshal(got, &chat); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	responseFormat, ok := chat["response_format"]
+	if !ok {
+		t.Fatalf("response_format missing; got=%s", string(got))
+	}
+	var format struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(responseFormat, &format); err != nil || format.Type != "json_object" {
+		t.Fatalf("response_format = %s, want type json_object", responseFormat)
+	}
+}
+
+// TestToChatMapsTextFormatJSONSchema forwards the schema and strict flag into
+// the chat response_format object so the upstream enforces structured output.
+func TestToChatMapsTextFormatJSONSchema(t *testing.T) {
+	body := `{"model":"public-chat","input":"x","text":{"format":{"type":"json_schema","name":"step","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}}}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	var chat map[string]json.RawMessage
+	if err := json.Unmarshal(got, &chat); err != nil {
+		t.Fatalf("decode chat body: %v", err)
+	}
+	responseFormat, ok := chat["response_format"]
+	if !ok {
+		t.Fatalf("response_format missing; got=%s", string(got))
+	}
+	var format struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Name   string          `json:"name"`
+			Strict *bool           `json:"strict"`
+			Schema json.RawMessage `json:"schema"`
+		} `json:"json_schema"`
+	}
+	if err := json.Unmarshal(responseFormat, &format); err != nil {
+		t.Fatalf("decode response_format: %v", err)
+	}
+	if format.Type != "json_schema" || format.JSONSchema.Name != "step" ||
+		format.JSONSchema.Strict == nil || !*format.JSONSchema.Strict {
+		t.Fatalf("response_format = %s, want json_schema step strict=true", responseFormat)
+	}
+	if len(format.JSONSchema.Schema) == 0 || !stringContains(string(format.JSONSchema.Schema), `"answer"`) {
+		t.Fatalf("schema not forwarded; response_format = %s", responseFormat)
+	}
+}
+
+// TestToChatDefaultTextFormatIsNoOp keeps the default text format (and a
+// plain string text parameter) from injecting a response_format.
+func TestToChatDefaultTextFormatIsNoOp(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"public-chat","input":"x"}`,
+		`{"model":"public-chat","input":"x","text":{"format":{"type":"text"}}}`,
+		`{"model":"public-chat","input":"x","text":"inline"}`,
+	} {
+		got, err := ToChat([]byte(body), chatModel())
+		if err != nil {
+			t.Fatalf("ToChat(%s): %v", body, err)
+		}
+		if containsKey(t, got, "response_format") {
+			t.Fatalf("response_format should be absent for default text format; body=%s got=%s", body, string(got))
+		}
+	}
+}
+
+func TestToChatRejectsUnknownTextFormat(t *testing.T) {
+	// An unknown format is refused instead of being silently dropped so
+	// structured-output requests never degrade to plain text.
+	mustFail(t, `{"model":"public-chat","input":"x","text":{"format":{"type":"json_array"}}}`, "unsupported_responses_feature")
+}
+
+func TestToChatRejectsMalformedTextFormat(t *testing.T) {
+	mustFail(t, `{"model":"public-chat","input":"x","text":{"format":42}}`, "invalid_parameter")
+	mustFail(t, `{"model":"public-chat","input":"x","text":123}`, "invalid_parameter")
+}
+
+// TestToChatRejectsEmptyContentArray aligns the Responses path with chat
+// semantics: empty user/system content produces no text and must be refused
+// rather than silently accepted.
+func TestToChatRejectsEmptyContentArray(t *testing.T) {
+	mustFail(t, `{"model":"public-chat","input":[{"role":"user","content":[]}]}`, "invalid_parameter")
+	mustFail(t, `{"model":"public-chat","input":[{"role":"user","content":[{"type":"input_text","text":""}]}]}`, "invalid_parameter")
 }
 
 func containsKey(t *testing.T, payload []byte, key string) bool {

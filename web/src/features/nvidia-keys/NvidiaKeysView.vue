@@ -7,6 +7,7 @@ import BatchImportDialog from './BatchImportDialog.vue'
 import KeyCards from './KeyCards.vue'
 import KeyTable from './KeyTable.vue'
 import KeyTestDialog from './KeyTestDialog.vue'
+import { isImportResult } from './types'
 import type { ImportResult, KeyTestResult, NVIDIAKey } from './types'
 
 const keys = ref<NVIDIAKey[]>([])
@@ -16,6 +17,7 @@ const testResults = ref<KeyTestResult[]>([])
 const errorMessage = ref('')
 const submitting = ref(false)
 const loading = ref(false)
+const testingAll = ref(false)
 const batchOpen = ref(false)
 const testDialogOpen = ref(false)
 const busyId = ref<number | null>(null)
@@ -63,14 +65,6 @@ function isNvidiaKey(value: unknown): value is NVIDIAKey {
     && typeof value.updated_at === 'string'
     && ['cooldown_until', 'cooldown_reason', 'last_success_at', 'last_error_at', 'last_error_code']
       .every((field) => value[field] === undefined || typeof value[field] === 'string')
-}
-
-function isImportResult(value: unknown): value is ImportResult {
-  return isRecord(value)
-    && typeof value.status === 'string'
-    && typeof value.masked === 'string'
-    && (value.line === undefined || isFiniteNumber(value.line))
-    && (value.reason === undefined || typeof value.reason === 'string')
 }
 
 function isKeyTestResult(value: unknown): value is KeyTestResult {
@@ -145,7 +139,9 @@ async function testKey(key: NVIDIAKey): Promise<void> {
 }
 
 async function testAll(): Promise<void> {
+  if (testingAll.value) return
   errorMessage.value = ''
+  testingAll.value = true
   try {
     const response: unknown = await nvidiaKeysApi.testAll()
     if (disposed) return
@@ -157,11 +153,14 @@ async function testAll(): Promise<void> {
     await loadKeys()
   } catch (error) {
     if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : '批量测试失败。'
+    errorMessage.value = error instanceof ApiError ? error.message : '批量测活失败。'
+  } finally {
+    if (!disposed) testingAll.value = false
   }
 }
 
 async function removeKey(key: NVIDIAKey): Promise<void> {
+  if (!globalThis.window.confirm(`确认删除 NVIDIA Key ${key.masked} 吗？删除后无法恢复。`)) return
   busyId.value = key.id
   errorMessage.value = ''
   try {
@@ -178,45 +177,81 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-950 p-4 text-slate-100 sm:p-6">
-    <section class="mx-auto max-w-6xl">
-      <header class="rounded-xl bg-slate-900 px-5 py-5 shadow-xl sm:px-6">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p class="text-sm text-indigo-300">
-              运维管理
-            </p>
-            <h1 class="mt-1 text-2xl font-semibold">
-              NVIDIA Key
-            </h1>
-            <p class="mt-2 text-sm text-slate-400">
-              管理上游凭据状态。页面只显示脱敏值，不保留 Key 明文。
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              data-testid="open-batch-import"
-              class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-slate-500"
-              type="button"
-              @click="batchOpen = true"
-            >
+  <div class="page-container animate-fade-in">
+    <div class="content-wrapper">
+      <!-- Header -->
+      <header class="section-header">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent)]">
+            运维管理
+          </p>
+          <h1 class="page-title mt-1">
+            NVIDIA Key
+          </h1>
+          <p class="page-subtitle">
+            管理上游凭据状态。页面只显示脱敏值，不保留 Key 明文。
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            data-testid="open-batch-import"
+            class="btn-secondary rounded-lg px-4 py-2 text-sm"
+            type="button"
+            @click="batchOpen = true"
+          >
+            <span class="flex items-center gap-2">
+              <svg
+                class="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+                />
+              </svg>
               批量导入
-            </button>
-            <button
-              data-testid="test-all-keys"
-              class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-slate-500"
-              type="button"
-              :disabled="loading"
-              @click="testAll"
-            >
-              顺序测试全部
-            </button>
-          </div>
+            </span>
+          </button>
+          <button
+            data-testid="test-all-keys"
+            class="btn-primary rounded-lg px-4 py-2 text-sm"
+            type="button"
+            :disabled="loading || testingAll"
+            @click="testAll"
+          >
+            <span class="flex items-center gap-2">
+              <svg
+                class="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                />
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              {{ testingAll ? '测活中…' : '顺序测活全部' }}
+            </span>
+          </button>
         </div>
       </header>
 
-      <section class="mt-5 rounded-xl border border-slate-800 bg-slate-900 p-5">
-        <h2 class="font-medium">
+      <!-- Single import -->
+      <div class="card p-5 animate-slide-up">
+        <h2 class="text-sm font-medium text-[var(--color-text)]">
           单个导入
         </h2>
         <form
@@ -224,51 +259,91 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           class="mt-3 flex flex-col gap-3 sm:flex-row"
           @submit.prevent="importOne"
         >
-          <input
-            v-model="singleKey"
-            class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm"
-            name="nvidia-key"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="粘贴 NVIDIA Key，提交后立即清空"
-          >
+          <div class="relative min-w-0 flex-1">
+            <input
+              v-model="singleKey"
+              class="input-field w-full pr-10 font-mono"
+              name="nvidia-key"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="粘贴 NVIDIA Key，提交后立即清空"
+            >
+          </div>
           <button
-            class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            class="btn-primary rounded-lg px-5 py-2.5 text-sm whitespace-nowrap"
             type="submit"
             :disabled="submitting"
           >
-            导入
+            {{ submitting ? '导入中…' : '导入' }}
           </button>
         </form>
-        <p
-          v-if="singleResult"
-          class="mt-3 text-sm"
-          :class="singleResult.status === 'imported' ? 'text-emerald-300' : 'text-amber-300'"
-        >
-          行 {{ singleResult.line ?? 1 }} · {{ singleResult.masked || '—' }} · {{ singleResult.status }}<span v-if="singleResult.reason"> · {{ singleResult.reason }}</span>
-        </p>
-        <p
-          v-if="errorMessage"
-          class="mt-3 text-sm text-rose-300"
-          role="alert"
-        >
-          {{ errorMessage }}
-        </p>
-      </section>
+        <Transition name="fade">
+          <div
+            v-if="singleResult"
+            class="mt-3"
+          >
+            <span
+              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm"
+              :class="singleResult.status === 'imported' ? 'badge-success' : 'badge-warning'"
+            >
+              <span>行 {{ singleResult.line ?? 1 }}</span>
+              <span class="opacity-40">·</span>
+              <span class="font-mono">{{ singleResult.masked || '—' }}</span>
+              <span class="opacity-40">·</span>
+              <span>{{ singleResult.status }}</span>
+              <span
+                v-if="singleResult.reason"
+                class="opacity-40"
+              >· {{ singleResult.reason }}</span>
+            </span>
+          </div>
+        </Transition>
+        <Transition name="fade">
+          <p
+            v-if="errorMessage"
+            class="mt-3 text-sm text-[#F87171]"
+            role="alert"
+          >
+            {{ errorMessage }}
+          </p>
+        </Transition>
+      </div>
 
+      <!-- Mobile hint -->
       <p
         data-testid="mobile-batch-hint"
-        class="mt-4 text-xs text-slate-500 md:hidden"
+        class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
       >
-        批量启停等高级操作请在桌面端完成。
+        移动端支持逐条启停、单测和删除；批量导入等高级操作请在桌面端或页面右上角完成。
       </p>
-      <section class="mt-4">
+
+      <!-- Key list -->
+      <div class="mt-4">
         <div
           v-if="loading"
-          class="rounded-xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-400"
+          class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
         >
-          加载中……
+          <svg
+            class="h-4 w-4 animate-spin"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+          加载中…
         </div>
         <template v-else>
           <KeyTable
@@ -286,8 +361,9 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
             @remove="removeKey"
           />
         </template>
-      </section>
-    </section>
+      </div>
+    </div>
+
     <BatchImportDialog
       :open="batchOpen"
       @close="batchOpen = false"
@@ -298,5 +374,16 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
       :results="testResults"
       @close="testDialogOpen = false"
     />
-  </main>
+  </div>
 </template>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: all 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

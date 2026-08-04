@@ -91,9 +91,6 @@ func TestValidateNonstreamEmbeddingsAcceptsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if validated.Metadata.RequestID != "req-1" {
-		t.Fatalf("request id = %q", validated.Metadata.RequestID)
-	}
 	if len(validated.Body) == 0 {
 		t.Fatal("body was not preserved")
 	}

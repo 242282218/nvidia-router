@@ -30,6 +30,7 @@ func TestCLIServeStopsWhenContextIsCancelled(t *testing.T) {
 	master := make([]byte, 32)
 	master[0] = 1
 	t.Setenv("NVIDIA_ROUTER_MASTER_KEY", base64.RawURLEncoding.EncodeToString(master))
+	t.Setenv("NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD", testInitialAdminPassword)
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", t.TempDir())
 	t.Setenv("NVIDIA_ROUTER_LISTEN_ADDR", address)
 
@@ -55,7 +56,7 @@ func TestCLIResetPasswordHonorsCancelledContext(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	closeCLIDatabase(t, db)
@@ -72,7 +73,7 @@ func TestCLIBackupHonorsCancelledContext(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	closeCLIDatabase(t, db)
@@ -107,7 +108,7 @@ func TestCLIResetPasswordRevokesSessionsWithoutChangingNVIDIASecrets(t *testing.
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
 	repository := adminauth.NewRepository(db, nil)
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -164,7 +165,7 @@ func TestCLIBackupWritesConsistentDatabase(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -202,7 +203,7 @@ func TestCLIBackupRejectsRouterDatabaseAsOutput(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	closeCLIDatabase(t, db)
@@ -225,7 +226,7 @@ func TestCLIResetPasswordErrorDoesNotEchoPassword(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
 	db := openCLIData(t, dataDir)
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	closeCLIDatabase(t, db)

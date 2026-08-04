@@ -46,6 +46,17 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
 	if name != "." && name != "index.html" && isFile(h.files, name) {
+		// Fingerprinted build outputs under /assets/* (Vite content-hashed
+		// filenames) are immutable: the URL itself changes per build, so
+		// clients may cache a copy for a year without revalidation. Anything
+		// else kept short to avoid shipping stale scripts while the index
+		// refreshes. The index document below stays no-store so changes to
+		// its asset references take effect immediately.
+		if strings.HasPrefix(name, "assets/") {
+			writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			writer.Header().Set("Cache-Control", "no-cache")
+		}
 		h.fileServer.ServeHTTP(writer, request)
 		return
 	}

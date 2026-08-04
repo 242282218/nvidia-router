@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
@@ -58,7 +58,7 @@ function isOptionalString(value: unknown): boolean {
 }
 
 async function revokeKey(key: AccessKey): Promise<void> {
-  if (!globalThis.window.confirm(`确认撤销 Access Key“${key.name}”吗？撤销后无法恢复。`)) return
+  if (!globalThis.window.confirm(`确认撤销 Access Key"${key.name}"吗？撤销后无法恢复。`)) return
   busyId.value = key.id
   errorMessage.value = ''
   try {
@@ -83,82 +83,125 @@ function formatDate(value?: string): string {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-950 p-4 text-slate-100 sm:p-6">
-    <section class="mx-auto max-w-6xl">
-      <header class="rounded-xl bg-slate-900 px-5 py-5 shadow-xl sm:px-6">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p class="text-sm text-indigo-300">
-              安全管理
-            </p>
-            <h1 class="mt-1 text-2xl font-semibold">
-              Access Key
-            </h1>
-            <p class="mt-2 text-sm text-slate-400">
-              管理调用路由器的下游设备和客户端凭证。
-            </p>
-          </div>
-          <button
-            data-testid="open-create-access-key"
-            class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white"
-            type="button"
-            @click="dialogOpen = true"
-          >
-            创建 Access Key
-          </button>
+  <div class="page-container animate-fade-in">
+    <div class="content-wrapper">
+      <header class="section-header">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wider text-[#F59E0B]">
+            安全管理
+          </p>
+          <h1 class="page-title mt-1">
+            Access Key
+          </h1>
+          <p class="page-subtitle">
+            管理调用路由器的下游设备和客户端凭证。
+          </p>
         </div>
+        <button
+          data-testid="open-create-access-key"
+          class="btn-primary rounded-lg px-4 py-2 text-sm"
+          type="button"
+          @click="dialogOpen = true"
+        >
+          <span class="flex items-center gap-2">
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
+            </svg>
+            创建 Access Key
+          </span>
+        </button>
       </header>
 
-      <p
-        v-if="errorMessage"
-        class="mt-4 text-sm text-rose-300"
-        role="alert"
-      >
-        {{ errorMessage }}
-      </p>
+      <Transition name="slide">
+        <p
+          v-if="errorMessage"
+          class="mb-4 text-sm text-[#F87171]"
+          role="alert"
+        >
+          {{ errorMessage }}
+        </p>
+      </Transition>
 
-      <section class="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-        <div
-          v-if="loading"
-          class="p-6 text-sm text-slate-400"
-        >
-          加载中……
-        </div>
-        <div
-          v-else-if="keys.length === 0"
-          class="p-6 text-sm text-slate-400"
-        >
-          尚未创建 Access Key。
-        </div>
-        <div
-          v-else
-          class="overflow-x-auto"
-        >
+      <div class="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+        <template v-if="loading">
+          <div class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]">
+            <svg
+              class="h-4 w-4 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              />
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
+            </svg>
+            加载中…
+          </div>
+        </template>
+        <template v-else-if="keys.length === 0">
+          <div class="p-6 text-sm text-[var(--color-text-muted)]">
+            尚未创建 Access Key。
+          </div>
+        </template>
+        <template v-else>
+          <!-- Mobile cards -->
           <div
             data-testid="access-key-cards"
-            class="space-y-3 p-4 md:hidden"
+            class="space-y-2 p-4 md:hidden"
           >
             <article
               v-for="key in keys"
               :key="`card-${key.id}`"
-              class="rounded-lg border border-slate-800 p-4"
+              class="card-hover p-4 animate-slide-up"
             >
               <div class="flex items-start justify-between gap-3">
-                <div>
-                  <h2 class="font-medium">
+                <div class="min-w-0">
+                  <h3 class="text-sm font-medium text-[var(--color-text)]">
                     {{ key.name }}
-                  </h2>
-                  <p class="mt-1 font-mono text-xs text-indigo-200">
-                    {{ key.key_prefix }}
-                  </p>
+                  </h3>
+                  <code class="mt-1 block truncate font-mono text-xs text-[var(--color-info)]">{{ key.key_prefix }}</code>
                 </div>
-                <span :class="key.revoked_at ? 'text-slate-500' : 'text-emerald-300'">
-                  {{ key.revoked_at ? '已撤销' : '有效' }}
-                </span>
+                <span
+                  v-if="key.revoked_at"
+                  class="badge-muted shrink-0"
+                >已撤销</span>
+                <span
+                  v-else
+                  class="badge-success shrink-0"
+                >有效</span>
+              </div>
+              <div class="mt-3 space-y-1 text-xs text-[var(--color-text-muted)]">
+                <div class="flex justify-between">
+                  <span>创建时间</span>
+                  <span>{{ formatDate(key.created_at) }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>最后使用</span>
+                  <span>{{ formatDate(key.last_used_at) }}</span>
+                </div>
               </div>
               <button
                 :data-testid="`mobile-revoke-access-key-${key.id}`"
-                class="mt-4 w-full rounded border border-rose-700 px-3 py-2 text-sm text-rose-300 disabled:opacity-40"
+                class="btn-danger mt-4 w-full rounded-lg py-2 text-sm"
                 type="button"
                 :disabled="Boolean(key.revoked_at) || busyId === key.id"
                 @click="revokeKey(key)"
@@ -167,59 +210,66 @@ function formatDate(value?: string): string {
               </button>
             </article>
           </div>
+
+          <!-- Desktop table -->
           <table
             data-testid="access-key-table"
             class="hidden min-w-full text-left text-sm md:table"
           >
-            <thead class="bg-slate-950/60 text-xs uppercase text-slate-400">
+            <thead>
               <tr>
-                <th class="px-4 py-3">
+                <th class="data-table-th">
                   名称
                 </th>
-                <th class="px-4 py-3">
+                <th class="data-table-th">
                   前缀
                 </th>
-                <th class="px-4 py-3">
+                <th class="data-table-th">
                   创建时间
                 </th>
-                <th class="px-4 py-3">
+                <th class="data-table-th">
                   最后使用
                 </th>
-                <th class="px-4 py-3">
+                <th class="data-table-th">
                   状态
                 </th>
-                <th class="px-4 py-3 text-right">
+                <th class="data-table-th text-right">
                   操作
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-800">
+            <tbody class="divide-y divide-[var(--color-border)]">
               <tr
                 v-for="key in keys"
                 :key="key.id"
+                class="transition-colors hover:bg-[var(--color-border)]/30"
               >
-                <td class="px-4 py-3 font-medium">
+                <td class="data-table-td font-medium text-[var(--color-text)]">
                   {{ key.name }}
                 </td>
-                <td class="px-4 py-3 font-mono text-indigo-200">
+                <td class="data-table-td font-mono text-[var(--color-info)]">
                   {{ key.key_prefix }}
                 </td>
-                <td class="px-4 py-3 text-slate-300">
+                <td class="data-table-td text-[var(--color-text-secondary)]">
                   {{ formatDate(key.created_at) }}
                 </td>
-                <td class="px-4 py-3 text-slate-300">
+                <td class="data-table-td text-[var(--color-text-secondary)]">
                   {{ formatDate(key.last_used_at) }}
                 </td>
-                <td
-                  class="px-4 py-3"
-                  :class="key.revoked_at ? 'text-slate-500' : 'text-emerald-300'"
-                >
-                  {{ key.revoked_at ? '已撤销' : '有效' }}
+                <td class="data-table-td">
+                  <span
+                    v-if="key.revoked_at"
+                    class="badge-muted"
+                  >已撤销</span>
+                  <span
+                    v-else
+                    class="badge-success"
+                  >有效</span>
                 </td>
-                <td class="px-4 py-3 text-right">
+                <td class="data-table-td text-right">
                   <button
                     :data-testid="`revoke-access-key-${key.id}`"
-                    class="rounded-lg border border-rose-700 px-3 py-1.5 text-xs text-rose-300 disabled:opacity-40"
+                    class="btn-danger rounded-md px-3 py-1 text-xs"
                     type="button"
                     :disabled="Boolean(key.revoked_at) || busyId === key.id"
                     @click="revokeKey(key)"
@@ -230,14 +280,26 @@ function formatDate(value?: string): string {
               </tr>
             </tbody>
           </table>
-        </div>
-      </section>
-    </section>
+        </template>
+      </div>
+    </div>
 
     <CreateAccessKeyDialog
       :open="dialogOpen"
       @close="dialogOpen = false"
       @created="loadKeys"
     />
-  </main>
+  </div>
 </template>
+
+<style scoped>
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

@@ -107,4 +107,21 @@ describe('createSessionStore', () => {
     window.dispatchEvent(new Event('session-expired'))
     expect(store.state.value).toEqual({ kind: 'authenticated', mustChangePassword: false })
   })
+
+  it('clears local session state even when the remote logout call fails', async () => {
+    const api = createAuthApi()
+    vi.mocked(api.login).mockResolvedValueOnce({
+      authenticated: true,
+      must_change_password: false,
+    })
+    // Network failure or 5xx during logout must not leave the client stuck
+    // in the authenticated shell holding a token the server has lost.
+    vi.mocked(api.logout).mockRejectedValueOnce(new TypeError('Network request failed'))
+    const store = createStore(api)
+
+    await store.login('admin', 'submitted-password')
+    await store.logout()
+
+    expect(store.state.value).toEqual({ kind: 'anonymous' })
+  })
 })

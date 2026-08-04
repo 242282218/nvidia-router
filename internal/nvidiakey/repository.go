@@ -224,6 +224,38 @@ func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot,
 	return snapshots, nil
 }
 
+// ListKeysForHealthCheck returns the IDs of every enabled, non-auth-invalid key
+// whose scheduling state shows recent failure history — i.e. the keys the
+// health checker should proactively probe. Healthy keys with no failure
+// history are excluded to limit upstream call volume on NVIDIA's free /v1/models
+// quota, and auth_invalid keys stay out so a revoked key never auto-recovers
+// without operator intervention (per the gpt-load comparison design).
+func (r *Repository) ListKeysForHealthCheck(ctx context.Context) ([]keystate.KeySnapshot, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, enabled, auth_invalid, cooldown_until, cooldown_level, consecutive_failures
+		FROM nvidia_keys
+		WHERE enabled = 1 AND auth_invalid = 0
+		  AND (cooldown_until IS NOT NULL OR cooldown_level > 0 OR consecutive_failures > 0)
+		ORDER BY id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list NVIDIA keys for health check: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	snapshots := make([]keystate.KeySnapshot, 0)
+	for rows.Next() {
+		snapshot, err := scanSchedulingSnapshot(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan NVIDIA key scheduling snapshot: %w", err)
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate NVIDIA key scheduling snapshots: %w", err)
+	}
+	return snapshots, nil
+}
+
 func (r *Repository) markSuccess(ctx context.Context, keyID int64, now time.Time) (keystate.KeySnapshot, error) {
 	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
 		result, err := tx.ExecContext(ctx, `
@@ -262,6 +294,9 @@ func (r *Repository) markFailure(
 		}
 		code := safePersistedCode(f.PublicCode)
 		duration, nextLevel := fault.CalculateCooldown(f, current.CooldownLevel, random)
+		if f.HTTPStatus == 429 && f.RetryAfter > 0 && f.RetryAfter < 2*time.Second {
+			duration = 2 * time.Second
+		}
 		authInvalid := current.AuthInvalid || f.DisableKey || f.HTTPStatus == 401
 		recordCooldown := f.HTTPStatus == 429 || duration > 0
 		if err := updateFailedKey(ctx, tx, keyID, authInvalid, code, duration, nextLevel, recordCooldown, now); err != nil {

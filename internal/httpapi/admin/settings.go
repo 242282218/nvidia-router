@@ -19,12 +19,14 @@ type Settings struct {
 }
 
 type settingsDTO struct {
-	QueueCapacity           int `json:"queue_capacity"`
-	QueueWaitTimeoutMS      int `json:"queue_wait_timeout_ms"`
-	ConnectTimeoutMS        int `json:"connect_timeout_ms"`
-	FirstByteTimeoutMS      int `json:"first_byte_timeout_ms"`
-	NonstreamTotalTimeoutMS int `json:"nonstream_total_timeout_ms"`
-	ShutdownGraceMS         int `json:"shutdown_grace_ms"`
+	QueueCapacity           int    `json:"queue_capacity"`
+	QueueWaitTimeoutMS      int    `json:"queue_wait_timeout_ms"`
+	ConnectTimeoutMS        int    `json:"connect_timeout_ms"`
+	FirstByteTimeoutMS      int    `json:"first_byte_timeout_ms"`
+	NonstreamTotalTimeoutMS int    `json:"nonstream_total_timeout_ms"`
+	ShutdownGraceMS         int    `json:"shutdown_grace_ms"`
+	FailoverStatusCodes     string `json:"failover_status_codes"`
+	RequestLogRetentionDays int    `json:"request_log_retention_days"`
 }
 
 type settingsPatch struct {
@@ -34,6 +36,12 @@ type settingsPatch struct {
 	FirstByteTimeoutMS      *int `json:"first_byte_timeout_ms"`
 	NonstreamTotalTimeoutMS *int `json:"nonstream_total_timeout_ms"`
 	ShutdownGraceMS         *int `json:"shutdown_grace_ms"`
+	// FailoverStatusCodes is the operator-tunable failover spec (audit B4).
+	// nil keeps the persisted value; an explicit empty string is the legitimate
+	// "never fail over" sentinel — we let Validate pass it through and let the
+	// runtime layer fall back to the documented default set.
+	FailoverStatusCodes     *string `json:"failover_status_codes"`
+	RequestLogRetentionDays *int    `json:"request_log_retention_days"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -96,6 +104,12 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.ShutdownGraceMS != nil {
 		current.ShutdownGraceMS = *patch.ShutdownGraceMS
 	}
+	if patch.FailoverStatusCodes != nil {
+		current.FailoverStatusCodes = *patch.FailoverStatusCodes
+	}
+	if patch.RequestLogRetentionDays != nil {
+		current.RequestLogRetentionDays = *patch.RequestLogRetentionDays
+	}
 	return current
 }
 
@@ -104,6 +118,8 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		QueueCapacity: snapshot.QueueCapacity, QueueWaitTimeoutMS: snapshot.QueueWaitTimeoutMS,
 		ConnectTimeoutMS: snapshot.ConnectTimeoutMS, FirstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
 		NonstreamTotalTimeoutMS: snapshot.NonstreamTotalTimeoutMS, ShutdownGraceMS: snapshot.ShutdownGraceMS,
+		FailoverStatusCodes:     snapshot.FailoverStatusCodes,
+		RequestLogRetentionDays: snapshot.RequestLogRetentionDays,
 	}
 }
 
@@ -114,8 +130,18 @@ func writeSettingsValidationError(writer http.ResponseWriter, err error) {
 		return
 	}
 	param := validation.Field
+	message := "The runtime setting is outside its allowed range."
+	// String-typed validators (failover_status_codes) encode the underlying
+	// parse failure on Cause/StringValue rather than the integer bounds; surface
+	// a more accurate message so admin UIs do not claim "outside its allowed
+	// range" for a malformed spec.
+	if validation.Cause != nil {
+		message = "The runtime setting is invalid."
+	} else if validation.StringValue != "" {
+		message = "The runtime setting is invalid."
+	}
 	apierror.Error{
 		Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_setting",
-		Message: "The runtime setting is outside its allowed range.", Param: &param, Cause: err,
+		Message: message, Param: &param, Cause: err,
 	}.Write(writer)
 }

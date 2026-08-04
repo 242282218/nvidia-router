@@ -11,6 +11,8 @@ const settings: RuntimeSettings = {
   first_byte_timeout_ms: 60_000,
   nonstream_total_timeout_ms: 300_000,
   shutdown_grace_ms: 60_000,
+  failover_status_codes: '429,500,502,503,504',
+  request_log_retention_days: 30,
 }
 
 const inputTestIds = {
@@ -20,6 +22,7 @@ const inputTestIds = {
   first_byte_timeout_seconds: 'first-byte-timeout-seconds',
   nonstream_total_timeout_minutes: 'nonstream-timeout-minutes',
   shutdown_grace_seconds: 'shutdown-grace-seconds',
+  request_log_retention_days: 'request-log-retention-days',
 } as const
 
 function mountForm() {
@@ -35,7 +38,7 @@ function mountForm() {
 
 async function setFields(
   wrapper: VueWrapper,
-  values: Record<keyof typeof inputTestIds, number>,
+  values: Partial<Record<keyof typeof inputTestIds, number>>,
 ): Promise<void> {
   for (const [field, value] of Object.entries(values)) {
     await wrapper.get(`[data-testid="${inputTestIds[field as keyof typeof inputTestIds]}"]`)
@@ -52,6 +55,21 @@ describe('SettingsForm', () => {
 
     expect(wrapper.emitted('save')).toBeUndefined()
     expect(wrapper.get('[data-testid="error-queue_capacity"]').text()).toContain('请输入')
+  })
+
+  it('saves failover codes and request-log retention days', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('[data-testid="failover-status-codes"]').setValue('429,403,500-599')
+    await wrapper.get('[data-testid="request-log-retention-days"]').setValue('60')
+    await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
+
+    expect(wrapper.emitted('save')).toEqual([[
+      expect.objectContaining({
+        failover_status_codes: '429,403,500-599',
+        request_log_retention_days: 60,
+      }),
+    ]])
   })
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY])(
@@ -103,6 +121,8 @@ describe('SettingsForm', () => {
         first_byte_timeout_ms: 1_000,
         nonstream_total_timeout_ms: 1_000,
         shutdown_grace_ms: 1_000,
+        failover_status_codes: '429,500,502,503,504',
+        request_log_retention_days: 30,
       },
     ],
     [
@@ -121,6 +141,8 @@ describe('SettingsForm', () => {
         first_byte_timeout_ms: 600_000,
         nonstream_total_timeout_ms: 1_800_000,
         shutdown_grace_ms: 600_000,
+        failover_status_codes: '429,500,502,503,504',
+        request_log_retention_days: 30,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {
@@ -143,5 +165,15 @@ describe('SettingsForm', () => {
 
     expect(wrapper.emitted('save')).toBeUndefined()
     expect(wrapper.get(`[data-testid="${errorId}"]`).text()).toContain('范围')
+  })
+
+  it.each(['29', '1'])('rejects request-log retention below 30 days: %s', async (value) => {
+    const wrapper = mountForm()
+
+    await wrapper.get('[data-testid="request-log-retention-days"]').setValue(value)
+    await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
+
+    expect(wrapper.emitted('save')).toBeUndefined()
+    expect(wrapper.get('[data-testid="error-request_log_retention_days"]').text()).toContain('范围')
   })
 })

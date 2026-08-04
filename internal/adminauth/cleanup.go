@@ -74,9 +74,14 @@ func (w *SessionCleanupWorker) cleanup(ctx context.Context) bool {
 	return true
 }
 
+// nextSessionCleanupAt schedules the session sweep 30 minutes after the
+// request_logs sweep (observability.CleanupWorker runs at 03:00 UTC). Both
+// cleanups issue large DELETEs on the single shared SQLite connection, so the
+// stagger keeps the two retention windows from stalling business traffic at
+// the same instant.
 func nextSessionCleanupAt(now time.Time) time.Time {
 	now = now.UTC()
-	next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, time.UTC)
+	next := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, time.UTC)
 	if !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}

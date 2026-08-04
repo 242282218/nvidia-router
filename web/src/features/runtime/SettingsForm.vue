@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 
 import type { RuntimeSettings } from './types'
@@ -10,9 +10,12 @@ interface SettingsFields {
   first_byte_timeout_seconds: number | string
   nonstream_total_timeout_minutes: number | string
   shutdown_grace_seconds: number | string
+  request_log_retention_days: number | string
+  failover_status_codes: string
 }
 
 type SettingParam = keyof RuntimeSettings
+type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes'>
 
 interface SettingRule {
   field: keyof SettingsFields
@@ -20,7 +23,8 @@ interface SettingRule {
   max: number
   min: number
   multiplier: number
-  param: SettingParam
+  param: NumericSettingParam
+  testId: string
 }
 
 const props = defineProps<{
@@ -41,16 +45,24 @@ const fields = reactive<SettingsFields>({
   first_byte_timeout_seconds: 60,
   nonstream_total_timeout_minutes: 5,
   shutdown_grace_seconds: 60,
+  request_log_retention_days: 30,
+  failover_status_codes: '429,500,502,503,504',
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
 
+// Bounds below are a UX pre-check only; the backend is authoritative (audit #64).
+// They must stay in sync with runtimeconfig/snapshot.go Validate(), which mirrors
+// the runtime_settings CHECK constraints. The requirement remains enforced
+// server-side: a drift here only relaxes or tightens the inline hint, never the
+// accepted value.
 const settingRules: SettingRule[] = [
-  { field: 'queue_capacity', integerInput: true, min: 1, max: 10_000, multiplier: 1, param: 'queue_capacity' },
-  { field: 'queue_wait_timeout_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'queue_wait_timeout_ms' },
-  { field: 'connect_timeout_seconds', integerInput: true, min: 1_000, max: 120_000, multiplier: 1_000, param: 'connect_timeout_ms' },
-  { field: 'first_byte_timeout_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'first_byte_timeout_ms' },
-  { field: 'nonstream_total_timeout_minutes', integerInput: false, min: 1_000, max: 1_800_000, multiplier: 60_000, param: 'nonstream_total_timeout_ms' },
-  { field: 'shutdown_grace_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'shutdown_grace_ms' },
+  { field: 'queue_capacity', integerInput: true, min: 1, max: 10_000, multiplier: 1, param: 'queue_capacity', testId: 'queue-capacity' },
+  { field: 'queue_wait_timeout_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'queue_wait_timeout_ms', testId: 'queue-wait-seconds' },
+  { field: 'connect_timeout_seconds', integerInput: true, min: 1_000, max: 120_000, multiplier: 1_000, param: 'connect_timeout_ms', testId: 'connect-timeout-seconds' },
+  { field: 'first_byte_timeout_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'first_byte_timeout_ms', testId: 'first-byte-timeout-seconds' },
+  { field: 'nonstream_total_timeout_minutes', integerInput: false, min: 1_000, max: 1_800_000, multiplier: 60_000, param: 'nonstream_total_timeout_ms', testId: 'nonstream-timeout-minutes' },
+  { field: 'shutdown_grace_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'shutdown_grace_ms', testId: 'shutdown-grace-seconds' },
+  { field: 'request_log_retention_days', integerInput: true, min: 30, max: 365, multiplier: 1, param: 'request_log_retention_days', testId: 'request-log-retention-days' },
 ]
 
 watch(() => props.settings, (settings) => {
@@ -62,6 +74,8 @@ watch(() => props.settings, (settings) => {
   fields.first_byte_timeout_seconds = settings.first_byte_timeout_ms / 1000
   fields.nonstream_total_timeout_minutes = settings.nonstream_total_timeout_ms / 60_000
   fields.shutdown_grace_seconds = settings.shutdown_grace_ms / 1000
+  fields.request_log_retention_days = settings.request_log_retention_days
+  fields.failover_status_codes = settings.failover_status_codes
 }, { immediate: true })
 
 function submit(): void {
@@ -72,6 +86,7 @@ function submit(): void {
 function validateFields(): RuntimeSettings | null {
   const errors: Partial<Record<SettingParam, string>> = {}
   const settings = {} as RuntimeSettings
+  settings.failover_status_codes = fields.failover_status_codes.trim()
   for (const rule of settingRules) {
     const raw = fields[rule.field]
     const value = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)
@@ -101,150 +116,139 @@ function fieldError(param: SettingParam): string {
 <template>
   <form
     data-testid="runtime-settings-form"
-    class="rounded-xl border border-slate-800 bg-slate-900 p-5"
+    class="card p-5"
     novalidate
     @submit.prevent="submit"
   >
     <div>
-      <h2 class="font-medium">
+      <h2 class="text-sm font-medium text-[var(--color-text)]">
         运行设置
       </h2>
-      <p class="mt-1 text-sm text-slate-400">
+      <p class="mt-1 text-sm text-[var(--color-text-muted)]">
         新请求立即使用更新后的队列和超时配置。
       </p>
     </div>
-    <div class="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <label class="text-sm text-slate-300">
-        队列容量
+
+    <div class="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <label
+        v-for="(rule) in settingRules"
+        :key="rule.param"
+        class="block text-sm font-medium text-[var(--color-text-secondary)]"
+      >
+        <span>{{
+          rule.param === 'queue_capacity' ? '队列容量' :
+          rule.param === 'queue_wait_timeout_ms' ? '队列等待（秒）' :
+          rule.param === 'connect_timeout_ms' ? '连接超时（秒）' :
+          rule.param === 'first_byte_timeout_ms' ? '首字节超时（秒）' :
+          rule.param === 'nonstream_total_timeout_ms' ? '非流式总超时（分钟）' :
+          rule.param === 'shutdown_grace_ms' ? '关闭宽限期（秒）' :
+          '请求日志保留（天）'
+        }}</span>
         <input
-          v-model.number="fields.queue_capacity"
-          data-testid="queue-capacity"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="1"
-          max="10000"
-          step="1"
+          :value="fields[rule.field]"
+          :data-testid="rule.testId"
+          class="input-field mt-1.5"
+          :min="rule.min / rule.multiplier"
+          :max="rule.max / rule.multiplier"
+          :step="rule.integerInput ? 1 : 'any'"
           type="number"
-          :aria-invalid="Boolean(fieldError('queue_capacity'))"
+          :aria-invalid="Boolean(fieldError(rule.param))"
+          @input="(e: Event) => { const t = e.target as HTMLInputElement; (fields[rule.field] as string | number) = t.value; }"
         >
-        <span
-          v-if="fieldError('queue_capacity')"
-          data-testid="error-queue_capacity"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('queue_capacity') }}</span>
+        <Transition name="fade">
+          <span
+            v-if="fieldError(rule.param)"
+            :data-testid="`error-${rule.param}`"
+            class="mt-1 block text-xs text-[#F87171]"
+            role="alert"
+          >{{ fieldError(rule.param) }}</span>
+        </Transition>
       </label>
-      <label class="text-sm text-slate-300">
-        队列等待（秒）
+
+      <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
+        <span>故障转移状态码</span>
         <input
-          v-model.number="fields.queue_wait_timeout_seconds"
-          data-testid="queue-wait-seconds"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="1"
-          max="600"
-          step="1"
-          type="number"
-          :aria-invalid="Boolean(fieldError('queue_wait_timeout_ms'))"
+          :value="fields.failover_status_codes"
+          data-testid="failover-status-codes"
+          class="input-field mt-1.5"
+          type="text"
+          placeholder="429,500-599"
+          :aria-invalid="Boolean(fieldError('failover_status_codes'))"
+          @input="(e: Event) => { fields.failover_status_codes = (e.target as HTMLInputElement).value }"
         >
-        <span
-          v-if="fieldError('queue_wait_timeout_ms')"
-          data-testid="error-queue_wait_timeout_ms"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('queue_wait_timeout_ms') }}</span>
-      </label>
-      <label class="text-sm text-slate-300">
-        连接超时（秒）
-        <input
-          v-model.number="fields.connect_timeout_seconds"
-          data-testid="connect-timeout-seconds"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="1"
-          max="120"
-          step="1"
-          type="number"
-          :aria-invalid="Boolean(fieldError('connect_timeout_ms'))"
-        >
-        <span
-          v-if="fieldError('connect_timeout_ms')"
-          data-testid="error-connect_timeout_ms"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('connect_timeout_ms') }}</span>
-      </label>
-      <label class="text-sm text-slate-300">
-        首字节超时（秒）
-        <input
-          v-model.number="fields.first_byte_timeout_seconds"
-          data-testid="first-byte-timeout-seconds"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="1"
-          max="600"
-          step="1"
-          type="number"
-          :aria-invalid="Boolean(fieldError('first_byte_timeout_ms'))"
-        >
-        <span
-          v-if="fieldError('first_byte_timeout_ms')"
-          data-testid="error-first_byte_timeout_ms"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('first_byte_timeout_ms') }}</span>
-      </label>
-      <label class="text-sm text-slate-300">
-        非流式总超时（分钟）
-        <input
-          v-model.number="fields.nonstream_total_timeout_minutes"
-          data-testid="nonstream-timeout-minutes"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="0.016666666666666666"
-          max="30"
-          step="any"
-          type="number"
-          :aria-invalid="Boolean(fieldError('nonstream_total_timeout_ms'))"
-        >
-        <span
-          v-if="fieldError('nonstream_total_timeout_ms')"
-          data-testid="error-nonstream_total_timeout_ms"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('nonstream_total_timeout_ms') }}</span>
-      </label>
-      <label class="text-sm text-slate-300">
-        关闭宽限期（秒）
-        <input
-          v-model.number="fields.shutdown_grace_seconds"
-          data-testid="shutdown-grace-seconds"
-          class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-          min="1"
-          max="600"
-          step="1"
-          type="number"
-          :aria-invalid="Boolean(fieldError('shutdown_grace_ms'))"
-        >
-        <span
-          v-if="fieldError('shutdown_grace_ms')"
-          data-testid="error-shutdown_grace_ms"
-          class="mt-1 block text-xs text-rose-300"
-          role="alert"
-        >{{ fieldError('shutdown_grace_ms') }}</span>
+        <span class="mt-1 block text-xs text-[var(--color-text-muted)]">使用逗号分隔状态码或范围；留空表示不自动切换。</span>
+        <Transition name="fade">
+          <span
+            v-if="fieldError('failover_status_codes')"
+            data-testid="error-failover_status_codes"
+            class="mt-1 block text-xs text-[#F87171]"
+            role="alert"
+          >{{ fieldError('failover_status_codes') }}</span>
+        </Transition>
       </label>
     </div>
-    <p
-      v-if="formError"
-      data-testid="runtime-settings-error"
-      class="mt-3 text-sm text-rose-300"
-      role="alert"
-    >
-      {{ formError }}
-    </p>
+
+    <Transition name="slide">
+      <p
+        v-if="formError"
+        data-testid="runtime-settings-error"
+        class="mt-3 text-sm text-[#F87171]"
+        role="alert"
+      >
+        {{ formError }}
+      </p>
+    </Transition>
+
     <div class="mt-5 flex justify-end">
       <button
-        class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        class="btn-primary rounded-lg px-5 py-2.5 text-sm"
         type="submit"
         :disabled="saving || !settings"
       >
-        保存设置
+        <span class="flex items-center gap-2">
+          <svg
+            v-if="saving"
+            class="h-4 w-4 animate-spin"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+          {{ saving ? '保存中…' : '保存设置' }}
+        </span>
       </button>
     </div>
   </form>
 </template>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

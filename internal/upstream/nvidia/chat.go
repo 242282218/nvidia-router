@@ -15,14 +15,12 @@ import (
 
 const MaxChatResponseBytes = 32 << 20
 
-type ChatMetadata struct {
-	RequestID string
-	Usage     json.RawMessage
-}
-
+// ValidatedChatResponse carries the validated body of a 2xx non-streaming chat
+// response. The upstream request id is intentionally not captured: no production
+// consumer reads it, and pinning it here would only invite dead state. Use
+// observability middleware if the request id needs to flow into logs later.
 type ValidatedChatResponse struct {
-	Body     []byte
-	Metadata ChatMetadata
+	Body []byte
 }
 
 func (c *Client) Chat(
@@ -58,7 +56,16 @@ func newAttemptTransport(base http.RoundTripper, snapshot runtimeconfig.Snapshot
 	}
 	if transport, ok := base.(*http.Transport); ok {
 		clone := transport.Clone()
-		clone.DialContext = dialer.DialContext
+		baseDialContext := clone.DialContext
+		if baseDialContext == nil {
+			clone.DialContext = dialer.DialContext
+		} else if snapshot.ConnectTimeoutMS > 0 {
+			clone.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				limited, cancel := context.WithTimeout(ctx, dialer.Timeout)
+				defer cancel()
+				return baseDialContext(limited, network, address)
+			}
+		}
 		clone.ResponseHeaderTimeout = time.Duration(snapshot.FirstByteTimeoutMS) * time.Millisecond
 		return clone, dialer
 	}
@@ -95,6 +102,19 @@ type pooledTransport struct {
 
 func newDirectTransportPool(base http.RoundTripper) *directTransportPool {
 	return &directTransportPool{base: base, items: make(map[directTransportKey]*pooledTransport)}
+}
+
+func (p *directTransportPool) Close() {
+	p.mu.Lock()
+	items := make([]*pooledTransport, 0, len(p.items))
+	for key, item := range p.items {
+		items = append(items, item)
+		delete(p.items, key)
+	}
+	p.mu.Unlock()
+	for _, item := range items {
+		closeIdleConnections(item.transport)
+	}
 }
 
 // Get returns the shared transport for the snapshot's timeout settings,
@@ -151,10 +171,6 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 
 	return ValidatedChatResponse{
 		Body: body,
-		Metadata: ChatMetadata{
-			RequestID: allowedRequestID(response.Header),
-			Usage:     fields["usage"],
-		},
 	}, nil
 }
 

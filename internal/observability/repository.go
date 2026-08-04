@@ -37,10 +37,40 @@ func (r *Repository) Record(ctx context.Context, record RequestRecord) error {
 	return nil
 }
 
+// RecordBatch persists a slice of request records in a single transaction.
+// The whole batch commits atomically; a single failing record rolls the
+// entire batch back and returns the underlying error. Callers (the buffered
+// flusher) decide how to retry or drop on failure rather than split the batch.
+func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin request batch transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, record := range records {
+		if err := insertRequestRecord(ctx, tx, record); err != nil {
+			return err
+		}
+		for _, dimension := range recordDimensions(record) {
+			if err := upsertDailyStat(ctx, tx, record, dimension); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit request batch transaction: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) DeleteRequestLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	result, err := r.db.ExecContext(ctx, `
 		DELETE FROM request_logs
-		WHERE julianday(created_at) < julianday(?)
+		WHERE created_at < ?
 	`, formatTime(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("delete expired request logs: %w", err)
@@ -93,12 +123,13 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 
 func upsertDailyStat(ctx context.Context, tx *sql.Tx, record RequestRecord, dimension dimension) error {
 	success, failure := outcomeCounts(record.Outcome)
+	firstByteMS, firstByteCount := firstByteAggregate(record.FirstByteMS)
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO daily_stats (
 			day, dimension_type, dimension_id, request_count, success_count,
 			failure_count, total_duration_ms, total_queue_ms, total_attempts,
-			prompt_tokens, completion_tokens
-		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+			total_first_byte_ms, first_byte_count, prompt_tokens, completion_tokens
+		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
 			request_count = request_count + 1,
 			success_count = success_count + excluded.success_count,
@@ -106,17 +137,27 @@ func upsertDailyStat(ctx context.Context, tx *sql.Tx, record RequestRecord, dime
 			total_duration_ms = total_duration_ms + excluded.total_duration_ms,
 			total_queue_ms = total_queue_ms + excluded.total_queue_ms,
 			total_attempts = total_attempts + excluded.total_attempts,
+			total_first_byte_ms = total_first_byte_ms + excluded.total_first_byte_ms,
+			first_byte_count = first_byte_count + excluded.first_byte_count,
 			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
 			completion_tokens = completion_tokens + excluded.completion_tokens
 	`,
 		record.CreatedAt.UTC().Format("2006-01-02"), dimension.typeName, dimension.id,
 		success, failure, record.DurationMS, record.QueueMS, record.AttemptCount,
+		firstByteMS, firstByteCount,
 		valueOrZero(record.PromptTokens), valueOrZero(record.CompletionTokens),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert %s daily stats: %w", dimension.typeName, err)
 	}
 	return nil
+}
+
+func firstByteAggregate(value *int64) (int64, int64) {
+	if value == nil {
+		return 0, 0
+	}
+	return *value, 1
 }
 
 func outcomeCounts(outcome string) (int, int) {
@@ -147,6 +188,9 @@ func boolInt(value bool) int {
 	return 0
 }
 
+// formatTime renders a fixed-width millisecond UTC timestamp. Lexicographic
+// order of the result equals chronological order, which is what lets
+// request_logs.created_at comparisons and sorts use plain TEXT indexes.
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return value.UTC().Format("2006-01-02T15:04:05.000Z")
 }

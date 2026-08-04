@@ -12,6 +12,7 @@ access_create_file=''
 access_response_file=''
 list_response_file=''
 new_password=''
+initial_password=''
 base_url=''
 
 compose() {
@@ -134,7 +135,7 @@ cleanup() {
   remove_temp_file "$access_create_file"
   remove_temp_file "$access_response_file"
   remove_temp_file "$list_response_file"
-  unset NVIDIA_ROUTER_MASTER_KEY new_password
+  unset NVIDIA_ROUTER_MASTER_KEY NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD initial_password new_password
   exit "$status"
 }
 
@@ -157,7 +158,10 @@ chmod 600 "$override_file"
 write_override_file "$override_file"
 
 NVIDIA_ROUTER_MASTER_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+initial_password="Nvr$(openssl rand -hex 16)InitialPassword"
 export NVIDIA_ROUTER_MASTER_KEY
+NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD="$initial_password"
+export NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD
 validate_compose_config
 compose build >/dev/null
 compose up -d --wait >/dev/null
@@ -206,7 +210,14 @@ access_create_file="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-access.XXXXXX")"
 access_response_file="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-access-response.XXXXXX")"
 chmod 600 "$cookie_jar" "$initial_login_file" "$change_password_file" "$access_create_file" "$access_response_file"
 
-printf '%s' '{"username":"admin","password":"admin"}' >"$initial_login_file"
+INITIAL_PASSWORD="$initial_password" python3 - "$initial_login_file" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({"username": "admin", "password": os.environ["INITIAL_PASSWORD"]}, stream, separators=(",", ":"))
+PY
 login_status="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' \
   --request POST --url "$base_url/admin/api/auth/login" \
   --header "Origin: $base_url" --header 'Content-Type: application/json' \
@@ -217,7 +228,7 @@ if [[ "$login_status" != '200' ]]; then
 fi
 
 new_password="Nvr$(openssl rand -hex 16)Password"
-NVR_ACCEPTANCE_CURRENT_PASSWORD='admin' \
+NVR_ACCEPTANCE_CURRENT_PASSWORD="$initial_password" \
 NVR_ACCEPTANCE_NEW_PASSWORD="$new_password" \
 python3 - "$change_password_file" <<'PY'
 import json

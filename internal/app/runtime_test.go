@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +26,7 @@ import (
 func TestSettingsPatchAppliesToSharedRuntimeStoreAndNewAcquires(t *testing.T) {
 	db := openAppDatabase(t)
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
 	if err != nil {
@@ -38,7 +40,7 @@ func TestSettingsPatchAppliesToSharedRuntimeStoreAndNewAcquires(t *testing.T) {
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 0 WHERE id = 1"); err != nil {
 		t.Fatalf("enable management session: %v", err)
 	}
-	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, server.URL)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	if login.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d: %s", login.StatusCode, readResponse(t, login))
 	}
@@ -89,8 +91,8 @@ func TestSettingsPatchAppliesToSharedRuntimeStoreAndNewAcquires(t *testing.T) {
 }
 
 func TestSettingsPatchKeepsInFlightSnapshotAndAppliesToNewNVIDIAAttempt(t *testing.T) {
-	transport := newRuntimeBudgetTransport()
-	app, accessToken := newRuntimeBudgetTestApp(t, transport)
+	transport := newRuntimeBudgetTransport(t)
+	app, accessToken := newRuntimeBudgetTestApp(t, transport.transport)
 	server := httptest.NewServer(app.Handler())
 	t.Cleanup(server.Close)
 	session := loginRuntimeAdmin(t, server)
@@ -140,7 +142,7 @@ func TestSettingsPatchKeepsInFlightSnapshotAndAppliesToNewNVIDIAAttempt(t *testi
 func TestRuntimeSummaryEndpointUsesPoolSnapshot(t *testing.T) {
 	db := openAppDatabase(t)
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
 	if err != nil {
@@ -154,7 +156,7 @@ func TestRuntimeSummaryEndpointUsesPoolSnapshot(t *testing.T) {
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 0 WHERE id = 1"); err != nil {
 		t.Fatalf("enable management session: %v", err)
 	}
-	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, server.URL)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	session := responseSessionCookie(t, login)
 	app.Pool.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true}, {ID: 2, Enabled: false}}, nil)
 	lease, err := app.Pool.Acquire(context.Background(), 1, nil)
@@ -205,39 +207,64 @@ type runtimeBudgetCapture struct {
 }
 
 type runtimeBudgetTransport struct {
+	transport     *http.Transport
 	started       chan runtimeBudgetCapture
 	continueFirst chan struct{}
 	afterPatch    chan runtimeBudgetCapture
+	mu            sync.Mutex
+	firstContext  context.Context
 	calls         int
 }
 
-func newRuntimeBudgetTransport() *runtimeBudgetTransport {
-	return &runtimeBudgetTransport{
+func newRuntimeBudgetTransport(t *testing.T) *runtimeBudgetTransport {
+	t.Helper()
+	capture := &runtimeBudgetTransport{
 		started:       make(chan runtimeBudgetCapture, 2),
 		continueFirst: make(chan struct{}),
 		afterPatch:    make(chan runtimeBudgetCapture, 1),
 	}
-}
-
-func (t *runtimeBudgetTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	t.calls++
-	capture := captureRuntimeBudget(request)
-	t.started <- capture
-	if t.calls == 1 {
-		<-t.continueFirst
-		t.afterPatch <- captureRuntimeBudget(request)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		capture.mu.Lock()
+		capture.calls++
+		firstCall := capture.calls == 1
+		first := capture.firstContext
+		capture.mu.Unlock()
+		if firstCall {
+			<-capture.continueFirst
+			if first != nil {
+				capture.afterPatch <- captureRuntimeBudgetContext(first)
+			}
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = nil
+	base.DisableKeepAlives = true
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		capture.started <- captureRuntimeBudgetContext(ctx)
+		capture.mu.Lock()
+		if capture.firstContext == nil {
+			capture.firstContext = ctx
+		}
+		capture.mu.Unlock()
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
 	}
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"choices":[{}]}`)),
-		Request:    request,
-	}, nil
+	capture.transport = base
+	return capture
 }
 
 func captureRuntimeBudget(request *http.Request) runtimeBudgetCapture {
-	budget, _ := router.BudgetFromContext(request.Context())
-	totalDeadline, _ := request.Context().Deadline()
+	return captureRuntimeBudgetContext(request.Context())
+}
+
+func captureRuntimeBudgetContext(ctx context.Context) runtimeBudgetCapture {
+	budget, _ := router.BudgetFromContext(ctx)
+	totalDeadline := budget.TotalDeadline()
+	if totalDeadline.IsZero() {
+		totalDeadline, _ = ctx.Deadline()
+	}
 	return runtimeBudgetCapture{
 		CapturedAt:        time.Now(),
 		ConnectTimeout:    budget.ConnectTimeout(),
@@ -271,7 +298,7 @@ func sendRuntimeChat(client *http.Client, baseURL, accessToken string) chatRespo
 	return chatResponse{status: response.StatusCode, body: string(body), err: err}
 }
 
-func newRuntimeBudgetTestApp(t *testing.T, transport http.RoundTripper) (*App, string) {
+func newRuntimeBudgetTestApp(t *testing.T, transport *http.Transport) (*App, string) {
 	t.Helper()
 	db := openAppDatabase(t)
 	masterKey := [32]byte{1}
@@ -290,7 +317,7 @@ func newRuntimeBudgetTestApp(t *testing.T, transport http.RoundTripper) (*App, s
 		t.Fatalf("parse NVIDIA base URL: %v", err)
 	}
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: masterKey, NVIDIABaseURL: baseURL},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: masterKey, NVIDIABaseURL: baseURL},
 		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 		NVIDIAHTTPClient: &http.Client{Transport: transport},
 	})
@@ -305,7 +332,7 @@ func newRuntimeBudgetTestApp(t *testing.T, transport http.RoundTripper) (*App, s
 
 func loginRuntimeAdmin(t *testing.T, server *httptest.Server) *http.Cookie {
 	t.Helper()
-	response := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, server.URL)
+	response := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d: %s", response.StatusCode, readResponse(t, response))
 	}

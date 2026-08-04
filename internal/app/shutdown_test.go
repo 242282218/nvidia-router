@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
 	"nvidia-router/internal/runtimeconfig"
 )
@@ -250,6 +252,100 @@ func TestAppCloseDrainsHTTPBeforeClosingDatabase(t *testing.T) {
 	if err := db.Ping(); err == nil {
 		t.Fatal("database remained open after Close")
 	}
+}
+
+func TestAppCloseDrainsRequestRecorderAfterHTTP(t *testing.T) {
+	store := &shutdownRecorderStub{}
+	recorder := observability.NewBufferRecorder(store, nil, observability.BufferOptions{
+		Capacity:   8,
+		BatchSize:  8,
+		FlushDelay: time.Hour,
+	})
+	recorderContext, recorderCancel := context.WithCancel(context.Background())
+	recorderDone := make(chan struct{})
+	go func() {
+		recorder.Run(recorderContext)
+		close(recorderDone)
+	}()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := NewServer(listener.Addr().String(), http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_ = recorder.Record(context.Background(), observability.RequestRecord{RequestID: "shutdown-request"})
+		writer.WriteHeader(http.StatusOK)
+	}), nil, nil)
+	application := &App{
+		Server:          server,
+		requestRecorder: recorder,
+		recorderCancel:  recorderCancel,
+		recorderDone:    recorderDone,
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.ServeOn(listener, context.Background()) }()
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active request did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- application.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before active request drained: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	if err := <-requestDone; err != nil {
+		t.Fatalf("active request: %v", err)
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not finish")
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("ServeOn: %v", err)
+	}
+	if got := store.count(); got != 1 {
+		t.Fatalf("flushed request records = %d, want 1", got)
+	}
+}
+
+type shutdownRecorderStub struct {
+	mu      sync.Mutex
+	records []observability.RequestRecord
+}
+
+func (s *shutdownRecorderStub) RecordBatch(_ context.Context, records []observability.RequestRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, records...)
+	return nil
+}
+
+func (s *shutdownRecorderStub) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.records)
 }
 
 type shutdownTestSettings struct {

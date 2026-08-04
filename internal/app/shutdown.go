@@ -22,11 +22,18 @@ func (a *App) beginShutdown(grace time.Duration) {
 		if a.Pool != nil {
 			a.Pool.Shutdown()
 		}
-		if a.proxy != nil {
+		if a.proxySettings != nil {
+			a.proxySettings.Close()
+		} else if a.proxy != nil {
 			a.proxy.Close()
 		}
 		if a.cleanupCancel != nil {
 			a.cleanupCancel()
+		}
+		if a.healthCancel != nil {
+			// Stop the health checker so it isn't probing NVIDIA against a
+			// closing DB; in-flight probe write attempts will get cancelled.
+			a.healthCancel()
 		}
 		if a.Server != nil {
 			a.Server.setShutdownGrace(grace)
@@ -50,14 +57,28 @@ func (a *App) finishShutdown() error {
 	if a.Server != nil {
 		shutdownErr = a.Server.Shutdown(context.Background())
 	}
+	if a.recorderCancel != nil {
+		// Stop recording only after HTTP has drained; handlers may enqueue their
+		// final request log while they are unwinding during Server.Shutdown.
+		a.recorderCancel()
+	}
 	if a.shutdownTimer != nil {
 		a.shutdownTimer.Stop()
 	}
 	if a.rootCancel != nil {
 		a.rootCancel()
 	}
+	if a.nvidiaClient != nil {
+		a.nvidiaClient.Close()
+	}
 	if a.cleanupDone != nil {
 		<-a.cleanupDone
+	}
+	if a.recorderDone != nil {
+		<-a.recorderDone
+	}
+	if a.healthDone != nil {
+		<-a.healthDone
 	}
 	if a.db == nil {
 		return shutdownErr

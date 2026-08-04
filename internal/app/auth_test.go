@@ -16,7 +16,7 @@ import (
 
 func TestAuthFlowEnforcesGlobalPasswordChangeGate(t *testing.T) {
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:  clock.RealClock{},
 	})
@@ -29,7 +29,7 @@ func TestAuthFlowEnforcesGlobalPasswordChangeGate(t *testing.T) {
 		_ = app.Close()
 	})
 
-	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, server.URL)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	if login.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200: %s", login.StatusCode, readResponse(t, login))
 	}
@@ -41,7 +41,7 @@ func TestAuthFlowEnforcesGlobalPasswordChangeGate(t *testing.T) {
 	managementBlocked := authRequest(t, server.Client(), http.MethodGet, server.URL+"/admin/api/settings", "", restricted, "")
 	assertResponseError(t, managementBlocked, http.StatusForbidden, "password_change_required")
 
-	changed := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/change-password", `{"current_password":"admin","new_password":"replacement-password"}`, restricted, server.URL)
+	changed := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/change-password", `{"current_password":"test-initial-admin-password","new_password":"replacement-password"}`, restricted, server.URL)
 	if changed.StatusCode != http.StatusOK {
 		t.Fatalf("change password status = %d, want 200: %s", changed.StatusCode, readResponse(t, changed))
 	}

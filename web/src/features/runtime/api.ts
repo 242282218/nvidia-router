@@ -2,19 +2,19 @@
 import type { RuntimeSettings, RuntimeSettingsResponse, RuntimeSummaryResponse } from './types'
 
 export interface RuntimeApi {
-  getSummary(): Promise<RuntimeSummaryResponse>
-  getSettings(): Promise<RuntimeSettingsResponse>
-  updateSettings(settings: RuntimeSettings): Promise<RuntimeSettingsResponse>
+  getSummary(signal?: AbortSignal): Promise<RuntimeSummaryResponse>
+  getSettings(signal?: AbortSignal): Promise<RuntimeSettingsResponse>
+  updateSettings(settings: RuntimeSettings, signal?: AbortSignal): Promise<RuntimeSettingsResponse>
 }
 
 export const runtimeApi: RuntimeApi = {
-  getSummary() {
-    return apiRequest('/admin/api/runtime/summary')
+  getSummary(signal) {
+    return apiRequest('/admin/api/runtime/summary', { signal })
   },
-  getSettings() {
-    return apiRequest('/admin/api/settings')
+  getSettings(signal) {
+    return apiRequest('/admin/api/settings', { signal })
   },
-  updateSettings(settings) {
-    return apiRequest('/admin/api/settings', { method: 'PATCH', body: settings })
+  updateSettings(settings, signal) {
+    return apiRequest('/admin/api/settings', { method: 'PATCH', body: settings, signal })
   },
 }

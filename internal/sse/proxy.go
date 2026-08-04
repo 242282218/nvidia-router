@@ -43,6 +43,11 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
+	// Tell nginx-style reverse proxies not to buffer the stream — without it the
+	// default `proxy_buffering on` batches SSE chunks until the buffer fills,
+	// collapsing the streaming experience into one big client-side dump (audit
+	// B6). Non-nginx proxies simply ignore the header.
+	writer.Header().Set("X-Accel-Buffering", "no")
 
 	seenDone := false
 	firstDataWritten := false
@@ -76,10 +81,13 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		}
 
 		isDone := false
-		for _, data := range event.Data {
-			trimmed := strings.TrimSpace(data)
-			if trimmed == "[DONE]" {
+		for i, data := range event.Data {
+			if strings.TrimSpace(data) == "[DONE]" {
 				isDone = true
+				// A malformed upstream may pack data lines after the terminal
+				// [DONE] inside the same event; truncate so they never reach the
+				// client (checklist #53).
+				event.Data = event.Data[:i+1]
 				break
 			}
 		}

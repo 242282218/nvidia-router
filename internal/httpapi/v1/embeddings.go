@@ -36,7 +36,10 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		})
 		return
 	}
-	payload, err := readChatBody(writer, request)
+	payload, bodyLease, err := readBodyWithLease(request, bodyReadLimitForJSON(), jsonBodyReadTimeout)
+	if bodyLease != nil {
+		defer bodyLease.Release()
+	}
 	if err != nil {
 		writeChatError(writer, err)
 		return

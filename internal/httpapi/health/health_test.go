@@ -27,9 +27,14 @@ func TestLiveReturnsExactOKResponse(t *testing.T) {
 	}
 }
 
-func TestReadyReturnsServiceUnavailableWithoutOperationalDetails(t *testing.T) {
+func TestReadyIgnoresAdminMustChangeFlag(t *testing.T) {
 	db := readyDatabase(t)
 	defer func() { _ = db.Close() }()
+	// A fresh deployment still has must_change_password set, but readiness
+	// describes service health, not the administrator's security posture: an
+	// orchestrator must keep the container alive so the first login can reset
+	// the bootstrap password. Setting the flag must NOT cause /health/ready
+	// to return 503.
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 1 WHERE id = 1"); err != nil {
 		t.Fatalf("require password change: %v", err)
 	}
@@ -38,10 +43,10 @@ func TestReadyReturnsServiceUnavailableWithoutOperationalDetails(t *testing.T) {
 
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
 
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (must_change_password must not gate readiness)", response.Code, http.StatusOK)
 	}
-	if got := response.Body.String(); got != "{\"status\":\"unavailable\"}" {
+	if got := response.Body.String(); got != "{\"status\":\"ok\"}" {
 		t.Fatalf("body = %q", got)
 	}
 }
@@ -135,7 +140,7 @@ func readyDatabase(t *testing.T) *sql.DB {
 	if err := keys.EnsureSentinel(context.Background(), db); err != nil {
 		t.Fatalf("ensure sentinel: %v", err)
 	}
-	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background()); err != nil {
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), "test-initial-admin-password"); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	if _, err := db.Exec("UPDATE admins SET must_change_password = 0 WHERE id = 1"); err != nil {

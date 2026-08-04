@@ -20,6 +20,8 @@ const settings = {
   first_byte_timeout_ms: 60_000,
   nonstream_total_timeout_ms: 300_000,
   shutdown_grace_ms: 60_000,
+  failover_status_codes: '429,500,502,503,504',
+  request_log_retention_days: 30,
 }
 
 beforeEach(() => {
@@ -91,11 +93,36 @@ describe('RuntimeView', () => {
     expect((wrapper.get('[data-testid="first-byte-timeout-seconds"]').element as HTMLInputElement).value).toBe('60')
     expect((wrapper.get('[data-testid="nonstream-timeout-minutes"]').element as HTMLInputElement).value).toBe('5')
     expect((wrapper.get('[data-testid="shutdown-grace-seconds"]').element as HTMLInputElement).value).toBe('60')
+    expect((wrapper.get('[data-testid="request-log-retention-days"]').element as HTMLInputElement).value).toBe('30')
 
     await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
     await flushPromises()
 
-    expect(runtimeApi.updateSettings).toHaveBeenCalledWith(settings)
+    expect(runtimeApi.updateSettings).toHaveBeenCalledWith(settings, expect.any(AbortSignal))
+  })
+
+  it('keeps save success even when the summary refresh fails (audit #63)', async () => {
+    vi.mocked(runtimeApi.getSummary)
+      .mockResolvedValueOnce({ data: { keys: { total: 8, enabled: 7, disabled: 1, auth_invalid: 2, cooling_down: 3, ready: 2 }, active: 4, queue: { length: 5, capacity: 100 }, earliest_cooldown: '2026-07-30T10:00:00Z', shutting_down: false } })
+      .mockRejectedValue(new ApiError(503, {
+        type: 'server_error',
+        code: 'summary_unavailable',
+        message: '运行摘要暂时不可用。',
+        param: null,
+      }))
+    const wrapper = mount(RuntimeView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
+    await flushPromises()
+
+    // Save verdict is preserved; no "保存失败" form error is shown.
+    expect(runtimeApi.updateSettings).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="runtime-saved"]').text()).toContain('设置已保存')
+    expect(wrapper.find('[data-testid="runtime-settings-error"]').exists()).toBe(false)
+    // The summary refresh failure surfaces as a distinct alert, not a save error.
+    expect(wrapper.get('[role="alert"]').text()).toContain('运行摘要暂时不可用')
+    expect(wrapper.find('[data-testid="runtime-saved"]').exists()).toBe(true)
   })
 
 

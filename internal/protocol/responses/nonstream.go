@@ -57,9 +57,10 @@ func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]
 }
 
 type chatChoiceMessage struct {
-	Role      string          `json:"role"`
-	Content   json.RawMessage `json:"content"`
-	ToolCalls []struct {
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	ReasoningContent json.RawMessage `json:"reasoning_content"`
+	ToolCalls        []struct {
 		ID       string          `json:"id"`
 		Type     string          `json:"type"`
 		Function toolCallContent `json:"function"`
@@ -71,14 +72,22 @@ type toolCallContent struct {
 	Arguments string `json:"arguments"`
 }
 
-type chatUsage struct {
-	PromptTokens     *int `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int `json:"completion_tokens,omitempty"`
-	TotalTokens      *int `json:"total_tokens,omitempty"`
-}
+type chatUsage = ChatUsage
 
 func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
-	output := make([]map[string]any, 0, 1+len(message.ToolCalls))
+	output := make([]map[string]any, 0, 2+len(message.ToolCalls))
+	// Reasoning precedes tool calls and text in a Responses output, matching
+	// how thinking models emit chain-of-thought before the answer.
+	reasoning, hasReasoning, err := extractText(message.ReasoningContent, "reasoning_content")
+	if err != nil {
+		return nil, err
+	}
+	if hasReasoning {
+		output = append(output, map[string]any{
+			"type":    "reasoning",
+			"summary": []map[string]any{{"type": "summary_text", "text": reasoning}},
+		})
+	}
 	for _, call := range message.ToolCalls {
 		output = append(output, map[string]any{
 			"type":      "function_call",
@@ -88,7 +97,7 @@ func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
 			"arguments": call.Function.Arguments,
 		})
 	}
-	text, hasText, err := extractAssistantText(message.Content)
+	text, hasText, err := extractText(message.Content, "content")
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +113,10 @@ func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
 	return output, nil
 }
 
-func extractAssistantText(content json.RawMessage) (string, bool, error) {
+// extractText pulls the string value from a Chat message field that may be a
+// plain string, null or an array of content parts. label names the field for
+// error messages.
+func extractText(content json.RawMessage, label string) (string, bool, error) {
 	if len(content) == 0 || string(content) == "null" {
 		return "", false, nil
 	}
@@ -120,7 +132,7 @@ func extractAssistantText(content json.RawMessage) (string, bool, error) {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(content, &parts) != nil {
-		return "", false, fmt.Errorf("convert chat to responses: assistant content must be text")
+		return "", false, fmt.Errorf("convert chat to responses: assistant %s must be text", label)
 	}
 	var text string
 	for _, part := range parts {

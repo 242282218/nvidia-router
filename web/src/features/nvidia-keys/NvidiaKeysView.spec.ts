@@ -125,6 +125,24 @@ describe('NvidiaKeysView', () => {
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })
 
+  it('keeps the test-all loading state separate from list loading', async () => {
+    const request = deferred<{ data: KeyTestResult[] }>()
+    vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
+    vi.mocked(nvidiaKeysApi.testAll).mockReturnValue(request.promise)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    const button = wrapper.get('[data-testid="test-all-keys"]')
+    await button.trigger('click')
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.text()).toContain('测活中')
+    expect((wrapper.vm as unknown as { testingAll: boolean }).testingAll).toBe(true)
+
+    request.resolve({ data: [] })
+    await flushPromises()
+    expect((wrapper.vm as unknown as { testingAll: boolean }).testingAll).toBe(false)
+  })
+
   it.each([
     ['a null data field', { data: null }],
     ['an invalid result item', { data: [{ id: null, status: 'ok' }] }],
@@ -137,7 +155,7 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="test-all-keys"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('批量测试失败')
+    expect(wrapper.get('[role="alert"]').text()).toContain('批量测活失败')
     expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })
@@ -204,12 +222,29 @@ describe('NvidiaKeysView', () => {
     expect(wrapper.html()).not.toContain(secret)
   })
 
+  it('requires confirmation before deleting a key', async () => {
+    vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
+    vi.mocked(nvidiaKeysApi.remove).mockResolvedValue(undefined)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
+    expect(nvidiaKeysApi.remove).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledWith('确认删除 NVIDIA Key nvapi…1234 吗？删除后无法恢复。')
+    expect(nvidiaKeysApi.remove).toHaveBeenCalledWith(7)
+  })
+
   it('supports mobile enable, manual test and delete actions and shows the desktop batch hint', async () => {
     const key = makeKey({ id: 8, masked: 'nvapi…5678' })
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [key] })
     vi.mocked(nvidiaKeysApi.setEnabled).mockResolvedValue({ id: 8, enabled: false })
     vi.mocked(nvidiaKeysApi.test).mockResolvedValue({ id: 8, status: 'ok' })
     vi.mocked(nvidiaKeysApi.remove).mockResolvedValue(undefined)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 

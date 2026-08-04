@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"nvidia-router/internal/apierror"
@@ -106,16 +107,20 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	requestCtx, cancel := a.requestContext(ctx, budget)
 	defer cancel()
 
+	// Build the failover matcher once per request: the spec lives on the same
+	// snapshot the rest of the budget reads, so decoding it during Run keeps the
+	// retry policy consistent with the timeouts above (audit B4).
+	failover := buildFailoverMatcher(settings.FailoverStatusCodes)
+
 	attempted := make(map[int64]struct{})
 	var totalQueue time.Duration
 	var lastFault *fault.Fault
 	for {
-		attemptBudget := budget.forAttempt(a.clock.Now())
 		queueStarted := a.clock.Now()
-		lease, err := a.acquire(requestCtx, attemptBudget, settings, modelID, attempted)
+		lease, err := a.acquire(requestCtx, settings, modelID, attempted)
 		totalQueue += a.clock.Now().Sub(queueStarted)
 		if err != nil {
-			if lastFault != nil && (a.budgetExpired(requestCtx) || !a.clock.Now().Before(attemptBudget.FirstByteDeadline())) {
+			if lastFault != nil && a.budgetExpired(requestCtx) {
 				return AttemptResult{}, *lastFault
 			}
 			return AttemptResult{}, chooseAcquireError(err, lastFault)
@@ -123,7 +128,9 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		attempted[lease.KeyID()] = struct{}{}
 		observability.SetAttempt(ctx, lease.KeyID(), len(attempted), totalQueue)
 
-		executeCtx := withBudget(requestCtx, attemptBudget)
+		// The first-byte budget starts once a lease is acquired; queue time is
+		// bounded separately by the pool's queue-wait setting (queue_timeout).
+		executeCtx := withBudget(requestCtx, budget.forAttempt(a.clock.Now()))
 		response, commit, currentFault, err := a.executeLease(executeCtx, requestCtx, modelID, lease, execute)
 		if err != nil {
 			return AttemptResult{}, err
@@ -134,10 +141,52 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 
 		}
 		lastFault = currentFault
-		if !currentFault.Retryable || commit.Committed() || a.budgetExpired(requestCtx) {
+		// Failover decision combines Classify's retryable flag with the
+		// operator-tunable matcher (audit B4): a fault retries when the legacy
+		// Retryable flag matches the gpt-load-era behaviour, OR when the
+		// operator explicitly added the status code to the failover spec. The
+		// union preserves pre-existing semantics for 401/403 (Retryable but not
+		// in the default spec) while letting operators widen the set without a
+		// release. A committed response and an expired budget remain hard
+		// stoppers because they describe request-state, not retry policy.
+		if !shouldRetry(currentFault, failover) || commit.Committed() || a.budgetExpired(requestCtx) {
 			return AttemptResult{}, *currentFault
 		}
 	}
+}
+
+// shouldRetry decides whether an Attempt should acquire a different key and
+// replay the request after currentFault. A configured failover matcher widens
+// Classify's retryable flag (audit B4): the legacy Retryable stays the default
+// behaviour for faults the operator did not opt into (401/403 default-retry
+// on credential policy), and the matcher only ever adds status codes the
+// operator explicitly whitelisted for failover.
+func shouldRetry(currentFault *fault.Fault, matcher fault.FailoverMatcher) bool {
+	if currentFault.Retryable {
+		return true
+	}
+	if matcher.IsEmpty() {
+		return false
+	}
+	return matcher.Match(currentFault.HTTPStatus)
+}
+
+// buildFailoverMapper turns the configured spec into a matcher. An empty spec is
+// the legacy sentinel: the caller wants the documented default failover set so
+// pre-configured operators see 429/5xx behaviour identical to the previous
+// hardcode. A parse failure (only reachable from pathologically bad rows; the
+// admin handler validates at store time) likewise yields the default rather
+// than silently "never fail over", which would amplify a config typo into every
+// upstream blip surfacing as a client-visible 5xx.
+func buildFailoverMatcher(spec string) fault.FailoverMatcher {
+	if strings.TrimSpace(spec) == "" {
+		return fault.MustFailoverMatcher(fault.DefaultFailoverStatusCodes)
+	}
+	matcher, err := fault.NewFailoverMatcher(spec)
+	if err != nil {
+		return fault.MustFailoverMatcher(fault.DefaultFailoverStatusCodes)
+	}
+	return matcher
 }
 
 func (a *Attempt) requestContext(ctx context.Context, budget Budget) (context.Context, context.CancelFunc) {
@@ -149,17 +198,11 @@ func (a *Attempt) requestContext(ctx context.Context, budget Budget) (context.Co
 
 func (a *Attempt) acquire(
 	ctx context.Context,
-	budget Budget,
 	settings runtimeconfig.Snapshot,
 	modelID int64,
 	attempted map[int64]struct{},
 ) (pool.Lease, error) {
-	if !a.clock.Now().Before(budget.FirstByteDeadline()) {
-		return nil, fault.Classify(nil, context.DeadlineExceeded, false, a.clock.Now())
-	}
-	acquireCtx, cancel := context.WithDeadline(ctx, budget.FirstByteDeadline())
-	defer cancel()
-	lease, err := a.keyPool.AcquireWithSnapshot(acquireCtx, modelID, attempted, settings)
+	lease, err := a.keyPool.AcquireWithSnapshot(ctx, modelID, attempted, settings)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, fault.Classify(nil, err, false, a.clock.Now())
 	}
@@ -199,12 +242,19 @@ func (a *Attempt) executeLease(
 	}
 	if executeErr == nil && response != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
 		if _, err := a.states.MarkSuccess(stateCtx, lease.KeyID()); err != nil {
-			closeResponse(response)
+			// Fail-open (audit #29): the upstream already produced a real 2xx
+			// body for the client. A best-effort key-state write must never turn
+			// that success into a 5xx — the lease/scheduling row just recovers on
+			// the next successful attempt. Only a cancelled stateCtx (client
+			// disconnect) keeps the 499 semantics, because there is no longer a
+			// client to deliver to.
 			if stateErr := stateCtx.Err(); stateErr != nil && errors.Is(err, stateErr) {
+				closeResponse(response)
 				classified := fault.Classify(nil, stateErr, false, a.clock.Now())
 				return nil, commit, &classified, nil
 			}
-			return nil, commit, nil, fmt.Errorf("persist successful NVIDIA key state: %w", err)
+			keepLease = true
+			return response, commit, nil, nil
 		}
 		a.stateSync.ApplySuccess(lease.KeyID())
 		keepLease = true
@@ -229,6 +279,16 @@ func (a *Attempt) budgetExpired(ctx context.Context) bool {
 }
 
 func chooseAcquireError(err error, lastFault *fault.Fault) error {
+	// A client disconnect during acquire surfaces as a wrapped
+	// context.Canceled. Without this check the handler falls through to the
+	// 500 internal_error fallback and the disconnect gets billed as an
+	// upstream failure in observability. fold the cancellation into a 499
+	// fault here so writeChatError's fault.As branch maps it to the public
+	// request_canceled envelope, matching the post-acquire code path that
+	// already runs through fault.Classify.
+	if errors.Is(err, context.Canceled) {
+		return fault.Classify(nil, err, false, time.Time{})
+	}
 	if lastFault == nil {
 		return fmt.Errorf("acquire NVIDIA key: %w", err)
 	}

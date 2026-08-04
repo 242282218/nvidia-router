@@ -48,7 +48,6 @@ func TestFirstEnabledIDSkipsCoolingDownKeys(t *testing.T) {
 func TestImportAcceptsGenericPrintableTokensAndDeduplicates(t *testing.T) {
 	validator := newFakeValidator()
 	validToken := "generic-build-token-123456"
-	validator.results[validToken] = nvidia.ValidationResult{State: nvidia.ValidationValid, Models: []string{"model-a"}}
 	service, db, _ := newNVIDIAKeyTestService(t, validator)
 
 	imported, err := service.Import(context.Background(), validToken)
@@ -62,7 +61,7 @@ func TestImportAcceptsGenericPrintableTokensAndDeduplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Import duplicate: %v", err)
 	}
-	if duplicate.Status != ImportStatusDuplicate || validator.CallCount(validToken) != 1 {
+	if duplicate.Status != ImportStatusDuplicate || validator.CallCount(validToken) != 0 {
 		t.Fatalf("duplicate/calls = %+v/%d", duplicate, validator.CallCount(validToken))
 	}
 	var count int
@@ -127,16 +126,12 @@ func TestImportMasksPrintableUnicodeWithoutCorruptingUTF8(t *testing.T) {
 	}
 }
 
-func TestBatchImportPreservesLineNumbersAndOnlyPersistsValidKeys(t *testing.T) {
+func TestBatchImportPreservesLineNumbersAndPersistsLocallyValidKeys(t *testing.T) {
 	valid := "valid-generic-token-123456"
 	invalid := "invalid-generic-token-1234"
 	temporary := "temporary-generic-token-12"
 	indeterminate := "unknown-generic-token-123"
 	validator := newFakeValidator()
-	validator.results[valid] = nvidia.ValidationResult{State: nvidia.ValidationValid, Models: []string{"model-a"}}
-	validator.results[invalid] = nvidia.ValidationResult{State: nvidia.ValidationInvalidCredential}
-	validator.results[temporary] = nvidia.ValidationResult{State: nvidia.ValidationTemporarilyUnavailable}
-	validator.results[indeterminate] = nvidia.ValidationResult{State: nvidia.ValidationIndeterminate}
 	service, db, _ := newNVIDIAKeyTestService(t, validator)
 
 	results := service.ImportBatch(context.Background(), strings.Join([]string{
@@ -148,7 +143,7 @@ func TestBatchImportPreservesLineNumbersAndOnlyPersistsValidKeys(t *testing.T) {
 	}, "\n"))
 
 	wantLines := []int{1, 3, 4, 5}
-	wantStatuses := []ImportStatus{ImportStatusImported, ImportStatusInvalid, ImportStatusTemporarilyUnavailable, ImportStatusIndeterminate}
+	wantStatuses := []ImportStatus{ImportStatusImported, ImportStatusImported, ImportStatusImported, ImportStatusImported}
 	if len(results) != len(wantLines) {
 		t.Fatalf("result count = %d, want %d", len(results), len(wantLines))
 	}
@@ -166,30 +161,32 @@ func TestBatchImportPreservesLineNumbersAndOnlyPersistsValidKeys(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM nvidia_keys").Scan(&count); err != nil {
 		t.Fatalf("count keys: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("persisted keys = %d, want 1", count)
+	if count != 4 {
+		t.Fatalf("persisted keys = %d, want 4", count)
+	}
+	if validator.CallCount(valid)+validator.CallCount(invalid)+validator.CallCount(temporary)+validator.CallCount(indeterminate) != 0 {
+		t.Fatalf("batch import unexpectedly validated credentials")
 	}
 }
 
-func TestProxyUnavailableImportDoesNotPersistKey(t *testing.T) {
+func TestProxyUnavailableImportPersistsKeyWithoutValidation(t *testing.T) {
 	token := "proxy-unavailable-token-123"
 	validator := newFakeValidator()
-	validator.results[token] = nvidia.ValidationResult{State: nvidia.ValidationProxyUnavailable}
 	service, db, _ := newNVIDIAKeyTestService(t, validator)
 
 	result, err := service.Import(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
-	if result.Status != ImportStatusTemporarilyUnavailable || result.Reason != "proxy_temporarily_unavailable" {
+	if result.Status != ImportStatusImported || result.Key == nil {
 		t.Fatalf("result = %+v", result)
 	}
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM nvidia_keys").Scan(&count); err != nil {
 		t.Fatalf("count keys: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("persisted keys = %d, want 0", count)
+	if count != 1 || validator.CallCount(token) != 0 {
+		t.Fatalf("persisted keys/calls = %d/%d, want 1/0", count, validator.CallCount(token))
 	}
 }
 
@@ -666,6 +663,45 @@ func insertKeyForDiscoveryTest(t *testing.T, db *sql.DB) int64 {
 		t.Fatalf("discovery key id: %v", err)
 	}
 	return id
+}
+
+// TestMaskTokenStaysUnderQuarterReveal locks in the audit fix for short key
+// disclosure: the previous maskToken exposed up to 8 prefix + 4 suffix bytes,
+// which for a 20-character (the minimum length validation accepts) keys leaks
+// 60% of the credential. The masked form must reveal at most a quarter of the
+// token; for short-and-medium tokens only the prefix is shown so brute-forcing
+// the tail remains infeasible.
+func TestMaskTokenStaysUnderQuarterReveal(t *testing.T) {
+	cases := []struct {
+		name     string
+		token    string
+		wantMask string
+		wantPref string
+		wantSuff string
+	}{
+		{name: "short token minimum", token: strings.Repeat("a", 20), wantMask: "aaaaa...", wantPref: "aaaaa", wantSuff: ""},
+		{name: "medium token", token: strings.Repeat("b", 32), wantMask: "bbbbbbbb...", wantPref: "bbbbbbbb", wantSuff: ""},
+		{name: "long nvidia key", token: "nvapi-" + strings.Repeat("c", 100), wantMask: "nvapi-cc...cccc", wantPref: "nvapi-cc", wantSuff: "cccc"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			masked, prefix, suffix := maskToken(tt.token)
+			if masked != tt.wantMask {
+				t.Fatalf("masked = %q, want %q", masked, tt.wantMask)
+			}
+			if prefix != tt.wantPref {
+				t.Fatalf("prefix = %q, want %q", prefix, tt.wantPref)
+			}
+			if suffix != tt.wantSuff {
+				t.Fatalf("suffix = %q, want %q", suffix, tt.wantSuff)
+			}
+			// Total revealed characters never exceed a quarter of the token.
+			revealed := len(prefix) + len(suffix)
+			if revealed*4 > len(tt.token) {
+				t.Fatalf("revealed %d chars on a %d-char token; ratio exceeds 1/4", revealed, len(tt.token))
+			}
+		})
+	}
 }
 
 func newNVIDIAKeyTestService(t *testing.T, validator *fakeValidator) (*Service, *sql.DB, string) {

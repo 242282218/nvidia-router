@@ -27,7 +27,11 @@ func NewRouter(
 	if len(additionalAdmin) > 0 && additionalAdmin[0] != nil {
 		stats = additionalAdmin[0]
 	}
-	securedManagement := NoStoreMiddleware(security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats)))
+	monitoring := http.NotFoundHandler()
+	if len(additionalAdmin) > 1 && additionalAdmin[1] != nil {
+		monitoring = additionalAdmin[1]
+	}
+	securedManagement := NoStoreMiddleware(security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats, monitoring)))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
 	root.Handle("/admin/", frontend)
@@ -35,12 +39,13 @@ func NewRouter(
 	return root
 }
 
-func newAdminRouter(management, settings, runtimeSummary, stats http.Handler) http.Handler {
+func newAdminRouter(management, settings, runtimeSummary, stats, monitoring http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/admin/api/settings", settings)
 	mux.Handle("/admin/api/runtime/summary", runtimeSummary)
 	mux.Handle("/admin/api/stats", stats)
 	mux.Handle("/admin/api/errors", stats)
+	mux.Handle("/admin/api/monitoring/", monitoring)
 	mux.Handle("/admin/api", management)
 	mux.Handle("/admin/api/", management)
 	return mux

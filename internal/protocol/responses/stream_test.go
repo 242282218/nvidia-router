@@ -77,6 +77,43 @@ func terminalCount(events []EmittedEvent, name string) int {
 	return count
 }
 
+func TestStreamTextThenToolUsesDistinctOutputIndices(t *testing.T) {
+	// Text before a tool call must give the message and the function call
+	// distinct output_index values, and the message done events must reference
+	// the message index rather than the running counter.
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "let me check"},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, ID: "fc_1", Name: "search"}}},
+		{FinishReason: "tool_calls"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_m", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	messageAdded, toolAdded, messageDone := -1, -1, -1
+	for _, e := range emit.events {
+		switch e.Event {
+		case "response.output_item.added":
+			item, _ := e.Data["item"].(map[string]any)
+			switch item["type"] {
+			case "message":
+				messageAdded, _ = e.Data["output_index"].(int)
+			case "function_call":
+				toolAdded, _ = e.Data["output_index"].(int)
+			}
+		case "response.output_item.done":
+			item, _ := e.Data["item"].(map[string]any)
+			if item["type"] == "message" {
+				messageDone, _ = e.Data["output_index"].(int)
+			}
+		}
+	}
+	if messageAdded != 0 || toolAdded != 1 || messageDone != 0 {
+		t.Fatalf("indices message_added=%d tool_added=%d message_done=%d, want 0/1/0", messageAdded, toolAdded, messageDone)
+	}
+	assertMonoSeq(t, emit.events)
+}
+
 func TestParseChatDeltaConcatenatesContentParts(t *testing.T) {
 	data := `{"choices":[{"delta":{"content":[{"type":"text","text":"Hel"},{"type":"text","text":"lo"}]}}]}`
 	delta, done, err := ParseChatDelta([]byte(data))
@@ -110,6 +147,19 @@ func TestParseChatDeltaPlainStringStillParses(t *testing.T) {
 	}
 	if delta.Content != "hi" || delta.Reasoning != "think" {
 		t.Fatalf("delta = %#v, want content hi reasoning think", delta)
+	}
+}
+
+func TestParseChatDeltaReadsUsageOnlyChunk(t *testing.T) {
+	delta, done, err := ParseChatDelta([]byte(`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}`))
+	if err != nil {
+		t.Fatalf("ParseChatDelta: %v", err)
+	}
+	if done {
+		t.Fatal("usage chunk was treated as done")
+	}
+	if delta.Usage == nil || delta.Usage.PromptTokens == nil || *delta.Usage.PromptTokens != 12 || delta.Usage.CompletionTokens == nil || *delta.Usage.CompletionTokens != 7 {
+		t.Fatalf("usage = %#v, want prompt=12 completion=7", delta.Usage)
 	}
 }
 
@@ -170,6 +220,29 @@ func TestStreamTextEventSequence(t *testing.T) {
 		t.Fatalf("text delta count = %d, want 2", deltas)
 	}
 	assertMonoSeq(t, emit.events)
+}
+
+func TestStreamCompletedEventIncludesUsage(t *testing.T) {
+	prompt, completion, total := 12, 7, 19
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "ok"},
+		{Usage: &ChatUsage{PromptTokens: &prompt, CompletionTokens: &completion, TotalTokens: &total}},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_usage", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	for _, event := range emit.events {
+		if event.Event != "response.completed" {
+			continue
+		}
+		usage, ok := event.Data["usage"].(map[string]any)
+		if !ok || usage["input_tokens"] != 12 || usage["output_tokens"] != 7 || usage["total_tokens"] != 19 {
+			t.Fatalf("completed usage = %#v, want input=12 output=7 total=19", event.Data["usage"])
+		}
+		return
+	}
+	t.Fatal("response.completed event not emitted")
 }
 
 func TestStreamToolCallsParallelChunks(t *testing.T) {
@@ -239,6 +312,97 @@ func TestStreamEmptyArgumentsAllowed(t *testing.T) {
 	assertMonoSeq(t, emit.events)
 }
 
+func TestStreamToolArgumentsTotalCapped(t *testing.T) {
+	// A hostile or broken upstream can stream argument fragments forever; the
+	// accumulated total must be capped rather than growing without bound
+	// (checklist #14).
+	huge := strings.Repeat("a", maxToolArgumentsBytes+1)
+	source := &fakeSource{deltas: []ChatDelta{
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, ID: "fc_1", Name: "search", Arguments: huge}}},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_cap", "public-chat"); !errors.Is(err, ErrToolArgumentsTooLarge) {
+		t.Fatalf("Convert error = %v, want ErrToolArgumentsTooLarge", err)
+	}
+}
+
+func TestStreamToolArgumentsCappedAcrossFragments(t *testing.T) {
+	// The cap must apply across the whole stream, not per fragment: many small
+	// argument deltas that add up past the limit must fail too.
+	half := maxToolArgumentsBytes / 2
+	source := &fakeSource{deltas: []ChatDelta{
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, ID: "fc_1", Name: "search", Arguments: strings.Repeat("a", half)}}},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, Arguments: strings.Repeat("b", half)}}},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, Arguments: "overflow"}}},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_cap2", "public-chat"); !errors.Is(err, ErrToolArgumentsTooLarge) {
+		t.Fatalf("Convert error = %v, want ErrToolArgumentsTooLarge", err)
+	}
+}
+
+func TestStreamEventsCarryCorrelationFields(t *testing.T) {
+	// Every message/tool event must reference the same item via item_id and
+	// carry the output_index/content_index pairs clients use to correlate
+	// added/done lifecycles (OpenAI SDKs reject events with dangling indices).
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "hi"},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, ID: "fc_1", Name: "search"}}},
+		{FinishReason: "tool_calls"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_corr", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	var messageID, toolID string
+	for _, e := range emit.events {
+		switch e.Event {
+		case "response.output_item.added":
+			item, _ := e.Data["item"].(map[string]any)
+			switch item["type"] {
+			case "message":
+				messageID, _ = item["id"].(string)
+				if messageID == "" {
+					t.Fatalf("message item missing id: %#v", item)
+				}
+			case "function_call":
+				toolID, _ = item["id"].(string)
+			}
+		case "response.content_part.added", "response.content_part.done", "response.output_text.done":
+			if e.Data["item_id"] != messageID {
+				t.Fatalf("%s item_id = %v, want %q", e.Event, e.Data["item_id"], messageID)
+			}
+			if e.Data["output_index"] != 0 || e.Data["content_index"] != 0 {
+				t.Fatalf("%s indices = output=%v content=%v, want 0/0", e.Event, e.Data["output_index"], e.Data["content_index"])
+			}
+		case "response.output_text.delta":
+			if e.Data["item_id"] != messageID || e.Data["output_index"] != 0 || e.Data["content_index"] != 0 {
+				t.Fatalf("output_text.delta correlation = %#v, want item %q output 0 content 0", e.Data, messageID)
+			}
+		case "response.output_item.done":
+			switch e.Data["item_id"] {
+			case messageID:
+				if e.Data["output_index"] != 0 {
+					t.Fatalf("message output_item.done index = %v, want 0", e.Data["output_index"])
+				}
+			case toolID:
+				if e.Data["output_index"] != 1 {
+					t.Fatalf("tool output_item.done index = %v, want 1", e.Data["output_index"])
+				}
+			default:
+				t.Fatalf("output_item.done item_id = %v, want %q or %q", e.Data["item_id"], messageID, toolID)
+			}
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			if e.Data["item_id"] != toolID {
+				t.Fatalf("%s item_id = %v, want %q", e.Event, e.Data["item_id"], toolID)
+			}
+		}
+	}
+	if messageID == "" || toolID == "" {
+		t.Fatalf("message_id=%q tool_id=%q, want both set", messageID, toolID)
+	}
+}
+
 func TestStreamReasoningMapsToSummary(t *testing.T) {
 	source := &fakeSource{deltas: []ChatDelta{
 		{Reasoning: "thinking"},
@@ -262,6 +426,110 @@ func TestStreamReasoningMapsToSummary(t *testing.T) {
 	if !seenReasoningDelta {
 		t.Fatal("reasoning content did not map to a summary delta event")
 	}
+}
+
+// TestStreamDoneEventsCarryAccumulatedText locks in the fix that the terminal
+// output_text.done and output_item.done events carry the text accumulated
+// across deltas. Before the fix the done events were empty, so SDKs that
+// assemble the final message from done events produced empty output.
+func TestStreamDoneEventsCarryAccumulatedText(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "Hel"},
+		{Content: "lo "},
+		{Content: "world"},
+		{FinishReason: "stop"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_done", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	textDone := ""
+	var itemContent []any
+	seenTextDone, seenItemDone := false, false
+	for _, e := range emit.events {
+		switch e.Event {
+		case "response.output_text.done":
+			seenTextDone = true
+			textDone, _ = e.Data["text"].(string)
+		case "response.output_item.done":
+			item, _ := e.Data["item"].(map[string]any)
+			if item["type"] == "message" {
+				seenItemDone = true
+				itemContent, _ = item["content"].([]any)
+			}
+		}
+	}
+	if !seenTextDone || !seenItemDone {
+		t.Fatalf("done events missing; text_done=%v item_done=%v", seenTextDone, seenItemDone)
+	}
+	if textDone != "Hello world" {
+		t.Fatalf("output_text.done text = %q, want %q", textDone, "Hello world")
+	}
+	if len(itemContent) != 1 {
+		t.Fatalf("output_item.done content = %#v, want one output_text part", itemContent)
+	}
+	part, _ := itemContent[0].(map[string]any)
+	if part["type"] != "output_text" || part["text"] != "Hello world" {
+		t.Fatalf("output_item.done part = %#v, want output_text with accumulated text", itemContent[0])
+	}
+}
+
+// TestStreamReasoningItemLifecycle verifies the reasoning item has its own
+// output_item.added/done lifecycle and every delta/done event carries the
+// item_id/output_index/content_index correlation fields, mirroring how the
+// message and tool items correlate so SDKs can assemble the item.
+func TestStreamReasoningItemLifecycle(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Reasoning: "step one "},
+		{Reasoning: "step two"},
+		{Content: "answer"},
+		{FinishReason: "stop"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_life", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	addedIndex, doneIndex := -1, -1
+	var reasoningID, summary string
+	deltaEvents := 0
+	for _, e := range emit.events {
+		switch e.Event {
+		case "response.output_item.added":
+			item, _ := e.Data["item"].(map[string]any)
+			if item["type"] == "reasoning" {
+				reasoningID, _ = item["id"].(string)
+				addedIndex, _ = e.Data["output_index"].(int)
+			}
+		case "response.reasoning_summary_text.delta":
+			deltaEvents++
+			if e.Data["item_id"] != reasoningID || e.Data["output_index"] != addedIndex || e.Data["content_index"] != 0 {
+				t.Fatalf("reasoning delta correlation = %#v, want item %q output %d content 0", e.Data, reasoningID, addedIndex)
+			}
+		case "response.output_item.done":
+			item, _ := e.Data["item"].(map[string]any)
+			if item["type"] == "reasoning" {
+				doneIndex, _ = e.Data["output_index"].(int)
+				if s, ok := item["summary"].([]any); ok && len(s) > 0 {
+					if entry, ok := s[0].(map[string]any); ok {
+						summary, _ = entry["text"].(string)
+					}
+				}
+			}
+		}
+	}
+	if reasoningID == "" {
+		t.Fatal("reasoning item added without id")
+	}
+	if addedIndex != 0 || doneIndex != 0 {
+		t.Fatalf("reasoning indices added=%d done=%d, want 0/0 (message follows)", addedIndex, doneIndex)
+	}
+	if deltaEvents != 2 {
+		t.Fatalf("reasoning delta count = %d, want 2", deltaEvents)
+	}
+	if summary != "step one step two" {
+		t.Fatalf("reasoning done summary = %q, want accumulated text", summary)
+	}
+	assertMonoSeq(t, emit.events)
 }
 
 func TestStreamInterruptedBeforeFinishEmitsFailed(t *testing.T) {

@@ -133,12 +133,14 @@ func TestChatErrorDoesNotExposeURLOrKey(t *testing.T) {
 	})}
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = endpoint
-	client, err := NewClient(httpClient, descriptor, fixedSettings{}, nil)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+	client := &Client{
+		httpClient: httpClient,
+		descriptor: descriptor,
+		settings:   fixedSettings{},
+		directPool: newDirectTransportPool(httpClient.Transport),
 	}
 
-	_, err = client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 100}, secret, []byte(`{}`), false)
+	_, err := client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 100}, secret, []byte(`{}`), false)
 	if err == nil {
 		t.Fatal("Chat succeeded")
 	}
@@ -161,12 +163,6 @@ func TestValidateNonstreamChatPreservesBodyAndExtractsMetadata(t *testing.T) {
 	}
 	if string(validated.Body) != string(body) {
 		t.Fatalf("body = %s", validated.Body)
-	}
-	if validated.Metadata.RequestID != "request-123" {
-		t.Fatalf("request ID = %q", validated.Metadata.RequestID)
-	}
-	if string(validated.Metadata.Usage) != `{"prompt_tokens":3,"completion_tokens":4}` {
-		t.Fatalf("usage = %s", validated.Metadata.Usage)
 	}
 }
 

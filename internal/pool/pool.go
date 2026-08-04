@@ -220,7 +220,13 @@ func (p *Pool) ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keyst
 	if !ok {
 		return
 	}
-	state.snapshot = cloneSnapshot(persisted)
+	// Merge only the fields owned by the failure path. The persisted snapshot
+	// was read inside the markFailure transaction and can predate a concurrent
+	// admin update, so a full overwrite would roll back e.g. SetEnabled.
+	state.snapshot.AuthInvalid = persisted.AuthInvalid
+	state.snapshot.CooldownUntil = persisted.CooldownUntil
+	state.snapshot.CooldownLevel = persisted.CooldownLevel
+	state.snapshot.ConsecutiveFailures = persisted.ConsecutiveFailures
 	if f.BlockModel {
 		state.blocks[modelID] = struct{}{}
 	}

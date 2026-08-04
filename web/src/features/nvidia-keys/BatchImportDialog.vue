@@ -1,16 +1,44 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
-import { ApiError } from '../../shared/api/client'
+import { ApiError, isRecord } from '../../shared/api/client'
 import { nvidiaKeysApi } from './api'
+import { isImportResult } from './types'
 import type { ImportResult } from './types'
 
-defineProps<{ open: boolean }>()
+const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ close: []; imported: [] }>()
 const text = ref('')
 const results = ref<ImportResult[]>([])
 const errorMessage = ref('')
 const submitting = ref(false)
+
+watch(() => props.open, (open) => {
+  if (!open) {
+    text.value = ''
+    results.value = []
+    errorMessage.value = ''
+  }
+})
+
+const resultSummary = computed(() => {
+  const imported = results.value.filter((result) => result.status === 'imported').length
+  const failed = results.value.length - imported
+  return { imported, failed }
+})
+
+function close(): void {
+  emit('close')
+}
+
+function statusClass(status: string): string {
+  switch (status) {
+    case 'imported': return 'badge-success'
+    case 'duplicate': return 'badge-info'
+    case 'invalid': return 'badge-danger'
+    default: return 'badge-warning'
+  }
+}
 
 async function submit(): Promise<void> {
   const keys = text.value
@@ -23,7 +51,12 @@ async function submit(): Promise<void> {
   }
   submitting.value = true
   try {
-    results.value = (await nvidiaKeysApi.importBatch(keys)).data
+    const response: unknown = await nvidiaKeysApi.importBatch(keys)
+    const rows = isRecord(response) ? response.data : undefined
+    if (!Array.isArray(rows) || !rows.every(isImportResult)) {
+      throw new TypeError('Invalid batch import response.')
+    }
+    results.value = rows
     emit('imported')
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '批量导入失败，请稍后重试。'
@@ -34,105 +67,205 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="fixed inset-0 z-20 flex items-center justify-center bg-black/70 p-4"
-    role="dialog"
-    aria-modal="true"
-  >
-    <section class="w-full max-w-2xl rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
-      <div class="flex items-center justify-between gap-4">
-        <h2 class="text-lg font-semibold">
-          批量导入 NVIDIA Key
-        </h2>
-        <button
-          class="text-slate-400 hover:text-white"
-          type="button"
-          aria-label="关闭"
-          @click="emit('close')"
-        >
-          关闭
-        </button>
-      </div>
-      <p class="mt-2 text-sm text-slate-400">
-        每行一个 Key。提交后输入会立即清空，页面不会保留完整 Key。
-      </p>
-      <form
-        class="mt-4 space-y-3"
-        @submit.prevent="submit"
-      >
-        <textarea
-          v-model="text"
-          class="min-h-36 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-sm"
-          name="batch-keys"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="每行一个 NVIDIA Key"
-        />
-        <p
-          v-if="errorMessage"
-          class="text-sm text-rose-300"
-          role="alert"
-        >
-          {{ errorMessage }}
-        </p>
-        <div class="flex justify-end gap-2">
+  <Transition name="modal">
+    <div
+      v-if="open"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="close"
+      @keydown.esc="close"
+    >
+      <section class="modal-panel flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden animate-scale-in">
+        <!-- Header -->
+        <div class="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] px-4 py-4 sm:px-6">
+          <div class="min-w-0">
+            <h2 class="text-base font-semibold text-[var(--color-text)]">
+              批量导入 NVIDIA Key
+            </h2>
+            <p class="mt-0.5 truncate text-sm text-[var(--color-text-muted)]">
+              每行一个 Key。导入只做本地校验和保存，不执行上游测活。
+            </p>
+          </div>
           <button
-            class="rounded-lg border border-slate-700 px-3 py-2 text-sm"
+            class="btn-secondary inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm"
             type="button"
-            @click="emit('close')"
+            aria-label="关闭批量导入窗口"
+            @click="close"
           >
-            取消
-          </button>
-          <button
-            class="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-            type="submit"
-            :disabled="submitting"
-          >
-            导入
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+            <span>关闭</span>
           </button>
         </div>
-      </form>
-      <div
-        v-if="results.length"
-        class="mt-5 overflow-x-auto rounded-lg border border-slate-800"
-      >
-        <table class="min-w-full text-left text-sm">
-          <thead class="border-b border-slate-800 text-slate-400">
-            <tr>
-              <th class="px-3 py-2">
-                行
-              </th><th class="px-3 py-2">
-                Key
-              </th><th class="px-3 py-2">
-                状态
-              </th><th class="px-3 py-2">
-                原因
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="result in results"
-              :key="`${result.line}-${result.masked}`"
-              class="border-b border-slate-800/60 last:border-0"
+
+        <!-- Body -->
+        <div class="min-h-0 overflow-y-auto p-4 sm:p-6">
+          <form
+            class="space-y-4"
+            @submit.prevent="submit"
+          >
+            <p class="rounded-lg border border-[#818CF8]/20 bg-[#818CF8]/5 px-3 py-2 text-xs text-[var(--color-info)]">
+              导入完成后，如需验证上游可用性，请返回页面点击“顺序测活全部”。
+            </p>
+            <textarea
+              v-model="text"
+              class="input-field min-h-[140px] w-full font-mono text-sm"
+              name="batch-keys"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="每行一个 NVIDIA Key"
+            />
+            <Transition name="fade">
+              <p
+                v-if="errorMessage"
+                class="text-sm text-[#F87171]"
+                role="alert"
+              >
+                {{ errorMessage }}
+              </p>
+            </Transition>
+            <div class="flex justify-end gap-2">
+              <button
+                class="btn-secondary rounded-lg px-4 py-2 text-sm"
+                type="button"
+                @click="close"
+              >
+                取消
+              </button>
+              <button
+                class="btn-primary rounded-lg px-4 py-2 text-sm"
+                type="submit"
+                :disabled="submitting"
+              >
+                {{ submitting ? '导入中…' : '导入' }}
+              </button>
+            </div>
+          </form>
+
+          <!-- Results -->
+          <Transition name="fade">
+            <div
+              v-if="results.length"
+              data-testid="batch-import-results"
+              class="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-sunken)]/40"
             >
-              <td class="px-3 py-2">
-                {{ result.line ?? '—' }}
-              </td>
-              <td class="px-3 py-2 font-mono">
-                {{ result.masked || '—' }}
-              </td>
-              <td class="px-3 py-2">
-                {{ result.status }}
-              </td>
-              <td class="px-3 py-2 text-slate-400">
-                {{ result.reason || '—' }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
+                <div>
+                  <h3 class="text-sm font-medium text-[var(--color-text)]">
+                    导入结果
+                  </h3>
+                  <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
+                    共 {{ results.length }} 条记录
+                  </p>
+                </div>
+                <div class="flex items-center gap-2 text-xs">
+                  <span class="badge-success">成功 {{ resultSummary.imported }}</span>
+                  <span
+                    v-if="resultSummary.failed"
+                    class="badge-warning"
+                  >需处理 {{ resultSummary.failed }}</span>
+                </div>
+              </div>
+              <div
+                class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[var(--color-focus)]/40"
+                tabindex="0"
+                aria-label="批量导入结果，可横向滚动"
+              >
+                <table class="data-table min-w-[560px]">
+                  <thead class="sticky top-0 z-10">
+                    <tr>
+                      <th class="data-table-th w-16">
+                        行
+                      </th>
+                      <th class="data-table-th">
+                        Key
+                      </th>
+                      <th class="data-table-th w-32">
+                        状态
+                      </th>
+                      <th class="data-table-th">
+                        原因
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-[var(--color-border)]">
+                    <tr
+                      v-for="result in results"
+                      :key="`${result.line}-${result.masked}`"
+                      class="transition-colors hover:bg-[var(--color-hover)]"
+                    >
+                      <td class="data-table-td">
+                        {{ result.line ?? '—' }}
+                      </td>
+                      <td
+                        class="data-table-td max-w-[220px] truncate font-mono text-[var(--color-info)]"
+                        :title="result.masked || '—'"
+                      >
+                        {{ result.masked || '—' }}
+                      </td>
+                      <td class="data-table-td">
+                        <span :class="statusClass(result.status)">{{ result.status }}</span>
+                      </td>
+                      <td
+                        class="data-table-td max-w-[240px] truncate text-[var(--color-text-muted)]"
+                        :title="result.reason || '—'"
+                      >
+                        {{ result.reason || '—' }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Transition>
+        </div>
+
+        <div class="flex shrink-0 justify-end border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 sm:px-6">
+          <button
+            class="btn-secondary min-h-10 rounded-lg px-4 py-2 text-sm"
+            type="button"
+            @click="close"
+          >
+            关闭
+          </button>
+        </div>
+      </section>
+    </div>
+  </Transition>
 </template>
+
+<style scoped>
+.modal-enter-active,
+.modal-leave-active {
+  transition: all 0.2s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+.modal-enter-from .modal-panel,
+.modal-leave-to .modal-panel {
+  transform: scale(0.95);
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

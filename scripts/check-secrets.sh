@@ -11,7 +11,6 @@ import posixpath
 import re
 import subprocess
 import tempfile
-import urllib.parse
 
 
 SECRET_PATTERN = re.compile(rb"(?:nvapi-[A-Za-z0-9_-]{32,}|nvr_[A-Za-z0-9_-]{43})")
@@ -20,8 +19,6 @@ SECRET_PATTERN = re.compile(rb"(?:nvapi-[A-Za-z0-9_-]{32,}|nvr_[A-Za-z0-9_-]{43}
 # fixtures and must not be flagged; real leaked secrets use env-style ALL_CAPS keys.
 CREDENTIAL_PATTERN = re.compile(rb"\b(?:PASSWORD|PASSWD|API_KEY|APIKEY|SECRET|TOKEN)\b\s*[:=]\s*[\"']([^\"']+)[\"']")
 PRIVATE_KEY_PATTERN = re.compile(rb"-----BEGIN (?:RSA|OPENSSH|EC|DSA) PRIVATE KEY-----")
-XK_PROXY_URL_PATTERN = re.compile(rb"https?://api[0-9]+\.xkdaili\.com/tools/XApi\.ashx\?[^\s\"'<>]+", re.IGNORECASE)
-XK_PROXY_ENV_PATTERN = re.compile(rb"NVIDIA_ROUTER_XK_PROXY_API_URL[ \t]*[:=][ \t]*[\"']?([^\s\"']+)", re.IGNORECASE)
 ALLOWLIST_PATH = "tests/e2e/keys.spec.ts"
 ALLOWLIST_TOKEN = b"nvapi-fixture-not-a-real-key-" + b"123456789"
 FORCED_CONTEXT_FILES = {".dockerignore", "Dockerfile"}
@@ -38,27 +35,6 @@ def is_placeholder(value):
     if normalized.startswith("<") or normalized.endswith(">") or (normalized.startswith("${") and normalized.endswith("}")):
         return True
     return any(marker in normalized for marker in ("example.com", ".example.", ".test", ".invalid", "localhost", "127.0.0.1"))
-
-
-def has_real_xk_credentials(raw_url):
-    try:
-        parsed = urllib.parse.urlsplit(raw_url.decode("utf-8"))
-        values = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-    except (UnicodeDecodeError, ValueError):
-        return False
-    apikey = values.get("apikey", [""])[0]
-    sign = values.get("sign", [""])[0]
-    return bool(apikey and sign and not is_placeholder(apikey) and not is_placeholder(sign))
-
-
-def inspect_xk_proxy_text(contents, relative_path):
-    for match in XK_PROXY_URL_PATTERN.finditer(contents):
-        if has_real_xk_credentials(match.group(0).rstrip(b".,);]")):
-            raise ScanFailure("Potential Xingkong proxy credential found in tracked text.")
-    for match in XK_PROXY_ENV_PATTERN.finditer(contents):
-        value = match.group(1).rstrip(b".,);]")
-        if not is_placeholder(value.decode("utf-8", errors="ignore")):
-            raise ScanFailure("Potential Xingkong proxy URL found in tracked text.")
 
 
 def inspect_generic_credentials(contents, relative_path):
@@ -82,12 +58,11 @@ def scan_tracked_files(root):
             continue
         relative_path = raw_path.decode("utf-8", errors="strict").replace(os.sep, "/")
         absolute = os.path.join(root, *relative_path.split("/"))
-        if os.path.islink(absolute):
+        if not os.path.exists(absolute) or os.path.islink(absolute):
             continue
         try:
             with open(absolute, "rb") as stream:
                 contents = stream.read()
-            inspect_xk_proxy_text(contents, relative_path)
             inspect_generic_credentials(contents, relative_path)
         except (OSError, UnicodeError) as error:
             raise ScanFailure("Failed to read a tracked file for secret scanning.") from error
@@ -288,28 +263,6 @@ def require(condition):
 
 
 def run_self_test():
-    inspect_xk_proxy_text(
-        b"NVIDIA_ROUTER_XK_PROXY_API_URL=https://proxy.example.test/?qty=1",
-        "fixture.env",
-    )
-    try:
-        inspect_xk_proxy_text(
-            b"http://api2.xkdaili.com/tools/XApi.ashx?apikey=invalid&sign=invalid",
-            "fixture.md",
-        )
-    except ScanFailure:
-        raise AssertionError("placeholder Xingkong proxy URL was rejected")
-    try:
-        xk_path = b"2.xkdaili.com/tools/XApi.ashx"
-        inspect_xk_proxy_text(
-            b"http://api" + xk_path + b"?apikey=real-key&sign=real-sign",
-            "fixture.md",
-        )
-    except ScanFailure:
-        pass
-    else:
-        raise AssertionError("real Xingkong proxy URL was not detected")
-
     # Generic credential detection: placeholder / test fixture values pass,
     # real-looking env-style assignments fail.
     inspect_generic_credentials(

@@ -164,6 +164,35 @@ func TestStateSyncAppliesPersistedFailureAndSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyFailureDoesNotRollBackConcurrentAdminUpdate(t *testing.T) {
+	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
+	cooldown := now.Add(time.Minute)
+	p := New(testSettings{}, fakeClock{now: now})
+	p.LoadSnapshot(testKeys(1), nil)
+
+	// The admin disable lands in memory after the failure transaction read its
+	// snapshot, so the persisted snapshot still carries the stale Enabled=true.
+	p.UpsertKey(keystate.KeySnapshot{ID: 1, Enabled: false})
+	p.ApplyFailure(1, 100, fault.Fault{}, keystate.KeySnapshot{
+		ID:                  1,
+		Enabled:             true,
+		CooldownUntil:       &cooldown,
+		CooldownLevel:       1,
+		ConsecutiveFailures: 1,
+	})
+
+	state := p.keys[1].snapshot
+	if state.Enabled {
+		t.Fatal("ApplyFailure rolled back the concurrent admin disable")
+	}
+	if state.CooldownUntil == nil || !state.CooldownUntil.Equal(cooldown) || state.CooldownLevel != 1 || state.ConsecutiveFailures != 1 {
+		t.Fatalf("ApplyFailure did not merge failure fields: %+v", state)
+	}
+	if _, ok := p.tryAcquire(100, nil); ok {
+		t.Fatal("disabled key was acquired")
+	}
+}
+
 func TestApplySuccessClearsAuthInvalidForAcquireWithSnapshot(t *testing.T) {
 	p := New(testSettings{}, fakeClock{})
 	p.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true, AuthInvalid: true}}, nil)

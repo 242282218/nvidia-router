@@ -44,7 +44,14 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		tracked := newTrackingWriter(writer, ctx, started, source, request.URL.Path)
 		next.ServeHTTP(tracked, request.WithContext(ctx))
 		metadata := state.Snapshot()
-		prompt, completion := parseUsage(tracked.body.Bytes(), tracked.captureComplete, tracked.captureEnabled, tracked.status, tracked.Header().Get("Content-Type"))
+		// Run the captured body through bearer-token redaction before usage
+		// parsing as a defensive safety net: NVIDIA responses never carry
+		// `Bearer <token>` text, so redaction is a no-op on legitimate content
+		// (the fast path returns early when "bearer" is absent). If an
+		// upstream error echo somehow leaked an Authorization-like body here,
+		// the JSON parse would no-op usage (already the failure-shaped branch)
+		// without persisting the token.
+		prompt, completion := parseUsage([]byte(RedactBearerToken(string(tracked.body.Bytes()))), tracked.captureComplete, tracked.captureEnabled, tracked.status, tracked.Header().Get("Content-Type"))
 		if metadata.PromptTokens == nil {
 			metadata.PromptTokens = prompt
 		}
@@ -58,6 +65,10 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		outcome := OutcomeFailure
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			outcome = OutcomeSuccess
+		}
+		if outcome == OutcomeFailure && metadata.ErrorCode == nil {
+			code := fallbackHTTPErrorCode(status)
+			metadata.ErrorCode = &code
 		}
 		var firstByteMS *int64
 		if metadata.IsStream && !tracked.firstBodyAt.IsZero() {
@@ -77,6 +88,19 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 			logger.Error("record request metadata failed", "request_id", requestID, "error", err)
 		}
 	})
+}
+
+func fallbackHTTPErrorCode(status int) string {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return "http_5xx"
+	case status >= http.StatusBadRequest:
+		return "http_4xx"
+	case status >= http.StatusMultipleChoices:
+		return "http_3xx"
+	default:
+		return "http_error"
+	}
 }
 
 type trackingWriter struct {
@@ -132,28 +156,24 @@ func (w *trackingWriter) Write(payload []byte) (int, error) {
 }
 
 func (w *trackingWriter) disableCaptureIfIneligible() {
-	if w.status < http.StatusOK || w.status >= http.StatusMultipleChoices ||
-		!isJSONContentType(w.Header().Get("Content-Type")) {
+	if w.status < http.StatusOK || w.status >= http.StatusMultipleChoices {
 		w.captureEnabled = false
 		w.captureComplete = false
 		w.body.Reset()
 		return
 	}
-	if state, ok := w.ctx.Value(requestStateKey{}).(*RequestState); ok {
-		state.mu.Lock()
-		stream := state.IsStream
-		state.mu.Unlock()
-		if stream {
-			w.captureEnabled = false
-			w.captureComplete = false
-			w.body.Reset()
-		}
+	mediaType, _, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	if err != nil || !isUsageMediaType(mediaType) {
+		w.captureEnabled = false
+		w.captureComplete = false
+		w.body.Reset()
+		return
 	}
 }
 
-func isJSONContentType(value string) bool {
-	mediaType, _, err := mime.ParseMediaType(value)
-	return err == nil && strings.EqualFold(mediaType, "application/json")
+func isUsageMediaType(mediaType string) bool {
+	return strings.EqualFold(mediaType, "application/json") ||
+		strings.EqualFold(mediaType, "text/event-stream")
 }
 
 func (w *trackingWriter) Flush() {
@@ -169,7 +189,20 @@ func (w *trackingWriter) SetErrorCode(code string) {
 }
 
 func parseUsage(payload []byte, complete, enabled bool, status int, contentType string) (*int64, *int64) {
-	if !enabled || !complete || len(payload) == 0 || status < http.StatusOK || status >= http.StatusMultipleChoices || !isJSONContentType(contentType) {
+	if !enabled || !complete || len(payload) == 0 || status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return nil, nil
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, nil
+	}
+	var body []byte
+	switch {
+	case strings.EqualFold(mediaType, "application/json"):
+		body = payload
+	case strings.EqualFold(mediaType, "text/event-stream"):
+		body = lastSSEEventData(payload)
+	default:
 		return nil, nil
 	}
 	var envelope struct {
@@ -179,8 +212,14 @@ func parseUsage(payload []byte, complete, enabled bool, status int, contentType 
 			InputTokens      *int64 `json:"input_tokens"`
 			OutputTokens     *int64 `json:"output_tokens"`
 		} `json:"usage"`
+		Response struct {
+			Usage struct {
+				InputTokens  *int64 `json:"input_tokens"`
+				OutputTokens *int64 `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
 	}
-	if json.Unmarshal(payload, &envelope) != nil {
+	if json.Unmarshal(body, &envelope) != nil {
 		return nil, nil
 	}
 	if envelope.Usage.PromptTokens == nil {
@@ -189,7 +228,35 @@ func parseUsage(payload []byte, complete, enabled bool, status int, contentType 
 	if envelope.Usage.CompletionTokens == nil {
 		envelope.Usage.CompletionTokens = envelope.Usage.OutputTokens
 	}
+	if envelope.Usage.PromptTokens == nil {
+		envelope.Usage.PromptTokens = envelope.Response.Usage.InputTokens
+	}
+	if envelope.Usage.CompletionTokens == nil {
+		envelope.Usage.CompletionTokens = envelope.Response.Usage.OutputTokens
+	}
 	return envelope.Usage.PromptTokens, envelope.Usage.CompletionTokens
+}
+
+// lastSSEEventData returns the JSON payload of the final data: event in an SSE
+// stream, skipping empty and [DONE] termination events. Chat-completions and
+// Responses streams both carry token usage in a trailing event.
+func lastSSEEventData(payload []byte) []byte {
+	trimmed := bytes.TrimRight(payload, "\r\n")
+	events := bytes.Split(trimmed, []byte("\n\n"))
+	for index := len(events) - 1; index >= 0; index-- {
+		var data []byte
+		for _, line := range bytes.Split(events[index], []byte("\n")) {
+			if bytes.HasPrefix(line, []byte("data:")) {
+				data = append(data, bytes.TrimPrefix(line, []byte("data:"))...)
+			}
+		}
+		event := bytes.TrimSpace(data)
+		if len(event) == 0 || bytes.Equal(event, []byte("[DONE]")) {
+			continue
+		}
+		return event
+	}
+	return nil
 }
 
 func newRequestID() string {

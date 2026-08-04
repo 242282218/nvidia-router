@@ -41,17 +41,15 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		})
 		return
 	}
-	payload, err := readChatBody(writer, request)
+	payload, bodyLease, err := readBodyWithLease(request, bodyReadLimitForJSON(), jsonBodyReadTimeout)
+	if bodyLease != nil {
+		defer bodyLease.Release()
+	}
 	if err != nil {
 		writeChatError(writer, err)
 		return
 	}
-	modelID, err := extractResponsesModel(payload)
-	if err != nil {
-		writeChatError(writer, err)
-		return
-	}
-	stream, err := detectResponsesStream(payload)
+	modelID, stream, err := parseResponsesHeader(payload)
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -101,7 +99,10 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		}
 		if stream {
 			if err := primeSSE(ctx, response); err != nil {
-				if errors.Is(err, sse.ErrEventTooLarge) {
+				if errors.Is(err, sse.ErrEventTooLarge) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					// A 200 with an empty/non-SSE body is an upstream protocol
+					// defect, not a connection blip; classify it as Protocol so
+					// the attempt loop does not cool down every healthy key.
 					return response, fault.Protocol(err)
 				}
 				return response, err
@@ -250,39 +251,40 @@ func writeSSEHeaders(writer http.ResponseWriter) {
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
+	// Disable nginx-style reverse proxy buffering for SSE so chunks reach the
+	// client live (audit B6). Non-nginx proxies ignore the header.
+	writer.Header().Set("X-Accel-Buffering", "no")
 }
 
-// extractResponsesModel pulls the model field so Resolve can locate the
-// whitelist entry before ToChat re-validates the bound model identity.
-func extractResponsesModel(body []byte) (string, error) {
-	var fields struct {
-		Model string `json:"model"`
+// parseResponsesHeader extracts the model and stream fields in a single pass
+// over the request body so Resolve and the attempt runner know how to route
+// before ToChat re-validates the bound model. The previous split ran two
+// full-body json.Unmarshal calls ahead of ToChat's own parse, scanning 32 MiB
+// bodies three times.
+func parseResponsesHeader(body []byte) (modelID string, stream bool, err error) {
+	var header struct {
+		Model  string          `json:"model"`
+		Stream json.RawMessage `json:"stream"`
 	}
-	if err := json.Unmarshal(body, &fields); err != nil || fields.Model == "" {
-		return "", &apierror.Error{
+	// A malformed body surfaces as the model error exactly as it did when
+	// extractResponsesModel ran first, so clients see one stable failure.
+	if unmarshalErr := json.Unmarshal(body, &header); unmarshalErr != nil || header.Model == "" {
+		return "", false, &apierror.Error{
 			Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_parameter",
 			Message: "The model parameter must be a non-empty string.",
 		}
 	}
-	return fields.Model, nil
-}
-
-func detectResponsesStream(body []byte) (bool, error) {
-	var fields struct {
-		Stream json.RawMessage `json:"stream,omitempty"`
-	}
-	_ = json.Unmarshal(body, &fields)
-	if len(fields.Stream) == 0 {
-		return false, nil
+	if len(header.Stream) == 0 {
+		return header.Model, false, nil
 	}
 	var value bool
-	if err := json.Unmarshal(fields.Stream, &value); err != nil {
-		return false, &apierror.Error{
+	if err := json.Unmarshal(header.Stream, &value); err != nil {
+		return "", false, &apierror.Error{
 			Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_parameter",
 			Message: "The stream parameter must be a boolean.",
 		}
 	}
-	return value, nil
+	return header.Model, value, nil
 }
 
 func chatModelRequirements() modelcatalog.Requirements {

@@ -17,7 +17,21 @@ import (
 )
 
 // MaxAudioBodyBytes bounds the overall multipart body size (headers + file).
+// It must remain <= router.maxReplayBytes: the inbound cap rejects oversized
+// requests before EncodeUpstream rebuilds the body, so a rebuilt body in the
+// happy path stays inside the replay limit. Keeping the two thresholds aligned
+// means the EncodeUpstream overflow branch (and its 413 mapping via
+// router.BodyTooLarge) stays latent unless a future change widens the inbound cap.
 const MaxAudioBodyBytes = 25 << 20
+
+// supportedResponseFormats are the response formats the proxy validates and
+// relays. Non-JSON formats (srt/vtt/text) are rejected at parse time: the proxy
+// validates 2xx bodies as JSON, and forwarding a text format would fail
+// validation after the first attempt, burning a key on a protocol error.
+var supportedResponseFormats = map[string]struct{}{
+	"json":         {},
+	"verbose_json": {},
+}
 
 // Request captures the validated parts of an ASR multipart request. Audio is
 // kept in a bounded replay body; files larger than 1 MiB are streamed to a
@@ -31,6 +45,10 @@ type Request struct {
 	prompt      string
 	granularity string
 	responseFmt string
+	// tempDir is the request-scoped scratch directory passed to ParseMultipart.
+	// EncodeUpstream reuses it for the rebuilt multipart body so large audio
+	// uploads stay clear of the OS tmpfs and the inbound cap pairing.
+	tempDir string
 }
 
 // ParseMultipart validates a multipart ASR request from the wire. The body is
@@ -63,12 +81,22 @@ func ParseMultipart(request *http.Request, tempDirs ...string) (Request, error) 
 	if len(files) == 0 {
 		return Request{}, invalidRequest("missing_required_parameter", "file", "The file parameter is required.")
 	}
+	if len(files) != 1 {
+		return Request{}, invalidRequest("invalid_audio", "file", "Exactly one audio file is required.")
+	}
 	file := files[0]
 	if file.Size == 0 {
 		return Request{}, invalidRequest("invalid_audio", "file", "The uploaded audio file is empty.")
 	}
 	if file.Size > MaxAudioBodyBytes {
 		return Request{}, invalidRequest("invalid_audio", "file", "The uploaded audio exceeds the 25 MiB limit.")
+	}
+	responseFmt := firstValue(values["response_format"])
+	if responseFmt != "" {
+		if _, ok := supportedResponseFormats[responseFmt]; !ok {
+			return Request{}, invalidRequest("unsupported_response_format", "response_format",
+				"Only json and verbose_json response formats are supported.")
+		}
 	}
 	fp, err := file.Open()
 	if err != nil {
@@ -87,7 +115,8 @@ func ParseMultipart(request *http.Request, tempDirs ...string) (Request, error) 
 		language:    firstValue(values["language"]),
 		prompt:      firstValue(values["prompt"]),
 		granularity: firstValue(values["timestamp_granularity"]),
-		responseFmt: firstValue(values["response_format"]),
+		responseFmt: responseFmt,
+		tempDir:     tempDir,
 	}, nil
 }
 
@@ -105,6 +134,11 @@ func firstValue(values []string) string {
 
 // ModelID returns the public model identifier for whitelist resolution.
 func (r Request) ModelID() string { return r.model }
+
+// ResponseFormat reports the requested response_format. The HTTP layer uses it
+// to pick the upstream response validation budget: verbose_json carries
+// per-word timestamps and needs a larger cap than plain json.
+func (r Request) ResponseFormat() string { return r.responseFmt }
 
 // Requirements declares that ASR requires a verified kind=asr model.
 func (r Request) Requirements() modelcatalog.Requirements {
@@ -148,53 +182,95 @@ func (r Request) Close() error {
 
 // EncodeUpstream rebuilds a multipart body with the mapped model and forwards
 // only NVIDIA-mappable fields (language/prompt/response_format and timestamp
-// granularity). It returns the body bytes and the content-type header carrying
+// granularity). It returns a replayable body and the content-type header carrying
 // the multipart boundary.
-func (r Request) EncodeUpstream(upstreamModel string) ([]byte, string, error) {
-	var body strings.Builder
-	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("model", upstreamModel); err != nil {
-		return nil, "", fmt.Errorf("write model field: %w", err)
-	}
-	if r.language != "" {
-		if err := writer.WriteField("language", r.language); err != nil {
-			return nil, "", fmt.Errorf("write language field: %w", err)
+//
+// The rebuilt body is streamed directly to a temp file via
+// router.CaptureStreamedReplay rather than accumulated in a strings.Builder: a
+// 25 MiB upload would otherwise sit fully in RAM through every replay attempt.
+// The temp file lives in the request-s scoped tempDir passed to ParseMultipart
+// so it stays clear of the OS tmpfs.
+func (r Request) EncodeUpstream(upstreamModel string) (router.ReplayableBody, string, error) {
+	replay, contentType, err := router.CaptureStreamedReplay[string](r.tempDir, func(out io.Writer) (int64, string, error) {
+		// CaptureStreamedReplay rejects bodies > maxReplayBytes, so every byte
+		// written through the multipart writer must be counted toward the limit.
+		// Using io.Copy alone would miss field/header bytes and the terminating
+		// boundary, so wrap the destination in a counter.
+		counter := &countingWriter{writer: out}
+		writer := multipart.NewWriter(counter)
+		contentType := writer.FormDataContentType()
+		writeErr := func(format string, cause error) (int64, string, error) {
+			return counter.bytes, contentType, fmt.Errorf(format, cause)
 		}
-	}
-	if r.prompt != "" {
-		if err := writer.WriteField("prompt", r.prompt); err != nil {
-			return nil, "", fmt.Errorf("write prompt field: %w", err)
+		if err := writer.WriteField("model", upstreamModel); err != nil {
+			return writeErr("write model field: %w", err)
 		}
-	}
-	if r.responseFmt != "" {
-		if err := writer.WriteField("response_format", r.responseFmt); err != nil {
-			return nil, "", fmt.Errorf("write response_format field: %w", err)
+		if r.language != "" {
+			if err := writer.WriteField("language", r.language); err != nil {
+				return writeErr("write language field: %w", err)
+			}
 		}
-	}
-	if r.granularity != "" {
-		if err := writer.WriteField("timestamp_granularity", r.granularity); err != nil {
-			return nil, "", fmt.Errorf("write timestamp field: %w", err)
+		if r.prompt != "" {
+			if err := writer.WriteField("prompt", r.prompt); err != nil {
+				return writeErr("write prompt field: %w", err)
+			}
 		}
-	}
-	part, err := writer.CreatePart(filePartHeader(r.file.Filename, r.AudioContentType()))
+		if r.responseFmt != "" {
+			if err := writer.WriteField("response_format", r.responseFmt); err != nil {
+				return writeErr("write response_format field: %w", err)
+			}
+		}
+		if r.granularity != "" {
+			if err := writer.WriteField("timestamp_granularity", r.granularity); err != nil {
+				return writeErr("write timestamp field: %w", err)
+			}
+		}
+		part, err := writer.CreatePart(filePartHeader(r.file.Filename, r.AudioContentType()))
+		if err != nil {
+			return writeErr("create file part: %w", err)
+		}
+		reader, err := r.fileBody.Open()
+		if err != nil {
+			return writeErr("open file body: %w", err)
+		}
+		if _, err := io.Copy(part, reader); err != nil {
+			_ = reader.Close()
+			return writeErr("write file bytes: %w", err)
+		}
+		if err := reader.Close(); err != nil {
+			return writeErr("close file body: %w", err)
+		}
+		if err := writer.Close(); err != nil {
+			return writeErr("close multipart writer: %w", err)
+		}
+		return counter.bytes, contentType, nil
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("create file part: %w", err)
+		return nil, "", fmt.Errorf("capture upstream multipart body: %w", err)
 	}
-	reader, err := r.fileBody.Open()
-	if err != nil {
-		return nil, "", fmt.Errorf("open file body: %w", err)
+	if r.fileBody != nil {
+		if err := r.fileBody.Close(); err != nil {
+			_ = replay.Close()
+			return nil, "", fmt.Errorf("release source audio replay body: %w", err)
+		}
 	}
-	if _, err := io.Copy(part, reader); err != nil {
-		_ = reader.Close()
-		return nil, "", fmt.Errorf("write file bytes: %w", err)
+	return replay, contentType, nil
+}
+
+// countingWriter transparently counts every byte written through it so the
+// caller can report an accurate N to CaptureStreamedReplay without needing to
+// know how the multipart writer packages fields and boundaries.
+type countingWriter struct {
+	writer io.Writer
+	bytes  int64
+}
+
+func (c *countingWriter) Write(data []byte) (int, error) {
+	n, err := c.writer.Write(data)
+	if n > 0 {
+		c.bytes += int64(n)
 	}
-	if err := reader.Close(); err != nil {
-		return nil, "", fmt.Errorf("close file body: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("close multipart writer: %w", err)
-	}
-	return []byte(body.String()), writer.FormDataContentType(), nil
+	return n, err
 }
 
 // AudioContentType reports a plausible content type for the upload so the

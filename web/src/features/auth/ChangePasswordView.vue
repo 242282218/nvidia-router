@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -45,70 +45,137 @@ function validateNewPassword(password: string): string {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-950 px-4 py-12 text-slate-100">
-    <section class="mx-auto max-w-md rounded-xl bg-slate-900 p-6 shadow-xl">
-      <div
-        v-if="isPlainHttp"
-        class="mb-5 rounded-lg border border-amber-500/60 bg-amber-950/60 p-3 text-sm text-amber-100"
-        role="alert"
-      >
-        当前页面使用 HTTP，密码会通过明文连接传输。请仅在可信网络中操作。
+  <div class="flex min-h-screen items-center justify-center bg-[var(--color-canvas)] px-4">
+    <!-- Ambient decoration -->
+    <div class="fixed inset-0 overflow-hidden pointer-events-none">
+      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[#F59E0B]/5 blur-3xl" />
+      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[#818CF8]/5 blur-3xl" />
+    </div>
+
+    <section class="relative w-full max-w-sm animate-fade-in">
+      <div class="mb-8 text-center">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#F59E0B] text-lg font-bold text-[var(--color-canvas)]">
+          !
+        </div>
+        <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">
+          修改管理员密码
+        </h1>
+        <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+          首次登录需要修改密码
+        </p>
       </div>
 
-      <h1 class="text-2xl font-semibold">
-        修改管理员密码
-      </h1>
-      <p class="mt-2 text-sm text-slate-400">
-        新密码至少 12 个字符，且不能为 admin。完成修改后才能进入管理端。
-      </p>
-
-      <form
-        class="mt-6 space-y-4"
-        @submit.prevent="submit"
+      <div
+        v-if="isPlainHttp"
+        class="mb-6 rounded-lg border border-[#F59E0B]/30 bg-[#F59E0B]/5 p-3 text-sm text-[#FBBF24]"
+        role="alert"
       >
-        <label class="block">
-          <span class="text-sm text-slate-300">当前密码</span>
-          <input
-            v-model="currentPassword"
-            autocomplete="current-password"
-            class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-            name="current-password"
-            required
-            type="password"
+        <div class="flex items-start gap-2">
+          <svg
+            class="mt-0.5 h-4 w-4 shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
           >
-        </label>
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+            />
+          </svg>
+          <span>当前页面使用 HTTP，密码会通过明文连接传输。请仅在可信网络中操作。</span>
+        </div>
+      </div>
 
-        <label class="block">
-          <span class="text-sm text-slate-300">新密码</span>
-          <input
-            v-model="newPassword"
-            autocomplete="new-password"
-            class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
-            minlength="12"
-            name="new-password"
-            required
-            type="password"
-          >
-        </label>
-
-        <p
-          v-if="formError"
-          class="text-sm text-red-300"
-          data-testid="form-error"
-          role="status"
-        >
-          {{ formError }}
+      <div class="card p-6 animate-slide-up">
+        <p class="text-sm text-[var(--color-text-muted)] mb-6">
+          新密码至少 12 个字符，且不能为 admin。完成修改后才能进入管理端。
         </p>
 
-        <button
-          class="w-full rounded-lg bg-green-500 px-4 py-2 font-medium text-slate-950 disabled:opacity-50"
-          :disabled="submitting"
-          type="submit"
+        <form
+          class="space-y-4"
+          @submit.prevent="submit"
         >
-          {{ submitting ? '修改中…' : '修改密码' }}
-        </button>
-      </form>
+          <label class="block">
+            <span class="text-sm font-medium text-[var(--color-text-secondary)]">当前密码</span>
+            <input
+              v-model="currentPassword"
+              autocomplete="current-password"
+              class="input-field mt-1.5"
+              name="current-password"
+              required
+              type="password"
+            >
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium text-[var(--color-text-secondary)]">新密码</span>
+            <input
+              v-model="newPassword"
+              autocomplete="new-password"
+              class="input-field mt-1.5"
+              minlength="12"
+              name="new-password"
+              required
+              type="password"
+            >
+          </label>
+
+          <Transition name="slide">
+            <p
+              v-if="formError"
+              class="rounded-lg bg-[#EF4444]/5 border border-[#EF4444]/20 px-3 py-2 text-sm text-[#F87171]"
+              data-testid="form-error"
+              role="status"
+            >
+              {{ formError }}
+            </p>
+          </Transition>
+
+          <button
+            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:opacity-40"
+            :disabled="submitting"
+            type="submit"
+          >
+            <span class="flex items-center justify-center gap-2">
+              <svg
+                v-if="submitting"
+                class="h-4 w-4 animate-spin"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  class="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  stroke-width="4"
+                />
+                <path
+                  class="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
+              </svg>
+              {{ submitting ? '修改中…' : '修改密码' }}
+            </span>
+          </button>
+        </form>
+      </div>
     </section>
-  </main>
+  </div>
 </template>
 
+<style scoped>
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

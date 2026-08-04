@@ -159,3 +159,32 @@ func TestStoreDoesNotReplaceSnapshotWhenSettingsRowIsMissing(t *testing.T) {
 		t.Fatalf("snapshot after missing-row store = %#v, want %#v", got, before)
 	}
 }
+
+func TestValidateRequiresAtLeastThirtyDaysOfRequestLogs(t *testing.T) {
+	for _, retention := range []int{29, 0} {
+		snapshot := validSnapshotForValidation()
+		snapshot.RequestLogRetentionDays = retention
+		if err := Validate(snapshot); err == nil {
+			t.Fatalf("Validate(%d) error = nil, want lower-bound error", retention)
+		}
+	}
+}
+
+func TestValidateAcceptsRequestLogRetentionBoundaries(t *testing.T) {
+	for _, retention := range []int{30, 365} {
+		snapshot := validSnapshotForValidation()
+		snapshot.RequestLogRetentionDays = retention
+		if err := Validate(snapshot); err != nil {
+			t.Fatalf("Validate(%d) error = %v, want nil", retention, err)
+		}
+	}
+}
+
+func validSnapshotForValidation() Snapshot {
+	return Snapshot{
+		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
+		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000,
+		ShutdownGraceMS: 60000, FailoverStatusCodes: "429,500,502,503,504",
+		RequestLogRetentionDays: 30,
+	}
+}

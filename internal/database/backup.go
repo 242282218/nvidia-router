@@ -34,7 +34,18 @@ func Backup(ctx context.Context, db *sql.DB, destination string) (returnErr erro
 		return fmt.Errorf("set SQLite backup permissions: %w", err)
 	}
 	if err := os.Rename(temporaryPath, destinationPath); err != nil {
-		return fmt.Errorf("publish SQLite backup: %w", err)
+		// os.Rename is not guaranteed to replace an existing target on every
+		// platform (Windows can refuse when the destination exists or is held
+		// by another process), while the backup CLI must be able to refresh an
+		// existing --output file. Fall back to delete-then-rename; the small
+		// non-atomic window is acceptable for a backup artifact, and a target
+		// that cannot be removed surfaces as a clear error below.
+		if removeErr := os.Remove(destinationPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("replace existing SQLite backup %q: %w", destinationPath, errors.Join(err, removeErr))
+		}
+		if err := os.Rename(temporaryPath, destinationPath); err != nil {
+			return fmt.Errorf("publish SQLite backup: %w", err)
+		}
 	}
 	published = true
 	return nil

@@ -3,9 +3,16 @@ package sse
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 )
+
+// MaxCaptureBytes bounds the total bytes Prime buffers while waiting for the
+// first data-bearing event. The decoder already caps a single event at
+// MaxEventSize, but a stream of comment/keep-alive events before the first data
+// event would otherwise grow the capture buffer without bound (checklist #13).
+const MaxCaptureBytes = MaxEventSize
 
 // Prime waits for one complete SSE event before the caller accepts an upstream
 // attempt. Every byte read by the decoder is replayed so the proxy sees the
@@ -21,6 +28,10 @@ func Prime(ctx context.Context, response *http.Response) error {
 		decoder := NewDecoder(captured)
 		for {
 			event, err := decoder.Decode()
+			if errors.Is(err, ErrEventTooLarge) {
+				result <- ErrEventTooLarge
+				return
+			}
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
@@ -56,6 +67,12 @@ type captureReader struct {
 func (r *captureReader) Read(payload []byte) (int, error) {
 	read, err := r.reader.Read(payload)
 	if read > 0 {
+		if r.Len()+read > MaxCaptureBytes {
+			// Bound the preamble buffer; Prime surfaces ErrEventTooLarge rather
+			// than buffering an unbounded comment/keep-alive preamble. The bytes
+			// are consumed but not retained, which is fine: the attempt fails.
+			return read, ErrEventTooLarge
+		}
 		_, _ = r.Write(payload[:read])
 	}
 	return read, err

@@ -65,8 +65,16 @@ export function createSessionStore(api: AuthApi = authApi): SessionStore {
   }
 
   async function logout(): Promise<void> {
-    await api.logout()
-    state.value = { kind: 'anonymous' }
+    try {
+      await api.logout()
+    } catch {
+      // The remote call may fail (token already expired, network down,
+      // backend restart), but locally the session must still end so the
+      // shell falls back to the login route instead of staying stuck on
+      // privileged chrome keyed to a token the server no longer accepts.
+    } finally {
+      state.value = { kind: 'anonymous' }
+    }
   }
 
   return { changePassword, dispose, ensureLoaded, login, logout, refresh, state }

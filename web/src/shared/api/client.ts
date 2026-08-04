@@ -39,10 +39,21 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   })
 
   if (!response.ok) {
-    if (response.status === 401) {
+    // Not every 401 invalidates the active session. The login form returns
+    // 401 invalid_credentials when the username/password is wrong even
+    // while the requester holds a valid cookie, and change-password returns
+    // the same status when the current password is mistyped. Auto-bouncing
+    // to /login there would kick out a still-authenticated administrator;
+    // only treat the explicit invalid_session / session_not_found codes as
+    // session-expired so the auth forms can surface the rejection inline.
+    const apiErr = await parseApiError(response)
+    if (
+      response.status === 401 &&
+      (apiErr.code === 'invalid_session' || apiErr.code === 'session_not_found')
+    ) {
       window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
     }
-    throw await parseApiError(response)
+    throw apiErr
   }
   if (response.status === 204) {
     return undefined as T
@@ -99,4 +110,8 @@ export function isFiniteNumber(value: unknown): value is number {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+export function isAbortError(value: unknown): boolean {
+  return isRecord(value) && value.name === 'AbortError'
 }

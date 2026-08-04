@@ -2,6 +2,7 @@ package apierror
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -35,4 +36,33 @@ func (err Error) Write(writer http.ResponseWriter) {
 			Code:    err.Code,
 		},
 	})
+}
+
+// WriteInternalError emits the generic 500 envelope to the client while
+// logging the underlying cause to the provided logger, paired with optional
+// request context. The public response carries no detail (per the existing
+// envelope contract), but the slog record makes the snack traceable on the
+// server side. A nil logger is treated as a no-op so callers without an
+// injected logger keep their current behaviour.
+func WriteInternalError(writer http.ResponseWriter, logger *slog.Logger, cause error, message string, attrs ...slog.Attr) {
+	if logger != nil && cause != nil {
+		args := []any{slog.String("cause", cause.Error())}
+		args = append(args, toAnySlice(attrs)...)
+		logger.Error(message, args...)
+	}
+	Error{
+		Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
+		Message: "The server could not complete the request.",
+	}.Write(writer)
+}
+
+func toAnySlice(attrs []slog.Attr) []any {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(attrs))
+	for _, attr := range attrs {
+		out = append(out, attr)
+	}
+	return out
 }

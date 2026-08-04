@@ -127,6 +127,57 @@ func TestFromChatRejectsMissingID(t *testing.T) {
 	}
 }
 
+func TestFromChatPreservesReasoningContent(t *testing.T) {
+	chat := `{"choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"think step by step"}}]}`
+	got, err := FromChat([]byte(chat), "resp_r", nonstreamModel())
+	if err != nil {
+		t.Fatalf("FromChat: %v", err)
+	}
+	result := decodeResponses(t, got)
+	output, _ := result["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want reasoning + message", len(output))
+	}
+	reasoning := output[0].(map[string]any)
+	if reasoning["type"] != "reasoning" {
+		t.Fatalf("first item type = %v, want reasoning", reasoning["type"])
+	}
+	summary, _ := reasoning["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("reasoning summary len = %d, want 1", len(summary))
+	}
+	part := summary[0].(map[string]any)
+	if part["type"] != "summary_text" || part["text"] != "think step by step" {
+		t.Fatalf("reasoning summary = %#v, want summary_text think step by step", part)
+	}
+	message := output[1].(map[string]any)
+	if message["type"] != "message" {
+		t.Fatalf("second item type = %v, want message", message["type"])
+	}
+	content := message["content"].([]any)
+	if content[0].(map[string]any)["text"] != "answer" {
+		t.Fatalf("message text = %v, want answer", content[0].(map[string]any)["text"])
+	}
+}
+
+func TestFromChatReasoningOnlyNoText(t *testing.T) {
+	// reasoning_content present with empty content: reasoning item is kept,
+	// no empty message item is synthesized.
+	chat := `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"only thinking"}}]}`
+	got, err := FromChat([]byte(chat), "resp_r2", nonstreamModel())
+	if err != nil {
+		t.Fatalf("FromChat: %v", err)
+	}
+	result := decodeResponses(t, got)
+	output, _ := result["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output len = %d, want 1 (reasoning only)", len(output))
+	}
+	if output[0].(map[string]any)["type"] != "reasoning" {
+		t.Fatalf("only item type = %v, want reasoning", output[0].(map[string]any)["type"])
+	}
+}
+
 func TestFromChatUsesPublicModelNotUpstream(t *testing.T) {
 	chat := `{"choices":[{"message":{"role":"assistant","content":"x"}}]}`
 	got, err := FromChat([]byte(chat), "resp_m", nonstreamModel())

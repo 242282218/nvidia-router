@@ -3,7 +3,6 @@ package v1
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -11,7 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/router"
@@ -35,6 +37,75 @@ func TestAudioRejectsMissingFile(t *testing.T) {
 	request.Header.Set("Content-Type", contentType)
 	handler.ServeHTTP(response, request)
 	assertChatError(t, response, http.StatusBadRequest, "missing_required_parameter")
+}
+
+func TestAudioRejectsWhenBodyReadAdmissionIsSaturated(t *testing.T) {
+	body, contentType := multipartBodyAudio("public-asr", map[string][]byte{"file": {1}})
+	for range cap(bodyReadSemaphore) {
+		bodyReadSemaphore <- struct{}{}
+	}
+	defer func() {
+		for range cap(bodyReadSemaphore) {
+			<-bodyReadSemaphore
+		}
+	}()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", contentType)
+	NewAudio(nil, nil, nil).ServeHTTP(response, request)
+	assertChatError(t, response, http.StatusTooManyRequests, "server_busy")
+}
+
+// TestAudioSlowUploadTimesOut verifies that a stalled multipart upload cannot
+// hold a body-read slot forever: the read deadline must close the wire body
+// (http.Server has no ReadTimeout because SSE streams stay open) and the
+// handler must surface 408 request_timeout.
+func TestAudioSlowUploadTimesOut(t *testing.T) {
+	body := &stallingUploadBody{unblocked: make(chan struct{})}
+	handler := NewAudio(nil, nil, nil)
+	handler.bodyReadTimeout = 40 * time.Millisecond
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", body)
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=slow")
+	handler.ServeHTTP(response, request)
+	assertChatError(t, response, http.StatusRequestTimeout, "request_timeout")
+	if !body.closed.Load() {
+		t.Fatal("slow upload body was not closed when the read deadline fired")
+	}
+	// The read slot must be returned even on timeout so a flood of stalled
+	// uploads cannot starve every other request. The channel holds one element
+	// per occupied slot, so zero elements means all slots are free again.
+	if held := len(bodyReadSemaphore); held != 0 {
+		t.Fatalf("body read slots held after timeout: %d/%d", held, cap(bodyReadSemaphore))
+	}
+}
+
+// stallingUploadBody yields a single byte then blocks until closed,
+// simulating a client that accepts the connection but never finishes the
+// upload. Close unblocks Read so the handler can actually return.
+type stallingUploadBody struct {
+	emitted   atomic.Bool
+	closed    atomic.Bool
+	unblocked chan struct{}
+	closeOnce sync.Once
+}
+
+func (b *stallingUploadBody) Read(payload []byte) (int, error) {
+	if b.emitted.CompareAndSwap(false, true) {
+		if len(payload) > 0 {
+			payload[0] = 'x'
+			return 1, nil
+		}
+	}
+	<-b.unblocked
+	return 0, io.EOF
+}
+
+func (b *stallingUploadBody) Close() error {
+	b.closed.Store(true)
+	b.closeOnce.Do(func() { close(b.unblocked) })
+	return nil
 }
 
 func TestAudioRejectsNonASRModelKind(t *testing.T) {
@@ -261,6 +332,9 @@ func TestSpeechMapsModelPrimesBodyAndFiltersContentType(t *testing.T) {
 			if response.Header().Get("Content-Type") != test.wantContentType {
 				t.Fatalf("content-type = %q", response.Header().Get("Content-Type"))
 			}
+			if got := response.Header().Get("X-Accel-Buffering"); got != "no" {
+				t.Fatalf("X-Accel-Buffering = %q, want %q (audit B6: nginx must not buffer speech stream)", got, "no")
+			}
 			if !lease.released {
 				t.Fatal("successful speech lease was not released")
 			}
@@ -281,9 +355,30 @@ func TestSpeechRejectsOversizedJSON(t *testing.T) {
 	assertChatError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
 }
 
+// TestWriteChatErrorMapsBodyTooLarge verifies the replay-overflow sentinel from
+// router.NewReplayableBody is surfaced to the client as 413 request_too_large
+// rather than the generic 500 internal_error fallback.
+func TestWriteChatErrorMapsBodyTooLarge(t *testing.T) {
+	_, err := router.NewReplayableBody(make([]byte, (25<<20)+1), t.TempDir())
+	if err == nil {
+		t.Fatal("expected oversized replay body to be rejected")
+	}
+	response := httptest.NewRecorder()
+	writeChatError(response, err)
+	assertChatError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
+}
+
 func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
-	transport := &speechInterruptTransport{}
-	client, err := nvidia.NewClient(&http.Client{Transport: transport}, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		writer.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = writer.Write([]byte{0x7f})
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.TTS.URL = upstream.URL + "/v1/audio/speech"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -295,7 +390,7 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 		if err != nil {
 			response, err = execute(ctx, lease.id+1, []byte("second-key"), &router.CommitState{})
 		}
-		return router.AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: transport.calls}, err
+		return router.AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: upstreamCalls}, err
 	})
 
 	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
@@ -306,8 +401,8 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"public-tts","input":"hello"}`))
 	handler.ServeHTTP(response, request)
 
-	if transport.calls != 1 {
-		t.Fatalf("upstream attempts = %d, want 1", transport.calls)
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream attempts = %d, want 1", upstreamCalls)
 	}
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), []byte{0x7f}) {
 		t.Fatalf("response = %d %#v", response.Code, response.Body.Bytes())
@@ -316,31 +411,3 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 		t.Fatal("TTS first-byte output did not commit Attempt state")
 	}
 }
-
-type speechInterruptTransport struct {
-	calls int
-}
-
-func (t *speechInterruptTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	t.calls++
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"audio/mpeg"}},
-		Body:       &speechInterruptBody{},
-	}, nil
-}
-
-type speechInterruptBody struct {
-	emitted bool
-}
-
-func (b *speechInterruptBody) Read(payload []byte) (int, error) {
-	if !b.emitted {
-		b.emitted = true
-		payload[0] = 0x7f
-		return 1, nil
-	}
-	return 0, errors.New("audio stream interrupted")
-}
-
-func (*speechInterruptBody) Close() error { return nil }

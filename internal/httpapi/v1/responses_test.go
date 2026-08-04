@@ -205,6 +205,7 @@ func TestResponsesStreamEmitsResponsesEventSequence(t *testing.T) {
 	sseBody := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"He\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n" +
 		"data: [DONE]\n\n"
 	response, lease := serveStreamResponses(t, sseBody)
 
@@ -234,12 +235,18 @@ func TestResponsesStreamEmitsResponsesEventSequence(t *testing.T) {
 	if strings.Count(body, "data: [DONE]") != 1 {
 		t.Fatalf("[DONE] appeared %d times, want 1", strings.Count(body, "data: [DONE]"))
 	}
+	if !strings.Contains(body, `"input_tokens":3`) || !strings.Contains(body, `"output_tokens":2`) {
+		t.Fatalf("stream usage missing from response.completed: %s", body)
+	}
 	if strings.Contains(body, "vendor/secret-id") || strings.Contains(body, "upstream-secret") {
 		t.Fatalf("upstream secret or id leaked into stream response:\n%s", body)
 	}
 	ct := response.Header().Get("Content-Type")
 	if !strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	if got := response.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering = %q, want %q (audit B6: nginx must not buffer SSE)", got, "no")
 	}
 }
 

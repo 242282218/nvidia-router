@@ -1,7 +1,20 @@
 node_modules/
 /web/dist/
 coverage/
+*.log
+.zcode/
+design_system_output.txt
+diff-trans.txt
 *.exe
 *.test
+
+# Local credential dumps (NVIDIA keys, account exports). Never commit.
+/key/
+
+# Ad-hoc build/test transcripts that escape the *.log rule.
+log_*.txt
+
 /internal/web/dist/*
+!/internal/web/dist/
 !/internal/web/dist/index.html
+!/internal/web/dist/assets/

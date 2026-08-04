@@ -218,7 +218,7 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		case KindEmbedding:
 			_, err = nvidia.ValidateNonstreamEmbeddings(response)
 		case KindASR:
-			_, err = nvidia.ValidateNonstreamAudio(response)
+			_, err = nvidia.ValidateNonstreamAudio(response, false)
 		case KindTTS:
 			if !isAudioContentType(response.Header.Get("Content-Type")) {
 				return ErrManualTestRequired

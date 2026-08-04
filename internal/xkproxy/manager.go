@@ -7,313 +7,173 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
-	"nvidia-router/internal/clock"
 	"nvidia-router/internal/runtimeconfig"
 )
 
 type RetireReason string
 
 const (
-	RetireReasonRenewWindow    RetireReason = "renew_window"
 	RetireReasonTransportError RetireReason = "transport_error"
 	RetireReasonShutdown       RetireReason = "shutdown"
 )
 
-type fetchFunc func(context.Context) (*url.URL, error)
+type ErrorReason string
+
+const (
+	ReasonTransportFailed ErrorReason = "transport_failed"
+	ReasonManagerClosed   ErrorReason = "manager_closed"
+)
+
+type Error struct {
+	reason ErrorReason
+	cause  error
+}
+
+func (e *Error) Error() string       { return "upstream proxy unavailable" }
+func (e *Error) Unwrap() error       { return e.cause }
+func (e *Error) Reason() ErrorReason { return e.reason }
+
+func NewTransportError(cause error) *Error {
+	return &Error{reason: ReasonTransportFailed, cause: cause}
+}
+
+type Provider interface {
+	Configured() bool
+	Enabled() bool
+	Acquire(context.Context, runtimeconfig.Snapshot) (*Handle, error)
+}
 
 type Manager struct {
-	mu                    sync.Mutex
-	ttl                   time.Duration
-	renewBefore           time.Duration
-	base                  *http.Transport
-	source                clock.Clock
-	logger                *slog.Logger
-	fetch                 fetchFunc
-	active                *lease
-	retiring              map[*lease]struct{}
-	fetching              chan struct{}
-	fetchCancel           context.CancelFunc
-	lastFetchFailureUntil time.Time
-	lastFetchError        *Error
-	closeCh               chan struct{}
-	closed                bool
-	nextID                int64
-	fetchCount            int64
-	retiredCount          int64
+	mu         sync.Mutex
+	proxyURL   *url.URL
+	base       *http.Transport
+	logger     *slog.Logger
+	transports map[transportKey]*cachedTransport
+	clock      uint64
+	closed     bool
+}
+
+const maxCachedTransports = 8
+
+type cachedTransport struct {
+	transport *http.Transport
+	lastUsed  uint64
 }
 
 type Handle struct {
 	manager   *Manager
-	lease     *lease
-	transport http.RoundTripper
-	released  atomicFlag
+	key       transportKey
+	transport *http.Transport
 }
-
-type lease struct {
-	id             int64
-	proxyURL       *url.URL
-	acquiredAt     time.Time
-	expiresAt      time.Time
-	usableUntil    time.Time
-	refs           int
-	servedRequests int64
-	reuseHits      int64
-	state          leaseState
-	retireReason   RetireReason
-	transports     map[transportKey]*http.Transport
-}
-
-type leaseState uint8
-
-const (
-	leaseActive leaseState = iota
-	leaseRetiring
-)
 
 type transportKey struct {
 	connectTimeoutMS   int
 	firstByteTimeoutMS int
 }
 
-type atomicFlag struct {
-	mu   sync.Mutex
-	done bool
-}
-
-func (f *atomicFlag) Do(callback func()) {
-	f.mu.Lock()
-	if f.done {
-		f.mu.Unlock()
-		return
+func New(proxyURL *url.URL, authKey string, base *http.Transport, logger *slog.Logger) (*Manager, error) {
+	if err := validateProxyURL(proxyURL); err != nil {
+		return nil, err
 	}
-	f.done = true
-	f.mu.Unlock()
-	callback()
-}
-
-func New(
-	apiURL *url.URL,
-	ttl time.Duration,
-	renewBefore time.Duration,
-	base *http.Transport,
-	source clock.Clock,
-	logger *slog.Logger,
-) (*Manager, error) {
-	if apiURL == nil || apiURL.Host == "" {
-		return nil, errors.New("initialize proxy manager: API URL is required")
-	}
-	if ttl < 30*time.Second || ttl > 30*time.Minute {
-		return nil, errors.New("initialize proxy manager: TTL is outside the supported range")
-	}
-	if renewBefore <= 0 || renewBefore >= ttl {
-		return nil, errors.New("initialize proxy manager: renew window is invalid")
+	if strings.TrimSpace(authKey) == "" {
+		return nil, errors.New("initialize proxy manager: proxy authentication key is required")
 	}
 	if base == nil {
 		return nil, errors.New("initialize proxy manager: HTTP transport is required")
 	}
-	if source == nil {
-		source = clock.RealClock{}
-	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return newManagerWithFetcher(apiURL, ttl, renewBefore, base, source, logger, newFetcher(apiURL).Fetch), nil
+
+	withAuth := *proxyURL
+	withAuth.User = url.UserPassword("proxy", authKey)
+	return &Manager{
+		proxyURL:   &withAuth,
+		base:       base,
+		logger:     logger,
+		transports: make(map[transportKey]*cachedTransport),
+	}, nil
 }
 
-func newManagerWithFetcher(
-	apiURL *url.URL,
-	ttl time.Duration,
-	renewBefore time.Duration,
-	base *http.Transport,
-	source clock.Clock,
-	logger *slog.Logger,
-	fetch fetchFunc,
-) *Manager {
-	_ = apiURL
-	return &Manager{
-		ttl:         ttl,
-		renewBefore: renewBefore,
-		base:        base,
-		source:      source,
-		logger:      logger,
-		fetch:       fetch,
-		retiring:    make(map[*lease]struct{}),
-		closeCh:     make(chan struct{}),
+func validateProxyURL(value *url.URL) error {
+	if value == nil || !value.IsAbs() || value.Host == "" || value.User != nil || value.RawQuery != "" || value.ForceQuery || value.Fragment != "" || (value.Path != "" && value.Path != "/") {
+		return errors.New("initialize proxy manager: proxy URL is invalid")
 	}
+	scheme := strings.ToLower(value.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return errors.New("initialize proxy manager: proxy URL is invalid")
+	}
+	return nil
+}
+
+func (m *Manager) Configured() bool { return m != nil }
+
+func (m *Manager) Enabled() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed
 }
 
 func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot) (*Handle, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		m.mu.Lock()
-		if m.closed {
-			m.mu.Unlock()
-			return nil, newError(ReasonManagerClosed, nil)
-		}
-		now := m.source.Now()
-		if m.active != nil && !now.Before(m.active.usableUntil) {
-			m.retireLocked(m.active, RetireReasonRenewWindow)
-		}
-		if m.active != nil {
-			handle := m.newHandleLocked(m.active, snapshot)
-			m.mu.Unlock()
-			return handle, nil
-		}
-		if m.lastFetchError != nil && now.Before(m.lastFetchFailureUntil) {
-			err := *m.lastFetchError
-			m.mu.Unlock()
-			return nil, &err
-		}
-		if m.fetching != nil {
-			wait := m.fetching
-			closeCh := m.closeCh
-			m.mu.Unlock()
-			select {
-			case <-wait:
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-closeCh:
-				return nil, newError(ReasonManagerClosed, nil)
-			}
-		}
-
-		fetchDone := make(chan struct{})
-		fetchCtx, cancel := context.WithCancel(ctx)
-		m.fetching = fetchDone
-		m.fetchCancel = cancel
-		m.mu.Unlock()
-
-		started := time.Now()
-		proxyURL, fetchErr := m.fetch(fetchCtx)
-		cancel()
-
-		m.mu.Lock()
-		m.fetching = nil
-		m.fetchCancel = nil
-		close(fetchDone)
-		if m.closed {
-			m.mu.Unlock()
-			return nil, newError(ReasonManagerClosed, nil)
-		}
-		if fetchErr != nil || proxyURL == nil {
-			if ctx.Err() != nil {
-				m.mu.Unlock()
-				return nil, ctx.Err()
-			}
-			proxyErr := asProxyError(fetchErr, ReasonInvalidResponse)
-			m.lastFetchError = proxyErr
-			m.lastFetchFailureUntil = m.source.Now().Add(time.Second)
-			m.fetchCount++
-			m.logger.Warn("proxy_fetch_failed", "error_reason", proxyErr.Reason())
-			m.mu.Unlock()
-			return nil, proxyErr
-		}
-		if err := ctx.Err(); err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		lease := m.newLeaseLocked(proxyURL)
-		m.active = lease
-		m.fetchCount++
-		m.logger.Info("proxy_lease_acquired", "lease_id", lease.id, "fetch_duration_ms", time.Since(started).Milliseconds(), "usable_duration_ms", m.ttl.Milliseconds()-m.renewBefore.Milliseconds())
-		handle := m.newHandleLocked(lease, snapshot)
-		m.mu.Unlock()
-		return handle, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-}
+	if m == nil {
+		return nil, errors.New("proxy manager is nil")
+	}
 
-func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return
+		return nil, &Error{reason: ReasonManagerClosed}
 	}
-	m.closed = true
-	close(m.closeCh)
-	if m.fetchCancel != nil {
-		m.fetchCancel()
+	key := transportKey{
+		connectTimeoutMS:   snapshot.ConnectTimeoutMS,
+		firstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
 	}
-	if m.active != nil {
-		m.retireLocked(m.active, RetireReasonShutdown)
+	entry := m.transports[key]
+	if entry == nil {
+		entry = &cachedTransport{transport: m.newTransport(key)}
+		m.transports[key] = entry
 	}
-	for lease := range m.retiring {
-		m.closeLeaseTransportsLocked(lease)
-		if lease.refs == 0 {
-			m.removeLeaseLocked(lease)
+	m.clock++
+	entry.lastUsed = m.clock
+	if len(m.transports) > maxCachedTransports {
+		m.evictLeastRecentlyUsed()
+	}
+	return &Handle{manager: m, key: key, transport: entry.transport}, nil
+}
+
+func (m *Manager) evictLeastRecentlyUsed() {
+	var oldestKey transportKey
+	var oldest uint64
+	for key, entry := range m.transports {
+		if oldest == 0 || entry.lastUsed < oldest {
+			oldestKey = key
+			oldest = entry.lastUsed
 		}
 	}
-	m.logger.Info("proxy_manager_closed", "fetch_count", m.fetchCount, "retired_count", m.retiredCount)
+	entry := m.transports[oldestKey]
+	entry.transport.CloseIdleConnections()
+	delete(m.transports, oldestKey)
 }
 
-func (h *Handle) Transport() http.RoundTripper {
-	if h == nil {
-		return nil
-	}
-	return h.transport
-}
-
-func (h *Handle) Retire(reason RetireReason) {
-	if h == nil || h.manager == nil {
-		return
-	}
-	h.manager.retireHandle(h, reason)
-}
-
-func (h *Handle) Release() {
-	if h == nil || h.manager == nil {
-		return
-	}
-	h.released.Do(func() { h.manager.release(h.lease) })
-}
-
-func (m *Manager) newLeaseLocked(proxyURL *url.URL) *lease {
-	m.nextID++
-	copyURL := *proxyURL
-	now := m.source.Now()
-	return &lease{
-		id:          m.nextID,
-		proxyURL:    &copyURL,
-		acquiredAt:  now,
-		expiresAt:   now.Add(m.ttl),
-		usableUntil: now.Add(m.ttl - m.renewBefore),
-		state:       leaseActive,
-		transports:  make(map[transportKey]*http.Transport),
-	}
-}
-
-func (m *Manager) newHandleLocked(lease *lease, snapshot runtimeconfig.Snapshot) *Handle {
-	key := transportKey{connectTimeoutMS: snapshot.ConnectTimeoutMS, firstByteTimeoutMS: snapshot.FirstByteTimeoutMS}
-	transport := lease.transports[key]
-	if transport == nil {
-		transport = m.newTransport(lease.proxyURL, key)
-		lease.transports[key] = transport
-	}
-	if lease.servedRequests > 0 {
-		lease.reuseHits++
-	}
-	lease.servedRequests++
-	lease.refs++
-	return &Handle{manager: m, lease: lease, transport: transport}
-}
-
-func (m *Manager) newTransport(proxyURL *url.URL, key transportKey) *http.Transport {
+func (m *Manager) newTransport(key transportKey) *http.Transport {
 	transport := m.base.Clone()
-	transport.Proxy = http.ProxyURL(proxyURL)
+	transport.Proxy = http.ProxyURL(m.proxyURL)
 	connectTimeout := time.Duration(key.connectTimeoutMS) * time.Millisecond
 	baseDialContext := transport.DialContext
 	if baseDialContext == nil {
 		transport.DialContext = (&net.Dialer{Timeout: connectTimeout}).DialContext
-	} else {
+	} else if connectTimeout > 0 {
 		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			if connectTimeout <= 0 {
-				return baseDialContext(ctx, network, address)
-			}
 			limited, cancel := context.WithTimeout(ctx, connectTimeout)
 			defer cancel()
 			return baseDialContext(limited, network, address)
@@ -327,60 +187,48 @@ func (m *Manager) newTransport(proxyURL *url.URL, key transportKey) *http.Transp
 	return transport
 }
 
-func (m *Manager) retireHandle(handle *Handle, reason RetireReason) {
+func (m *Manager) retire(handle *Handle, reason RetireReason) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.retireLocked(handle.lease, reason)
-}
-
-func (m *Manager) retireLocked(lease *lease, reason RetireReason) {
-	if lease == nil || lease.state != leaseActive {
+	if handle == nil || handle.manager != m {
 		return
 	}
-	lease.state = leaseRetiring
-	lease.retireReason = reason
-	if m.active == lease {
-		m.active = nil
+	if current := m.transports[handle.key]; current != nil && current.transport == handle.transport {
+		delete(m.transports, handle.key)
 	}
-	m.retiring[lease] = struct{}{}
-	m.retiredCount++
-	if reason == RetireReasonTransportError || reason == RetireReasonShutdown {
-		m.closeLeaseTransportsLocked(lease)
-	}
-	m.logger.Info("proxy_lease_retired", "lease_id", lease.id, "served_requests", lease.servedRequests, "reuse_hits", lease.reuseHits, "active_requests", lease.refs, "retire_reason", reason)
-	if lease.refs == 0 {
-		m.removeLeaseLocked(lease)
-	}
+	handle.transport.CloseIdleConnections()
+	m.logger.Info("proxy_transport_retired", "reason", reason)
 }
 
-func (m *Manager) release(lease *lease) {
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if lease == nil || lease.refs == 0 {
+	if m.closed {
 		return
 	}
-	lease.refs--
-	if lease.refs == 0 && lease.state == leaseRetiring {
-		m.removeLeaseLocked(lease)
+	m.closed = true
+	for _, entry := range m.transports {
+		entry.transport.CloseIdleConnections()
 	}
+	m.transports = nil
+	m.logger.Info("proxy_manager_closed")
 }
 
-func (m *Manager) removeLeaseLocked(lease *lease) {
-	delete(m.retiring, lease)
-	m.closeLeaseTransportsLocked(lease)
-	lease.transports = nil
+func (h *Handle) Transport() http.RoundTripper {
+	if h == nil {
+		return nil
+	}
+	return h.transport
 }
 
-func (m *Manager) closeLeaseTransportsLocked(lease *lease) {
-	for _, transport := range lease.transports {
-		transport.CloseIdleConnections()
+func (h *Handle) Retire(reason RetireReason) {
+	if h == nil || h.manager == nil {
+		return
 	}
+	h.manager.retire(h, reason)
 }
 
-func asProxyError(err error, fallback ErrorReason) *Error {
-	var proxyErr *Error
-	if errors.As(err, &proxyErr) {
-		return proxyErr
-	}
-	return newError(fallback, err)
-}
+func (h *Handle) Release() {}

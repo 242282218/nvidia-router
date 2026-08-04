@@ -21,6 +21,7 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 		return ChatDelta{}, false, nil
 	}
 	var chunk struct {
+		Usage   *ChatUsage `json:"usage"`
 		Choices []struct {
 			Delta struct {
 				Role      string              `json:"role"`
@@ -34,7 +35,7 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return ChatDelta{}, false, fmt.Errorf("decode chat delta: %w", err)
 	}
-	parsed := ChatDelta{}
+	parsed := ChatDelta{Usage: chunk.Usage}
 	if len(chunk.Choices) > 0 {
 		choice := chunk.Choices[0]
 		parsed.Content = decodeStringField(choice.Delta.Content)
@@ -53,6 +54,14 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 		parsed.FinishReason = decodeStringField(choice.FinishReason)
 	}
 	return parsed, false, nil
+}
+
+// ChatUsage is the token usage shape emitted by Chat Completions. A usage-only
+// terminal chunk is valid, so it is kept independently of choices[].
+type ChatUsage struct {
+	PromptTokens     *int `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int `json:"completion_tokens,omitempty"`
+	TotalTokens      *int `json:"total_tokens,omitempty"`
 }
 
 type chatChunkToolCall struct {

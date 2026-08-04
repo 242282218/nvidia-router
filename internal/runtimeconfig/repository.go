@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type Repository struct {
@@ -33,14 +34,21 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 			returnErr = fmt.Errorf("rollback runtime settings transaction: %w", errors.Join(returnErr, rollbackErr))
 		}
 	}()
+	// Emit updated_at as RFC3339 'Z' from the application layer so the row
+	// matches the format every other repository writes (admins/nvidia_keys/
+	// models all use UTC RFC3339). CURRENT_TIMESTAMP falls back to SQLite's
+	// "YYYY-MM-DD HH:MM:SS" default, which is inconsistent to parse back.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE runtime_settings SET
 			queue_capacity = ?, queue_wait_timeout_ms = ?, connect_timeout_ms = ?,
 			first_byte_timeout_ms = ?, nonstream_total_timeout_ms = ?, shutdown_grace_ms = ?,
-			updated_at = CURRENT_TIMESTAMP
+			failover_status_codes = ?, request_log_retention_days = ?,
+			updated_at = ?
 		WHERE id = 1`,
 		next.QueueCapacity, next.QueueWaitTimeoutMS, next.ConnectTimeoutMS,
 		next.FirstByteTimeoutMS, next.NonstreamTotalTimeoutMS, next.ShutdownGraceMS,
+		next.FailoverStatusCodes, next.RequestLogRetentionDays,
+		formatTimestamp(time.Now()),
 	)
 	if err != nil {
 		return fmt.Errorf("update runtime settings: %w", err)
@@ -59,6 +67,10 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 	return nil
 }
 
+func formatTimestamp(now time.Time) string {
+	return now.UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
 type snapshotQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -67,7 +79,8 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 	var snapshot Snapshot
 	err := source.QueryRowContext(ctx, `
 		SELECT queue_capacity, queue_wait_timeout_ms, connect_timeout_ms,
-			first_byte_timeout_ms, nonstream_total_timeout_ms, shutdown_grace_ms
+			first_byte_timeout_ms, nonstream_total_timeout_ms, shutdown_grace_ms,
+			failover_status_codes, request_log_retention_days
 		FROM runtime_settings WHERE id = 1`).Scan(
 		&snapshot.QueueCapacity,
 		&snapshot.QueueWaitTimeoutMS,
@@ -75,6 +88,8 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 		&snapshot.FirstByteTimeoutMS,
 		&snapshot.NonstreamTotalTimeoutMS,
 		&snapshot.ShutdownGraceMS,
+		&snapshot.FailoverStatusCodes,
+		&snapshot.RequestLogRetentionDays,
 	)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load runtime settings: %w", err)

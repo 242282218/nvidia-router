@@ -47,13 +47,21 @@ type App struct {
 	Pool            *pool.Pool
 	RuntimeSettings *runtimeconfig.Store
 	Server          *Server
-	proxy           *xkproxy.Manager
+	proxy           *xkproxy.Switcher
+	proxySettings   *xkproxy.SettingsService
+	nvidiaClient    *nvidia.Client
 
 	db               *sql.DB
 	handler          http.Handler
+	requestRecorder  *observability.BufferRecorder
+	healthChecker    *nvidiakey.HealthChecker
 	shutting         atomic.Bool
 	cleanupCancel    context.CancelFunc
 	cleanupDone      chan struct{}
+	recorderCancel   context.CancelFunc
+	recorderDone     chan struct{}
+	healthCancel     context.CancelFunc
+	healthDone       chan struct{}
 	rootCancel       context.CancelFunc
 	shutdownOnce     sync.Once
 	shutdownGrace    time.Duration
@@ -96,50 +104,57 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, closeAfterInitializationError(db, err)
 	}
-	var proxy *xkproxy.Manager
-	if resolved.Config.XKProxyAPIURL != nil {
-		base := resolved.NVIDIAHTTPClient.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		baseTransport, ok := base.(*http.Transport)
-		if !ok {
-			return nil, closeAfterInitializationError(db, errors.New("initialize proxy manager: HTTP transport is required"))
-		}
-		proxy, err = xkproxy.New(
-			resolved.Config.XKProxyAPIURL,
-			resolved.Config.XKProxyTTL,
-			resolved.Config.XKProxyRenewBefore,
-			baseTransport,
-			resolved.Clock,
-			resolved.Logger,
-		)
-		if err != nil {
-			return nil, closeAfterInitializationError(db, fmt.Errorf("initialize proxy manager: %w", err))
-		}
+	base := resolved.NVIDIAHTTPClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
 	}
+	baseTransport, ok := base.(*http.Transport)
+	if !ok {
+		return nil, closeAfterInitializationError(db, errors.New("initialize proxy manager: HTTP transport is required"))
+	}
+	proxySettings, err := xkproxy.NewSettingsService(ctx, db, keys, xkproxy.EnvironmentConfig{
+		URL: resolved.Config.XKProxyURL, AuthKey: resolved.Config.XKProxyAuthKey,
+	}, baseTransport, resolved.Logger)
+	if err != nil {
+		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize proxy settings: %w", err))
+	}
+	proxy := proxySettings.Switcher()
 	nvidiaClient, err := nvidia.NewClient(resolved.NVIDIAHTTPClient, descriptor, settings, proxy)
 	if err != nil {
-		if proxy != nil {
-			proxy.Close()
-		}
+		proxySettings.Close()
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize NVIDIA client: %w", err))
 	}
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
+	healthChecker := nvidiakey.NewHealthChecker(keyRepository, resolved.Clock, nvidiakey.HealthCheckerOptions{
+		Logger: resolved.Logger,
+	})
+	healthChecker.WireProbe(nvidiaKeys.ProbeHealth)
+	healthChecker.WireWriter(nvidiaKeys)
+	// Mirror DB recovery into pool state so a key the checker revives is
+	// immediately acquirable without waiting for the next restart.
+	healthChecker.WireSync(keyPool.ApplySuccess)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
-	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, false), adminauth.NewLoginLimiter(resolved.Clock))
+	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
+	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
 	adminManagement := adminapi.NewManagement(
 		adminapi.NewNVIDIAKeys(nvidiaKeys, keyPool),
 		adminapi.NewAccessKeys(accessKeys),
 		adminapi.NewModels(models, nvidiaKeys, keyPool),
+		adminapi.NewProxyPool(proxySettings),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
 	observabilityRepository := observability.NewRepository(db)
+	// Wrap the repository with a buffering recorder so request_logs writes
+	// move off the hot path: per-request Record only enqueues, a background
+	// flusher persists batches in a single SQLite transaction (audit #25).
+	requestRecorder := observability.NewBufferRecorder(observabilityRepository, resolved.Clock, observability.BufferOptions{
+		Logger: resolved.Logger,
+	})
 	observe := func(next http.Handler) http.Handler {
 		guarded := httpapi.DataMiddleware(accessKeys, next)
-		return observability.HTTPMiddleware(observabilityRepository, resolved.Clock, resolved.Logger, guarded)
+		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded)
 	}
 	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
 	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
@@ -149,29 +164,38 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	modelList := observe(v1.NewModels(models))
 	frontend, err := webui.NewEmbeddedHandler()
 	if err != nil {
-		if proxy != nil {
-			proxy.Close()
-		}
+		nvidiaClient.Close()
+		proxySettings.Close()
 		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize embedded frontend: %w", err))
 	}
 
 	resolved.DB = db
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	cleanupDone := make(chan struct{})
+	recorderCtx, recorderCancel := context.WithCancel(context.Background())
+	recorderDone := make(chan struct{})
+	healthCtx, healthCancel := context.WithCancel(context.Background())
+	healthDone := make(chan struct{})
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	app := &App{
 		Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings,
-		proxy:         proxy,
+		proxy: proxy, proxySettings: proxySettings, nvidiaClient: nvidiaClient,
+		requestRecorder: requestRecorder, healthChecker: healthChecker,
+
 		cleanupCancel: cleanupCancel, cleanupDone: cleanupDone,
+		recorderCancel: recorderCancel, recorderDone: recorderDone,
+		healthCancel: healthCancel, healthDone: healthDone,
 		rootCancel: rootCancel,
 	}
 	unsupported := observe(v1.Unsupported)
-	app.handler = shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
+	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
+	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
+	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
-		adminapi.NewStats(observabilityRepository, resolved.Clock),
-	))
-	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger)
+		statsHandler, monitoringHandler,
+	)))
+	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger, settings)
 	adminSessionWorker := adminauth.NewSessionCleanupWorker(adminRepository, resolved.Clock, resolved.Logger)
 	var cleanupWorkers sync.WaitGroup
 	cleanupWorkers.Add(2)
@@ -187,6 +211,20 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		cleanupWorkers.Wait()
 		close(cleanupDone)
 	}()
+	// Flusher pairs with the buffer recorder: it must outlive request serving
+	// long enough to drain the in-memory queue, so it gets its own ctx that
+	// shutdown.go cancels right before closing the DB.
+	go func() {
+		defer close(recorderDone)
+		requestRecorder.Run(recorderCtx)
+	}()
+	// Health checker pairs with the request path: it independently probes
+	// unhealthy keys and recovers valid ones so a user request doesn't pay the
+	// first failure after a key recovers from cooldown.
+	go func() {
+		defer close(healthDone)
+		healthChecker.Run(healthCtx)
+	}()
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.beginShutdown(0) })
 	app.Server.setRootContext(rootCtx)
 	return app, nil
@@ -194,6 +232,17 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 
 func (a *App) Handler() http.Handler {
 	return a.handler
+}
+
+// FlushObservability synchronously persists any buffered request-log records.
+// Tests and admin surfaces use it to make buffered logs visible without
+// waiting on the flusher's timer. Safe to call when the recorder is unstarted
+// or already stopped (no-op).
+func (a *App) FlushObservability(ctx context.Context) error {
+	if a.requestRecorder == nil {
+		return nil
+	}
+	return a.requestRecorder.ForceFlush(ctx)
 }
 
 func nvidiaDescriptor(cfg config.Config) (nvidia.Descriptor, error) {
@@ -209,7 +258,7 @@ func nvidiaDescriptor(cfg config.Config) (nvidia.Descriptor, error) {
 }
 
 func resolveDependencies(dependencies Dependencies) (Dependencies, error) {
-	if dependencies.Config == (config.Config{}) {
+	if dependencies.Config.ListenAddress == "" && dependencies.Config.DataDir == "" && dependencies.Config.TempDir == "" && dependencies.Config.MasterKey == ([32]byte{}) && dependencies.Config.InitialAdminPassword == "" && !dependencies.Config.AdminSecureCookie && dependencies.Config.AdminExternalOrigin == nil && len(dependencies.Config.TrustedProxyCIDRs) == 0 && dependencies.Config.NVIDIABaseURL == nil && dependencies.Config.XKProxyURL == nil && dependencies.Config.XKProxyAuthKey == "" {
 		loaded, err := config.LoadFromEnv(config.LoadOptions{})
 		if err != nil {
 			return Dependencies{}, fmt.Errorf("load configuration: %w", err)
@@ -250,7 +299,7 @@ func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) (*cr
 	if err := keys.EnsureSentinel(ctx, db); err != nil {
 		return nil, fmt.Errorf("ensure crypto sentinel: %w", err)
 	}
-	if err := adminauth.NewRepository(db, dependencies.Clock).EnsureAdmin(ctx); err != nil {
+	if err := adminauth.NewRepository(db, dependencies.Clock).EnsureAdmin(ctx, dependencies.Config.InitialAdminPassword); err != nil {
 		return nil, fmt.Errorf("initialize administrator: %w", err)
 	}
 	return keys, nil

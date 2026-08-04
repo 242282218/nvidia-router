@@ -133,32 +133,62 @@ func TestAcquireClassifiesUnavailableKeys(t *testing.T) {
 	}
 }
 
-func TestQueueDoesNotBypassModelAwareHead(t *testing.T) {
+func TestQueueRotatesModelAwareHeadAndResolvesFullyBlockedHead(t *testing.T) {
 	p := newQueueTestPool(queueSnapshot(10, time.Second), 1, 2)
 	p.SetModelBlock(2, 10, true)
 	holder := mustAcquire(t, p, 10)
 	first := acquireAsync(p, context.Background(), 10)
 	waitForQueueLength(t, p, 1)
 	second := acquireAsync(p, context.Background(), 20)
-	waitForQueueLength(t, p, 2)
-
-	select {
-	case result := <-second:
-		result.release()
-		t.Fatalf("later model bypassed queue head: %v", result.err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	p.SetModelBlock(1, 10, true)
-	assertAPIError(t, receiveAcquire(t, first).err, http.StatusNotFound, "model_not_available", false)
+	// The model-10 head can only use the busy key 1, so a later waiter that
+	// can use key 2 must not be stalled behind it.
 	secondResult := receiveAcquire(t, second)
 	if secondResult.err != nil {
-		t.Fatalf("second Acquire after head became blocked: %v", secondResult.err)
+		t.Fatalf("later model behind busy head: %v", secondResult.err)
 	}
 	if got := secondResult.lease.KeyID(); got != 2 {
 		t.Fatalf("second Lease key = %d, want 2", got)
 	}
 	secondResult.lease.Release()
+
+	// Once every key is blocked for the head's model it resolves immediately.
+	p.SetModelBlock(1, 10, true)
+	assertAPIError(t, receiveAcquire(t, first).err, http.StatusNotFound, "model_not_available", false)
 	holder.Release()
+}
+
+func TestQueueBusyHeadRotatesSoLaterWaiterProceeds(t *testing.T) {
+	p := newQueueTestPool(queueSnapshot(10, time.Second), 1, 2)
+	holderA := mustAcquire(t, p, 1)
+	holderB := mustAcquireWithAttempted(t, p, 1, map[int64]struct{}{1: {}})
+	// Both keys are busy. The head waiter already tried key 1 (its retry
+	// excludes it) and key 2 is busy, so it can only see UnavailableBusy.
+	first := acquireAsyncWithAttempted(p, context.Background(), 1, map[int64]struct{}{1: {}})
+	waitForQueueLength(t, p, 1)
+	second := acquireAsync(p, context.Background(), 1)
+	waitForQueueLength(t, p, 2)
+
+	// Freeing key 1 cannot serve the busy-stalled head, so the later waiter
+	// must get it instead of being stalled behind the whole queue.
+	holderA.Release()
+	secondResult := receiveAcquire(t, second)
+	if secondResult.err != nil {
+		t.Fatalf("second Acquire behind busy head: %v", secondResult.err)
+	}
+	if got := secondResult.lease.KeyID(); got != 1 {
+		t.Fatalf("second Lease key = %d, want 1", got)
+	}
+	secondResult.lease.Release()
+	holderB.Release()
+
+	firstResult := receiveAcquire(t, first)
+	if firstResult.err != nil {
+		t.Fatalf("first Acquire after rotation: %v", firstResult.err)
+	}
+	if got := firstResult.lease.KeyID(); got != 2 {
+		t.Fatalf("first Lease key = %d, want 2", got)
+	}
+	firstResult.lease.Release()
 }
 
 func TestShutdownRejectsQueuedAndFutureAcquire(t *testing.T) {
@@ -187,9 +217,13 @@ func (r acquireCallResult) release() {
 }
 
 func acquireAsync(p *Pool, ctx context.Context, modelID int64) <-chan acquireCallResult {
+	return acquireAsyncWithAttempted(p, ctx, modelID, nil)
+}
+
+func acquireAsyncWithAttempted(p *Pool, ctx context.Context, modelID int64, attempted map[int64]struct{}) <-chan acquireCallResult {
 	result := make(chan acquireCallResult, 1)
 	go func() {
-		lease, err := p.Acquire(ctx, modelID, nil)
+		lease, err := p.Acquire(ctx, modelID, attempted)
 		result <- acquireCallResult{lease: lease, err: err}
 	}()
 	return result
@@ -197,7 +231,12 @@ func acquireAsync(p *Pool, ctx context.Context, modelID int64) <-chan acquireCal
 
 func mustAcquire(t *testing.T, p *Pool, modelID int64) Lease {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), modelID, nil)
+	return mustAcquireWithAttempted(t, p, modelID, nil)
+}
+
+func mustAcquireWithAttempted(t *testing.T, p *Pool, modelID int64, attempted map[int64]struct{}) Lease {
+	t.Helper()
+	lease, err := p.Acquire(context.Background(), modelID, attempted)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}

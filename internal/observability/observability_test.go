@@ -15,6 +15,7 @@ import (
 
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/runtimeconfig"
 )
 
 func TestRequestRecordContainsOnlyAllowlistedMetadata(t *testing.T) {
@@ -116,6 +117,29 @@ func TestRepositoryRecordKeepsUnknownUsageNullAndAggregatesFailure(t *testing.T)
 	}
 }
 
+func TestRepositoryRecordAggregatesFirstByteOnlyWhenKnown(t *testing.T) {
+	db := openObservabilityDB(t)
+	firstByte := int64(80)
+	record := RequestRecord{
+		RequestID: "first-byte", HTTPStatus: http.StatusOK, Outcome: OutcomeSuccess,
+		DurationMS: 100, FirstByteMS: &firstByte, AttemptCount: 1,
+		CreatedAt: time.Date(2026, 8, 3, 1, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var total, count int64
+	if err := db.QueryRow(`
+		SELECT total_first_byte_ms, first_byte_count
+		FROM daily_stats WHERE dimension_type = 'global' AND dimension_id = 'all'
+	`).Scan(&total, &count); err != nil {
+		t.Fatalf("read first byte aggregate: %v", err)
+	}
+	if total != 80 || count != 1 {
+		t.Fatalf("first byte aggregate = %d/%d, want 80/1", total, count)
+	}
+}
+
 func TestRepositoryRecordRollsBackAllDimensionsOnDuplicateRequestID(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)
@@ -169,28 +193,23 @@ func TestRepositoryDeleteRequestLogsBeforeKeepsBoundaryAndDailyStats(t *testing.
 	}
 }
 
-func TestRepositoryDeleteRequestLogsBeforeHandlesMixedRFC3339Precision(t *testing.T) {
+func TestRepositoryDeleteRequestLogsBeforeMillisecondBoundary(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)
-	for _, id := range []string{"fraction-old", "fraction-boundary", "second-new"} {
-		code := "test_error"
-		if err := repository.Record(context.Background(), RequestRecord{
-			RequestID: id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
-			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: time.Date(2026, 6, 30, 3, 0, 0, 0, time.UTC),
-		}); err != nil {
-			t.Fatalf("Record %s: %v", id, err)
-		}
-	}
 	for _, item := range []struct {
 		id string
-		at string
+		at time.Time
 	}{
-		{"fraction-old", "2026-06-30T03:00:00.949Z"},
-		{"fraction-boundary", "2026-06-30T03:00:00.950Z"},
-		{"second-new", "2026-06-30T03:00:01Z"},
+		{"fraction-old", time.Date(2026, 6, 30, 3, 0, 0, 949000000, time.UTC)},
+		{"fraction-boundary", time.Date(2026, 6, 30, 3, 0, 0, 950000000, time.UTC)},
+		{"second-new", time.Date(2026, 6, 30, 3, 0, 1, 0, time.UTC)},
 	} {
-		if _, err := db.Exec("UPDATE request_logs SET created_at = ? WHERE request_id = ?", item.at, item.id); err != nil {
-			t.Fatalf("update %s timestamp: %v", item.id, err)
+		code := "test_error"
+		if err := repository.Record(context.Background(), RequestRecord{
+			RequestID: item.id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
+			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: item.at,
+		}); err != nil {
+			t.Fatalf("Record %s: %v", item.id, err)
 		}
 	}
 
@@ -242,14 +261,55 @@ func insertNVIDIAKey(t *testing.T, db *sql.DB) int64 {
 	return id
 }
 
-func TestCleanupWorkerRunsAtStartupAndUsesThirtyDayUTCThreshold(t *testing.T) {
+func TestCleanupWorkerDoesNotRunAtStartupAndSchedulesNext(t *testing.T) {
 	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
 	repository := &cleanupRepositoryStub{called: make(chan time.Time, 1)}
 	waitStarted := make(chan time.Duration, 1)
 	ctx, cancel := context.WithCancel(context.Background())
-	worker := newCleanupWorker(repository, func() time.Time { return now }, func(ctx context.Context, duration time.Duration) bool {
+	worker := newCleanupWorker(repository, nil, func() time.Time { return now }, func(ctx context.Context, duration time.Duration) bool {
 		waitStarted <- duration
 		<-ctx.Done()
+		return false
+	}, nil)
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case duration := <-waitStarted:
+		want := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC).Sub(now.UTC())
+		if duration != want {
+			t.Fatalf("next cleanup delay = %s, want %s", duration, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not schedule next UTC 03:00 cleanup")
+	}
+	select {
+	case cutoff := <-repository.called:
+		t.Fatalf("cleanup ran at startup with cutoff %s", cutoff)
+	default:
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+}
+
+func TestCleanupWorkerRunsWhenScheduledWaitElapses(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
+	repository := &cleanupRepositoryStub{called: make(chan time.Time, 1)}
+	waitCalls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := newCleanupWorker(repository, nil, func() time.Time { return now }, func(ctx context.Context, _ time.Duration) bool {
+		waitCalls++
+		if waitCalls == 1 {
+			return true
+		}
+		cancel()
 		return false
 	}, nil)
 	done := make(chan struct{})
@@ -265,24 +325,75 @@ func TestCleanupWorkerRunsAtStartupAndUsesThirtyDayUTCThreshold(t *testing.T) {
 			t.Fatalf("cleanup cutoff = %s, want %s", cutoff, want)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("startup cleanup was not run")
+		t.Fatal("cleanup was not run after scheduled wait elapsed")
 	}
-	select {
-	case duration := <-waitStarted:
-		want := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC).Sub(now.UTC())
-		if duration != want {
-			t.Fatalf("next cleanup delay = %s, want %s", duration, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("worker did not schedule next UTC 03:00 cleanup")
-	}
-	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop after cancellation")
 	}
 }
+
+// TestCleanupWorkerHonoursOperatorTunedRetentionDays verifies that a valid
+// operator setting is read from the live runtime snapshot while values below
+// the one-month safety floor fall back to the documented default.
+func TestCleanupWorkerHonoursOperatorTunedRetentionDays(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
+	repository := &cleanupRepositoryStub{called: make(chan time.Time, 1)}
+	settings := cleanupSettingsStub{snapshot: runtimeconfig.Snapshot{RequestLogRetentionDays: 7}}
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := newCleanupWorker(repository, settings, func() time.Time { return now }, func(_ context.Context, _ time.Duration) bool {
+		return true
+	}, nil)
+	go func() {
+		worker.Run(ctx)
+	}()
+
+	select {
+	case cutoff := <-repository.called:
+		want := now.UTC().AddDate(0, 0, -DefaultRequestLogRetentionDays)
+		if !cutoff.Equal(want) {
+			t.Fatalf("invalid tuned cleanup cutoff = %s, want %s (retention floor=%d)", cutoff, want, DefaultRequestLogRetentionDays)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not run for the tuned retention window")
+	}
+	cancel()
+}
+
+// TestCleanupWorkerFallsBackToDefaultWhenSettingsMissing verifies that an
+// empty/misconfigured snapshot falls back to the documented default rather
+// than the naive AddDate(0,0,0) "delete everything" path the previous
+// constant-only implementation avoided by construction (audit B5).
+func TestCleanupWorkerFallsBackToDefaultWhenSettingsMissing(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 30, 0, 0, time.UTC)
+	repository := &cleanupRepositoryStub{called: make(chan time.Time, 1)}
+	settings := cleanupSettingsStub{snapshot: runtimeconfig.Snapshot{RequestLogRetentionDays: 0}}
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := newCleanupWorker(repository, settings, func() time.Time { return now }, func(_ context.Context, _ time.Duration) bool {
+		return true
+	}, nil)
+	go func() {
+		worker.Run(ctx)
+	}()
+
+	select {
+	case cutoff := <-repository.called:
+		want := now.UTC().AddDate(0, 0, -DefaultRequestLogRetentionDays)
+		if !cutoff.Equal(want) {
+			t.Fatalf("fallback cleanup cutoff = %s, want %s (retention=%d)", cutoff, want, DefaultRequestLogRetentionDays)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not run for the fallback retention window")
+	}
+	cancel()
+}
+
+type cleanupSettingsStub struct {
+	snapshot runtimeconfig.Snapshot
+}
+
+func (s cleanupSettingsStub) Snapshot() runtimeconfig.Snapshot { return s.snapshot }
 
 type cleanupRepositoryStub struct {
 	called chan time.Time
@@ -355,28 +466,23 @@ func TestRepositoryListRecentErrorsReturnsOnlyAllowlistedFields(t *testing.T) {
 	}
 }
 
-func TestRepositoryListRecentErrorsOrdersMixedRFC3339PrecisionByTime(t *testing.T) {
+func TestRepositoryListRecentErrorsOrdersMillisecondTimestamps(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)
-	for _, id := range []string{"older-no-fraction", "later-fraction", "latest-no-fraction"} {
-		code := "test_error"
-		if err := repository.Record(context.Background(), RequestRecord{
-			RequestID: id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
-			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
-		}); err != nil {
-			t.Fatalf("Record %s: %v", id, err)
-		}
-	}
 	for _, item := range []struct {
 		id string
-		at string
+		at time.Time
 	}{
-		{"older-no-fraction", "2026-07-30T00:00:00Z"},
-		{"later-fraction", "2026-07-30T00:00:00.900Z"},
-		{"latest-no-fraction", "2026-07-30T00:00:01Z"},
+		{"older-whole", time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)},
+		{"later-fraction", time.Date(2026, 7, 30, 0, 0, 0, 900000000, time.UTC)},
+		{"latest-whole", time.Date(2026, 7, 30, 0, 0, 1, 0, time.UTC)},
 	} {
-		if _, err := db.Exec("UPDATE request_logs SET created_at = ? WHERE request_id = ?", item.at, item.id); err != nil {
-			t.Fatalf("update %s timestamp: %v", item.id, err)
+		code := "test_error"
+		if err := repository.Record(context.Background(), RequestRecord{
+			RequestID: item.id, Endpoint: "/v1/models", HTTPStatus: 500, Outcome: OutcomeFailure,
+			ErrorCode: &code, DurationMS: 1, AttemptCount: 1, CreatedAt: item.at,
+		}); err != nil {
+			t.Fatalf("Record %s: %v", item.id, err)
 		}
 	}
 
@@ -384,7 +490,7 @@ func TestRepositoryListRecentErrorsOrdersMixedRFC3339PrecisionByTime(t *testing.
 	if err != nil {
 		t.Fatalf("ListRecentErrors: %v", err)
 	}
-	want := []string{"latest-no-fraction", "later-fraction", "older-no-fraction"}
+	want := []string{"latest-whole", "later-fraction", "older-whole"}
 	if len(items) != len(want) {
 		t.Fatalf("recent error count = %d, want %d", len(items), len(want))
 	}
@@ -421,17 +527,16 @@ func TestHTTPMiddlewareExtractsUsageFromEligibleJSON(t *testing.T) {
 	}
 }
 
-func TestTrackingWriterDoesNotRetainSSEAudioOrLargeBodies(t *testing.T) {
+func TestTrackingWriterRetainsSSEAndDropsUncapturableBodies(t *testing.T) {
 	tests := []struct {
-		name     string
-		endpoint string
-		content  string
-		stream   bool
-		payload  []byte
+		name         string
+		endpoint     string
+		content      string
+		stream       bool
+		payload      []byte
+		wantRetained bool
 	}{
-		{name: "sse", endpoint: "/v1/chat/completions", content: "text/event-stream", stream: true, payload: []byte(`data: {"usage":{"prompt_tokens":1}}
-
-`)},
+		{name: "sse", endpoint: "/v1/chat/completions", content: "text/event-stream", stream: true, payload: []byte("data: {\"usage\":{\"prompt_tokens\":1}}\n\n"), wantRetained: true},
 		{name: "audio", endpoint: "/v1/audio/speech", content: "audio/mpeg", payload: bytes.Repeat([]byte("audio"), 32)},
 		{name: "large json", endpoint: "/v1/chat/completions", content: "application/json", payload: bytes.Repeat([]byte("x"), usageCaptureLimit+1)},
 	}
@@ -446,10 +551,56 @@ func TestTrackingWriterDoesNotRetainSSEAudioOrLargeBodies(t *testing.T) {
 			if _, err := tracking.Write(test.payload); err != nil {
 				t.Fatalf("Write: %v", err)
 			}
+			if test.wantRetained {
+				if !tracking.captureComplete || tracking.body.Len() == 0 {
+					t.Fatalf("SSE body retained length/completeness = %d/%v, want >0/true", tracking.body.Len(), tracking.captureComplete)
+				}
+				return
+			}
 			if tracking.body.Len() != 0 || tracking.captureComplete {
 				t.Fatalf("retained body length/completeness = %d/%v, want 0/false", tracking.body.Len(), tracking.captureComplete)
 			}
 		})
+	}
+}
+
+func TestHTTPMiddlewareExtractsUsageFromSSETail(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "chat-model", true)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := writer.(http.Flusher)
+		for _, event := range []string{
+			`data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}`,
+			`data: {"id":"1","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}}`,
+			`data: [DONE]`,
+		} {
+			_, _ = writer.Write([]byte(event + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if recorder.record.PromptTokens == nil || *recorder.record.PromptTokens != 12 || recorder.record.CompletionTokens == nil || *recorder.record.CompletionTokens != 7 {
+		t.Fatalf("usage = %v/%v, want 12/7", recorder.record.PromptTokens, recorder.record.CompletionTokens)
+	}
+}
+
+func TestHTTPMiddlewareExtractsUsageFromResponsesCompletedEvent(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "responses-model", true)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n"))
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if recorder.record.PromptTokens == nil || *recorder.record.PromptTokens != 5 || recorder.record.CompletionTokens == nil || *recorder.record.CompletionTokens != 3 {
+		t.Fatalf("usage = %v/%v, want 5/3", recorder.record.PromptTokens, recorder.record.CompletionTokens)
 	}
 }
 
@@ -465,5 +616,19 @@ func TestHTTPMiddlewareSkipsUsageForErrorJSON(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), request)
 	if recorder.record.PromptTokens != nil || recorder.record.CompletionTokens != nil {
 		t.Fatalf("error response usage = %v/%v, want nil/nil", recorder.record.PromptTokens, recorder.record.CompletionTokens)
+	}
+}
+
+func TestHTTPMiddlewareAddsFallbackErrorCodeForUnclassifiedFailure(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if recorder.record.ErrorCode == nil || *recorder.record.ErrorCode != "http_5xx" {
+		t.Fatalf("fallback error code = %v, want http_5xx", recorder.record.ErrorCode)
 	}
 }

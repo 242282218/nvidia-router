@@ -1,0 +1,113 @@
+:root {
+  color-scheme: dark;
+  --color-canvas: #0b0d0f;
+  --color-surface: #111416;
+  --color-elevated: #171b1f;
+  --color-sunken: #07090b;
+  --color-hover: #1d2328;
+  --color-active: #142019;
+  --color-border: rgba(226, 232, 240, 0.1);
+  --color-border-strong: rgba(226, 232, 240, 0.16);
+  --color-text: #edf1f2;
+  --color-text-secondary: #a7b0b8;
+  --color-text-muted: #7f8a94;
+  --color-text-subtle: #5f6b75;
+  --color-accent: #76b900;
+  --color-accent-bright: #8bd31f;
+  --color-accent-foreground: #081000;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-info: #a5b4fc;
+  --color-focus: #93c5fd;
+  --radius-control: 0.5rem;
+  --radius-panel: 0.75rem;
+  --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+  border-color: var(--color-border);
+}
+
+*, *::before, *::after {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 176, 184, 0.22) transparent;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(167, 176, 184, 0.22); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(167, 176, 184, 0.38); }
+
+html,
+body,
+#app {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+html {
+  background: var(--color-canvas);
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--color-canvas);
+  color: var(--color-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: var(--color-text);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

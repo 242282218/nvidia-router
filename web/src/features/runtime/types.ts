@@ -25,6 +25,8 @@ export interface RuntimeSettings {
   first_byte_timeout_ms: number
   nonstream_total_timeout_ms: number
   shutdown_grace_ms: number
+  failover_status_codes: string
+  request_log_retention_days: number
 }
 
 export interface RuntimeSummaryResponse {

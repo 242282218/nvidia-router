@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"nvidia-router/internal/clock"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/xkproxy"
 )
@@ -51,7 +50,8 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	proxy := newConnectProxy(t)
-	manager, fetches := newProxyManager(t, []string{"127.0.0.1:1", proxy.Address()}, upstream.Client().Transport.(*http.Transport))
+	proxy.FailNextConnect()
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
 	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
@@ -70,11 +70,8 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 	if upstreamRequests.Load() != 1 {
 		t.Fatalf("upstream requests = %d, want 1 successful replay", upstreamRequests.Load())
 	}
-	if proxy.Connects() != 1 {
-		t.Fatalf("successful proxy CONNECTs = %d, want 1", proxy.Connects())
-	}
-	if fetches.Load() != 2 {
-		t.Fatalf("proxy fetches = %d, want 2", fetches.Load())
+	if proxy.Connects() != 2 {
+		t.Fatalf("proxy CONNECTs = %d, want 2 (one failed and one successful attempt)", proxy.Connects())
 	}
 }
 
@@ -84,7 +81,7 @@ func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	manager, fetches := newProxyManager(t, []string{"192.0.2.10:8000"}, base)
+	manager := newProxyManager(t, "192.0.2.10:8000", base)
 	client, err := NewClient(http.DefaultClient, DefaultDescriptor(), fixedSettings{}, manager)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -99,10 +96,6 @@ func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("Chat succeeded after first-byte deadline")
 	}
-	if fetches.Load() != 1 {
-		t.Fatalf("proxy fetches = %d, want 1", fetches.Load())
-	}
-
 	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{})
 	if err != nil {
 		t.Fatalf("Acquire after deadline: %v", err)
@@ -118,7 +111,7 @@ func TestClientReusesProxyTransportAcrossSequentialResponses(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	proxy := newConnectProxy(t)
-	manager, fetches := newProxyManager(t, []string{proxy.Address()}, upstream.Client().Transport.(*http.Transport))
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
 	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
@@ -144,32 +137,20 @@ func TestClientReusesProxyTransportAcrossSequentialResponses(t *testing.T) {
 	if proxy.Connects() > 2 {
 		t.Fatalf("proxy CONNECTs = %d, want <= 2", proxy.Connects())
 	}
-	if fetches.Load() != 1 {
-		t.Fatalf("proxy fetches = %d, want 1", fetches.Load())
-	}
 }
 
-func newProxyManager(t *testing.T, addresses []string, base *http.Transport) (*xkproxy.Manager, *atomic.Int32) {
+func newProxyManager(t *testing.T, address string, base *http.Transport) *xkproxy.Manager {
 	t.Helper()
-	var index atomic.Int32
-	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		current := int(index.Add(1)) - 1
-		if current >= len(addresses) {
-			current = len(addresses) - 1
-		}
-		_, _ = io.WriteString(writer, addresses[current])
-	}))
-	t.Cleanup(api.Close)
-	apiURL, err := url.Parse(api.URL + "?qty=1")
+	proxyURL, err := url.Parse("http://" + address)
 	if err != nil {
-		t.Fatalf("parse proxy API URL: %v", err)
+		t.Fatalf("parse proxy URL: %v", err)
 	}
-	manager, err := xkproxy.New(apiURL, 3*time.Minute, 15*time.Second, base, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	manager, err := xkproxy.New(proxyURL, "proxy-secret", base, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("xkproxy.New: %v", err)
 	}
 	t.Cleanup(manager.Close)
-	return manager, &index
+	return manager
 }
 
 type fixedSettings struct{}
@@ -182,6 +163,7 @@ type connectProxy struct {
 	server   *http.Server
 	listener net.Listener
 	connects atomic.Int32
+	failNext atomic.Int32
 }
 
 func newConnectProxy(t *testing.T) *connectProxy {
@@ -204,12 +186,22 @@ func (p *connectProxy) Address() string { return p.listener.Addr().String() }
 
 func (p *connectProxy) Connects() int32 { return p.connects.Load() }
 
+func (p *connectProxy) FailNextConnect() { p.failNext.Store(1) }
+
 func (p *connectProxy) handle(writer http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("Proxy-Authorization") != "Basic cHJveHk6cHJveHktc2VjcmV0" {
+		http.Error(writer, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
 	if request.Method != http.MethodConnect {
 		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
 		return
 	}
 	p.connects.Add(1)
+	if p.failNext.CompareAndSwap(1, 0) {
+		http.Error(writer, "temporary proxy failure", http.StatusBadGateway)
+		return
+	}
 	upstream, err := net.DialTimeout("tcp", request.Host, time.Second)
 	if err != nil {
 		http.Error(writer, "upstream unavailable", http.StatusBadGateway)

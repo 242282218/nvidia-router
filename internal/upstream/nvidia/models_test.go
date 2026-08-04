@@ -41,6 +41,18 @@ func TestModelsSupportsKnownResponseShapes(t *testing.T) {
 	}
 }
 
+func TestModelsRejectsOversizedResponses(t *testing.T) {
+	server := mocknvidia.New(mocknvidia.Script{
+		Status: http.StatusOK,
+		Body:   `{"data":[{"id":"` + strings.Repeat("x", maxModelsResponseBytes) + `"}]}`,
+	})
+	t.Cleanup(server.Close)
+	_, err := newTestClient(t, server.URL(), server.Client()).Models(context.Background(), "test-token")
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("Models error = %v, want ErrProtocol", err)
+	}
+}
+
 func TestModelsRejectsEmptyAndMalformedResponsesWithoutLeakingBody(t *testing.T) {
 	for _, body := range []string{"", "{\"data\":", "{\"data\":[]}", "{\"other\":[]}", "{\"data\":[{\"id\":\"\"}]}"} {
 		t.Run(body, func(t *testing.T) {
@@ -187,6 +199,19 @@ func newTestClient(t *testing.T, baseURL string, httpClient *http.Client) *Clien
 	t.Helper()
 	descriptor := DefaultDescriptor()
 	descriptor.Models.URL = baseURL + "/v1/models"
+	if httpClient.Transport != nil {
+		if _, ok := httpClient.Transport.(*http.Transport); !ok {
+			// Unit tests use synthetic RoundTrippers to exercise sanitisation and
+			// body-read failures; production construction rejects these because
+			// direct timeout enforcement cannot be guaranteed.
+			return &Client{
+				httpClient: httpClient,
+				descriptor: descriptor,
+				settings:   fixedSettings{},
+				directPool: newDirectTransportPool(httpClient.Transport),
+			}
+		}
+	}
 	client, err := NewClient(httpClient, descriptor, fixedSettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)

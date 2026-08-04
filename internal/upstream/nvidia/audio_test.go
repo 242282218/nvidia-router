@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 )
 
@@ -36,7 +37,12 @@ func TestAudioTranscriptionsSendsMultipart(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	body := []byte("--bound\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\r\nWAVDATA\r\n--bound--")
-	resp, err := client.AudioTranscriptions(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 10000}, "nvapi-secret", body, "multipart/form-data; boundary=bound")
+	replay, err := router.NewReplayableBody(body, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewReplayableBody: %v", err)
+	}
+	defer func() { _ = replay.Close() }()
+	resp, err := client.AudioTranscriptionsReplay(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 10000}, "nvapi-secret", replay, "multipart/form-data; boundary=bound")
 	if err != nil {
 		t.Fatalf("AudioTranscriptions: %v", err)
 	}
@@ -64,7 +70,7 @@ func TestValidateNonstreamAudioRejectsMalformed(t *testing.T) {
 	}
 	for name, body := range cases {
 		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
-		if _, err := ValidateNonstreamAudio(resp); err == nil {
+		if _, err := ValidateNonstreamAudio(resp, false); err == nil {
 			t.Fatalf("%s: expected protocol error", name)
 		}
 	}
@@ -77,12 +83,12 @@ func TestValidateNonstreamAudioAcceptsTextOrTranscript(t *testing.T) {
 	}
 	for name, body := range cases {
 		resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"r1"}}, Body: io.NopCloser(strings.NewReader(body))}
-		validated, err := ValidateNonstreamAudio(resp)
+		validated, err := ValidateNonstreamAudio(resp, false)
 		if err != nil {
 			t.Fatalf("%s: Validate: %v", name, err)
 		}
-		if validated.Metadata.RequestID != "r1" {
-			t.Fatalf("%s: request id = %q", name, validated.Metadata.RequestID)
+		if string(validated.Body) != body {
+			t.Fatalf("%s: body = %s", name, validated.Body)
 		}
 	}
 }
@@ -96,9 +102,24 @@ func TestValidateNonstreamAudioRequiresNonEmptyTranscript(t *testing.T) {
 		`{}`,
 	} {
 		response := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
-		if _, err := ValidateNonstreamAudio(response); !errors.Is(err, ErrProtocol) {
+		if _, err := ValidateNonstreamAudio(response, false); !errors.Is(err, ErrProtocol) {
 			t.Fatalf("body %s error = %v, want protocol error", body, err)
 		}
+	}
+}
+
+func TestValidateNonstreamAudioVerboseBudgetAllowsLargeTranscript(t *testing.T) {
+	// verbose_json responses carry per-word timestamps that routinely exceed
+	// the plain json budget; with the verbose flag the larger cap applies.
+	verbose := `{"task":"transcribe","language":"en","text":"` + strings.Repeat("word ", 4096) + `","words":[]}`
+	response := &http.Response{Body: io.NopCloser(strings.NewReader(verbose))}
+	if _, err := ValidateNonstreamAudio(response, true); err != nil {
+		t.Fatalf("verbose_json large body rejected with verbose budget: %v", err)
+	}
+	// The same body must still be rejected under the plain json budget.
+	response = &http.Response{Body: io.NopCloser(strings.NewReader(verbose))}
+	if _, err := ValidateNonstreamAudio(response, false); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("verbose_json large body not rejected under plain budget: %v", err)
 	}
 }
 

@@ -7,11 +7,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 )
 
-const maximumErrorSummaryBytes = 8 << 10
+const (
+	maximumErrorSummaryBytes = 8 << 10
+	// maximumPublicMessageBytes bounds how much of the upstream message is
+	// forwarded to clients; a verbose upstream error must not balloon the fault.
+	maximumPublicMessageBytes = 1 << 10
+)
 
 var credentialErrorValues = map[string]struct{}{
 	"invalid_api_key":      {},
@@ -50,13 +56,13 @@ func Classify(response *http.Response, requestErr error, modelsRequest bool, now
 			PublicMessage: "The upstream service rate limited the request.", retryAfterValid: retryAfterValid,
 		}
 	case status == 400 || status == 404 || status == 409 || status == 422:
-		return requestFault(status)
+		return requestFault(status, summary.message)
 	case status == 500 || status == 502 || status == 503 || status == 504:
 		return upstreamFault(status, true, "upstream_error", "The upstream service is temporarily unavailable.", nil)
 	case status >= 500 && status <= 599:
 		return upstreamFault(status, false, "upstream_error", "The upstream service rejected the request.", nil)
 	case status >= 400 && status <= 499:
-		return requestFault(status)
+		return requestFault(status, summary.message)
 	default:
 		return upstreamFault(http.StatusBadGateway, false, "upstream_protocol_error", "The upstream response was unexpected.", nil)
 	}
@@ -90,10 +96,14 @@ func credentialFault(status int) Fault {
 	}
 }
 
-func requestFault(status int) Fault {
+func requestFault(status int, upstreamMessage string) Fault {
+	message := upstreamMessage
+	if message == "" {
+		message = "The upstream service rejected the request."
+	}
 	return Fault{
 		HTTPStatus: status, Scope: ScopeRequest, PublicType: "invalid_request_error",
-		PublicCode: "upstream_request_rejected", PublicMessage: "The upstream service rejected the request.",
+		PublicCode: "upstream_request_rejected", PublicMessage: message,
 	}
 }
 
@@ -107,6 +117,11 @@ func upstreamFault(status int, retryable bool, code, message string, cause error
 type errorSummary struct {
 	code     string
 	typeName string
+	// message is the upstream's own description of why the request was
+	// rejected. Only surfaced for request faults (4xx describing the client's
+	// own request); it is never used for credential/rate-limit/server faults
+	// whose bodies may carry internal or credential-adjacent detail.
+	message string
 }
 
 func (s errorSummary) invalidCredential() bool {
@@ -128,8 +143,9 @@ func readErrorSummary(body io.Reader) errorSummary {
 	}
 	var envelope struct {
 		Error struct {
-			Code json.RawMessage `json:"code"`
-			Type json.RawMessage `json:"type"`
+			Code    json.RawMessage `json:"code"`
+			Type    json.RawMessage `json:"type"`
+			Message string          `json:"message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(payload, &envelope) != nil {
@@ -138,7 +154,18 @@ func readErrorSummary(body io.Reader) errorSummary {
 	return errorSummary{
 		code:     safeSummaryValue(envelope.Error.Code),
 		typeName: safeSummaryValue(envelope.Error.Type),
+		message:  safeMessageValue(envelope.Error.Message),
 	}
+}
+
+// safeMessageValue trims and caps the upstream error message so a verbose
+// body cannot balloon a fault nor be forwarded in full to clients.
+func safeMessageValue(message string) string {
+	trimmed := strings.TrimSpace(message)
+	if len(trimmed) > maximumPublicMessageBytes {
+		return trimmed[:maximumPublicMessageBytes]
+	}
+	return trimmed
 }
 
 func safeSummaryValue(raw json.RawMessage) string {

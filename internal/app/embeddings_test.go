@@ -105,7 +105,7 @@ func newEmbeddingsTestApp(t *testing.T, upstream *mocknvidia.Server, upstreamSec
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	application, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: masterKey, NVIDIABaseURL: baseURL},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: masterKey, NVIDIABaseURL: baseURL},
 		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 		NVIDIAHTTPClient: upstream.Client(),
 	})

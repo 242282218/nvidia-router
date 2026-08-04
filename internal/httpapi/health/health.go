@@ -4,10 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"time"
 
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
 )
+
+// readyProbeTimeout bounds every /health/ready probe. The database runs on a
+// single shared connection with a 5s busy timeout, so without a probe deadline
+// a connection wedged behind a long write would make each probe wait up to 5s,
+// letting orchestrator probes pile up instead of failing fast.
+const readyProbeTimeout = 2 * time.Second
 
 type Handler struct {
 	db       *sql.DB
@@ -39,20 +46,29 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) ready(ctx context.Context) bool {
-	if h.shutting == nil || h.shutting() || h.db == nil || h.db.PingContext(ctx) != nil {
+	if h.shutting == nil || h.shutting() || h.db == nil {
 		return false
 	}
-	if database.VerifyMigrations(ctx, h.db) != nil {
+	// Fail the probe quickly instead of queueing behind a busy business
+	// request on the single shared connection (see readyProbeTimeout).
+	probe, cancel := context.WithTimeout(ctx, readyProbeTimeout)
+	defer cancel()
+	if h.db.PingContext(probe) != nil {
 		return false
 	}
-	if h.keys == nil || h.keys.ValidateSentinel(ctx, h.db) != nil {
+	if database.VerifyMigrations(probe, h.db) != nil {
 		return false
 	}
-	var mustChange int
-	if err := h.db.QueryRowContext(ctx, "SELECT must_change_password FROM admins WHERE id = 1").Scan(&mustChange); err != nil {
+	// Deliberately do NOT gate readiness on must_change_password: that flag
+	// describes an administrator-driven security posture (log in then change
+	// the bootstrap password), not service health. An orchestrator probing
+	// /health/ready right after first boot would otherwise report the
+	// container as unhealthy until someone logs in, restarting it in a
+	// loop and locking out the very first sign-in the policy is waiting for.
+	if h.keys == nil || h.keys.ValidateSentinel(probe, h.db) != nil {
 		return false
 	}
-	return mustChange == 0
+	return true
 }
 
 func writeStatus(writer http.ResponseWriter, status int, value string) {

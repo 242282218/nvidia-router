@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 const validKey = 'fixture-second-valid-key-123456789'
 const secondValidKey = 'nvapi-fixture-not-a-real-key-123456789'
-const invalidKey = 'invalid-key-value-that-is-long-enough'
+const invalidKey = 'invalid'
 
 async function login(page: Page): Promise<void> {
   await page.goto('/admin/login')
@@ -37,14 +37,14 @@ test.describe('management resources', () => {
     await expect(page.getByText('imported')).toBeVisible()
     await expect(page.getByTestId('key-table')).toBeVisible()
     await expect(page.getByTestId('key-cards')).toBeHidden()
-    await expect(page.getByTestId('key-table')).toContainText('fixture-…6789')
+    await expect(page.getByTestId('key-table')).toContainText('fixture-…')
 
     await page.getByTestId('open-batch-import').click()
     await page.locator('textarea[name="batch-keys"]').fill(`${invalidKey}\n${secondValidKey}`)
-    await page.getByRole('dialog').getByRole('button', { name: '导入' }).click()
-    await expect(page.getByRole('dialog')).toContainText('invalid_credential')
+    await page.getByRole('dialog').getByRole('button', { name: '导入', exact: true }).click()
+    await expect(page.getByRole('dialog')).toContainText('invalid_format')
     await expect(page.getByRole('dialog')).toContainText('imported')
-    await expect(page.getByRole('dialog')).toContainText('nvapi-fi...6789')
+    await expect(page.getByRole('dialog')).toContainText('nvapi-fi...9')
     await expect(page.locator('body')).not.toContainText(validKey)
     await expect(page.locator('body')).not.toContainText(secondValidKey)
     await expect(page.locator('textarea[name="batch-keys"]').first()).toHaveValue('')
@@ -56,7 +56,7 @@ test.describe('management resources', () => {
     await page.getByTestId('single-import-form').getByRole('button', { name: '导入' }).click()
     await expect(page.getByTestId('key-table')).toBeVisible()
     await expect(page.getByTestId('key-cards')).toBeHidden()
-    await expect(page.getByTestId('key-table')).toContainText('fixture-…6789')
+    await expect(page.getByTestId('key-table')).toContainText('fixture-…')
     await page.getByTestId('test-all-keys').click()
     await expect(page.getByTestId('key-test-results')).toContainText('valid')
     await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click()

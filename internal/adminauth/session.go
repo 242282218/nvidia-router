@@ -19,6 +19,9 @@ const (
 	sessionIDBytes    = 16
 	sessionLifetime   = 24 * time.Hour
 	sessionCookieName = "nvr_admin_session"
+	// sessionTouchInterval throttles last_seen_at writes so SPA session
+	// polling does not hammer the single SQLite connection on every request.
+	sessionTouchInterval = time.Minute
 )
 
 var ErrInvalidSession = errors.New("invalid admin session")
@@ -155,12 +158,23 @@ func (s *SessionService) Authenticate(ctx context.Context, token string) (Sessio
 	var session Session
 	var expiresAt string
 	now := s.clock.Now().UTC()
+	// Bump last_seen_at at most once per interval; throttled or invalid
+	// sessions fall back to the SELECT below, which still enforces
+	// revoked/expired on every request.
 	err := s.db.QueryRowContext(ctx, `
 		UPDATE admin_sessions
 		SET last_seen_at = ?
 		WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
+		  AND last_seen_at <= ?
 		RETURNING id, expires_at
-	`, timestamp(now), digest, timestamp(now)).Scan(&session.ID, &expiresAt)
+	`, timestamp(now), digest, timestamp(now), timestamp(now.Add(-sessionTouchInterval))).Scan(&session.ID, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `
+			SELECT id, expires_at
+			FROM admin_sessions
+			WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
+		`, digest, timestamp(now)).Scan(&session.ID, &expiresAt)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrInvalidSession
 	}

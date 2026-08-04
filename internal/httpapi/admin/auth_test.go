@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -20,7 +21,7 @@ import (
 func TestAuthLoginCreatesRestrictedSessionWithRequiredCookie(t *testing.T) {
 	fixture := newAuthFixture(t)
 
-	response := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin)
+	response := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("login status = %d, want 200: %s", response.Code, response.Body.String())
@@ -41,7 +42,7 @@ func TestAuthLoginCreatesRestrictedSessionWithRequiredCookie(t *testing.T) {
 func TestAuthRejectsInvalidOriginCredentialsAndSixthAttempt(t *testing.T) {
 	fixture := newAuthFixture(t)
 
-	crossOrigin := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, "http://attacker.example")
+	crossOrigin := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, "http://attacker.example")
 	assertAPIError(t, crossOrigin, http.StatusForbidden, "invalid_origin")
 
 	for attempt := 1; attempt <= 5; attempt++ {
@@ -55,12 +56,86 @@ func TestAuthRejectsInvalidOriginCredentialsAndSixthAttempt(t *testing.T) {
 	}
 }
 
+func TestAuthLoginRateLimitIsScopedPerUserAndAddress(t *testing.T) {
+	fixture := newAuthFixture(t)
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		response := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"wrong"}`, nil, sameOrigin)
+		assertAPIError(t, response, http.StatusUnauthorized, "invalid_credentials")
+	}
+	rateLimited := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"wrong"}`, nil, sameOrigin)
+	assertAPIError(t, rateLimited, http.StatusTooManyRequests, "rate_limit_exceeded")
+
+	// A different username from the same address must not share the exhausted
+	// bucket; otherwise one user's failures would lock out everyone behind a
+	// shared proxy.
+	otherUser := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin2","password":"wrong"}`, nil, sameOrigin)
+	assertAPIError(t, otherUser, http.StatusUnauthorized, "invalid_credentials")
+}
+
+func TestAuthLoginRateLimitScopesByForwardedClientIP(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	testClock := instantClock{now: time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)}
+	keys, err := crypto.New([32]byte{1})
+	if err != nil {
+		t.Fatalf("create key set: %v", err)
+	}
+	if err := keys.EnsureSentinel(context.Background(), db); err != nil {
+		t.Fatalf("ensure sentinel: %v", err)
+	}
+	repository := adminauth.NewRepository(db, testClock)
+	if err := repository.EnsureAdmin(context.Background(), "test-initial-admin-password"); err != nil {
+		t.Fatalf("ensure admin: %v", err)
+	}
+	_, trustedProxy, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("parse trusted proxy CIDR: %v", err)
+	}
+	auth := NewAuth(repository, adminauth.NewSessionService(db, testClock, keys, false), adminauth.NewLoginLimiter(testClock), adminauth.OriginPolicy{TrustedProxies: []*net.IPNet{trustedProxy}})
+
+	login := func(username, remoteAddr, forwarded string) *httptest.ResponseRecorder {
+		body := `{"username":"` + username + `","password":"wrong"}`
+		request := httptest.NewRequest(http.MethodPost, "/admin/api/auth/login", bytes.NewBufferString(body))
+		request.RemoteAddr = remoteAddr
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", "http://example.com")
+		if forwarded != "" {
+			request.Header.Set("X-Forwarded-For", forwarded)
+		}
+		response := httptest.NewRecorder()
+		auth.ServeHTTP(response, request)
+		return response
+	}
+
+	// Two clients behind the same trusted proxy share the proxy address but must
+	// get independent rate-limit buckets keyed on their forwarded IPs.
+	for attempt := 1; attempt <= 5; attempt++ {
+		assertAPIError(t, login("admin", "10.0.0.5:1111", "203.0.113.9"), http.StatusUnauthorized, "invalid_credentials")
+	}
+	assertAPIError(t, login("admin", "10.0.0.5:1111", "203.0.113.9"), http.StatusTooManyRequests, "rate_limit_exceeded")
+	assertAPIError(t, login("admin", "10.0.0.5:1111", "203.0.113.10"), http.StatusUnauthorized, "invalid_credentials")
+
+	// An untrusted peer must not be able to spoof the forwarded header.
+	for attempt := 1; attempt <= 5; attempt++ {
+		assertAPIError(t, login("admin", "192.0.2.99:1234", "203.0.113.200"), http.StatusUnauthorized, "invalid_credentials")
+	}
+	assertAPIError(t, login("admin", "192.0.2.99:1234", "203.0.113.200"), http.StatusTooManyRequests, "rate_limit_exceeded")
+	// The same spoofed header from a different untrusted peer still hits its
+	// own bucket (keyed on the socket address, not the spoofed header).
+	assertAPIError(t, login("admin", "192.0.2.100:1234", "203.0.113.200"), http.StatusUnauthorized, "invalid_credentials")
+}
+
 func TestAuthChangePasswordRotatesSessionAndLogoutRevokeAll(t *testing.T) {
 	fixture := newAuthFixture(t)
-	firstOld := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin))
-	secondOld := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin))
+	firstOld := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin))
+	secondOld := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin))
 
-	changed := fixture.request(http.MethodPost, "/admin/api/auth/change-password", `{"current_password":"admin","new_password":"replacement-password"}`, firstOld, sameOrigin)
+	changed := fixture.request(http.MethodPost, "/admin/api/auth/change-password", `{"current_password":"test-initial-admin-password","new_password":"replacement-password"}`, firstOld, sameOrigin)
 	if changed.Code != http.StatusOK {
 		t.Fatalf("change password status = %d, want 200: %s", changed.Code, changed.Body.String())
 	}
@@ -78,7 +153,7 @@ func TestAuthChangePasswordRotatesSessionAndLogoutRevokeAll(t *testing.T) {
 	}
 	assertSessionResponse(t, current, false)
 
-	oldPassword := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin)
+	oldPassword := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin)
 	assertAPIError(t, oldPassword, http.StatusUnauthorized, "invalid_credentials")
 	firstNew := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"replacement-password"}`, nil, sameOrigin))
 
@@ -100,9 +175,16 @@ func TestAuthChangePasswordRotatesSessionAndLogoutRevokeAll(t *testing.T) {
 	assertInvalidSession(t, fixture, secondActive)
 }
 
+func TestAuthChangePasswordRejectsUnchangedPassword(t *testing.T) {
+	fixture := newAuthFixture(t)
+	session := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin))
+	response := fixture.request(http.MethodPost, "/admin/api/auth/change-password", `{"current_password":"test-initial-admin-password","new_password":"test-initial-admin-password"}`, session, sameOrigin)
+	assertAPIError(t, response, http.StatusBadRequest, "invalid_request")
+}
+
 func TestAuthGuardsDataAndManagementRoutes(t *testing.T) {
 	fixture := newAuthFixture(t)
-	restricted := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin))
+	restricted := requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin))
 	next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
 
 	dataBlocked := serve(fixture.auth.RequirePasswordChanged(next), http.MethodPost, "/v1/models", "", nil, "")
@@ -117,9 +199,9 @@ func TestAuthGuardsDataAndManagementRoutes(t *testing.T) {
 	if logoutRestricted.Code != http.StatusNoContent {
 		t.Fatalf("restricted logout status = %d, want 204: %s", logoutRestricted.Code, logoutRestricted.Body.String())
 	}
-	restricted = requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"admin"}`, nil, sameOrigin))
+	restricted = requireSessionCookie(t, fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, sameOrigin))
 
-	changed := fixture.request(http.MethodPost, "/admin/api/auth/change-password", `{"current_password":"admin","new_password":"replacement-password"}`, restricted, sameOrigin)
+	changed := fixture.request(http.MethodPost, "/admin/api/auth/change-password", `{"current_password":"test-initial-admin-password","new_password":"replacement-password"}`, restricted, sameOrigin)
 	active := requireSessionCookie(t, changed)
 	dataAllowed := serve(fixture.auth.RequirePasswordChanged(next), http.MethodPost, "/v1/models", "", nil, "")
 	if dataAllowed.Code != http.StatusNoContent {
@@ -139,7 +221,7 @@ func TestAuthGuardsDataAndManagementRoutes(t *testing.T) {
 
 func TestAuthRejectsOversizedBodyWithJSON413(t *testing.T) {
 	fixture := newAuthFixture(t)
-	body := `{"username":"` + strings.Repeat("x", maxAuthBodyBytes+1) + `","password":"admin"}`
+	body := `{"username":"` + strings.Repeat("x", maxAuthBodyBytes+1) + `","password":"test-initial-admin-password"}`
 	response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
 
 	assertAPIError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
@@ -168,7 +250,7 @@ func newAuthFixture(t *testing.T) authFixture {
 		t.Fatalf("ensure sentinel: %v", err)
 	}
 	repository := adminauth.NewRepository(db, testClock)
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), "test-initial-admin-password"); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	sessions := adminauth.NewSessionService(db, testClock, keys, false)

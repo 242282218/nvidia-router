@@ -87,6 +87,30 @@ func TestRouterRegistersProtectedRuntimeAdministrationRoutes(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersProtectedMonitoringRoutes(t *testing.T) {
+	notFound := http.NotFoundHandler()
+	monitoring := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Monitoring-Handler", "applied")
+		writer.WriteHeader(http.StatusOK)
+	})
+	router := NewRouter(
+		notFound, notFound, notFound, notFound, notFound, notFound, notFound, v1.Unsupported,
+		fakeAdminSecurity{}, notFound, notFound, notFound, notFound, notFound, monitoring,
+	)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/monitoring/summary", nil))
+	if response.Code != http.StatusOK || response.Header().Get("X-Monitoring-Handler") != "applied" {
+		t.Fatalf("monitoring route = %d/%q, want 200/applied", response.Code, response.Header().Get("X-Monitoring-Handler"))
+	}
+	if response.Header().Get("X-Admin-Guard") != "applied" {
+		t.Fatal("monitoring route did not pass through management guard")
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("monitoring Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
+}
+
 func TestRouterAddsNoStoreToAPIHealthAndAuthResponsesWithoutSPAHTML(t *testing.T) {
 	api := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

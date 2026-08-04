@@ -4,17 +4,9 @@
 
 ## 重要安全边界
 
-> **醒目警告：当前第一轮默认使用普通 HTTP，绝不是安全生产部署。禁止把本说明或当前部署方式写成“安全公网部署”，也禁止在不可信网络中直接暴露。**
+> **醒目警告：应用本身只提供 HTTP。直接将非回环监听暴露到不可信网络是不安全的；安全部署必须在受信反向代理后使用 HTTPS、Secure Cookie、external origin 和 trusted proxy CIDR。**
 >
-> 普通 HTTP 会明文传输以下内容：
->
-> - 管理员密码；
-> - 管理员会话 Cookie；
-> - 下游 Access Key；
-> - API 请求中的提示词及其他请求内容；
-> - API 响应内容。
->
-> HTTPS、证书和 Caddy、Nginx 等反向代理属于后续迭代，当前第一轮没有提供这些配置。若要面向安全生产或不可信公网使用，当前版本不满足要求。
+> 普通 HTTP 会明文传输管理员密码、管理员会话 Cookie、下游 Access Key、API 请求内容和响应内容。`X-Forwarded-Proto` 只有来自 `NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS` 的来源才会被使用。
 
 ## 环境要求
 
@@ -37,9 +29,19 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 ```dotenv
 NVIDIA_ROUTER_MASTER_KEY=替换为实际主密钥
+NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=替换为至少 12 个字符的随机密码
+# 星空代理池独立部署时填写其可达的 HTTP 正向代理地址
+# NVIDIA_ROUTER_XK_PROXY_URL=http://proxy-pool:8080
+# NVIDIA_ROUTER_XK_PROXY_AUTH_KEY=替换为星空代理池的 PROXY_AUTH_KEY
+# HTTPS 反向代理部署时启用以下配置
+# NVIDIA_ROUTER_ADMIN_SECURE_COOKIE=true
+# NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN=https://admin.example.com
+# NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS=127.0.0.1/32
 ```
 
-`.env` 只应由受信用户读取；不要将包含真实主密钥的文件提交到 Git。Compose 还会使用以下固定值：监听 `0.0.0.0:3756`，数据目录 `/data`，临时目录 `/tmp`，对外映射端口 `3756`。
+`.env` 只应由受信用户读取；不要将包含真实主密钥或密码的文件提交到 Git。Compose 还会使用以下固定值：容器监听 `0.0.0.0:3756`，数据目录 `/data`，临时目录 `/tmp`，宿主端口默认只绑定 `127.0.0.1:3756`。
+
+星空代理池是独立项目和独立服务。它负责上游 XApi、代理出口轮换、测活和过期处理；本项目只通过 `NVIDIA_ROUTER_XK_PROXY_URL` 连接其 `8080` 正向代理，并使用相同的 `PROXY_AUTH_KEY` 作为 `NVIDIA_ROUTER_XK_PROXY_AUTH_KEY`。代理地址非空但认证 Key 缺失时，路由器拒绝启动；代理池不可用时不会回退直连。管理员登录后也可在“代理池”页面保存配置，数据库配置优先于环境变量，认证 Key 使用主密钥加密保存。
 
 ## 启动和首次登录
 
@@ -62,13 +64,13 @@ docker compose ps
 docker compose logs -f app
 ```
 
-默认访问地址为：
+默认 Compose 访问地址为：
 
 ```text
-http://SERVER_IP:3756
+http://127.0.0.1:3756
 ```
 
-首次管理员账号和密码均为 `admin`，即 `admin/admin`。首次登录后必须立即修改密码。服务在首次改密前会拒绝代理 API 和敏感管理操作；`/health/ready` 也不会报告就绪。
+管理员用户名固定为 `admin`，首次密码来自 `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD`。首次登录后必须立即修改密码。服务在首次改密前会拒绝代理 API 和敏感管理操作；`/health/ready` 也不会报告就绪。若要通过 HTTPS 反向代理访问，公开 origin 必须与 `NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN` 精确匹配，并将反向代理来源加入 `NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS`。
 
 改密完成后验证健康状态：
 

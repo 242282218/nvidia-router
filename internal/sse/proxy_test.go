@@ -205,6 +205,57 @@ func TestProxyIgnoresEventsAfterDONE(t *testing.T) {
 	}
 }
 
+func TestProxyTruncatesDataAfterDONEWithinSameEvent(t *testing.T) {
+	// A malformed upstream packs data lines after the terminal [DONE] in one
+	// event; those must not reach the client (checklist #53).
+	input := "data: [DONE]\ndata: leaked-extra\n\n"
+	upstream := &http.Response{Body: io.NopCloser(strings.NewReader(input))}
+
+	recorder := httptest.NewRecorder()
+	err := Proxy(context.Background(), recorder, upstream, ProxyOptions{})
+	if err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "leaked-extra") {
+		t.Fatalf("post-[DONE] data line leaked: %s", body)
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Fatalf("[DONE] marker not forwarded: %s", body)
+	}
+}
+
+func TestPrimeRejectsCommentPreambleOverCaptureCap(t *testing.T) {
+	// A stream of comment/keep-alive events before any data event must not grow
+	// the Prime capture buffer without bound (checklist #13).
+	upstream := &http.Response{
+		Body: io.NopCloser(&repeatEventReader{event: []byte(": keep-alive\n\n"), left: MaxCaptureBytes + 1}),
+	}
+	err := Prime(context.Background(), upstream)
+	if !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("Prime error = %v, want ErrEventTooLarge", err)
+	}
+}
+
+// repeatEventReader emits the same SSE event until left bytes are produced,
+// letting tests stream a long preamble without allocating it up front.
+type repeatEventReader struct {
+	event []byte
+	left  int64
+}
+
+func (r *repeatEventReader) Read(payload []byte) (int, error) {
+	if r.left <= 0 {
+		return 0, io.EOF
+	}
+	n := copy(payload, r.event)
+	if int64(n) > r.left {
+		n = int(r.left)
+	}
+	r.left -= int64(n)
+	return n, nil
+}
+
 func TestProxyCancelOnContextDone(t *testing.T) {
 	// Infinite stream - should cancel via context
 	pr, pw := io.Pipe()

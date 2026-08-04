@@ -5,16 +5,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
+	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 )
 
 // MaxAudioResponseBytes bounds how much of a non-streaming audio response body
-// we read before declaring a protocol error.
+// we read before declaring a protocol error. Plain json transcripts are small;
+// verbose_json carries per-word timestamps and gets a much larger budget below.
 const MaxAudioResponseBytes = 8 << 10
+
+// MaxVerboseAudioResponseBytes bounds verbose_json responses (word-level
+// timestamps). The old 8 KiB cap rejected legitimate long transcripts and
+// forced a wasteful key failover; 1 MiB covers realistic verbose payloads while
+// still bounding memory.
+const MaxVerboseAudioResponseBytes = 1 << 20
 
 // AudioTranscriptions sends a non-streaming ASR request to NVIDIA as multipart
 // form data. Like Chat, the per-attempt connect timeout comes from the
@@ -27,17 +37,37 @@ func (c *Client) AudioTranscriptions(
 	body []byte,
 	contentType string,
 ) (*http.Response, error) {
+	replay, err := router.NewReplayableBody(body, os.TempDir())
+	if err != nil {
+		return nil, safeError{"capture NVIDIA audio transcriptions body", err}
+	}
+	defer func() { _ = replay.Close() }()
+	return c.AudioTranscriptionsReplay(ctx, snapshot, token, replay, contentType)
+}
+
+func (c *Client) AudioTranscriptionsReplay(
+	ctx context.Context,
+	snapshot runtimeconfig.Snapshot,
+	token string,
+	body router.ReplayableBody,
+	contentType string,
+) (*http.Response, error) {
+	if body == nil {
+		return nil, safeError{"create NVIDIA audio transcriptions request", errors.New("request body is required")}
+	}
 	response, err := c.do(ctx, snapshot, func(ctx context.Context) (*http.Request, error) {
 		request, err := c.descriptor.NewRequest(c.descriptor.ASR, false, token)
 		if err != nil {
 			return nil, safeError{"create NVIDIA audio transcriptions request", err}
 		}
-		request = request.WithContext(ctx)
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		request.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(body)), nil
+		reader, err := body.Open()
+		if err != nil {
+			return nil, safeError{"open NVIDIA audio transcriptions body", err}
 		}
-		request.ContentLength = int64(len(body))
+		request = request.WithContext(ctx)
+		request.Body = reader
+		request.GetBody = func() (io.ReadCloser, error) { return body.Open() }
+		request.ContentLength = body.Size()
 		request.Header.Set("Content-Type", contentType)
 		return request, nil
 	})
@@ -48,27 +78,26 @@ func (c *Client) AudioTranscriptions(
 }
 
 // ValidatedAudioResponse carries the normalised transcript from a 2xx ASR
-// response plus extracted metadata. It never carries the input audio.
+// response. The upstream request id is intentionally not captured here; no
+// production consumer reads it.
 type ValidatedAudioResponse struct {
-	Body     []byte
-	Metadata AudioMetadata
-}
-
-// AudioMetadata carries the upstream request ID extracted from a successful
-// audio response.
-type AudioMetadata struct {
-	RequestID string
+	Body []byte
 }
 
 // ValidateNonstreamAudio reads and validates a non-streaming audio response. A
 // 2xx body must be a JSON object containing `text` or `transcript`; anything
 // else is surfaced as a protocol error so the Attempt loop can fail over.
-func ValidateNonstreamAudio(response *http.Response) (ValidatedAudioResponse, error) {
-	body, err := io.ReadAll(io.LimitReader(response.Body, MaxAudioResponseBytes+1))
+// verboseJSON selects the larger read budget for verbose_json responses.
+func ValidateNonstreamAudio(response *http.Response, verboseJSON bool) (ValidatedAudioResponse, error) {
+	limit := int64(MaxAudioResponseBytes)
+	if verboseJSON {
+		limit = MaxVerboseAudioResponseBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return ValidatedAudioResponse{}, safeError{"read NVIDIA audio response", err}
 	}
-	if len(body) > MaxAudioResponseBytes {
+	if len(body) > int(limit) {
 		return ValidatedAudioResponse{}, protocolError()
 	}
 
@@ -82,9 +111,6 @@ func ValidateNonstreamAudio(response *http.Response) (ValidatedAudioResponse, er
 
 	return ValidatedAudioResponse{
 		Body: body,
-		Metadata: AudioMetadata{
-			RequestID: allowedRequestID(response.Header),
-		},
 	}, nil
 }
 

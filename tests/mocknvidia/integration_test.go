@@ -616,15 +616,16 @@ type harnessOptions struct {
 	logger   *slog.Logger
 	prepare  func(*testing.T, *sql.DB, []int64, int64)
 
-	// Proxy mode (星空代理租约): when proxyFetchURL is set the App is
-	// configured with XKProxyAPIURL and all NVIDIA upstream traffic must flow
-	// through the CONNECT proxy selected by the fetch API. The NVIDIA upstream
+	// Proxy mode (星空代理池): when proxyURL is set the App is configured with
+	// the static HTTP proxy-pool endpoint and all NVIDIA upstream traffic must
+	// flow through the CONNECT proxy. The NVIDIA upstream
 	// is then the TLS server created by newTLSNVIDIAUpstream instead of the
 	// plain HTTP mocknvidia server, because CONNECT tunneling only applies to
 	// HTTPS. tlsUpstream, when non-nil, is used as that TLS upstream so tests
 	// can inspect its request log; otherwise the harness creates one.
-	proxyFetchURL *url.URL
-	tlsUpstream   *tlsUpstreamFixture
+	proxyURL     *url.URL
+	proxyAuthKey string
+	tlsUpstream  *tlsUpstreamFixture
 }
 
 func newAppHarness(t *testing.T, upstream *mocknvidia.Server, secrets []string) *appHarness {
@@ -677,11 +678,11 @@ func newAppHarnessWithOptions(t *testing.T, options harnessOptions) *appHarness 
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	config := config.Config{DataDir: root, MasterKey: masterKey, NVIDIABaseURL: baseURL}
+	config := config.Config{DataDir: root, MasterKey: masterKey, InitialAdminPassword: "test-initial-admin-password", NVIDIABaseURL: baseURL}
 	nvidiaHTTPClient := upstream.Client()
-	if options.proxyFetchURL != nil {
-		// 星空代理模式：使用本地 TLS NVIDIA 上游（CONNECT 只对 HTTPS 有意义），
-		// 注入 XKProxyAPIURL。App 的 NVIDIAHTTPClient 使用 TLS 上游的 Client()，
+	if options.proxyURL != nil {
+		// 星空代理池模式：使用本地 TLS NVIDIA 上游（CONNECT 只对 HTTPS 有意义），
+		// 注入静态代理池端点。App 的 NVIDIAHTTPClient 使用 TLS 上游的 Client()，
 		// 其 Transport 信任该 TLS server 证书。
 		tlsUpstream := options.tlsUpstream
 		if tlsUpstream == nil {
@@ -693,9 +694,11 @@ func newAppHarnessWithOptions(t *testing.T, options harnessOptions) *appHarness 
 		}
 		config.NVIDIABaseURL = baseURL
 		nvidiaHTTPClient = tlsUpstream.Client()
-		config.XKProxyAPIURL = options.proxyFetchURL
-		config.XKProxyTTL = 3 * time.Minute
-		config.XKProxyRenewBefore = 15 * time.Second
+		config.XKProxyURL = options.proxyURL
+		config.XKProxyAuthKey = options.proxyAuthKey
+		if config.XKProxyAuthKey == "" {
+			config.XKProxyAuthKey = "proxy-secret"
+		}
 	}
 	application, err := app.New(context.Background(), app.Dependencies{
 		Config: config,
@@ -849,11 +852,11 @@ func assertAuthorizationOrder(t *testing.T, requests []mocknvidia.Request, secre
 }
 
 // ---------------------------------------------------------------------------
-// 星空代理（XKProxy）端到端 fixture
+// 星空代理池端到端 fixture
 //
-// 链路：App（XKProxyAPIURL）→ fetch API（返回 IP:PORT）→ CONNECT 代理 →
-// TLS NVIDIA 上游。fetch API 与 CONNECT 代理都是真实本地组件；TLS 上游用
-// httptest.NewTLSServer 自建，App 的 NVIDIAHTTPClient 信任其证书。
+// 链路：App（静态代理池 URL）→ HTTP CONNECT 代理 → TLS NVIDIA 上游。
+// CONNECT 代理和 TLS 上游都是真实本地组件；App 的 NVIDIAHTTPClient 信任
+// httptest.NewTLSServer 自建的证书。
 // ---------------------------------------------------------------------------
 
 type tlsUpstreamRequest struct {
@@ -944,76 +947,34 @@ func (f *tlsUpstreamFixture) count() int {
 	return len(f.requests)
 }
 
-// proxyFixture bundles the fetch API, the local HTTP CONNECT proxy and the TLS
-// NVIDIA upstream that form the proxy chain. The fetch API serves the addresses
-// configured via setResponses in order (the last entry repeats); an empty list
-// makes every fetch fail with a non-IP body.
+// proxyFixture bundles the local HTTP CONNECT proxy and TLS NVIDIA upstream
+// used to exercise the static proxy-pool integration.
 type proxyFixture struct {
-	fetchServer  *httptest.Server
 	connectProxy *connectProxyFixture
 	upstream     *tlsUpstreamFixture
-
-	mu         sync.Mutex
-	fetchCalls int
-	responses  []string
 }
 
-// newProxyFixture wires the whole proxy chain: TLS NVIDIA upstream, a CONNECT
-// proxy forwarding tunnels to it, and a fetch API. Configure the fetch API's
-// responses before the first upstream request reaches the app.
+// newProxyFixture wires a TLS NVIDIA upstream and an HTTP CONNECT proxy.
 func newProxyFixture(t *testing.T) *proxyFixture {
 	t.Helper()
 	upstream := newTLSNVIDIAUpstream(t)
 	fixture := &proxyFixture{upstream: upstream}
 	fixture.connectProxy = newConnectProxyFixture(t, upstream.Listener.Addr().String())
-	fixture.fetchServer = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		fixture.mu.Lock()
-		index := fixture.fetchCalls
-		fixture.fetchCalls++
-		var body string
-		if len(fixture.responses) == 0 {
-			body = "not-an-ip-address"
-		} else if index >= len(fixture.responses) {
-			body = fixture.responses[len(fixture.responses)-1]
-		} else {
-			body = fixture.responses[index]
-		}
-		fixture.mu.Unlock()
-		_, _ = io.WriteString(writer, body)
-	}))
-	t.Cleanup(fixture.fetchServer.Close)
 	return fixture
 }
 
-// setResponses replaces the ordered fetch API responses.
-func (f *proxyFixture) setResponses(responses []string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.responses = append([]string(nil), responses...)
-}
-
-// proxyAddress is the CONNECT proxy's IP:PORT, ready to be served by the fetch API.
-func (f *proxyFixture) proxyAddress() string {
-	return f.connectProxy.address()
-}
-
-func (f *proxyFixture) fetchURL(t *testing.T) *url.URL {
+func (f *proxyFixture) proxyURL(t *testing.T) *url.URL {
 	t.Helper()
-	parsed, err := url.Parse(f.fetchServer.URL + "?qty=1")
+	parsed, err := url.Parse("http://" + f.connectProxy.address())
 	if err != nil {
-		t.Fatalf("parse fetch URL: %v", err)
+		t.Fatalf("parse proxy URL: %v", err)
 	}
 	return parsed
 }
 
-// fetchCount reports how many times the fetch API was called.
-func (f *proxyFixture) fetchCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.fetchCalls
-}
-
 func (f *proxyFixture) connectCount() int32 { return f.connectProxy.connects.Load() }
+
+func (f *proxyFixture) failNextConnect() { f.connectProxy.failNext.Store(1) }
 
 // connectProxyFixture is a minimal HTTP CONNECT proxy. Every CONNECT is counted
 // and the tunnel is forwarded to the configured target host.
@@ -1022,6 +983,7 @@ type connectProxyFixture struct {
 	server   *http.Server
 	target   string
 	connects atomic.Int32
+	failNext atomic.Int32
 }
 
 func newConnectProxyFixture(t *testing.T, target string) *connectProxyFixture {
@@ -1043,11 +1005,19 @@ func newConnectProxyFixture(t *testing.T, target string) *connectProxyFixture {
 func (p *connectProxyFixture) address() string { return p.listener.Addr().String() }
 
 func (p *connectProxyFixture) handle(writer http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("Proxy-Authorization") != "Basic cHJveHk6cHJveHktc2VjcmV0" {
+		http.Error(writer, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
 	if request.Method != http.MethodConnect {
 		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
 		return
 	}
 	p.connects.Add(1)
+	if p.failNext.CompareAndSwap(1, 0) {
+		http.Error(writer, "temporary proxy failure", http.StatusBadGateway)
+		return
+	}
 	upstream, err := net.DialTimeout("tcp", p.target, time.Second)
 	if err != nil {
 		http.Error(writer, "upstream unavailable", http.StatusBadGateway)

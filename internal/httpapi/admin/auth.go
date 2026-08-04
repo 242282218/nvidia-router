@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
-	"strings"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/adminauth"
@@ -21,9 +21,16 @@ const (
 )
 
 type Auth struct {
-	repository *adminauth.Repository
-	sessions   *adminauth.SessionService
-	limiter    *adminauth.LoginLimiter
+	repository   *adminauth.Repository
+	sessions     *adminauth.SessionService
+	limiter      *adminauth.LoginLimiter
+	originPolicy adminauth.OriginPolicy
+
+	// must-change-password state is read on every /v1 request; cache it after
+	// the first read and clear it once the password is rotated.
+	mustChangeMu     sync.Mutex
+	mustChangeLoaded bool
+	mustChangeValue  bool
 }
 
 type sessionResponse struct {
@@ -41,12 +48,16 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
-func NewAuth(repository *adminauth.Repository, sessions *adminauth.SessionService, limiter *adminauth.LoginLimiter) *Auth {
-	return &Auth{repository: repository, sessions: sessions, limiter: limiter}
+func NewAuth(repository *adminauth.Repository, sessions *adminauth.SessionService, limiter *adminauth.LoginLimiter, policies ...adminauth.OriginPolicy) *Auth {
+	var policy adminauth.OriginPolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	return &Auth{repository: repository, sessions: sessions, limiter: limiter, originPolicy: policy}
 }
 
 func (a *Auth) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if err := adminauth.ValidateOrigin(request); err != nil {
+	if err := adminauth.ValidateOriginWithPolicy(request, a.originPolicy); err != nil {
 		writeInvalidOrigin(writer)
 		return
 	}
@@ -68,7 +79,7 @@ func (a *Auth) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func (a *Auth) RequirePasswordChanged(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		mustChange, err := a.repository.MustChangePassword(request.Context())
+		mustChange, err := a.mustChangePassword(request.Context())
 		if err != nil {
 			writeInternalError(writer, err)
 			return
@@ -81,9 +92,34 @@ func (a *Auth) RequirePasswordChanged(next http.Handler) http.Handler {
 	})
 }
 
+// mustChangePassword returns the cached must-change flag, loading it from the
+// repository on first use. The value only flips via ChangePassword, which
+// clears the cache, so the single-process cache never goes stale.
+func (a *Auth) mustChangePassword(ctx context.Context) (bool, error) {
+	a.mustChangeMu.Lock()
+	defer a.mustChangeMu.Unlock()
+	if a.mustChangeLoaded {
+		return a.mustChangeValue, nil
+	}
+	value, err := a.repository.MustChangePassword(ctx)
+	if err != nil {
+		return false, err
+	}
+	a.mustChangeValue = value
+	a.mustChangeLoaded = true
+	return value, nil
+}
+
+func (a *Auth) clearMustChangePassword() {
+	a.mustChangeMu.Lock()
+	a.mustChangeValue = false
+	a.mustChangeLoaded = true
+	a.mustChangeMu.Unlock()
+}
+
 func (a *Auth) RequireManagement(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if err := adminauth.ValidateOrigin(request); err != nil {
+		if err := adminauth.ValidateOriginWithPolicy(request, a.originPolicy); err != nil {
 			writeInvalidOrigin(writer)
 			return
 		}
@@ -95,25 +131,27 @@ func (a *Auth) RequireManagement(next http.Handler) http.Handler {
 }
 
 func (a *Auth) login(writer http.ResponseWriter, request *http.Request) {
-	ip := clientIP(request.RemoteAddr)
-	if err := a.limiter.StartAttempt(ip); err != nil {
+	ip := adminauth.ClientIP(request, a.originPolicy.TrustedProxies)
+
+	var input loginRequest
+	if err := decodeJSON(writer, request, &input); err != nil {
+		a.recordLoginFailure(request.Context(), loginLimiterKey(input.Username, ip))
+		writeInvalidRequest(writer, "The login request is invalid.", err)
+		return
+	}
+	key := loginLimiterKey(input.Username, ip)
+	if err := a.limiter.StartAttempt(key); err != nil {
 		writeRateLimit(writer)
 		return
 	}
 
-	var input loginRequest
-	if err := decodeJSON(writer, request, &input); err != nil {
-		a.recordLoginFailure(request.Context(), ip)
-		writeInvalidRequest(writer, "The login request is invalid.", err)
-		return
-	}
 	matched, err := a.repository.VerifyCredentials(request.Context(), input.Username, input.Password)
 	if err != nil {
 		writeInternalError(writer, err)
 		return
 	}
 	if !matched {
-		a.recordLoginFailure(request.Context(), ip)
+		a.recordLoginFailure(request.Context(), key)
 		writeInvalidCredentials(writer)
 		return
 	}
@@ -123,22 +161,33 @@ func (a *Auth) login(writer http.ResponseWriter, request *http.Request) {
 		writeInternalError(writer, err)
 		return
 	}
-	mustChange, err := a.repository.MustChangePassword(request.Context())
+	mustChange, err := a.mustChangePassword(request.Context())
 	if err != nil {
 		_ = a.sessions.Revoke(request.Context(), created.ID)
 		writeInternalError(writer, err)
 		return
 	}
-	a.limiter.RecordSuccess(ip)
+	a.limiter.RecordSuccess(key)
 	http.SetCookie(writer, a.sessions.MakeSessionCookie(created.Token))
 	writeSession(writer, mustChange)
+}
+
+// loginLimiterKey scopes the login rate-limit bucket to a specific username and
+// client address, so one misbehaving user behind a shared proxy cannot lock out
+// the entire admin surface. An empty username (invalid request bodies) falls
+// back to a per-address bucket.
+func loginLimiterKey(username, ip string) string {
+	if username == "" {
+		return ip
+	}
+	return username + "\x00" + ip
 }
 
 func (a *Auth) session(writer http.ResponseWriter, request *http.Request) {
 	if _, ok := a.requireSession(writer, request, false); !ok {
 		return
 	}
-	mustChange, err := a.repository.MustChangePassword(request.Context())
+	mustChange, err := a.mustChangePassword(request.Context())
 	if err != nil {
 		writeInternalError(writer, err)
 		return
@@ -167,6 +216,7 @@ func (a *Auth) changePassword(writer http.ResponseWriter, request *http.Request)
 		writePasswordChangeError(writer, errors.Join(err, cleanupErr))
 		return
 	}
+	a.clearMustChangePassword()
 	http.SetCookie(writer, a.sessions.MakeSessionCookie(replacement.Token))
 	writeSession(writer, false)
 
@@ -215,7 +265,7 @@ func (a *Auth) requireSession(writer http.ResponseWriter, request *http.Request,
 	if !requireChanged {
 		return session, true
 	}
-	mustChange, err := a.repository.MustChangePassword(request.Context())
+	mustChange, err := a.mustChangePassword(request.Context())
 	if err != nil {
 		writeInternalError(writer, err)
 		return adminauth.Session{}, false
@@ -254,14 +304,6 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, destination a
 		return fmt.Errorf("finish JSON body: %w", err)
 	}
 	return nil
-}
-
-func clientIP(remoteAddress string) string {
-	host, _, err := net.SplitHostPort(remoteAddress)
-	if err == nil {
-		return host
-	}
-	return strings.TrimSpace(remoteAddress)
 }
 
 func writeSession(writer http.ResponseWriter, mustChange bool) {
@@ -305,7 +347,7 @@ func writePasswordChangeError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, adminauth.ErrCurrentPasswordIncorrect):
 		writeInvalidCredentials(writer)
-	case errors.Is(err, adminauth.ErrPasswordTooShort), errors.Is(err, adminauth.ErrPasswordIsDefault):
+	case errors.Is(err, adminauth.ErrPasswordTooShort), errors.Is(err, adminauth.ErrPasswordIsDefault), errors.Is(err, adminauth.ErrPasswordUnchanged):
 		writeInvalidRequest(writer, "The new password does not meet the password policy.", err)
 	default:
 		writeInternalError(writer, err)
@@ -313,5 +355,9 @@ func writePasswordChangeError(writer http.ResponseWriter, err error) {
 }
 
 func writeInternalError(writer http.ResponseWriter, err error) {
-	apierror.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error", Message: "The server could not complete the request.", Cause: err}.Write(writer)
+	// The Cause is the only useful trail of an internal failure, but it must
+	// never reach the client (the envelope contract hides it). Record it to
+	// the default slog logger so server-side operators can attribute 500s
+	// without having to add structured logging through every handler.
+	apierror.WriteInternalError(writer, slog.Default(), err, "admin auth internal error")
 }

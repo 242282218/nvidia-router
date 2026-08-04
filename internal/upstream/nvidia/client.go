@@ -24,8 +24,9 @@ type Client struct {
 	httpClient *http.Client
 	descriptor Descriptor
 	settings   runtimeconfig.Provider
-	proxy      *xkproxy.Manager
+	proxy      xkproxy.Provider
 	directPool *directTransportPool
+	closeOnce  sync.Once
 }
 
 type requestFactory func(context.Context) (*http.Request, error)
@@ -48,22 +49,24 @@ type ValidationResult struct {
 	Fault     *fault.Fault
 }
 
-func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimeconfig.Provider, proxy *xkproxy.Manager) (*Client, error) {
+func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimeconfig.Provider, proxy xkproxy.Provider) (*Client, error) {
 	if httpClient == nil {
 		return nil, errors.New("new NVIDIA client: HTTP client is required")
 	}
 	if settings == nil {
 		return nil, errors.New("new NVIDIA client: runtime settings are required")
 	}
-	if proxy != nil {
-		base := httpClient.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		if _, ok := base.(*http.Transport); !ok {
+	base := httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if _, ok := base.(*http.Transport); !ok {
+		if proxy != nil && proxy.Enabled() {
 			return nil, errors.New("new NVIDIA client: proxy mode requires an HTTP transport")
 		}
+		return nil, errors.New("new NVIDIA client: direct mode requires an HTTP transport")
 	}
+
 	return &Client{
 		httpClient: httpClient,
 		descriptor: descriptor,
@@ -71,6 +74,20 @@ func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimec
 		proxy:      proxy,
 		directPool: newDirectTransportPool(httpClient.Transport),
 	}, nil
+}
+
+func (c *Client) Close() {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		if c.directPool != nil {
+			c.directPool.Close()
+		}
+		if c.httpClient != nil {
+			closeIdleConnections(c.httpClient.Transport)
+		}
+	})
 }
 
 func (c *Client) Models(ctx context.Context, token string) ([]string, error) {
@@ -152,8 +169,11 @@ func (c *Client) modelsRequest(ctx context.Context, token string) (*http.Respons
 
 func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, error) {
 	snapshot = c.effectiveSnapshot(snapshot)
-	if c.proxy == nil {
+	if c.proxy == nil || !c.proxy.Configured() {
 		return c.doDirect(ctx, snapshot, build)
+	}
+	if !c.proxy.Enabled() {
+		return nil, xkproxy.NewTransportError(errors.New("proxy is disabled"))
 	}
 	response, _, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
 	if !retryable {
@@ -211,7 +231,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 		handle.Release()
 		return nil, false, false, err
 	}
-	firstByteTimer := startFirstByteWatch(ctx, snapshot.FirstByteDeadline)
+	firstByteTimer := startFirstByteWatch(snapshot.FirstByteDeadline)
 	trace := &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			if info.Err == nil {
@@ -228,9 +248,14 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	response, err := httpClient.Do(request)
 	firstByteTimer.Stop()
 	if response != nil {
-		if response.Body != nil {
-			response.Body = newReleaseBody(response.Body, handle.Release)
+		if response.Body == nil {
+			handle.Release()
+			if err == nil {
+				err = errors.New("NVIDIA proxy transport returned response without body")
+			}
+			return nil, wrote.Load(), false, err
 		}
+		response.Body = newReleaseBody(response.Body, handle.Release)
 		if err != nil {
 			_ = response.Body.Close()
 			return nil, wrote.Load(), false, err
@@ -260,7 +285,7 @@ type firstByteWatch struct {
 	expired atomic.Bool
 }
 
-func startFirstByteWatch(ctx context.Context, deadline time.Time) *firstByteWatch {
+func startFirstByteWatch(deadline time.Time) *firstByteWatch {
 	watch := &firstByteWatch{}
 	if deadline.IsZero() {
 		return watch
@@ -270,15 +295,13 @@ func startFirstByteWatch(ctx context.Context, deadline time.Time) *firstByteWatc
 		watch.expired.Store(true)
 		return watch
 	}
+	// time.AfterFunc already runs its callback on its own goroutine, so
+	// there is no need to spawn another one to babysit the timer: Stop
+	// is invoked from GotFirstResponseByte and the post-Do call sites,
+	// and a cancelled request context makes httpClient.Do return on its
+	// own. Spawning a goroutine that selects on timer.C would actually
+	// leak: AfterFunc-backed timers never deliver on their channel.
 	watch.timer = time.AfterFunc(duration, func() { watch.expired.Store(true) })
-	go func() {
-		select {
-		case <-ctx.Done():
-			watch.timer.Stop()
-		case <-watch.timer.C:
-		}
-	}()
-
 	return watch
 }
 

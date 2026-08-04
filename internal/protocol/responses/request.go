@@ -80,6 +80,9 @@ func ToChat(body []byte, model modelcatalog.Model) ([]byte, error) {
 		return nil, err
 	}
 	mapSamplingParameters(fields, chat)
+	if err := mapTextFormat(fields, chat); err != nil {
+		return nil, err
+	}
 	if stream, ok := fields["stream"]; ok {
 		chat["stream"] = stream
 	} else {
@@ -174,11 +177,14 @@ func convertMessageItem(parsed responsesInputItem, index int) (chatMessage, bool
 	}
 	switch parsed.Role {
 	case "system", "user":
-		text, usesVision, isString, err := extractMessageText(parsed, param)
+		text, usesVision, _, err := extractMessageText(parsed, param)
 		if err != nil {
 			return chatMessage{}, false, false, err
 		}
-		if isString && text == "" {
+		// Reject empty content whatever its shape: a string "", a null, an empty
+		// array or an array of empty parts all produce no text, and the chat
+		// path refuses empty user/system content (checklist: align semantics).
+		if text == "" {
 			return chatMessage{}, false, false, invalidResponses("invalid_parameter", param+".content", "The message content must be non-empty.")
 		}
 		return chatMessage{Role: parsed.Role, RolePresent: true, Content: text, ContentPresent: true}, false, usesVision, nil
@@ -332,8 +338,16 @@ func mapToolChoice(fields map[string]json.RawMessage, chat map[string]json.RawMe
 func mapReasoning(fields map[string]json.RawMessage, model modelcatalog.Model, chat map[string]json.RawMessage) error {
 	raw, ok := fields["reasoning"]
 	if !ok {
-		// Allow passthrough of a native chat reasoning_effort request field too.
+		// Allow passthrough of a native chat reasoning_effort request field
+		// too, but still gate it on the same capability check as the
+		// structured `reasoning` object so callers cannot bypass model
+		// gating by switching field names. Behaviour for OpenAI-native
+		// callers is unchanged when the model is enabled, and now refuses
+		// consistently when it is not.
 		if native, ok := fields["reasoning_effort"]; ok {
+			if !model.SupportsReasoning || model.ReasoningWireFormat != "openai" {
+				return unsupportedResponses("reasoning_effort", "The selected model does not support reasoning.")
+			}
 			chat["reasoning_effort"] = native
 			return nil
 		}
@@ -378,6 +392,70 @@ func mapSamplingParameters(fields map[string]json.RawMessage, chat map[string]js
 		if raw, ok := fields[name]; ok {
 			chat[name] = raw
 		}
+	}
+}
+
+// mapTextFormat maps the Responses text.format (structured output) parameter to
+// the Chat response_format parameter. Without this a client requesting
+// json_schema output gets plain text back with no error, and its parser fails
+// downstream. json_object and json_schema map directly; text (the default) is a
+// no-op; anything else is rejected instead of being silently dropped.
+func mapTextFormat(fields map[string]json.RawMessage, chat map[string]json.RawMessage) error {
+	raw, ok := fields["text"]
+	if !ok {
+		return nil
+	}
+	var text struct {
+		Format json.RawMessage `json:"format"`
+	}
+	if err := json.Unmarshal(raw, &text); err != nil || len(text.Format) == 0 || string(text.Format) == "null" {
+		// A plain string text parameter is a no-op; a malformed object is
+		// rejected so structured-output requests cannot silently degrade.
+		var asString string
+		if json.Unmarshal(raw, &asString) == nil {
+			return nil
+		}
+		return invalidResponses("invalid_parameter", "text", "The text parameter must be an object with a format.")
+	}
+	var format struct {
+		Type       string          `json:"type"`
+		Name       string          `json:"name"`
+		Schema     json.RawMessage `json:"schema"`
+		Strict     *bool           `json:"strict"`
+		JSONSchema json.RawMessage `json:"json_schema"`
+	}
+	if err := json.Unmarshal(text.Format, &format); err != nil {
+		return invalidResponses("invalid_parameter", "text.format", "The text format parameter is malformed.")
+	}
+	switch format.Type {
+	case "", "text":
+		return nil
+	case "json_object":
+		chat["response_format"] = json.RawMessage(`{"type":"json_object"}`)
+		return nil
+	case "json_schema":
+		schema := format.Schema
+		if len(schema) == 0 {
+			schema = format.JSONSchema
+		}
+		if len(schema) == 0 {
+			return invalidResponses("invalid_parameter", "text.format", "A json_schema format requires a schema.")
+		}
+		entry := map[string]any{
+			"type":        "json_schema",
+			"json_schema": map[string]any{"name": format.Name, "schema": json.RawMessage(schema)},
+		}
+		if format.Strict != nil {
+			entry["json_schema"].(map[string]any)["strict"] = *format.Strict
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshal response_format: %w", err)
+		}
+		chat["response_format"] = encoded
+		return nil
+	default:
+		return unsupportedResponses("text.format", "This text format is not supported.")
 	}
 }
 

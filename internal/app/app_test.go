@@ -28,11 +28,13 @@ import (
 	"nvidia-router/internal/xkproxy"
 )
 
+const testInitialAdminPassword = "test-initial-admin-password"
+
 func TestNew(t *testing.T) {
 	db := openAppDatabase(t)
 	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:  clock.RealClock{},
@@ -53,22 +55,14 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
-	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, "192.0.2.10:8000")
-	}))
-	t.Cleanup(proxyAPI.Close)
-	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
-	if err != nil {
-		t.Fatalf("parse proxy URL: %v", err)
-	}
+	proxyURL := mustURL(t, "http://proxy-pool:8080")
 	db := openAppDatabase(t)
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{
-			DataDir:            t.TempDir(),
-			MasterKey:          [32]byte{1},
-			XKProxyAPIURL:      proxyURL,
-			XKProxyTTL:         3 * time.Minute,
-			XKProxyRenewBefore: 15 * time.Second,
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword,
+			DataDir:        t.TempDir(),
+			MasterKey:      [32]byte{1},
+			XKProxyURL:     proxyURL,
+			XKProxyAuthKey: "proxy-secret",
 		},
 		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
@@ -93,7 +87,7 @@ func TestNewServesEmbeddedFrontendAndKeepsAPIPrefixesOutOfSPA(t *testing.T) {
 	db := openAppDatabase(t)
 	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:  clock.RealClock{},
@@ -151,7 +145,7 @@ func TestNewRestoresPoolStateFromDatabase(t *testing.T) {
 	}
 
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:  clock.RealClock{},
@@ -202,7 +196,7 @@ func TestNewClosesDatabaseWhenInitializationFails(t *testing.T) {
 	}
 
 	_, err = New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
 	})
 	if err == nil {
@@ -336,10 +330,10 @@ func runCLIProcess(t *testing.T, args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
-func TestNewDoesNotCreateProxyManagerWhenDisabled(t *testing.T) {
+func TestNewCreatesDisabledProxySwitcherWhenNoConfiguration(t *testing.T) {
 	db := openAppDatabase(t)
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:  clock.RealClock{},
@@ -348,8 +342,11 @@ func TestNewDoesNotCreateProxyManagerWhenDisabled(t *testing.T) {
 		_ = db.Close()
 		t.Fatalf("New: %v", err)
 	}
-	if app.proxy != nil {
-		t.Fatal("proxy manager was created although XKProxyAPIURL is unset")
+	if app.proxy == nil {
+		t.Fatal("proxy switcher was not created")
+	}
+	if app.proxy.Configured() || app.proxy.Enabled() {
+		t.Fatal("proxy switcher is enabled without configuration")
 	}
 	if err := app.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -357,23 +354,15 @@ func TestNewDoesNotCreateProxyManagerWhenDisabled(t *testing.T) {
 }
 
 func TestNewProxyManagerUsesDefaultTransportWhenNil(t *testing.T) {
-	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, "192.0.2.10:8000")
-	}))
-	t.Cleanup(proxyAPI.Close)
-	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
-	if err != nil {
-		t.Fatalf("parse proxy URL: %v", err)
-	}
+	proxyURL := mustURL(t, "http://proxy-pool:8080")
 	db := openAppDatabase(t)
 	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{
-			DataDir:            t.TempDir(),
-			MasterKey:          [32]byte{1},
-			XKProxyAPIURL:      proxyURL,
-			XKProxyTTL:         3 * time.Minute,
-			XKProxyRenewBefore: 15 * time.Second,
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword,
+			DataDir:        t.TempDir(),
+			MasterKey:      [32]byte{1},
+			XKProxyURL:     proxyURL,
+			XKProxyAuthKey: "proxy-secret",
 		},
 		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
@@ -383,19 +372,17 @@ func TestNewProxyManagerUsesDefaultTransportWhenNil(t *testing.T) {
 	if app.proxy == nil {
 		t.Fatal("proxy manager was not created")
 	}
-	// No NVIDIAHTTPClient was injected, so resolveDependencies supplies
-	// http.DefaultClient, whose Transport field is nil. New must fall back to
-	// http.DefaultTransport when wiring the proxy manager base transport;
-	// xkproxy.New requires a concrete *http.Transport, so a missing fallback
-	// would have made New fail with "HTTP transport is required". Reaching
-	// this point with a live proxy manager therefore proves the fallback, and
-	// the manager's base transport must be http.DefaultTransport itself.
-	base := reflect.ValueOf(app.proxy).Elem().FieldByName("base")
+	// No NVIDIAHTTPClient was injected, so the service must use the standard
+	// transport as its base instead of dereferencing a nil client transport.
+	base := reflect.ValueOf(app.proxySettings).Elem().FieldByName("base")
 	if base.Kind() != reflect.Pointer || base.IsNil() {
 		t.Fatalf("proxy manager base transport = %v, want a non-nil *http.Transport", base.Kind())
 	}
 	if base.Pointer() != reflect.ValueOf(http.DefaultTransport).Pointer() {
 		t.Fatalf("proxy manager base transport pointer = %#x, want http.DefaultTransport %#x", base.Pointer(), reflect.ValueOf(http.DefaultTransport).Pointer())
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
@@ -403,12 +390,11 @@ func TestNewFailsWhenProxyBaseTransportIsCustomRoundTripper(t *testing.T) {
 	db := openAppDatabase(t)
 	defer func() { _ = db.Close() }()
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{
-			DataDir:            t.TempDir(),
-			MasterKey:          [32]byte{1},
-			XKProxyAPIURL:      mustURL(t, "http://192.0.2.99/tools/XApi.ashx?qty=1&apikey=secret&sign=secret"),
-			XKProxyTTL:         3 * time.Minute,
-			XKProxyRenewBefore: 15 * time.Second,
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword,
+			DataDir:        t.TempDir(),
+			MasterKey:      [32]byte{1},
+			XKProxyURL:     mustURL(t, "http://proxy-pool:8080"),
+			XKProxyAuthKey: "proxy-secret",
 		},
 		DB:               db,
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -424,7 +410,7 @@ func TestNewFailsWhenProxyBaseTransportIsCustomRoundTripper(t *testing.T) {
 	if !strings.Contains(err.Error(), "transport") {
 		t.Fatalf("New error = %v, want mention of transport", err)
 	}
-	for _, leaked := range []string{"192.0.2.99", "apikey", "sign", "/tools/XApi.ashx", "XApi"} {
+	for _, leaked := range []string{"proxy-pool:8080", "proxy-secret"} {
 		if strings.Contains(err.Error(), leaked) {
 			t.Fatalf("New error leaked %q: %v", leaked, err)
 		}
@@ -432,22 +418,14 @@ func TestNewFailsWhenProxyBaseTransportIsCustomRoundTripper(t *testing.T) {
 }
 
 func TestAppCloseIsIdempotent(t *testing.T) {
-	proxyAPI := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, "192.0.2.10:8000")
-	}))
-	t.Cleanup(proxyAPI.Close)
-	proxyURL, err := url.Parse(proxyAPI.URL + "?qty=1")
-	if err != nil {
-		t.Fatalf("parse proxy URL: %v", err)
-	}
+	proxyURL := mustURL(t, "http://proxy-pool:8080")
 	db := openAppDatabase(t)
 	app, err := New(context.Background(), Dependencies{
-		Config: config.Config{
-			DataDir:            t.TempDir(),
-			MasterKey:          [32]byte{1},
-			XKProxyAPIURL:      proxyURL,
-			XKProxyTTL:         3 * time.Minute,
-			XKProxyRenewBefore: 15 * time.Second,
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword,
+			DataDir:        t.TempDir(),
+			MasterKey:      [32]byte{1},
+			XKProxyURL:     proxyURL,
+			XKProxyAuthKey: "proxy-secret",
 		},
 		DB: db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
 	})
@@ -455,9 +433,7 @@ func TestAppCloseIsIdempotent(t *testing.T) {
 		_ = db.Close()
 		t.Fatalf("New: %v", err)
 	}
-	// App.Close must be safe to call repeatedly: the proxy manager Close
-	// inside is guarded by the manager's own closed flag, and App's
-	// shutdown work runs only once (spec 14.6).
+	// App.Close and the static proxy manager must both be idempotent.
 	if err := app.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -467,7 +443,6 @@ func TestAppCloseIsIdempotent(t *testing.T) {
 	if err := app.Close(); err != nil {
 		t.Fatalf("third Close: %v", err)
 	}
-	// The proxy manager itself must also tolerate repeated Close calls.
 	app.proxy.Close()
 	app.proxy.Close()
 }

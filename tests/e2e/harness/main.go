@@ -74,11 +74,12 @@ func run() (runErr error) {
 
 	encodedMasterKey := base64.RawURLEncoding.EncodeToString(masterKey[:])
 	for name, value := range map[string]string{
-		"NVIDIA_ROUTER_LISTEN_ADDR":     address,
-		"NVIDIA_ROUTER_DATA_DIR":        dataDir,
-		"NVIDIA_ROUTER_TEMP_DIR":        workDir,
-		"NVIDIA_ROUTER_MASTER_KEY":      encodedMasterKey,
-		"NVIDIA_ROUTER_NVIDIA_BASE_URL": baseURL.String(),
+		"NVIDIA_ROUTER_LISTEN_ADDR":            address,
+		"NVIDIA_ROUTER_DATA_DIR":               dataDir,
+		"NVIDIA_ROUTER_TEMP_DIR":               workDir,
+		"NVIDIA_ROUTER_MASTER_KEY":             encodedMasterKey,
+		"NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD": "e2e-initial-admin-password",
+		"NVIDIA_ROUTER_NVIDIA_BASE_URL":        baseURL.String(),
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			return fmt.Errorf("set %s: %w", name, err)

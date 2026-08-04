@@ -41,18 +41,12 @@ func (c *Client) Embeddings(
 	return response, nil
 }
 
-// ValidatedEmbeddingsResponse is the validated, structured form of a 2xx
-// embeddings response: the raw body plus extracted metadata.
+// ValidatedEmbeddingsResponse is the validated body of a 2xx non-streaming
+// embeddings response. The upstream request id and usage payload are not
+// captured: no production consumer reads them, and the streaming usage path is
+// already handled separately in the SSE proxy layer.
 type ValidatedEmbeddingsResponse struct {
-	Body     []byte
-	Metadata EmbeddingsMetadata
-}
-
-// EmbeddingsMetadata carries the usage and upstream request ID extracted from a
-// successful embeddings response. It never carries input or vector contents.
-type EmbeddingsMetadata struct {
-	RequestID string
-	Usage     json.RawMessage
+	Body []byte
 }
 
 // ValidateNonstreamEmbeddings reads and validates a non-streaming embeddings
@@ -78,9 +72,5 @@ func ValidateNonstreamEmbeddings(response *http.Response) (ValidatedEmbeddingsRe
 
 	return ValidatedEmbeddingsResponse{
 		Body: body,
-		Metadata: EmbeddingsMetadata{
-			RequestID: allowedRequestID(response.Header),
-			Usage:     fields["usage"],
-		},
 	}, nil
 }

@@ -95,6 +95,11 @@ func (s *Service) Revoke(ctx context.Context, id int64) error {
 	if err := s.repository.Revoke(ctx, id, s.clock.Now()); err != nil {
 		return fmt.Errorf("revoke access key: %w", err)
 	}
+	// Drop usage-tracking entries so revoked keys do not accumulate forever.
+	s.usageMu.Lock()
+	delete(s.lastRecorded, id)
+	delete(s.pending, id)
+	s.usageMu.Unlock()
 	return nil
 }
 

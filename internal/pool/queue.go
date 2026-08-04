@@ -201,18 +201,27 @@ func (p *Pool) dispatchWaitersLocked() {
 	if p.closed {
 		return
 	}
-	for p.waiters.Len() > 0 {
+	remaining := p.waiters.Len()
+	for remaining > 0 && p.waiters.Len() > 0 {
 		waiter := p.waiters.front()
 		if err := waiter.ctx.Err(); err != nil {
 			p.waiters.remove(waiter)
 			waiter.result <- acquireResult{err: err}
+			remaining--
 			continue
 		}
 		lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted)
 		if lease == nil && unavailable.reason == UnavailableBusy {
-			return
+			// A busy head waiter must not stall the queue: rotate it to the
+			// tail and keep scanning. remaining bounds the pass so a queue of
+			// busy-only waiters cannot loop forever.
+			p.waiters.remove(waiter)
+			p.waiters.push(waiter)
+			remaining--
+			continue
 		}
 		p.waiters.remove(waiter)
+		remaining--
 		if lease != nil {
 			waiter.result <- acquireResult{lease: lease}
 			continue

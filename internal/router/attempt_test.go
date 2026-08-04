@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
@@ -131,36 +133,65 @@ func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 	}
 }
 
+// TestAttemptSyncsOnlyAfterStateWriterSucceeds locks in that a state-write
+// failure never triggers ApplySuccess (the in-memory pool must stay consistent
+// with the DB row). Non-2xx still propagates the persistence error; a real 2xx
+// body is delivered to the client fail-open even when the state write fails
+// (audit #29), so the request succeeds rather than turning a success into 5xx.
 func TestAttemptSyncsOnlyAfterStateWriterSucceeds(t *testing.T) {
-	for _, status := range []int{http.StatusOK, http.StatusInternalServerError} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			settings := &countingProvider{snapshot: attemptSettings()}
-			keyPool := newAttemptPool(settings, 1)
-			stateErr := errors.New("state transaction failed")
-			states := &failingStateWriter{err: stateErr}
-			syncer := &recordingStateSync{}
-			attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
-
-			_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
-				return attemptResponse(status, ""), nil
-			})
-			if !errors.Is(err, stateErr) {
-				t.Fatalf("Run error = %v, want state error", err)
-			}
-			var upstreamFault fault.Fault
-			if errors.As(err, &upstreamFault) {
-				t.Fatalf("Run error = %+v, want internal state error", upstreamFault)
-			}
-			if syncer.calls.Load() != 0 {
-				t.Fatal("StateSync ran before failed transaction")
-			}
-			lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
-			if acquireErr != nil {
-				t.Fatalf("Acquire after state failure: %v", acquireErr)
-			}
-			lease.Release()
-		})
+	assertSyncNoCalls := func(t *testing.T, syncer *recordingStateSync) {
+		t.Helper()
+		if syncer.calls.Load() != 0 {
+			t.Fatal("StateSync ran before failed transaction")
+		}
 	}
+
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1)
+	stateErr := errors.New("state transaction failed")
+	states := &failingStateWriter{err: stateErr}
+	syncer := &recordingStateSync{}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
+
+	result, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		return attemptResponse(http.StatusOK, ""), nil
+	})
+	if err != nil {
+		t.Fatalf("Run(fail-open 2xx) error = %v, want response delivered", err)
+	}
+	if result.Response == nil || result.Response.StatusCode != http.StatusOK {
+		t.Fatalf("Run(fail-open 2xx) response = %+v, want delivered 200", result.Response)
+	}
+	result.Release()
+	assertSyncNoCalls(t, syncer)
+}
+
+func TestAttemptNon200StateWriteFailurePropagates(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1)
+	stateErr := errors.New("state transaction failed")
+	states := &failingStateWriter{err: stateErr}
+	syncer := &recordingStateSync{}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, syncer, clock.RealClock{})
+
+	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		return attemptResponse(http.StatusInternalServerError, ""), nil
+	})
+	if !errors.Is(err, stateErr) {
+		t.Fatalf("Run error = %v, want state error", err)
+	}
+	var upstreamFault fault.Fault
+	if errors.As(err, &upstreamFault) {
+		t.Fatalf("Run error = %+v, want internal state error", upstreamFault)
+	}
+	if syncer.calls.Load() != 0 {
+		t.Fatal("StateSync ran before failed transaction")
+	}
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	if acquireErr != nil {
+		t.Fatalf("Acquire after state failure: %v", acquireErr)
+	}
+	lease.Release()
 }
 
 func TestAttemptCommittedErrorDoesNotTryAnotherKey(t *testing.T) {
@@ -260,9 +291,93 @@ func TestAttemptReturnsLastFaultWhenCandidatesAreExhausted(t *testing.T) {
 	}
 }
 
-func TestAttemptReturnsLastFaultWhenBudgetExpiresInQueue(t *testing.T) {
+// TestAttemptFailoverSpecWidensRetryAcrossNonRetryableFault verifies the matcher
+// has union semantics with Classify.Retryable (audit B4): a 422 request fault
+// is classified as non-retryable, so the default spec produces no failover to
+// key 2. Once the operator opts 422 into failover_status_codes the matcher
+// widens the retry set and the second key is tried despite Retryable=false.
+func TestAttemptFailoverSpecWidensRetryAcrossNonRetryableFault(t *testing.T) {
+	keys := []int64{1, 2}
+	for _, spec := range []struct {
+		name        string
+		wantCalls   []int64
+		specValue   string
+		expectError bool
+	}{
+		{name: "default_spec_does_not_failover_422", specValue: "", wantCalls: []int64{1}, expectError: true},
+		{name: "operator_adds_422_to_spec", specValue: "429,422,503", wantCalls: keys, expectError: false},
+	} {
+		t.Run(spec.name, func(t *testing.T) {
+			settings := &countingProvider{snapshot: attemptSettings()}
+			settings.snapshot.FailoverStatusCodes = spec.specValue
+			keyPool := newAttemptPool(settings, keys...)
+			attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+			calls := []int64{}
+			result, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
+				calls = append(calls, keyID)
+				if keyID == 1 {
+					// 422 routes through the requestFault branch (ScopeRequest,
+					// Retryable=false) so matcher.Match alone drives the retry
+					// decision — exercising the union semantics under audit.
+					return attemptResponse(422, `{"error":{"message":"bad request"}}`), nil
+				}
+				return attemptResponse(200, `{}`), nil
+			})
+			defer result.Release()
+			if spec.expectError {
+				if err == nil {
+					t.Fatalf("Run: want error for %q, got nil", spec.name)
+				}
+			} else if err != nil {
+				t.Fatalf("Run for %q: %v", spec.name, err)
+			}
+			if len(calls) != len(spec.wantCalls) {
+				t.Fatalf("%s calls = %v, want %v", spec.name, calls, spec.wantCalls)
+			}
+			for i, call := range calls {
+				if call != spec.wantCalls[i] {
+					t.Fatalf("%s calls = %v, want %v", spec.name, calls, spec.wantCalls)
+				}
+			}
+		})
+	}
+}
+
+// TestAttemptFailoverSpecCannotShrinkRetryable502 locks the documented B4
+// trade-off: the operator can only widen the matcher, not shrink it. A 502
+// has Retryable=true by Classify, so even when the failover spec is pared back
+// to "429" only the request still cross-tries to key 2 — confirming the union
+// semantics that was explicitly chosen over the "matcher authoritative"
+// alternative (which would have churned 401/403 credential failover; see
+// docs/gpt-load对比借鉴优化方案.md §B4 风险/取舍). When a future operator needs
+// a real close-the-failover knob we upgrade the semantics deliberately,
+// rather than have the test silently start failing.
+func TestAttemptFailoverSpecCannotShrinkRetryable502(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
-	settings.snapshot.FirstByteTimeoutMS = 50
+	settings.snapshot.FailoverStatusCodes = "429" // intentionally narrow — 502 is not listed
+	keyPool := newAttemptPool(settings, 1, 2)
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+	var calls []int64
+	result, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		calls = append(calls, keyID)
+		if keyID == 1 {
+			return attemptResponse(502, ""), nil
+		}
+		return attemptResponse(200, `{}`), nil
+	})
+	defer result.Release()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []int64{1, 2}
+	if len(calls) != len(want) || calls[0] != 1 || calls[1] != 2 {
+		t.Fatalf("calls = %v, want %v (502 Retryable=true must still retry despite narrow spec)", calls, want)
+	}
+}
+
+func TestAttemptReturnsQueueTimeoutWhenBudgetExpiresInQueue(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	settings.snapshot.QueueWaitTimeoutMS = 30
 	keyPool := newAttemptPool(settings, 1, 2)
 	holder, err := keyPool.Acquire(context.Background(), 1, nil)
 	if err != nil {
@@ -271,21 +386,24 @@ func TestAttemptReturnsLastFaultWhenBudgetExpiresInQueue(t *testing.T) {
 	defer holder.Release()
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
 
+	// The first attempt hits key 2 and records an upstream fault; the retry then
+	// queues behind the held key 1. The queue stage owns its own timeout, so the
+	// client must get a retryable 429 queue_timeout instead of the stale 500.
 	_, err = attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
 		return attemptResponse(500, ""), nil
 	})
-	var lastFault fault.Fault
-	if !errors.As(err, &lastFault) {
-		t.Fatalf("Run error = %T %v, want last Fault", err, err)
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("Run error = %T %v, want *apierror.Error", err, err)
 	}
-	if lastFault.HTTPStatus != 500 {
-		t.Fatalf("last Fault status = %d, want 500", lastFault.HTTPStatus)
+	if publicError.Status != http.StatusTooManyRequests || publicError.Code != "queue_timeout" {
+		t.Fatalf("Run error = status %d code %q, want 429 queue_timeout", publicError.Status, publicError.Code)
 	}
 }
 
-func TestAttemptClassifiesBudgetExpiryWhileWaitingForFirstKey(t *testing.T) {
+func TestAttemptReturnsQueueTimeoutWhileWaitingForFirstKey(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
-	settings.snapshot.FirstByteTimeoutMS = 50
+	settings.snapshot.QueueWaitTimeoutMS = 30
 	keyPool := newAttemptPool(settings, 1)
 	holder, err := keyPool.Acquire(context.Background(), 1, nil)
 	if err != nil {
@@ -299,12 +417,12 @@ func TestAttemptClassifiesBudgetExpiryWhileWaitingForFirstKey(t *testing.T) {
 		calls.Add(1)
 		return attemptResponse(200, ""), nil
 	})
-	var timeoutFault fault.Fault
-	if !errors.As(err, &timeoutFault) {
-		t.Fatalf("Run error = %T %v, want timeout Fault", err, err)
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("Run error = %T %v, want *apierror.Error", err, err)
 	}
-	if timeoutFault.HTTPStatus != http.StatusGatewayTimeout || timeoutFault.PublicCode != "upstream_timeout" {
-		t.Fatalf("timeout Fault = %+v", timeoutFault)
+	if publicError.Status != http.StatusTooManyRequests || publicError.Code != "queue_timeout" {
+		t.Fatalf("Run error = status %d code %q, want 429 queue_timeout", publicError.Status, publicError.Code)
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("Execute calls = %d, want 0", calls.Load())
@@ -483,6 +601,29 @@ type failingStateWriter struct{ err error }
 type countingStateWriter struct {
 	successes int
 	failures  int
+}
+
+// TestChooseAcquireErrorMapsClientCancelTo499 locks in the fix for the audit
+// finding that a client disconnect during acquire fell through to the 500
+// internal_error fallback. The wrapped context.Canceled must surface as a
+// request_canceled fault (HTTP 499) so observability does not bill it as an
+// upstream failure.
+func TestChooseAcquireErrorMapsClientCancelTo499(t *testing.T) {
+	err := chooseAcquireError(fmt.Errorf("acquire NVIDIA key: %w", context.Canceled), nil)
+	var f fault.Fault
+	if !errors.As(err, &f) {
+		t.Fatalf("chooseAcquireError canceled err = %T, want fault.Fault; got=%v", err, err)
+	}
+	if f.HTTPStatus != 499 || f.PublicCode != "request_canceled" {
+		t.Fatalf("canceled fault = %+v, want HTTPStatus=499 PublicCode=request_canceled", f)
+	}
+
+	// A non-cancel acquire error still reports the wrapped message when there
+	// is no previous fault to surface.
+	other := chooseAcquireError(errors.New("no_available_keys"), nil)
+	if !strings.Contains(other.Error(), "acquire NVIDIA key") {
+		t.Fatalf("non-cancel err = %v, want wrapped acquire message", other)
+	}
 }
 
 func (w *countingStateWriter) MarkSuccess(_ context.Context, keyID int64) (keystate.KeySnapshot, error) {

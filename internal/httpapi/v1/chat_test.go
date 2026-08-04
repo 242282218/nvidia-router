@@ -120,17 +120,20 @@ func TestChatStreamForwardsSSEEvents(t *testing.T) {
 	if !strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
+	if got := response.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering = %q, want %q (audit B6: nginx must not buffer SSE)", got, "no")
+	}
 }
 
 func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
-	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       io.NopCloser(strings.NewReader(": keep-alive\n\n")),
-		}, nil
-	})}
-	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, ": keep-alive\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -151,6 +154,22 @@ func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
 	if classified.PublicCode != "upstream_protocol_error" || classified.Scope != fault.ScopeUpstreamGlobal {
 		t.Fatalf("classified = %#v, want upstream_protocol_error global", classified)
 	}
+}
+
+// TestChatStreamResponseUncommittedInterruptionWritesError locks the handler
+// contract for an interrupted upstream stream that never delivered a data
+// event: primeSSE normally intercepts this at execute time, but if it ever
+// slips through (e.g. a future change to the prime path), the client must get
+// a 502 protocol error, not an empty 200 it would mistake for a completion.
+func TestChatStreamResponseUncommittedInterruptionWritesError(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(": keep-alive\n\n")),
+	}
+	response := httptest.NewRecorder()
+	NewChat(nil, nil, nil).streamResponse(context.Background(), response, upstream)
+	assertChatError(t, response, http.StatusBadGateway, "upstream_protocol_error")
 }
 
 func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.T) {
@@ -218,6 +237,12 @@ func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), responseBody) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.Bytes())
 	}
+	// Audit B6: only streaming responses opt out of reverse-proxy buffering.
+	// Non-streaming responses should let nginx buffer/compress as usual so the
+	// SSE-specific X-Accel-Buffering header is never set on a 200 JSON reply.
+	if got := response.Header().Get("X-Accel-Buffering"); got != "" {
+		t.Fatalf("non-streaming response X-Accel-Buffering = %q, want unset", got)
+	}
 	if attempts != 2 || protocolFailures != 1 {
 		t.Fatalf("attempts = %d, protocol failures = %d; want 2, 1", attempts, protocolFailures)
 	}
@@ -241,14 +266,24 @@ func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.
 
 func TestChatExecutionPreservesResponseReadFailureClassification(t *testing.T) {
 	readErr := io.ErrUnexpectedEOF
-	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       readErrorBody{err: readErr},
-		}, nil
-	})}
-	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		hijacker, ok := writer.(http.Hijacker)
+		if !ok {
+			t.Errorf("response writer does not support hijacking")
+			return
+		}
+		connection, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijack upstream connection: %v", err)
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_, _ = io.WriteString(connection, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"choices\"")
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -310,13 +345,3 @@ type releaseTrackingLease struct {
 func (l *releaseTrackingLease) KeyID() int64 { return l.id }
 
 func (l *releaseTrackingLease) Release() { l.released = true }
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
-
-type readErrorBody struct{ err error }
-
-func (b readErrorBody) Read([]byte) (int, error) { return 0, b.err }
-
-func (readErrorBody) Close() error { return nil }

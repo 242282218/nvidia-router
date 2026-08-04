@@ -10,6 +10,7 @@ type ChatDelta struct {
 	Reasoning    string
 	FinishReason string
 	ToolCalls    []ChatToolCallDelta
+	Usage        *ChatUsage
 }
 
 // ChatToolCallDelta is one entry in a streaming choices[].delta.tool_calls
@@ -72,6 +73,9 @@ func (s *streamState) Convert(source ChatDeltaSource, emit Emitter, responseID, 
 }
 
 func (s *streamState) applyDelta(delta ChatDelta, emit Emitter, responseID string) error {
+	if delta.Usage != nil {
+		s.usage = delta.Usage
+	}
 	if delta.Reasoning != "" {
 		if err := s.emitReasoningDelta(delta.Reasoning, emit, responseID); err != nil {
 			return err
@@ -102,39 +106,71 @@ func (s *streamState) emitTextDelta(text string, emit Emitter, responseID string
 	if text == "" {
 		return nil
 	}
+	if err := s.text.write(text); err != nil {
+		return fmt.Errorf("accumulate assistant text: %w", err)
+	}
 	data := map[string]any{
 		"sequence_number": s.nextSequence(),
+		"item_id":         s.messageID,
+		"output_index":    s.messageIndex,
+		"content_index":   0,
 		"delta":           text,
 	}
 	return emit.Emit(EmittedEvent{Event: "response.output_text.delta", Data: data})
 }
 
 func (s *streamState) openMessage(emit Emitter, responseID string) error {
+	s.messageIndex = s.itemIndex
+	s.messageID = messageItemID(responseID)
 	added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"output_index":    s.itemIndex,
-		"item":            map[string]any{"type": "message", "role": "assistant"},
+		"output_index":    s.messageIndex,
+		"item":            map[string]any{"id": s.messageID, "type": "message", "role": "assistant"},
 	}}
 	if err := emit.Emit(added); err != nil {
 		return fmt.Errorf("emit output_item.added: %w", err)
 	}
 	partAdded := EmittedEvent{Event: "response.content_part.added", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"output_index":    s.itemIndex,
+		"item_id":         s.messageID,
+		"output_index":    s.messageIndex,
 		"content_index":   0,
 		"part":            map[string]any{"type": "output_text"},
 	}}
 	if err := emit.Emit(partAdded); err != nil {
 		return fmt.Errorf("emit content_part.added: %w", err)
 	}
+	// Reserve this index for the message item so a later tool call cannot
+	// collide with it and message done events reference the same index.
+	s.itemIndex++
 	s.messageStarted = true
 	s.textPartOpen = true
 	return nil
 }
 
 func (s *streamState) emitReasoningDelta(text string, emit Emitter, responseID string) error {
+	if !s.reasoningOpen {
+		s.reasoningOpen = true
+		s.reasoningIndex = s.itemIndex
+		s.reasoningID = reasoningItemID(responseID)
+		added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
+			"sequence_number": s.nextSequence(),
+			"output_index":    s.reasoningIndex,
+			"item":            map[string]any{"id": s.reasoningID, "type": "reasoning", "summary": []any{}},
+		}}
+		if err := emit.Emit(added); err != nil {
+			return fmt.Errorf("emit reasoning output_item.added: %w", err)
+		}
+		s.itemIndex++
+	}
+	if err := s.reasoning.write(text); err != nil {
+		return fmt.Errorf("accumulate reasoning summary: %w", err)
+	}
 	data := map[string]any{
 		"sequence_number": s.nextSequence(),
+		"item_id":         s.reasoningID,
+		"output_index":    s.reasoningIndex,
+		"content_index":   0,
 		"delta":           map[string]any{"type": "summary_text", "text": text},
 	}
 	return emit.Emit(EmittedEvent{Event: "response.reasoning_summary_text.delta", Data: data})
@@ -144,7 +180,12 @@ func (s *streamState) applyToolCall(call ChatToolCallDelta, emit Emitter, respon
 	tool, exists := s.openTools[call.Index]
 	if !exists {
 		id := call.ID
-		tool = &toolItem{outputIndex: s.itemIndex, id: id, name: call.Name}
+		tool = &toolItem{
+			outputIndex: s.itemIndex,
+			id:          id,
+			name:        call.Name,
+			arguments:   newBoundedBuilder(maxToolArgumentsBytes, ErrToolArgumentsTooLarge),
+		}
 		s.openTools[call.Index] = tool
 		s.toolOrder = append(s.toolOrder, call.Index)
 		added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
@@ -161,7 +202,9 @@ func (s *streamState) applyToolCall(call ChatToolCallDelta, emit Emitter, respon
 		tool.name = call.Name
 	}
 	if call.Arguments != "" {
-		tool.arguments.write(call.Arguments)
+		if err := tool.arguments.write(call.Arguments); err != nil {
+			return fmt.Errorf("accumulate tool call %d arguments: %w", call.Index, err)
+		}
 		delta := EmittedEvent{Event: "response.function_call_arguments.delta", Data: map[string]any{
 			"sequence_number": s.nextSequence(),
 			"output_index":    tool.outputIndex,
@@ -183,8 +226,22 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 		return nil
 	}
 	s.finalized = true
-	if err := s.closeOpenMessage(emit); err != nil {
-		return err
+	// Close items in output_index order so done events correlate with the order
+	// clients saw items added.
+	if s.reasoningOpen && (!s.messageStarted || s.reasoningIndex < s.messageIndex) {
+		if err := s.closeReasoningItem(emit); err != nil {
+			return err
+		}
+		if err := s.closeOpenMessage(emit); err != nil {
+			return err
+		}
+	} else {
+		if err := s.closeOpenMessage(emit); err != nil {
+			return err
+		}
+		if err := s.closeReasoningItem(emit); err != nil {
+			return err
+		}
 	}
 	for _, idx := range s.toolOrder {
 		tool := s.openTools[idx]
@@ -210,6 +267,8 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 	}
 	if failed {
 		data["status"] = "failed"
+	} else if usage := convertUsage(s.usage); usage != nil {
+		data["usage"] = usage
 	}
 	if err := emit.Emit(EmittedEvent{Event: terminal, Data: data}); err != nil {
 		return fmt.Errorf("emit %s: %w", terminal, err)
@@ -225,34 +284,76 @@ func (s *streamState) closeOpenMessage(emit Emitter) error {
 	if !s.messageStarted || !s.textPartOpen {
 		return nil
 	}
+	text := s.text.string()
 	textDone := EmittedEvent{Event: "response.output_text.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"output_index":    s.itemIndex,
+		"item_id":         s.messageID,
+		"output_index":    s.messageIndex,
 		"content_index":   0,
-		"text":            "",
+		"text":            text,
 	}}
 	if err := emit.Emit(textDone); err != nil {
 		return fmt.Errorf("emit output_text.done: %w", err)
 	}
 	partDone := EmittedEvent{Event: "response.content_part.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"output_index":    s.itemIndex,
+		"item_id":         s.messageID,
+		"output_index":    s.messageIndex,
 		"content_index":   0,
 		"part":            map[string]any{"type": "output_text"},
 	}}
 	if err := emit.Emit(partDone); err != nil {
 		return fmt.Errorf("emit content_part.done: %w", err)
 	}
+	content := []any{}
+	if text != "" {
+		content = []any{map[string]any{"type": "output_text", "text": text}}
+	}
 	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"output_index":    s.itemIndex,
-		"item":            map[string]any{"type": "message", "role": "assistant", "content": []any{}},
+		"item_id":         s.messageID,
+		"output_index":    s.messageIndex,
+		"item":            map[string]any{"id": s.messageID, "type": "message", "role": "assistant", "content": content},
 	}}
 	if err := emit.Emit(itemDone); err != nil {
 		return fmt.Errorf("emit output_item.done: %w", err)
 	}
-	s.itemIndex++
 	s.textPartOpen = false
+	return nil
+}
+
+// closeReasoningItem terminates an open reasoning item with the accumulated
+// summary, mirroring the message/tool output_item.done lifecycle. Without it
+// clients that assemble output from done events would lose the reasoning text.
+func (s *streamState) closeReasoningItem(emit Emitter) error {
+	if !s.reasoningOpen {
+		return nil
+	}
+	s.reasoningOpen = false
+	summary := s.reasoning.string()
+	textDone := EmittedEvent{Event: "response.reasoning_summary_text.done", Data: map[string]any{
+		"sequence_number": s.nextSequence(),
+		"item_id":         s.reasoningID,
+		"output_index":    s.reasoningIndex,
+		"content_index":   0,
+		"text":            summary,
+	}}
+	if err := emit.Emit(textDone); err != nil {
+		return fmt.Errorf("emit reasoning_summary_text.done: %w", err)
+	}
+	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
+		"sequence_number": s.nextSequence(),
+		"item_id":         s.reasoningID,
+		"output_index":    s.reasoningIndex,
+		"item": map[string]any{
+			"id":      s.reasoningID,
+			"type":    "reasoning",
+			"summary": []any{map[string]any{"type": "summary_text", "text": summary}},
+		},
+	}}
+	if err := emit.Emit(itemDone); err != nil {
+		return fmt.Errorf("emit reasoning output_item.done: %w", err)
+	}
 	return nil
 }
 
@@ -269,6 +370,7 @@ func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
 	}
 	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
+		"item_id":         tool.id,
 		"output_index":    tool.outputIndex,
 		"item": map[string]any{
 			"type":      "function_call",

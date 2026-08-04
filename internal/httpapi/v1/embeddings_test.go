@@ -109,23 +109,23 @@ func TestEmbeddingsMapsModelAndPreservesValidatedResponse(t *testing.T) {
 }
 
 func TestEmbeddingsExecutionSurfacesProtocolErrorForFailover(t *testing.T) {
-	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"usage":{}}`)),
-		}, nil
-	})}
-	client, err := nvidia.NewClient(httpClient, nvidia.DefaultDescriptor(), testNVIDIASettings{}, nil)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"usage":{}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	response, err := NewEmbeddings(nil, nil, client).execute([]byte(`{"model":"m","input":"hi"}`))(
 		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
 	)
-		if response != nil {
-			defer func() { _ = response.Body.Close() }()
-		}
+	if response != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
 	if err == nil {
 		t.Fatal("expected protocol error for malformed 2xx embeddings response")
 	}

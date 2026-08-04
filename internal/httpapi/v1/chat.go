@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"nvidia-router/internal/apierror"
-	"nvidia-router/internal/config"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
@@ -20,15 +19,6 @@ import (
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
 )
-
-// maxConcurrentBodyReads bounds how many requests may be reading their body at
-// once. Each body can be up to 32 MiB, so without a cap a burst of concurrent
-// /v1 requests would buffer N x 32 MiB before pool admission ever applies.
-const maxConcurrentBodyReads = 16
-
-// bodyReadSemaphore gates body reads ahead of pool admission so request
-// concurrency cannot bypass the pool's resource limits.
-var bodyReadSemaphore = make(chan struct{}, maxConcurrentBodyReads)
 
 type ModelResolver interface {
 	Resolve(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error)
@@ -56,7 +46,10 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		})
 		return
 	}
-	payload, err := readChatBody(writer, request)
+	payload, bodyLease, err := readBodyWithLease(request, bodyReadLimitForJSON(), jsonBodyReadTimeout)
+	if bodyLease != nil {
+		defer bodyLease.Release()
+	}
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -134,52 +127,29 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
 	commit := &router.CommitState{}
 	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{CommitState: commit})
-	if err == nil || err == sse.ErrStreamInterrupted {
-		// Both clean completion and interrupted stream: connection already committed,
-		// client observes truncation. Nothing more to write.
+	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) {
+		// Clean completion, or an interrupted stream whose first byte already
+		// reached the client: the client observes truncation and nothing more
+		// can be written.
 		return
 	}
 	// Context cancelled or other error after commit - nothing we can do.
-	// Before commit, writeChatError handles it.
+	// Before commit, writeChatError handles it. An interrupted stream that
+	// never committed is an upstream protocol defect (200 with no data events):
+	// surface an error rather than the empty 200 the client would take as a
+	// successful completion.
 	if !commit.Committed() {
+		if errors.Is(err, sse.ErrStreamInterrupted) {
+			writeChatError(writer, &apierror.Error{
+				Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_protocol_error",
+				Message: "The upstream service ended the stream before sending any data.",
+			})
+			return
+		}
 		writeChatError(writer, &apierror.Error{
 			Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
 			Message: "The server could not complete the stream.",
 		})
-	}
-}
-
-func readChatBody(writer http.ResponseWriter, request *http.Request) ([]byte, error) {
-	// Acquire the read slot before touching the body; a burst of requests must
-	// not buffer N x 32 MiB while waiting for pool admission. Refuse with 429
-	// when saturated instead of queueing goroutines behind slow uploads.
-	select {
-	case bodyReadSemaphore <- struct{}{}:
-		defer func() { <-bodyReadSemaphore }()
-	default:
-		return nil, &apierror.Error{
-			Status: http.StatusTooManyRequests, Type: "server_error", Code: "server_busy",
-			Message: "The server is busy reading request bodies, try again later.",
-		}
-	}
-	// Pass a nil writer to MaxBytesReader so the handler alone writes the
-	// JSON error body; a non-nil writer would emit a plain-text 413 first and
-	// corrupt the JSON response contract.
-	body, err := io.ReadAll(http.MaxBytesReader(nil, request.Body, config.JSONBodyLimit))
-	if err == nil {
-		return body, nil
-	}
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		param := "body"
-		return nil, &apierror.Error{
-			Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large",
-			Message: "The request body exceeds the 32 MiB limit.", Param: &param,
-		}
-	}
-	return nil, &apierror.Error{
-		Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_request",
-		Message: "The request body could not be read.",
 	}
 }
 
@@ -232,6 +202,13 @@ func writeChatError(writer http.ResponseWriter, err error) {
 		apierror.Error{
 			Status: upstreamFault.HTTPStatus, Type: upstreamFault.PublicType, Code: upstreamFault.PublicCode,
 			Message: upstreamFault.PublicMessage, RetryAfter: upstreamFault.RetryAfter,
+		}.Write(writer)
+		return
+	}
+	if router.BodyTooLarge(err) {
+		apierror.Error{
+			Status: http.StatusRequestEntityTooLarge, Type: "invalid_request_error", Code: "request_too_large",
+			Message: "The request body exceeds the 25 MiB replay limit.",
 		}.Write(writer)
 		return
 	}

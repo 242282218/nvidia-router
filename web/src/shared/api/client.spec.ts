@@ -82,12 +82,31 @@ describe('apiRequest', () => {
     } satisfies Partial<ApiError>)
   })
 
-  it('dispatches a session-expired event for a 401 response', async () => {
+  it('dispatches a session-expired event only for invalid_session 401 responses', async () => {
     const onSessionExpired = vi.fn()
     window.addEventListener('session-expired', onSessionExpired)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })))
+
+    // A login failure also returns 401 with code `invalid_credentials`; that
+    // must NOT be treated as a stale-session signal.
+    const credentialsResponse = new Response(
+      JSON.stringify({
+        error: { code: 'invalid_credentials', message: 'bad password', param: null, type: 'authentication_error' },
+      }),
+      { headers: { 'Content-Type': 'application/json' }, status: 401 },
+    )
+    const sessionResponse = new Response(
+      JSON.stringify({
+        error: { code: 'invalid_session', message: 'expired', param: null, type: 'authentication_error' },
+      }),
+      { headers: { 'Content-Type': 'application/json' }, status: 401 },
+    )
+    const fetchMock = vi.fn().mockResolvedValueOnce(credentialsResponse).mockResolvedValueOnce(sessionResponse)
+    vi.stubGlobal('fetch', fetchMock)
 
     try {
+      await expect(apiRequest('/admin/api/auth/login', { method: 'POST' })).rejects.toMatchObject({ status: 401 })
+      expect(onSessionExpired).not.toHaveBeenCalled()
+
       await expect(apiRequest('/admin/api/models')).rejects.toMatchObject({ status: 401 })
       expect(onSessionExpired).toHaveBeenCalledOnce()
     } finally {

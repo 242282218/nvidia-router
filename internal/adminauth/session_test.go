@@ -119,10 +119,49 @@ func TestSessionAuthenticateUpdatesLastSeenWithoutExtendingExpiry(t *testing.T) 
 	}
 }
 
+func TestSessionAuthenticateThrottlesLastSeenWrites(t *testing.T) {
+	db := newTestDatabase(t)
+	testClock := newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC))
+	service := NewSessionService(db, testClock, newSessionTestKeySet(t), false)
+	created, err := service.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var initial string
+	if err := db.QueryRow("SELECT last_seen_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&initial); err != nil {
+		t.Fatalf("read initial last_seen_at: %v", err)
+	}
+
+	testClock.Advance(30 * time.Second)
+	if _, err := service.Authenticate(context.Background(), created.Token); err != nil {
+		t.Fatalf("Authenticate within window: %v", err)
+	}
+	var withinWindow string
+	if err := db.QueryRow("SELECT last_seen_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&withinWindow); err != nil {
+		t.Fatalf("read throttled last_seen_at: %v", err)
+	}
+	if withinWindow != initial {
+		t.Fatalf("last_seen_at changed within throttle window: %q -> %q", initial, withinWindow)
+	}
+
+	testClock.Advance(2 * time.Minute)
+	if _, err := service.Authenticate(context.Background(), created.Token); err != nil {
+		t.Fatalf("Authenticate after window: %v", err)
+	}
+	var afterWindow string
+	if err := db.QueryRow("SELECT last_seen_at FROM admin_sessions WHERE id = ?", created.ID).Scan(&afterWindow); err != nil {
+		t.Fatalf("read refreshed last_seen_at: %v", err)
+	}
+	if afterWindow == initial {
+		t.Fatal("last_seen_at did not refresh after the throttle window")
+	}
+}
+
 func TestSessionAuthenticateRejectsRevocationBeforeFinalTouch(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
-	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
+	clock := newLimiterClock(now)
+	service := NewSessionService(db, clock, newSessionTestKeySet(t), false)
 	created, err := service.Create(context.Background())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -139,6 +178,9 @@ func TestSessionAuthenticateRejectsRevocationBeforeFinalTouch(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create revocation trigger: %v", err)
 	}
+	// The touch is throttled while last_seen_at is fresh, so advance past the
+	// throttle window to make the UPDATE (and its trigger) fire.
+	clock.Advance(2 * time.Hour)
 
 	_, err = service.Authenticate(context.Background(), created.Token)
 	if !errors.Is(err, ErrInvalidSession) {
@@ -291,7 +333,8 @@ func TestSessionCleanupWorkerRetriesAfterFailureBeforeDailySchedule(t *testing.T
 	if waits[0] != time.Minute {
 		t.Fatalf("retry wait = %s, want 1m", waits[0])
 	}
-	if want := 22*time.Hour + 30*time.Minute; waits[1] != want {
+	// The daily sweep is staggered to 03:30 UTC; from 04:30 that is 23h away.
+	if want := 23 * time.Hour; waits[1] != want {
 		t.Fatalf("daily wait = %s, want %s", waits[1], want)
 	}
 }
@@ -323,7 +366,7 @@ func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	repository := NewRepository(db, fixedClock{now: now})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	service := NewSessionService(db, fixedClock{now: now}, newSessionTestKeySet(t), false)
@@ -341,7 +384,7 @@ func TestSessionPasswordChangeKeepsOnlyReplacementSession(t *testing.T) {
 	}
 
 	// Passing an authenticating old session ID would preserve the cookie being rotated out.
-	if err := repository.ChangePassword(context.Background(), "admin", "a replacement password", replacement.ID); err != nil {
+	if err := repository.ChangePassword(context.Background(), testInitialAdminPassword, "a replacement password", replacement.ID); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 	assertInvalidSession(t, service, firstOld.Token)
@@ -371,6 +414,17 @@ func TestSessionAuthenticationSeparatesInvalidCredentialsFromDatabaseFailures(t 
 	}
 	if errors.Is(err, ErrInvalidSession) {
 		t.Fatal("Authenticate classified a database failure as ErrInvalidSession")
+	}
+}
+
+func TestSecureSessionCookieHasSecureAttribute(t *testing.T) {
+	cookie := SecureSessionCookie("session-token")
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" || cookie.MaxAge != 86400 {
+		t.Fatalf("secure session cookie = %#v", cookie)
+	}
+	cleared := ClearSecureSessionCookie()
+	if !cleared.Secure || cleared.MaxAge >= 0 {
+		t.Fatalf("secure cleared cookie = %#v", cleared)
 	}
 }
 

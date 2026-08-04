@@ -14,93 +14,94 @@ function audioNeedsVerification(model: Model): boolean {
 function enablingIsBlocked(model: Model): boolean {
   return !model.enabled && audioNeedsVerification(model)
 }
+
+function capBadge(supported: boolean): string {
+  return supported ? 'badge-success' : 'badge-muted'
+}
 </script>
 
 <template>
   <div
     data-testid="model-table"
-    class="hidden overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 md:block"
+    class="hidden overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
   >
-    <table class="min-w-full text-left text-sm">
-      <thead class="border-b border-slate-800 text-slate-400">
+    <table class="data-table">
+      <thead>
         <tr>
-          <th class="px-4 py-3">
+          <th class="data-table-th">
             模型
           </th>
-          <th class="px-4 py-3">
+          <th class="data-table-th">
             Kind
           </th>
-          <th class="px-4 py-3">
+          <th class="data-table-th">
             能力
           </th>
-          <th class="px-4 py-3">
+          <th class="data-table-th">
             状态
           </th>
-          <th class="px-4 py-3 text-right">
+          <th class="data-table-th text-right">
             操作
           </th>
         </tr>
       </thead>
-      <tbody>
+      <tbody class="divide-y divide-[var(--color-border)]">
         <tr
           v-for="model in models"
           :key="model.id"
-          class="border-b border-slate-800/80 last:border-0"
+          class="transition-colors hover:bg-[var(--color-hover)]"
         >
-          <td class="px-4 py-3">
-            <p class="font-medium">
+          <td class="data-table-td">
+            <p class="font-medium text-[var(--color-text)]">
               {{ model.display_name }}
             </p>
-            <p class="mt-1 font-mono text-xs text-slate-500">
+            <p class="mt-0.5 font-mono text-xs text-[var(--color-text-muted)]">
               {{ model.public_id }}
             </p>
           </td>
-          <td class="px-4 py-3 font-mono text-indigo-300">
-            {{ model.kind }}
+          <td class="data-table-td">
+            <span class="badge-info">{{ model.kind }}</span>
           </td>
-          <td class="px-4 py-3 text-xs text-slate-300">
-            <span :class="model.supports_vision ? 'text-emerald-300' : 'text-slate-500'">
-              Vision {{ model.supports_vision ? '✓' : '—' }}
-            </span>
-            <span
-              class="ml-2"
-              :class="model.supports_tools ? 'text-emerald-300' : 'text-slate-500'"
-            >
-              Tools {{ model.supports_tools ? '✓' : '—' }}
-            </span>
-            <span
-              class="ml-2"
-              :class="model.supports_reasoning ? 'text-emerald-300' : 'text-slate-500'"
-            >
-              Reasoning {{ model.supports_reasoning ? '✓' : '—' }}
-            </span>
+          <td class="data-table-td">
+            <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+              <span :class="capBadge(model.supports_vision)">Vision {{ model.supports_vision ? '✓' : '—' }}</span>
+              <span :class="capBadge(model.supports_tools)">Tools {{ model.supports_tools ? '✓' : '—' }}</span>
+              <span :class="capBadge(model.supports_reasoning)">Reasoning {{ model.supports_reasoning ? '✓' : '—' }}</span>
+            </div>
           </td>
-          <td class="px-4 py-3">
-            <span :class="model.enabled ? 'text-emerald-300' : 'text-slate-400'">
-              {{ model.enabled ? '启用' : '停用' }}
-            </span>
+          <td class="data-table-td">
+            <span
+              v-if="model.enabled"
+              class="badge-success"
+            >启用</span>
+            <span
+              v-else
+              class="badge-muted"
+            >停用</span>
             <p
               v-if="model.capability_verified_at"
-              class="mt-1 text-xs text-slate-500"
+              class="mt-1 text-xs text-[var(--color-text-muted)]"
             >
-              能力已验证 <time :datetime="model.capability_verified_at">{{ model.capability_verified_at }}</time>
+              已验证
             </p>
             <p
               v-else-if="audioNeedsVerification(model)"
-              class="mt-1 max-w-52 text-xs text-amber-300"
+              class="mt-1 text-xs text-[var(--color-warning)]"
             >
               需要先完成真实音频能力测试
             </p>
             <div
               v-if="model.blocked_by_key_ids?.length"
-              class="mt-2 space-y-1 text-xs text-amber-300"
+              class="mt-2 space-y-1"
             >
-              <p>已 block：</p>
+              <p class="text-xs text-[var(--color-warning)]">
+                已 block：
+              </p>
               <button
                 v-for="keyId in model.blocked_by_key_ids"
                 :key="keyId"
                 :data-testid="`model-table-unblock-${keyId}`"
-                class="block underline hover:text-amber-100 disabled:opacity-40"
+                class="block text-xs text-[#F87171] underline hover:text-[#FCA5A5] disabled:opacity-40"
                 type="button"
                 :disabled="busyId === model.id"
                 @click="emit('unblock', keyId, model)"
@@ -109,10 +110,10 @@ function enablingIsBlocked(model: Model): boolean {
               </button>
             </div>
           </td>
-          <td class="space-x-2 px-4 py-3 text-right">
+          <td class="data-table-td text-right">
             <button
               data-testid="model-enable"
-              class="rounded border border-slate-700 px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+              class="btn-secondary rounded-md px-3 py-1 text-xs"
               type="button"
               :disabled="enablingIsBlocked(model) || busyId === model.id"
               @click="emit('toggle', model)"
@@ -124,7 +125,7 @@ function enablingIsBlocked(model: Model): boolean {
         <tr v-if="models.length === 0">
           <td
             colspan="5"
-            class="px-4 py-8 text-center text-slate-500"
+            class="px-4 py-8 text-center text-[var(--color-text-muted)]"
           >
             暂无模型白名单。
           </td>

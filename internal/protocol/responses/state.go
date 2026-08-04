@@ -38,16 +38,32 @@ func Stream(source ChatDeltaSource, emit Emitter, responseID, model string) (int
 
 // streamState tracks per-request structural progress for a single Responses
 // stream. It lives only for the request lifecycle and never persists. It holds
-// indices and flags only; reasoning text, completion text and tool arguments
-// are forwarded as deltas and discarded.
+// indices and flags plus the accumulated assistant text and reasoning summary
+// needed for the terminal done events; reasoning text, completion text and tool
+// arguments are forwarded as deltas and only retained up to their budgets.
 type streamState struct {
-	sequence       int
-	itemIndex      int
+	sequence     int
+	itemIndex    int
+	messageIndex int
+	// messageID correlates every event for the assistant message item. It is
+	// synthesized from the response id because chat deltas carry no message id.
+	messageID      string
 	messageStarted bool
 	textPartOpen   bool
+	// text accumulates the assistant content so output_text.done and the
+	// message output_item.done carry the final text instead of an empty value
+	// (SDKs assemble output from the done events).
+	text *stringsBuilder
+	// reasoningIndex/reasoningID track the open reasoning item; reasoning
+	// summaries get their own output item before the message item.
+	reasoningIndex int
+	reasoningID    string
+	reasoningOpen  bool
+	reasoning      *stringsBuilder
 	openTools      map[int]*toolItem
 	toolOrder      []int
 	finished       bool
+	usage          *ChatUsage
 	finalized      bool
 }
 
@@ -55,12 +71,16 @@ type toolItem struct {
 	outputIndex int
 	id          string
 	name        string
-	arguments   stringsBuilder
+	arguments   *stringsBuilder
 	closed      bool
 }
 
 func newStreamState() *streamState {
-	return &streamState{openTools: make(map[int]*toolItem)}
+	return &streamState{
+		openTools: make(map[int]*toolItem),
+		text:      newBoundedBuilder(maxStreamTextBytes, ErrStreamTextTooLarge),
+		reasoning: newBoundedBuilder(maxStreamTextBytes, ErrStreamTextTooLarge),
+	}
 }
 
 func (s *streamState) nextSequence() int {
@@ -86,14 +106,50 @@ func (s *streamState) event(name, responseID, model string) EmittedEvent {
 	return EmittedEvent{Event: name, Data: data}
 }
 
+// maxToolArgumentsBytes bounds the total accumulated arguments of one tool call
+// across a stream. The SSE decoder caps a single event at 4 MiB, but a hostile
+// or broken upstream could stream argument fragments forever; without a total
+// cap the tool item would grow without bound (checklist #14).
+const maxToolArgumentsBytes = 16 << 20
+
+// maxStreamTextBytes bounds the accumulated assistant text and reasoning
+// summary kept for the terminal done events. Clients that assemble output from
+// output_text.done / output_item.done need the final text, so the state machine
+// must retain it; the cap mirrors the tool-argument budget.
+const maxStreamTextBytes = 16 << 20
+
+// ErrToolArgumentsTooLarge is returned when accumulated tool call arguments
+// exceed maxToolArgumentsBytes. The HTTP layer treats it as an in-stream
+// failure that terminates the response.
+var ErrToolArgumentsTooLarge = sentinel("tool call arguments exceed maximum size")
+
+// ErrStreamTextTooLarge is returned when accumulated assistant text or
+// reasoning summary exceeds maxStreamTextBytes.
+var ErrStreamTextTooLarge = sentinel("streamed response text exceeds maximum size")
+
 // stringsBuilder is a minimal accumulating helper kept in-package so the state
-// machine never imports strings via std Builder helpers that grow unbounded;
-// callers bound total size at the HTTP layer.
+// machine never imports strings via std Builder helpers that grow unbounded.
+// The total byte count is enforced here so a stream of deltas cannot accumulate
+// past the builder's budget.
 type stringsBuilder struct {
 	parts []string
+	total int
+	limit int
+	err   error
 }
 
-func (b *stringsBuilder) write(fragment string) { b.parts = append(b.parts, fragment) }
+func newBoundedBuilder(limit int, err error) *stringsBuilder {
+	return &stringsBuilder{limit: limit, err: err}
+}
+
+func (b *stringsBuilder) write(fragment string) error {
+	if b.total+len(fragment) > b.limit {
+		return b.err
+	}
+	b.parts = append(b.parts, fragment)
+	b.total += len(fragment)
+	return nil
+}
 
 func (b *stringsBuilder) string() string {
 	if len(b.parts) == 0 {

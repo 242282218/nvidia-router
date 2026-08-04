@@ -15,12 +15,14 @@ import (
 	"nvidia-router/internal/database"
 )
 
+const testInitialAdminPassword = "test-initial-admin-password"
+
 func TestEnsureAdminCreatesDefaultAdminOnlyOnce(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	repository := NewRepository(db, fixedClock{now: now})
 
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	admin := readAdmin(t, db)
@@ -30,12 +32,12 @@ func TestEnsureAdminCreatesDefaultAdminOnlyOnce(t *testing.T) {
 	if admin.createdAt != now.Format(time.RFC3339) || admin.updatedAt != now.Format(time.RFC3339) {
 		t.Fatalf("created admin timestamps = %q, %q", admin.createdAt, admin.updatedAt)
 	}
-	matched, err := VerifyPassword("admin", admin.passwordHash)
+	matched, err := VerifyPassword(testInitialAdminPassword, admin.passwordHash)
 	if err != nil || !matched {
 		t.Fatalf("default admin password verification = %t, %v", matched, err)
 	}
 
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("second EnsureAdmin: %v", err)
 	}
 	assertAdminEqual(t, readAdmin(t, db), admin)
@@ -52,7 +54,7 @@ func TestEnsureAdminPreservesExistingAdmin(t *testing.T) {
 	}
 	insertAdmin(t, db, existing)
 
-	if err := NewRepository(db, fixedClock{}).EnsureAdmin(context.Background()); err != nil {
+	if err := NewRepository(db, fixedClock{}).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	assertAdminEqual(t, readAdmin(t, db), existing)
@@ -71,7 +73,7 @@ func TestEnsureAdminConcurrentInitializationCreatesOneStableAdmin(t *testing.T) 
 		go func() {
 			defer group.Done()
 			<-start
-			errs <- repository.EnsureAdmin(context.Background())
+			errs <- repository.EnsureAdmin(context.Background(), testInitialAdminPassword)
 		}()
 	}
 	close(start)
@@ -87,12 +89,12 @@ func TestEnsureAdminConcurrentInitializationCreatesOneStableAdmin(t *testing.T) 
 		t.Fatalf("admin count = %d, want 1", count)
 	}
 	created := readAdmin(t, db)
-	if matched, err := VerifyPassword("admin", created.passwordHash); err != nil || !matched {
+	if matched, err := VerifyPassword(testInitialAdminPassword, created.passwordHash); err != nil || !matched {
 		t.Fatalf("concurrently created admin verification = %t, %v", matched, err)
 	}
 
 	for range callers {
-		if err := repository.EnsureAdmin(context.Background()); err != nil {
+		if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 			t.Fatalf("subsequent EnsureAdmin: %v", err)
 		}
 	}
@@ -103,7 +105,7 @@ func TestChangePasswordUpdatesPasswordAndRevokesOtherSessions(t *testing.T) {
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	repository := NewRepository(db, fixedClock{now: now})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	insertSession(t, db, "keep", nil)
@@ -111,7 +113,7 @@ func TestChangePasswordUpdatesPasswordAndRevokesOtherSessions(t *testing.T) {
 	alreadyRevoked := "2026-07-01T00:00:00Z"
 	insertSession(t, db, "already-revoked", &alreadyRevoked)
 
-	if err := repository.ChangePassword(context.Background(), "admin", "a replacement password", "keep"); err != nil {
+	if err := repository.ChangePassword(context.Background(), testInitialAdminPassword, "a replacement password", "keep"); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 	admin := readAdmin(t, db)
@@ -121,7 +123,7 @@ func TestChangePasswordUpdatesPasswordAndRevokesOtherSessions(t *testing.T) {
 	if admin.updatedAt != now.Format(time.RFC3339) {
 		t.Fatalf("updated_at = %q, want %q", admin.updatedAt, now.Format(time.RFC3339))
 	}
-	if matched, err := VerifyPassword("admin", admin.passwordHash); err != nil || matched {
+	if matched, err := VerifyPassword(testInitialAdminPassword, admin.passwordHash); err != nil || matched {
 		t.Fatalf("old password verification = %t, %v", matched, err)
 	}
 	if matched, err := VerifyPassword("a replacement password", admin.passwordHash); err != nil || !matched {
@@ -142,13 +144,13 @@ func TestChangePasswordWithoutCurrentSessionRevokesAllActiveSessions(t *testing.
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	repository := NewRepository(db, fixedClock{now: now})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	insertSession(t, db, "first", nil)
 	insertSession(t, db, "second", nil)
 
-	if err := repository.ChangePassword(context.Background(), "admin", "a replacement password", ""); err != nil {
+	if err := repository.ChangePassword(context.Background(), testInitialAdminPassword, "a replacement password", ""); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 	for _, id := range []string{"first", "second"} {
@@ -161,7 +163,7 @@ func TestChangePasswordWithoutCurrentSessionRevokesAllActiveSessions(t *testing.
 func TestChangePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := newTestDatabase(t)
 	repository := NewRepository(db, fixedClock{now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	insertSession(t, db, "keep", nil)
@@ -178,7 +180,7 @@ func TestChangePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 		t.Fatalf("create session trigger: %v", err)
 	}
 
-	err := repository.ChangePassword(context.Background(), "admin", "a replacement password", "keep")
+	err := repository.ChangePassword(context.Background(), testInitialAdminPassword, "a replacement password", "keep")
 	if err == nil {
 		t.Fatal("ChangePassword succeeded despite session revocation trigger")
 	}
@@ -192,7 +194,7 @@ func TestChangePasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T) {
 	db := newTestDatabase(t)
 	repository := NewRepository(db, fixedClock{})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	before := readAdmin(t, db)
@@ -206,9 +208,10 @@ func TestChangePasswordRejectsInvalidCredentialsAndWeakNewPassword(t *testing.T)
 		dontWant        error
 	}{
 		{name: "wrong current password", currentPassword: "wrong", newPassword: "a replacement password", want: ErrCurrentPasswordIncorrect},
-		{name: "short password", currentPassword: "admin", newPassword: "too-short", want: ErrPasswordTooShort},
-		{name: "four multi-byte characters", currentPassword: "admin", newPassword: "😀😀😀😀", want: ErrPasswordTooShort},
-		{name: "default password", currentPassword: "admin", newPassword: "admin", want: ErrPasswordIsDefault, dontWant: ErrPasswordTooShort},
+		{name: "short password", currentPassword: "test-initial-admin-password", newPassword: "too-short", want: ErrPasswordTooShort},
+		{name: "four multi-byte characters", currentPassword: "test-initial-admin-password", newPassword: "馃榾馃榾馃榾馃榾", want: ErrPasswordTooShort},
+		{name: "default password", currentPassword: "test-initial-admin-password", newPassword: "admin", want: ErrPasswordIsDefault, dontWant: ErrPasswordTooShort},
+		{name: "new password equals current", currentPassword: "test-initial-admin-password", newPassword: "test-initial-admin-password", want: ErrPasswordUnchanged},
 	} {
 		t.Run(input.name, func(t *testing.T) {
 			err := repository.ChangePassword(context.Background(), input.currentPassword, input.newPassword, "active")
@@ -233,10 +236,10 @@ func TestResetPasswordWithoutCurrentPasswordRevokesAllSessionsAndPreservesNVIDIA
 	db := newTestDatabase(t)
 	now := time.Date(2026, time.July, 29, 15, 0, 0, 0, time.UTC)
 	repository := NewRepository(db, fixedClock{now: now})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
-	if err := repository.ChangePassword(context.Background(), "admin", "previous recovery password", ""); err != nil {
+	if err := repository.ChangePassword(context.Background(), testInitialAdminPassword, "previous recovery password", ""); err != nil {
 		t.Fatalf("set previous password: %v", err)
 	}
 	insertSession(t, db, "first-reset-session", nil)
@@ -273,7 +276,7 @@ func TestResetPasswordWithoutCurrentPasswordRevokesAllSessionsAndPreservesNVIDIA
 func TestResetPasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	db := newTestDatabase(t)
 	repository := NewRepository(db, fixedClock{now: time.Date(2026, time.July, 29, 15, 0, 0, 0, time.UTC)})
-	if err := repository.EnsureAdmin(context.Background()); err != nil {
+	if err := repository.EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	insertSession(t, db, "reset-session", nil)
@@ -295,6 +298,53 @@ func TestResetPasswordRollsBackWhenSessionRevocationFails(t *testing.T) {
 	assertAdminEqual(t, readAdmin(t, db), beforeAdmin)
 	if revokedAt := sessionRevokedAt(t, db, "reset-session"); revokedAt != nil {
 		t.Fatalf("failed ResetPassword revoked session at %q", *revokedAt)
+	}
+}
+
+// TestVerifyCredentialsRehashesWeakerStoredHash proves that a stored digest
+// produced under weaker parameters is upgraded to the current parameters when
+// the user logs in successfully. This guards the Argon2id upgrade contract: a
+// future cost increase stays transparent to users because VerifyCredentials
+// lazily re-hashes legacy hashes.
+func TestVerifyCredentialsRehashesWeakerStoredHash(t *testing.T) {
+	db := newTestDatabase(t)
+	now := time.Date(2026, time.July, 29, 15, 0, 0, 0, time.UTC)
+	repository := NewRepository(db, fixedClock{now: now})
+
+	// Seed the admin row with a weak digest (t=2) instead of the current t=3.
+	weakHash := hashWithParameters(testInitialAdminPassword, 65536, 2, 2)
+	insertAdmin(t, db, adminRecord{
+		username:           defaultAdminUsername,
+		passwordHash:       weakHash,
+		mustChangePassword: true,
+		createdAt:          now.Format(time.RFC3339),
+		updatedAt:          "2025-01-01T00:00:00Z",
+	})
+
+	matched, err := repository.VerifyCredentials(context.Background(), defaultAdminUsername, testInitialAdminPassword)
+	if err != nil || !matched {
+		t.Fatalf("VerifyCredentials weak-stored = %t, %v", matched, err)
+	}
+
+	admin := readAdmin(t, db)
+	// The digest should now use the current parameters (m=65536,t=3,p=2).
+	if !strings.Contains(admin.passwordHash, "$argon2id$v=19$m=65536,t=3,p=2$") {
+		t.Fatalf("password hash not upgraded: %q", admin.passwordHash)
+	}
+	if admin.updatedAt != now.Format(time.RFC3339) {
+		t.Fatalf("updated_at = %q, want %q", admin.updatedAt, now.Format(time.RFC3339))
+	}
+	// The upgraded digest must still verify the same password.
+	if ok, err := VerifyPassword(testInitialAdminPassword, admin.passwordHash); err != nil || !ok {
+		t.Fatalf("upgraded hash verification = %t, %v", ok, err)
+	}
+	// A wrong password against a weak hash must NOT trigger an upgrade write.
+	wrongMatched, err := repository.VerifyCredentials(context.Background(), defaultAdminUsername, "definitely wrong password")
+	if err != nil || wrongMatched {
+		t.Fatalf("VerifyCredentials wrong password = %t, %v", wrongMatched, err)
+	}
+	if adminAfterWrong := readAdmin(t, db); adminAfterWrong.passwordHash != admin.passwordHash {
+		t.Fatalf("wrong-password verification mutated password hash: was %q, now %q", admin.passwordHash, adminAfterWrong.passwordHash)
 	}
 }
 

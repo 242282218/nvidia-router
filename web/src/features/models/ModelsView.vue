@@ -167,92 +167,145 @@ function replaceModel(updated: Model): void {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-950 p-4 text-slate-100 sm:p-6">
-    <section class="mx-auto max-w-6xl">
-      <header class="rounded-xl bg-slate-900 px-5 py-5 shadow-xl sm:px-6">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p class="text-sm text-indigo-300">
-              运维管理
-            </p><h1 class="mt-1 text-2xl font-semibold">
-              模型白名单
-            </h1><p class="mt-2 text-sm text-slate-400">
-              管理模型类型、能力标签和启用状态。
-            </p>
-          </div>
-          <button
-            class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-slate-500 disabled:opacity-50"
-            data-testid="discover-models"
-            type="button"
-            :disabled="discovering"
-            @click="discover"
-          >
-            发现候选模型
-          </button>
+  <div class="page-container animate-fade-in">
+    <div class="content-wrapper">
+      <header class="section-header">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent)]">
+            运维管理
+          </p>
+          <h1 class="page-title mt-1">
+            模型白名单
+          </h1>
+          <p class="page-subtitle">
+            管理模型类型、能力标签和启用状态。
+          </p>
         </div>
+        <button
+          class="btn-secondary rounded-lg px-4 py-2 text-sm"
+          data-testid="discover-models"
+          type="button"
+          :disabled="discovering"
+          @click="discover"
+        >
+          <span class="flex items-center gap-2">
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            {{ discovering ? '发现中…' : '发现候选模型' }}
+          </span>
+        </button>
       </header>
 
-      <section
-        v-if="candidates.length"
-        class="mt-5 rounded-xl border border-slate-800 bg-slate-900 p-5"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 class="font-medium">
-              候选模型
-            </h2><p class="mt-1 text-sm text-slate-400">
-              从首个可用 NVIDIA Key 获取，勾选后保存白名单。
-            </p>
-          </div><button
-            class="rounded-lg bg-indigo-500 px-3 py-2 text-sm disabled:opacity-50"
-            data-testid="save-candidates"
-            type="button"
-            :disabled="saving"
-            @click="saveCandidates"
-          >
-            保存选择
-          </button>
-        </div>
-        <div class="mt-4 grid gap-2 sm:grid-cols-2">
-          <label
-            v-for="candidate in candidates"
-            :key="candidate.upstream_id"
-            class="flex items-start gap-3 rounded-lg border border-slate-800 p-3 text-sm"
-          ><input
-            v-model="selectedCandidates[candidate.upstream_id]"
-            class="mt-1"
-            :data-testid="`candidate-${candidate.upstream_id}`"
-            type="checkbox"
-          ><span><span class="font-medium">{{ candidate.display_name }}</span><span class="ml-2 font-mono text-xs text-indigo-300">{{ candidate.kind }}</span><span class="mt-1 block font-mono text-xs text-slate-500">{{ candidate.upstream_id }}</span></span></label>
-        </div>
-      </section>
-      <p
-        v-if="candidateMessage"
-        class="mt-3 text-sm text-emerald-300"
-      >
-        {{ candidateMessage }}
-      </p>
-      <p
-        v-if="errorMessage"
-        class="mt-3 text-sm text-rose-300"
-        role="alert"
-      >
-        {{ errorMessage }}
-      </p>
+      <!-- Candidates section -->
+      <Transition name="slide">
+        <section
+          v-if="candidates.length"
+          class="card p-5 mb-5 animate-slide-up"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-medium text-[var(--color-text)]">
+                候选模型
+              </h2>
+              <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+                从首个可用 NVIDIA Key 获取，勾选后保存白名单。
+              </p>
+            </div>
+            <button
+              class="btn-primary rounded-lg px-4 py-2 text-sm"
+              data-testid="save-candidates"
+              type="button"
+              :disabled="saving"
+              @click="saveCandidates"
+            >
+              {{ saving ? '保存中…' : '保存选择' }}
+            </button>
+          </div>
+          <div class="mt-4 grid gap-2 sm:grid-cols-2">
+            <label
+              v-for="candidate in candidates"
+              :key="candidate.upstream_id"
+              class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm hover:bg-[var(--color-border)]/30 transition-colors cursor-pointer"
+            >
+              <input
+                v-model="selectedCandidates[candidate.upstream_id]"
+                class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                :data-testid="`candidate-${candidate.upstream_id}`"
+                type="checkbox"
+              >
+              <span>
+                <span class="font-medium text-[var(--color-text)]">{{ candidate.display_name }}</span>
+                <span class="ml-2 badge-info">{{ candidate.kind }}</span>
+                <span class="mt-0.5 block font-mono text-xs text-[var(--color-text-muted)]">{{ candidate.upstream_id }}</span>
+              </span>
+            </label>
+          </div>
+        </section>
+      </Transition>
+
+      <!-- Messages -->
+      <Transition name="slide">
+        <p
+          v-if="candidateMessage"
+          class="mb-4 text-sm badge-success inline-flex px-3 py-1"
+        >
+          {{ candidateMessage }}
+        </p>
+      </Transition>
+      <Transition name="slide">
+        <p
+          v-if="errorMessage"
+          class="mb-4 text-sm text-[#F87171]"
+          role="alert"
+        >
+          {{ errorMessage }}
+        </p>
+      </Transition>
 
       <p
         data-testid="mobile-model-hint"
-        class="mt-4 text-xs text-slate-500 md:hidden"
+        class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
       >
-        候选模型批量选择等高级操作请在桌面端完成。
+        移动端可查看和切换模型状态；候选模型的批量选择等高级操作请在桌面端或上方完成。
       </p>
 
-      <section class="mt-5">
+      <!-- Model list -->
+      <div class="mt-4">
         <div
           v-if="loading"
-          class="rounded-xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-400"
+          class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
         >
-          加载中……
+          <svg
+            class="h-4 w-4 animate-spin"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+          加载中…
         </div>
         <template v-else>
           <ModelTable
@@ -260,14 +313,27 @@ function replaceModel(updated: Model): void {
             :busy-id="busyId"
             @toggle="toggleModel"
             @unblock="unblockModel"
-          /><ModelCards
+          />
+          <ModelCards
             :models="models"
             :busy-id="busyId"
             @toggle="toggleModel"
             @unblock="unblockModel"
           />
         </template>
-      </section>
-    </section>
-  </main>
+      </div>
+    </div>
+  </div>
 </template>
+
+<style scoped>
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.25s ease;
+}
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+</style>

@@ -117,6 +117,35 @@ func (s *Service) Test(ctx context.Context, id int64) (TestResult, error) {
 	return result, nil
 }
 
+// ProbeHealth is the HealthChecker callback. It probes id against the live
+// NVIDIA validator and reports a boolean recovery rather than mutating state
+// itself: the checker calls Service.MarkSuccess separately so the recovery
+// path stays identical to the request path. Probe failures never worsen a key
+// from a probe — only a "valid" result recovers; everything else leaves
+// cooldown untouched (a transient upstream hiccup must not poison a key the
+// request path would otherwise still serve).
+func (s *Service) ProbeHealth(ctx context.Context, id int64) ProbeResult {
+	var validation nvidia.ValidationResult
+	if err := s.WithSecret(ctx, id, func(secret []byte) error {
+		validation = s.validator.ValidateCredential(ctx, string(secret), s.clock.Now())
+		return nil
+	}); err != nil {
+		return ProbeResult{Category: "skipped", Reason: err.Error()}
+	}
+	switch validation.State {
+	case nvidia.ValidationValid:
+		return ProbeResult{Recovered: true, Category: "valid"}
+	case nvidia.ValidationInvalidCredential:
+		return ProbeResult{Category: "invalid"}
+	case nvidia.ValidationTemporarilyUnavailable:
+		return ProbeResult{Category: "temporarily_unavailable"}
+	case nvidia.ValidationProxyUnavailable:
+		return ProbeResult{Category: "temporarily_unavailable", Reason: "proxy_temporarily_unavailable"}
+	default:
+		return ProbeResult{Category: "indeterminate"}
+	}
+}
+
 func (s *Service) MarkSuccess(ctx context.Context, keyID int64) (keystate.KeySnapshot, error) {
 	snapshot, err := s.repository.markSuccess(ctx, keyID, s.clock.Now())
 	if err != nil {
@@ -151,12 +180,6 @@ func (s *Service) Import(ctx context.Context, token string) (ImportResult, error
 		return ImportResult{Status: ImportStatusDuplicate, Reason: "duplicate", Masked: masked}, nil
 	}
 
-	validation := s.validator.ValidateCredential(ctx, token, s.clock.Now())
-	if validation.State != nvidia.ValidationValid {
-		status, reason := validationStatus(validation.State)
-		return ImportResult{Status: status, Reason: reason, Masked: masked}, nil
-	}
-
 	plaintext := []byte(token)
 	ciphertext, nonce, err := s.keys.Encrypt(plaintext, nvidiaKeyAAD)
 	crypto.Zero(plaintext)
@@ -173,7 +196,7 @@ func (s *Service) Import(ctx context.Context, token string) (ImportResult, error
 	if duplicate {
 		return ImportResult{Status: ImportStatusDuplicate, Reason: "duplicate", Masked: masked}, nil
 	}
-	return ImportResult{Status: ImportStatusImported, Reason: "valid", Masked: masked, Key: &key}, nil
+	return ImportResult{Status: ImportStatusImported, Reason: "accepted_format", Masked: masked, Key: &key}, nil
 }
 
 func (s *Service) ImportBatch(ctx context.Context, input string) []ImportResult {

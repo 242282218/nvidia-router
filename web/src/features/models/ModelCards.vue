@@ -14,6 +14,10 @@ function audioNeedsVerification(model: Model): boolean {
 function enablingIsBlocked(model: Model): boolean {
   return !model.enabled && audioNeedsVerification(model)
 }
+
+function capBadge(supported: boolean): string {
+  return supported ? 'badge-success' : 'badge-muted'
+}
 </script>
 
 <template>
@@ -24,58 +28,62 @@ function enablingIsBlocked(model: Model): boolean {
     <article
       v-for="model in models"
       :key="model.id"
-      class="rounded-xl border border-slate-800 bg-slate-900 p-4"
+      class="card-hover p-4 animate-slide-up"
     >
       <div class="flex items-start justify-between gap-3">
-        <div>
-          <h3 class="font-medium">
+        <div class="min-w-0">
+          <h3 class="text-sm font-medium text-[var(--color-text)]">
             {{ model.display_name }}
           </h3>
-          <p class="mt-1 font-mono text-xs text-slate-500">
+          <p class="mt-0.5 truncate font-mono text-xs text-[var(--color-text-muted)]">
             {{ model.public_id }}
           </p>
         </div>
-        <span class="font-mono text-xs text-indigo-300">{{ model.kind }}</span>
+        <span class="badge-info shrink-0">{{ model.kind }}</span>
       </div>
+
       <div class="mt-3 flex flex-wrap gap-2 text-xs">
-        <span :class="model.supports_vision ? 'text-emerald-300' : 'text-slate-500'">
-          Vision {{ model.supports_vision ? '✓' : '—' }}
-        </span>
-        <span :class="model.supports_tools ? 'text-emerald-300' : 'text-slate-500'">
-          Tools {{ model.supports_tools ? '✓' : '—' }}
-        </span>
-        <span :class="model.supports_reasoning ? 'text-emerald-300' : 'text-slate-500'">
-          Reasoning {{ model.supports_reasoning ? '✓' : '—' }}
-        </span>
+        <span :class="capBadge(model.supports_vision)">Vision {{ model.supports_vision ? '✓' : '—' }}</span>
+        <span :class="capBadge(model.supports_tools)">Tools {{ model.supports_tools ? '✓' : '—' }}</span>
+        <span :class="capBadge(model.supports_reasoning)">Reasoning {{ model.supports_reasoning ? '✓' : '—' }}</span>
       </div>
-      <p
-        class="mt-3 text-sm"
-        :class="model.enabled ? 'text-emerald-300' : 'text-slate-400'"
-      >
-        {{ model.enabled ? '启用' : '停用' }}
-      </p>
+
+      <div class="mt-3 flex items-center justify-between">
+        <span
+          v-if="model.enabled"
+          class="badge-success"
+        >启用</span>
+        <span
+          v-else
+          class="badge-muted"
+        >停用</span>
+      </div>
+
       <p
         v-if="model.capability_verified_at"
-        class="mt-1 text-xs text-slate-500"
+        class="mt-2 text-xs text-[var(--color-text-muted)]"
       >
-        能力已验证 <time :datetime="model.capability_verified_at">{{ model.capability_verified_at }}</time>
+        已验证
       </p>
       <p
         v-else-if="audioNeedsVerification(model)"
-        class="mt-1 text-xs text-amber-300"
+        class="mt-2 text-xs text-[var(--color-warning)]"
       >
         需要先完成真实音频能力测试
       </p>
+
       <div
         v-if="model.blocked_by_key_ids?.length"
-        class="mt-3 space-y-1 text-xs text-amber-300"
+        class="mt-3 space-y-1"
       >
-        <p>已 block：</p>
+        <p class="text-xs text-[#FBBF24]">
+          已 block：
+        </p>
         <button
           v-for="keyId in model.blocked_by_key_ids"
           :key="keyId"
           :data-testid="`model-unblock-${keyId}`"
-          class="block underline disabled:opacity-40"
+          class="block text-xs text-[#F87171] underline disabled:opacity-40"
           type="button"
           :disabled="busyId === model.id"
           @click="emit('unblock', keyId, model)"
@@ -83,9 +91,10 @@ function enablingIsBlocked(model: Model): boolean {
           Key #{{ keyId }} · 手测恢复
         </button>
       </div>
+
       <button
         data-testid="model-card-toggle"
-        class="mt-4 w-full rounded border border-slate-700 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+        class="mt-4 btn-secondary w-full rounded-lg py-2 text-sm"
         type="button"
         :disabled="enablingIsBlocked(model) || busyId === model.id"
         @click="emit('toggle', model)"
@@ -95,7 +104,7 @@ function enablingIsBlocked(model: Model): boolean {
     </article>
     <p
       v-if="models.length === 0"
-      class="rounded-xl border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500"
+      class="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
     >
       暂无模型白名单。
     </p>

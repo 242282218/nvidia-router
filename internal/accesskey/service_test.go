@@ -121,6 +121,31 @@ func TestRecordUseUpdatesAsynchronouslyAtMostOncePerMinute(t *testing.T) {
 	waitLastUsed(t, db, created.Key.ID, source.Now())
 }
 
+func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
+	service, _ := newTestService(t, filepath.Join(t.TempDir(), "router.db"))
+	created, err := service.Create(context.Background(), "desktop")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	service.usageMu.Lock()
+	service.lastRecorded[created.Key.ID] = time.Now()
+	service.pending[created.Key.ID] = struct{}{}
+	service.usageMu.Unlock()
+
+	if err := service.Revoke(context.Background(), created.Key.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	service.usageMu.Lock()
+	defer service.usageMu.Unlock()
+	if _, ok := service.lastRecorded[created.Key.ID]; ok {
+		t.Fatal("Revoke left a lastRecorded entry")
+	}
+	if _, ok := service.pending[created.Key.ID]; ok {
+		t.Fatal("Revoke left a pending entry")
+	}
+}
+
 func newTestService(t *testing.T, path string) (*Service, *sql.DB) {
 	t.Helper()
 	return newTestServiceWithClock(t, path, newManualClock(time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)))

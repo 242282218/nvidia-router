@@ -28,11 +28,17 @@
 **/*_rsa
 **/*.pem
 **/*.key
+key/
+log_*.txt
 **/*.exe
 **/*.test
 **/node_modules
 web/dist
 internal/web/dist
+!internal/web/dist/
+!internal/web/dist/index.html
+!internal/web/dist/assets/
+!internal/web/dist/assets/*
 docs
 scripts
 tests

@@ -88,6 +88,54 @@ func TestBackupRemovesTemporaryFileWhenSourceIsClosed(t *testing.T) {
 	}
 }
 
+func TestBackupOverwritesExistingDestination(t *testing.T) {
+	// `db backup --output existing.db` must refresh a pre-existing file. On
+	// platforms where os.Rename refuses to replace an existing target the
+	// Backup fallback removes it first, so a second backup to the same path
+	// must still publish the newest contents (audit #47).
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "router.db")
+	db, err := Open(sourcePath)
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close source database: %v", err)
+		}
+	})
+
+	insertBackupFixtures(t, db)
+	backupPath := filepath.Join(root, "router-backup.db")
+	if err := Backup(context.Background(), db, backupPath); err != nil {
+		t.Fatalf("first Backup: %v", err)
+	}
+	if _, err := db.Exec("UPDATE admins SET username = 'renamed' WHERE id = 1"); err != nil {
+		t.Fatalf("mutate source after first backup: %v", err)
+	}
+	// Re-run with a target that already exists from the first backup.
+	if err := Backup(context.Background(), db, backupPath); err != nil {
+		t.Fatalf("second Backup over existing file: %v", err)
+	}
+
+	backupDB, err := Open(backupPath)
+	if err != nil {
+		t.Fatalf("Open overwritten backup: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backupDB.Close(); err != nil {
+			t.Errorf("close overwritten backup: %v", err)
+		}
+	})
+	var username string
+	if err := backupDB.QueryRow("SELECT username FROM admins WHERE id = 1").Scan(&username); err != nil {
+		t.Fatalf("read overwritten backup admin: %v", err)
+	}
+	if username != "renamed" {
+		t.Fatalf("overwritten backup username = %q, want latest source value", username)
+	}
+}
+
 func insertBackupFixtures(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`

@@ -2,17 +2,17 @@
 
 NVIDIA Build 专用的 OpenAI-compatible API 路由器，提供 NVIDIA API Key 加密存储、下游 Access Key、模型白名单、限流感知调度、管理页面和 SQLite 持久化。
 
-本项目面向第一轮 MVP 和个人使用。第一轮只支持单实例 Docker Compose 部署，不包含 HTTPS、反向代理、多实例、公开多租户或其他上游厂商。
+本项目面向第一轮 MVP 和个人使用。第一轮支持单实例 Docker Compose 部署，也支持在受信反向代理后使用 external origin 与 Secure Cookie；不包含应用内 TLS、多实例、公开多租户或其他上游厂商。
 
-## 第一轮 HTTP 风险
+## HTTP 与反向代理安全边界
 
-> **重要：第一轮默认通过普通 HTTP 提供服务，不是安全生产部署。禁止将本项目当前的 HTTP 方式描述为安全公网部署，也不要把它用于不可信网络。**
+> **重要：应用本身只提供 HTTP。直接将非回环监听暴露到不可信网络是不安全的；生产部署必须在受信反向代理后使用 HTTPS、`NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN`、`NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS` 和 `NVIDIA_ROUTER_ADMIN_SECURE_COOKIE=true`。**
 >
-> 普通 HTTP 会明文传输管理员密码、管理员 Cookie、下游 Access Key、提示词和响应内容。HTTPS、证书和反向代理属于后续迭代，不在当前第一轮范围内。
+> 普通 HTTP 会明文传输管理员密码、管理员 Cookie、下游 Access Key、提示词和响应内容。`X-Forwarded-Proto` 只有来自受信代理 CIDR 的请求才会被使用。
 
 ## 快速开始
 
-默认访问地址为 `http://SERVER_IP:3756`。首次管理员账号和密码均为 `admin`，即 `admin/admin`。首次登录后必须立即修改密码；修改前，代理 API 和敏感管理操作不可用。
+默认 Compose 只绑定宿主机回环地址 `http://127.0.0.1:3756`。管理员用户名固定为 `admin`，首次密码由 `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD` 注入，首次登录后必须立即修改；修改前，代理 API 和敏感管理操作不可用。
 
 ### 生成主密钥
 
@@ -26,11 +26,17 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 ### 使用 Docker Compose
 
-在仓库根目录创建 `.env`，至少设置主密钥：
+在仓库根目录创建 `.env`，设置主密钥和一次性初始管理员密码：
 
 ```dotenv
 NVIDIA_ROUTER_MASTER_KEY=替换为上面命令生成的值
+NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=替换为至少 12 个字符的随机密码
+# 星空代理池独立部署时填写其可达地址和同一个 PROXY_AUTH_KEY
+NVIDIA_ROUTER_XK_PROXY_URL=http://proxy-pool:8080
+NVIDIA_ROUTER_XK_PROXY_AUTH_KEY=替换为星空代理池的代理 Key
 ```
+
+不要把真实密码写入仓库或命令历史；已有管理员记录后，初始密码不会覆盖现有密码，但 Compose 仍要求该变量存在以完成配置校验。
 
 启动服务：
 
@@ -73,17 +79,20 @@ docker compose stop app
 | 变量 | 默认值或要求 | 说明 |
 | --- | --- | --- |
 | `NVIDIA_ROUTER_MASTER_KEY` | 必填 | 32 字节 Raw URL Base64 主密钥；错误或缺失会阻止服务正常启动 |
-| `NVIDIA_ROUTER_LISTEN_ADDR` | `0.0.0.0:3756` | 监听地址 |
+| `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD` | 必填 | 首次初始化密码，至少 12 个字符；已有管理员时不会覆盖密码 |
+| `NVIDIA_ROUTER_ADMIN_SECURE_COOKIE` | `false` | HTTPS 反向代理部署设为 `true` |
+| `NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN` | 空 | 反向代理公开的完整 `http(s)` origin，不含路径或 query |
+| `NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS` | 空 | 仅信任这些来源 IP 的 forwarded proto |
+| `NVIDIA_ROUTER_LISTEN_ADDR` | `0.0.0.0:3756` | 应用监听地址；Compose 默认只将宿主端口绑定到 `127.0.0.1` |
 | `NVIDIA_ROUTER_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `NVIDIA_ROUTER_TEMP_DIR` | `/tmp` | 请求临时资源目录 |
 | `NVIDIA_ROUTER_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | NVIDIA 上游 HTTPS 地址 |
-| `NVIDIA_ROUTER_XK_PROXY_API_URL` | 空 | 星空代理提取 URL；为空时直连，非空时所有 NVIDIA 请求强制走代理 |
-| `NVIDIA_ROUTER_XK_PROXY_TTL` | `3m` | 单个代理 IP 的物理租期，支持 `30s` 至 `30m` |
-| `NVIDIA_ROUTER_XK_PROXY_RENEW_BEFORE` | `15s` | 进入该窗口后不再接收新请求，必须小于 TTL |
+| `NVIDIA_ROUTER_XK_PROXY_URL` | 空 | 星空代理池标准 HTTP/HTTPS 正向代理地址；为空时直连，非空时所有 NVIDIA 请求强制走代理 |
+| `NVIDIA_ROUTER_XK_PROXY_AUTH_KEY` | 空 | 代理池的 `PROXY_AUTH_KEY`；配置代理地址时必填，首次启动可通过环境变量注入 |
 
-星空代理按需懒提取：没有 NVIDIA 上游流量时不会消耗 IP，同一租约会复用连接池。代理配置启用后不会静默回退直连；提取、CONNECT 或代理传输失败会返回临时不可用。API URL 同时包含供应商凭据，只能通过运行时环境变量注入，不得写入仓库、日志或管理 API。
+`nvida反代` 不再调用星空 XApi，也不提取或保存单个代理 IP。它只连接星空代理池的标准 HTTP 正向代理；代理池负责 XApi、出口轮换、测活和过期处理。代理配置启用后不会静默回退直连；代理池未就绪、认证失败或 CONNECT 失败会返回临时不可用。
 
-回滚代理功能：删除 `NVIDIA_ROUTER_XK_PROXY_API_URL` 后重启应用，服务恢复 NVIDIA 直连，不需要数据库回滚。
+代理池和本项目独立 Compose 部署时，应把两个容器接入同一个 Docker 网络，或使用代理池宿主机的可达地址；`NVIDIA_ROUTER_XK_PROXY_URL` 使用代理池的 `8080` 端点。代理用户名固定为 `proxy`，认证 Key 必须与代理池的 `PROXY_AUTH_KEY` 一致。管理员也可以在 Web 的“代理池”页面修改启用状态、地址和认证 Key；数据库配置优先于环境变量，认证 Key 以现有主密钥加密后保存，不会写入日志或 API 响应。
 
 ## CLI
 
@@ -170,7 +179,7 @@ go run ./cmd/nvidia-router db backup --output <path>
 
 该命令还需要已存在的 `/data/router.db` 和可写输出路径，正式备份请先停服并按 [docs/备份与恢复说明.md](docs/备份与恢复说明.md) 操作。
 
-本次文档任务中的验证结果为：`go run ./cmd/nvidia-router --help`、`go test ./...`、`pnpm --dir web run typecheck`、`pnpm --dir web run build` 和 `git diff --check` 成功；根目录 `pnpm build` 因没有 `package.json` 按预期失败；`go run ./cmd/nvidia-router serve` 因未提供主密钥按预期失败；`db help` 和 `admin --help` 因当前 CLI 未实现子命令帮助按预期失败；`docker compose config` 未执行，因为当前环境没有 `docker` 可执行文件。以上命令只验证帮助、编译、单元测试、前端类型检查、前端构建和文档差异，不能代表真实 NVIDIA 联调或 E2E 通过。真实联调需要运行中的路由器、完成首次改密、有效 NVIDIA Key、模型白名单和逐项 `status=PASS` 证据；详见 [docs/NVIDIA真实联调说明.md](docs/NVIDIA真实联调说明.md)。没有这些证据时，不得宣称 live 或 E2E 已通过。
+本轮验证结果为：`go test ./...`、`go vet ./...`、`pnpm --dir web run lint`、`pnpm --dir web run test`（103 个测试）、`pnpm --dir web run typecheck`、`pnpm --dir web run build` 和 `git diff --check` 成功；`go test -race ./...` 因当前环境缺少 CGO 编译器未执行成功；`docker compose config` 未执行，因为当前环境没有 `docker` 可执行文件。以上命令不能代表真实 NVIDIA 联调或 E2E 通过。真实联调需要运行中的路由器、完成首次改密、有效 NVIDIA Key、模型白名单和逐项 `status=PASS` 证据；详见 [docs/NVIDIA真实联调说明.md](docs/NVIDIA真实联调说明.md)。没有这些证据时，不得宣称 live 或 E2E 已通过。
 
 ## 相关文档
 

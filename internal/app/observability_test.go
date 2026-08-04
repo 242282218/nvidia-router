@@ -47,6 +47,11 @@ func TestAppRecordsRequestMetadataAndFourDimensions(t *testing.T) {
 	if requestID == "" {
 		t.Fatal("response request ID is empty")
 	}
+	// The request recorder buffers and flushes asynchronously; force a flush so
+	// the in-memory queue lands in SQLite before the test queries it.
+	if err := application.FlushObservability(context.Background()); err != nil {
+		t.Fatalf("FlushObservability: %v", err)
+	}
 
 	var stored struct {
 		requestID         string
@@ -124,6 +129,9 @@ func TestAppRecordsStreamingFirstByteAndFullConnectionDuration(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
+	if err := application.FlushObservability(context.Background()); err != nil {
+		t.Fatalf("FlushObservability: %v", err)
+	}
 	var firstByteMS sql.NullInt64
 	var durationMS int64
 	if err := application.db.QueryRow("SELECT first_byte_ms, duration_ms FROM request_logs").Scan(&firstByteMS, &durationMS); err != nil {
@@ -137,7 +145,7 @@ func TestAppRecordsStreamingFirstByteAndFullConnectionDuration(t *testing.T) {
 	}
 }
 
-func TestAppStartupCatchesUpMissedCleanupAndCloseWaitsForWorker(t *testing.T) {
+func TestAppStartupSkipsCleanupAndCloseWaitsForWorker(t *testing.T) {
 	db := openAppDatabase(t)
 	now := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
 	for _, item := range []struct {
@@ -162,35 +170,29 @@ func TestAppStartupCatchesUpMissedCleanupAndCloseWaitsForWorker(t *testing.T) {
 	}
 
 	application, err := New(context.Background(), Dependencies{
-		Config: config.Config{DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), TempDir: t.TempDir(), MasterKey: [32]byte{1}},
 		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: fixedAppClock{now: now},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE request_id = 'expired'").Scan(&count); err != nil {
-			t.Fatalf("query expired: %v", err)
-		}
-		if count == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("missed cleanup was not caught up within one minute of fake time")
-		}
-		time.Sleep(time.Millisecond)
+
+	// The cleanup worker must not sweep on startup: a retention-window DELETE on
+	// the single shared connection would stall live traffic. Expired rows stay
+	// until the first scheduled UTC 03:00 pass.
+	time.Sleep(100 * time.Millisecond)
+	var expired, boundary, stats int
+	if err := db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE request_id = 'expired'").Scan(&expired); err != nil {
+		t.Fatalf("query expired: %v", err)
 	}
-	var boundary, stats int
 	if err := db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE request_id = 'boundary'").Scan(&boundary); err != nil {
 		t.Fatalf("query boundary: %v", err)
 	}
 	if err := db.QueryRow("SELECT COUNT(*) FROM daily_stats").Scan(&stats); err != nil {
 		t.Fatalf("query daily stats: %v", err)
 	}
-	if boundary != 1 || stats != 1 {
-		t.Fatalf("boundary/stats = %d/%d, want 1/1", boundary, stats)
+	if expired != 1 || boundary != 1 || stats != 1 {
+		t.Fatalf("expired/boundary/stats = %d/%d/%d, want 1/1/1 before first scheduled cleanup", expired, boundary, stats)
 	}
 
 	done := application.cleanupDone

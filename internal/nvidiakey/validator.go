@@ -46,9 +46,31 @@ func validationStatus(state nvidia.ValidationState) (ImportStatus, string) {
 
 func maskToken(token string) (string, string, string) {
 	characters := []rune(token)
-	prefixLength := min(8, len(characters)/2)
-	suffixLength := min(4, len(characters)-prefixLength-1)
+	// Two-phase reveal budget: never expose more than a quarter of the token,
+	// and never show a suffix unless the prefix already leaves room for one.
+	// The earlier 8+4 default leaked 60% of a minimum-length (20-char) token;
+	// this caps short tokens to prefix-only so brute-forcing the tail stays
+	// infeasible while long tokens still show the `nvapi-` prefix and a tail.
+	totalRevealBudget := max(2, len(characters)/4)
+	prefixLength := min(8, totalRevealBudget)
+	if prefixLength > len(characters) {
+		prefixLength = len(characters)
+	}
 	prefix := string(characters[:prefixLength])
-	suffix := string(characters[len(characters)-suffixLength:])
-	return prefix + "..." + suffix, prefix, suffix
+
+	suffixLength := 0
+	if len(characters)-prefixLength > 4 {
+		// Only show a tail when there is room inside the budget.
+		suffixLength = min(4, totalRevealBudget-prefixLength)
+	}
+	suffix := ""
+	if suffixLength > 0 {
+		suffix = string(characters[len(characters)-suffixLength:])
+	}
+
+	masked := prefix + "..."
+	if suffixLength > 0 {
+		masked = prefix + "..." + suffix
+	}
+	return masked, prefix, suffix
 }

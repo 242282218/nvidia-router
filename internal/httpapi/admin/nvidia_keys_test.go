@@ -80,7 +80,7 @@ func (s *fakeStateSync) SetModelBlock(k, m int64, b bool) {
 func TestNVIDIAKeyAPIUsesAllowlistedDTOAndSynchronizesState(t *testing.T) {
 	secret := "nvapi-secret-should-never-appear"
 	now := time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)
-	service := &fakeNVIDIAKeys{keys: []nvidiakey.Key{{ID: 7, DisplayPrefix: "nvapi-", DisplaySuffix: "tail", Enabled: true, CreatedAt: now, UpdatedAt: now}}, importResult: nvidiakey.ImportResult{Status: nvidiakey.ImportStatusImported, Masked: "nvapi-…tail", Key: &nvidiakey.Key{ID: 8, Enabled: true}}}
+	service := &fakeNVIDIAKeys{keys: []nvidiakey.Key{{ID: 7, DisplayPrefix: "nvapi-", DisplaySuffix: "tail", Enabled: true, CreatedAt: now, UpdatedAt: now}}, importResult: nvidiakey.ImportResult{Status: nvidiakey.ImportStatusImported, Masked: "nvapi-鈥ail", Key: &nvidiakey.Key{ID: 8, Enabled: true}}}
 	syncer := &fakeStateSync{}
 	handler := NewNVIDIAKeys(service, syncer)
 
@@ -122,7 +122,7 @@ func TestNVIDIAKeyAPIUsesAllowlistedDTOAndSynchronizesState(t *testing.T) {
 }
 
 func TestNVIDIAKeyBatchAndTestAllAreSequential(t *testing.T) {
-	service := &fakeNVIDIAKeys{keys: []nvidiakey.Key{{ID: 1}, {ID: 2}, {ID: 3}}, batch: []nvidiakey.ImportResult{{Line: 1, Status: nvidiakey.ImportStatusImported, Masked: "a…z", Key: &nvidiakey.Key{ID: 4, Enabled: true}}, {Line: 2, Status: nvidiakey.ImportStatusInvalid, Reason: "invalid_format", Masked: "invalid"}}, tests: []nvidiakey.TestResult{{ID: 1, Status: "valid"}, {ID: 2, Status: "temporarily_unavailable"}, {ID: 3, Status: "invalid"}}}
+	service := &fakeNVIDIAKeys{keys: []nvidiakey.Key{{ID: 1}, {ID: 2}, {ID: 3}}, batch: []nvidiakey.ImportResult{{Line: 1, Status: nvidiakey.ImportStatusImported, Masked: "a鈥", Key: &nvidiakey.Key{ID: 4, Enabled: true}}, {Line: 2, Status: nvidiakey.ImportStatusInvalid, Reason: "invalid_format", Masked: "invalid"}}, tests: []nvidiakey.TestResult{{ID: 1, Status: "valid"}, {ID: 2, Status: "temporarily_unavailable"}, {ID: 3, Status: "invalid"}}}
 	syncer := &fakeStateSync{}
 	handler := NewNVIDIAKeys(service, syncer)
 	response := performAdminRequest(handler, http.MethodPost, "/admin/api/nvidia-keys/batch", `{"keys":"one\ntwo"}`)

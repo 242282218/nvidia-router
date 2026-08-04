@@ -56,6 +56,46 @@ func NewReplayableBodyFromReader(reader io.Reader, size int64, tempDir string) (
 	return newFileReplayBodyFromReader(reader, size, tempDir)
 }
 
+// CaptureStreamedReplay writes an unknown-size body to a temp file as it is
+// produced and returns a ReplayableBody backed by that file. Unlike
+// NewReplayableBodyFromReader it does not require the final size in advance, so
+// the caller can stream a freshly assembled multipart body (whose length only
+// becomes known after the writer closes) without buffering the whole thing in
+// memory. The caller-provided produce callback receives an io.Writer and must
+// report how many bytes it wrote plus an optional aux value (e.g. the multipart
+// boundary it used). Exceeding maxReplayBytes is rejected with the same sentinel
+// so HTTP layers map it to 413. An empty tempDir falls back to the OS default.
+func CaptureStreamedReplay[T any](tempDir string, produce func(writer io.Writer) (written int64, aux T, err error)) (ReplayableBody, T, error) {
+	var zero T
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	file, err := os.CreateTemp(tempDir, "nvreplay-*.bin")
+	if err != nil {
+		return nil, zero, fmt.Errorf("create replay temp file: %w", err)
+	}
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("set replay temp file permissions: %w", err)
+	}
+	written, aux, err := produce(file)
+	if err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("write replay stream: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("close replay temp file: %w", err)
+	}
+	if written < 0 || written > maxReplayBytes {
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("capture replayable body: %w", errBodyTooLarge)
+	}
+	return &fileReplayBody{path: file.Name(), size: written}, aux, nil
+}
+
 // BodyTooLarge reports whether err is the sentinel returned for payloads that
 // exceed the replay limit, so HTTP layers can map it to 413.
 func BodyTooLarge(err error) bool {

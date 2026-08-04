@@ -71,6 +71,13 @@ vi.mock('../features/statistics/api', () => ({
   },
 }))
 
+vi.mock('../features/proxy/api', () => ({
+  proxyPoolApi: {
+    get: vi.fn().mockResolvedValue({ data: { enabled: false, proxy_url: '', auth_configured: false, source: 'none' } }),
+    update: vi.fn(),
+  },
+}))
+
 function createSession(state: SessionState): SessionStore {
   return {
     changePassword: vi.fn(),
@@ -108,10 +115,12 @@ describe('authentication router guard', () => {
 
   it('routes a normal session into AppShell', async () => {
     const { router } = await navigate({ kind: 'authenticated', mustChangePassword: false })
-    const matchedComponent = router.currentRoute.value.matched.at(-1)?.components?.default
+    const matchedRoute = router.currentRoute.value.matched[0]
+    const matchedComponent = matchedRoute?.components?.default
 
     expect(router.currentRoute.value.path).toBe('/')
     expect((matchedComponent as { name?: string }).name).toBe('AppShell')
+    expect(matchedRoute?.children.some((child) => child.path === '')).toBe(true)
   })
 
   it('redirects an authenticated management page after any API returns 401 and cleans up on unmount', async () => {
@@ -134,7 +143,17 @@ describe('authentication router guard', () => {
     try {
       await router.push('/models')
       await router.isReady()
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              error: { code: 'invalid_session', message: 'expired', param: null, type: 'authentication_error' },
+            }),
+            { headers: { 'Content-Type': 'application/json' }, status: 401 },
+          ),
+        ),
+      )
 
       await expect(apiRequest('/admin/api/models')).rejects.toMatchObject({ status: 401 })
       await flushPromises()
@@ -181,7 +200,8 @@ describe('application router integration', () => {
     ['nav-models', '/models', '模型白名单'],
     ['nav-access-keys', '/access-keys', 'Access Key'],
     ['nav-runtime', '/runtime', '运行状态'],
-    ['nav-statistics', '/statistics', '基础统计'],
+    ['nav-statistics', '/statistics', '监控'],
+    ['nav-proxy-pool', '/proxy-pool', '代理池'],
   ])('navigates from AppShell through %s', async (testId, expectedPath, expectedHeading) => {
     const session = createSession({ kind: 'authenticated', mustChangePassword: false })
     const router = createAppRouter(session, createMemoryHistory('/admin/'))
@@ -203,6 +223,13 @@ describe('application router integration', () => {
 })
 
 describe('management routes', () => {
+  it('declares route metadata and resolves unknown management routes to 404', async () => {
+    const { router } = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/unknown-page')
+
+    expect(router.currentRoute.value.matched.at(-1)?.meta.title).toBe('页面不存在')
+    expect(router.currentRoute.value.matched.at(-1)?.components?.default).toBeDefined()
+  })
+
   it('keeps task 36 routes and registers task 37 routes', () => {
     const router = createAppRouter(
       createSession({ kind: 'authenticated', mustChangePassword: false }),
@@ -215,5 +242,6 @@ describe('management routes', () => {
     expect(paths).toContain('/access-keys')
     expect(paths).toContain('/runtime')
     expect(paths).toContain('/statistics')
+    expect(paths).toContain('/proxy-pool')
   })
 })

@@ -113,6 +113,56 @@ func TestClassifierIgnoresMessageAndUnsafeSummaryValues(t *testing.T) {
 	}
 }
 
+func TestClassifierForwardsUpstreamMessageForRequestFaults(t *testing.T) {
+	// A 4xx describing the client's own request should surface the upstream's
+	// message so the caller sees the real reason (e.g. context length).
+	for _, status := range []int{400, 404, 409, 422, 451} {
+		body := `{"error":{"code":"bad_request","message":"This model's maximum context length is 128000 tokens."}}`
+		got := Classify(responseForClassifier(status, body, ""), nil, false, time.Time{})
+		if got.Scope != ScopeRequest {
+			t.Fatalf("status %d scope = %v, want ScopeRequest", status, got.Scope)
+		}
+		if got.PublicMessage != "This model's maximum context length is 128000 tokens." {
+			t.Fatalf("status %d PublicMessage = %q, want upstream message", status, got.PublicMessage)
+		}
+	}
+}
+
+func TestClassifierDoesNotForwardMessageForNonRequestFaults(t *testing.T) {
+	// Credential, rate-limit and server faults must keep generic messages: the
+	// body may carry internal or credential-adjacent detail.
+	secret := "nvapi-secret"
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "credential code on 400", status: 400, body: `{"error":{"code":"invalid_api_key","message":"` + secret + `"}}`},
+		{name: "unauthorized", status: 401, body: `{"error":{"message":"` + secret + `"}}`},
+		{name: "model forbidden", status: 403, body: `{"error":{"code":"model_not_found","message":"` + secret + `"}}`},
+		{name: "rate limited", status: 429, body: `{"error":{"message":"` + secret + `"}}`},
+		{name: "server 500", status: 500, body: `{"error":{"message":"` + secret + `"}}`},
+		{name: "server 503", status: 503, body: `{"error":{"message":"` + secret + `"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(responseForClassifier(tt.status, tt.body, ""), nil, false, time.Time{})
+			if strings.Contains(got.PublicMessage, secret) {
+				t.Fatalf("status %d leaked secret in PublicMessage %q", tt.status, got.PublicMessage)
+			}
+		})
+	}
+}
+
+func TestClassifierCapsForwardedMessage(t *testing.T) {
+	long := strings.Repeat("x", maximumPublicMessageBytes*2)
+	body := `{"error":{"message":"` + long + `"}}`
+	got := Classify(responseForClassifier(400, body, ""), nil, false, time.Time{})
+	if len(got.PublicMessage) > maximumPublicMessageBytes {
+		t.Fatalf("forwarded message len = %d, want <= %d", len(got.PublicMessage), maximumPublicMessageBytes)
+	}
+}
+
 func responseForClassifier(status int, body, retryAfter string) *http.Response {
 	header := make(http.Header)
 	if retryAfter != "" {

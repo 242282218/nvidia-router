@@ -13,10 +13,15 @@ type modelRecord struct {
 	ID string `json:"id"`
 }
 
+const maxModelsResponseBytes = 4 << 20
+
 func parseModels(body io.Reader) ([]string, error) {
-	payload, err := io.ReadAll(body)
+	payload, err := io.ReadAll(io.LimitReader(body, maxModelsResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read models response: %w", err)
+	}
+	if len(payload) > maxModelsResponseBytes {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrProtocol, maxModelsResponseBytes)
 	}
 	payload = bytes.TrimSpace(payload)
 	if len(payload) == 0 {
