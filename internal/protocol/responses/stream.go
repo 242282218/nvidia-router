@@ -253,22 +253,24 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 		}
 	}
 	terminal := "response.completed"
+	status := "completed"
 	if failed {
 		terminal = "response.failed"
+		status = "failed"
+	}
+	response := s.responseObject(responseID, model, status)
+	// SDKs read the assembled result from response.output on the terminal event
+	// rather than replaying every delta, so an absent output reads as an empty
+	// response even when the deltas carried content.
+	response["output"] = s.outputItems()
+	if !failed {
+		if usage := convertUsage(s.usage); usage != nil {
+			response["usage"] = usage
+		}
 	}
 	data := map[string]any{
 		"sequence_number": s.nextSequence(),
-		"id":              responseID,
-		"object":          "response",
-		"status":          "completed",
-	}
-	if model != "" {
-		data["model"] = model
-	}
-	if failed {
-		data["status"] = "failed"
-	} else if usage := convertUsage(s.usage); usage != nil {
-		data["usage"] = usage
+		"response":        response,
 	}
 	if err := emit.Emit(EmittedEvent{Event: terminal, Data: data}); err != nil {
 		return fmt.Errorf("emit %s: %w", terminal, err)

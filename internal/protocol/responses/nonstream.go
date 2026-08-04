@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"nvidia-router/internal/modelcatalog"
 )
@@ -18,7 +19,8 @@ func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]
 	}
 	var chat struct {
 		Choices []struct {
-			Message chatChoiceMessage `json:"message"`
+			Message      chatChoiceMessage `json:"message"`
+			FinishReason string            `json:"finish_reason"`
 		} `json:"choices"`
 		Usage *chatUsage `json:"usage,omitempty"`
 	}
@@ -36,11 +38,21 @@ func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]
 
 	usage := convertUsage(chat.Usage)
 	response := map[string]any{
-		"id":     responsesID,
-		"object": "response",
-		"status": "completed",
-		"model":  model.PublicID,
-		"output": output,
+		"id":         responsesID,
+		"object":     "response",
+		"status":     statusForFinishReason(chat.Choices[0].FinishReason),
+		"created_at": time.Now().Unix(),
+		"model":      model.PublicID,
+		"output":     output,
+		// output_text is the flattened convenience accessor the SDKs expose as
+		// response.output_text. Without it, callers that read it instead of
+		// walking output see an empty result.
+		"output_text": outputText(output),
+	}
+	// incomplete_details is only meaningful for an incomplete response; the spec
+	// leaves it absent otherwise.
+	if reason, ok := incompleteReason(chat.Choices[0].FinishReason); ok {
+		response["incomplete_details"] = map[string]any{"reason": reason}
 	}
 	if usage != nil {
 		usageBytes, err := json.Marshal(usage)
@@ -162,4 +174,53 @@ func convertUsage(usage *chatUsage) map[string]any {
 		return nil
 	}
 	return result
+}
+
+// statusForFinishReason maps the Chat finish_reason onto a Responses status.
+// Reporting completed unconditionally hid truncation: a response cut off by the
+// token limit looked identical to one that finished normally.
+func statusForFinishReason(reason string) string {
+	switch reason {
+	case "length", "content_filter":
+		return "incomplete"
+	default:
+		return "completed"
+	}
+}
+
+// incompleteReason returns the Responses incomplete_details reason for a Chat
+// finish_reason, and false when the response is not incomplete.
+func incompleteReason(reason string) (string, bool) {
+	switch reason {
+	case "length":
+		return "max_output_tokens", true
+	case "content_filter":
+		return "content_filter", true
+	default:
+		return "", false
+	}
+}
+
+// outputText flattens the assistant text across output items, mirroring the
+// SDK-level response.output_text accessor.
+func outputText(output []map[string]any) string {
+	var builder strings.Builder
+	for _, item := range output {
+		if item["type"] != "message" {
+			continue
+		}
+		parts, ok := item["content"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if part["type"] != "output_text" {
+				continue
+			}
+			if text, ok := part["text"].(string); ok {
+				builder.WriteString(text)
+			}
+		}
+	}
+	return builder.String()
 }

@@ -54,7 +54,8 @@ func eventNames(events []EmittedEvent) []string {
 
 func assertMonoSeq(t *testing.T, events []EmittedEvent) {
 	t.Helper()
-	last := 0
+	// Sequence numbers are 0-based, so the first event must be allowed to be 0.
+	last := -1
 	for _, e := range events {
 		seq, ok := e.Data["sequence_number"].(int)
 		if !ok {
@@ -236,9 +237,13 @@ func TestStreamCompletedEventIncludesUsage(t *testing.T) {
 		if event.Event != "response.completed" {
 			continue
 		}
-		usage, ok := event.Data["usage"].(map[string]any)
+		response, ok := event.Data["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("completed event missing nested response: %#v", event.Data)
+		}
+		usage, ok := response["usage"].(map[string]any)
 		if !ok || usage["input_tokens"] != 12 || usage["output_tokens"] != 7 || usage["total_tokens"] != 19 {
-			t.Fatalf("completed usage = %#v, want input=12 output=7 total=19", event.Data["usage"])
+			t.Fatalf("completed usage = %#v, want input=12 output=7 total=19", response["usage"])
 		}
 		return
 	}

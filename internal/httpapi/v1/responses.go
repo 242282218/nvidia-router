@@ -224,7 +224,7 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 			return fmt.Errorf("encode done: %w", err)
 		}
 	} else {
-		payload, err := json.Marshal(event.Data)
+		payload, err := json.Marshal(event.Payload())
 		if err != nil {
 			return fmt.Errorf("marshal responses event: %w", err)
 		}
