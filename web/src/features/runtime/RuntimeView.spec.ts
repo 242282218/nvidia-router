@@ -22,6 +22,8 @@ const settings = {
   shutdown_grace_ms: 60_000,
   failover_status_codes: '429,500,502,503,504',
   request_log_retention_days: 30,
+  max_attempts_per_request: 5,
+  retry_budget_ms: 120_000,
 }
 
 beforeEach(() => {

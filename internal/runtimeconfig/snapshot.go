@@ -23,6 +23,14 @@ type Snapshot struct {
 	// RequestLogRetentionDays drives observability.CleanupWorker instead of the
 	// previously hardcoded 30-day constant (audit B5).
 	RequestLogRetentionDays int
+	// MaxAttemptsPerRequest caps how many keys one request may try. Previously
+	// the ceiling was the whole key pool, so a single request against a large
+	// pool could amplify into hundreds of upstream calls.
+	MaxAttemptsPerRequest int
+	// RetryBudgetMS bounds the pre-commit retry phase. It deliberately does not
+	// bound a committed stream: once the first byte reaches the client the
+	// response is no longer retryable and a long generation is legitimate.
+	RetryBudgetMS int
 	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
 	FirstByteDeadline time.Time
 }
@@ -71,6 +79,8 @@ func Validate(snapshot Snapshot) error {
 		{"nonstream_total_timeout_ms", snapshot.NonstreamTotalTimeoutMS, 1000, 1800000},
 		{"shutdown_grace_ms", snapshot.ShutdownGraceMS, 1000, 600000},
 		{"request_log_retention_days", snapshot.RequestLogRetentionDays, 30, 365},
+		{"max_attempts_per_request", snapshot.MaxAttemptsPerRequest, 1, 50},
+		{"retry_budget_ms", snapshot.RetryBudgetMS, 1000, 600000},
 	}
 	for _, check := range checks {
 		if check.value < check.min || check.value > check.max {

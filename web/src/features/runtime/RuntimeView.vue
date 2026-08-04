@@ -114,6 +114,8 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
     'shutdown_grace_ms',
     'failover_status_codes',
     'request_log_retention_days',
+    'max_attempts_per_request',
+    'retry_budget_ms',
   ].includes(value)
 }
 

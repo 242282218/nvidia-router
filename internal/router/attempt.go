@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -152,6 +153,21 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		if !shouldRetry(currentFault, failover) || commit.Committed() || a.budgetExpired(requestCtx) {
 			return AttemptResult{}, *currentFault
 		}
+		// Attempt cap and retry window are checked here rather than through the
+		// request context: a stream's context must stay open for the body, so
+		// bounding the loop via ctx would truncate committed streams.
+		if len(attempted) >= budget.maxAttempts {
+			return AttemptResult{}, *currentFault
+		}
+		if !budget.retryDeadline.IsZero() && !a.clock.Now().Before(budget.retryDeadline) {
+			return AttemptResult{}, *currentFault
+		}
+		// Back off before the next key. Retrying immediately turned a struggling
+		// upstream into a burst of N requests as fast as the pool could hand out
+		// leases; the jitter keeps concurrent requests from re-synchronising.
+		if err := a.backoff(requestCtx, len(attempted), budget); err != nil {
+			return AttemptResult{}, *currentFault
+		}
 	}
 }
 
@@ -276,6 +292,47 @@ func (a *Attempt) executeLease(
 
 func (a *Attempt) budgetExpired(ctx context.Context) bool {
 	return ctx.Err() != nil
+}
+
+const (
+	retryBackoffBase = 100 * time.Millisecond
+	retryBackoffMax  = 2 * time.Second
+)
+
+// backoff waits before the next key attempt. The delay doubles per attempt and
+// carries the same 0.8-1.2 jitter factor fault.CalculateCooldown uses, so
+// concurrent requests failing on the same upstream do not re-synchronise into
+// bursts. It never sleeps past the retry deadline, and returns the context
+// error if the client disconnects while waiting.
+func (a *Attempt) backoff(ctx context.Context, attempts int, budget Budget) error {
+	// The first retry is immediate. One bad key is the common case, and moving to
+	// a different key is not the same as hammering one endpoint, so paying a
+	// delay there would slow down every ordinary failover. Escalate only once
+	// failures repeat, which is the signal that the upstream itself is unwell.
+	if attempts <= 1 {
+		return nil
+	}
+	delay := retryBackoffBase << (attempts - 2)
+	if delay > retryBackoffMax || delay <= 0 {
+		delay = retryBackoffMax
+	}
+	delay = time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+	if !budget.retryDeadline.IsZero() {
+		if remaining := budget.retryDeadline.Sub(a.clock.Now()); remaining < delay {
+			delay = remaining
+		}
+	}
+	if delay <= 0 {
+		return nil
+	}
+	timer := a.clock.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func chooseAcquireError(err error, lastFault *fault.Fault) error {

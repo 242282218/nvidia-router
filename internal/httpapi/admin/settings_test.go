@@ -33,6 +33,7 @@ func TestSettingsGETReturnsCurrentRuntimeConfiguration(t *testing.T) {
 		QueueCapacity: 7, QueueWaitTimeoutMS: 2000, ConnectTimeoutMS: 3000,
 		FirstByteTimeoutMS: 4000, NonstreamTotalTimeoutMS: 5000, ShutdownGraceMS: 6000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}}
 	response := serveSettingsRequest(t, NewSettings(store), http.MethodGet, "", "")
 	if response.Code != http.StatusOK {
@@ -54,6 +55,7 @@ func TestSettingsPATCHRejectsValuesOutsideDatabaseChecks(t *testing.T) {
 		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000, ShutdownGraceMS: 60000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}
 	// The "failover success code rejected" and "failover malformed range" cases
 	// lock in the audit B4 §197 risk mitigation: a 200 token in the spec would
@@ -100,6 +102,7 @@ func TestSettingsPATCHAcceptsDatabaseCheckBoundaries(t *testing.T) {
 		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000, ShutdownGraceMS: 60000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}}
 	body := `{
 		"queue_capacity":10000,
@@ -123,6 +126,7 @@ func TestSettingsPATCHStoresThenPublishesValidSnapshot(t *testing.T) {
 		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000, ShutdownGraceMS: 60000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}
 	store := &fakeRuntimeSettingsStore{snapshot: current}
 	response := serveSettingsRequest(t, NewSettings(store), http.MethodPatch, "", `{"queue_capacity":9,"first_byte_timeout_ms":12000}`)
@@ -142,6 +146,7 @@ func TestSettingsPATCHDoesNotPublishWhenStoreFails(t *testing.T) {
 		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000, ShutdownGraceMS: 60000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}
 	storeErr := errors.New("database unavailable")
 	store := &fakeRuntimeSettingsStore{snapshot: current, err: storeErr}
@@ -174,6 +179,7 @@ func TestSettingsPATCHStoresExpandedFailoverSpecAndRetentionDays(t *testing.T) {
 		QueueCapacity: 100, QueueWaitTimeoutMS: 60000, ConnectTimeoutMS: 10000,
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000, ShutdownGraceMS: 60000,
 		FailoverStatusCodes: "429,500,502,503,504", RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest: 5, RetryBudgetMS: 120000,
 	}
 	store := &fakeRuntimeSettingsStore{snapshot: current}
 	body := `{"failover_status_codes":"429,403,500-599","request_log_retention_days":60}`

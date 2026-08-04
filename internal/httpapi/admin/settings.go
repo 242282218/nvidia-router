@@ -27,6 +27,8 @@ type settingsDTO struct {
 	ShutdownGraceMS         int    `json:"shutdown_grace_ms"`
 	FailoverStatusCodes     string `json:"failover_status_codes"`
 	RequestLogRetentionDays int    `json:"request_log_retention_days"`
+	MaxAttemptsPerRequest   int    `json:"max_attempts_per_request"`
+	RetryBudgetMS           int    `json:"retry_window_ms"`
 }
 
 type settingsPatch struct {
@@ -42,6 +44,8 @@ type settingsPatch struct {
 	// runtime layer fall back to the documented default set.
 	FailoverStatusCodes     *string `json:"failover_status_codes"`
 	RequestLogRetentionDays *int    `json:"request_log_retention_days"`
+	MaxAttemptsPerRequest   *int    `json:"max_attempts_per_request"`
+	RetryBudgetMS           *int    `json:"retry_window_ms"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -110,6 +114,12 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.RequestLogRetentionDays != nil {
 		current.RequestLogRetentionDays = *patch.RequestLogRetentionDays
 	}
+	if patch.MaxAttemptsPerRequest != nil {
+		current.MaxAttemptsPerRequest = *patch.MaxAttemptsPerRequest
+	}
+	if patch.RetryBudgetMS != nil {
+		current.RetryBudgetMS = *patch.RetryBudgetMS
+	}
 	return current
 }
 
@@ -120,6 +130,8 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		NonstreamTotalTimeoutMS: snapshot.NonstreamTotalTimeoutMS, ShutdownGraceMS: snapshot.ShutdownGraceMS,
 		FailoverStatusCodes:     snapshot.FailoverStatusCodes,
 		RequestLogRetentionDays: snapshot.RequestLogRetentionDays,
+		MaxAttemptsPerRequest:   snapshot.MaxAttemptsPerRequest,
+		RetryBudgetMS:           snapshot.RetryBudgetMS,
 	}
 }
 

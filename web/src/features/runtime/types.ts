@@ -27,6 +27,8 @@ export interface RuntimeSettings {
   shutdown_grace_ms: number
   failover_status_codes: string
   request_log_retention_days: number
+  max_attempts_per_request: number
+  retry_budget_ms: number
 }
 
 export interface RuntimeSummaryResponse {

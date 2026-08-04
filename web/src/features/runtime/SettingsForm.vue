@@ -11,6 +11,8 @@ interface SettingsFields {
   nonstream_total_timeout_minutes: number | string
   shutdown_grace_seconds: number | string
   request_log_retention_days: number | string
+  max_attempts_per_request: number | string
+  retry_budget_ms: number | string
   failover_status_codes: string
 }
 
@@ -19,6 +21,7 @@ type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes'>
 
 interface SettingRule {
   field: keyof SettingsFields
+  hint?: string
   integerInput: boolean
   max: number
   min: number
@@ -46,6 +49,8 @@ const fields = reactive<SettingsFields>({
   nonstream_total_timeout_minutes: 5,
   shutdown_grace_seconds: 60,
   request_log_retention_days: 30,
+  max_attempts_per_request: 5,
+  retry_budget_ms: 120_000,
   failover_status_codes: '429,500,502,503,504',
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
@@ -63,6 +68,8 @@ const settingRules: SettingRule[] = [
   { field: 'nonstream_total_timeout_minutes', integerInput: false, min: 1_000, max: 1_800_000, multiplier: 60_000, param: 'nonstream_total_timeout_ms', testId: 'nonstream-timeout-minutes' },
   { field: 'shutdown_grace_seconds', integerInput: true, min: 1_000, max: 600_000, multiplier: 1_000, param: 'shutdown_grace_ms', testId: 'shutdown-grace-seconds' },
   { field: 'request_log_retention_days', integerInput: true, min: 30, max: 365, multiplier: 1, param: 'request_log_retention_days', testId: 'request-log-retention-days' },
+  { field: 'max_attempts_per_request', hint: '单个客户端请求最多尝试的 NVIDIA Key 数量，允许范围 1-50。', integerInput: true, min: 1, max: 50, multiplier: 1, param: 'max_attempts_per_request', testId: 'max-attempts-per-request' },
+  { field: 'retry_budget_ms', hint: '提交前重试阶段的时间上限，允许范围 1000-600000 毫秒；不限制已提交的流式响应。', integerInput: true, min: 1_000, max: 600_000, multiplier: 1, param: 'retry_budget_ms', testId: 'retry-budget-ms' },
 ]
 
 watch(() => props.settings, (settings) => {
@@ -75,6 +82,8 @@ watch(() => props.settings, (settings) => {
   fields.nonstream_total_timeout_minutes = settings.nonstream_total_timeout_ms / 60_000
   fields.shutdown_grace_seconds = settings.shutdown_grace_ms / 1000
   fields.request_log_retention_days = settings.request_log_retention_days
+  fields.max_attempts_per_request = settings.max_attempts_per_request
+  fields.retry_budget_ms = settings.retry_budget_ms
   fields.failover_status_codes = settings.failover_status_codes
 }, { immediate: true })
 
@@ -142,7 +151,9 @@ function fieldError(param: SettingParam): string {
           rule.param === 'first_byte_timeout_ms' ? '首字节超时（秒）' :
           rule.param === 'nonstream_total_timeout_ms' ? '非流式总超时（分钟）' :
           rule.param === 'shutdown_grace_ms' ? '关闭宽限期（秒）' :
-          '请求日志保留（天）'
+          rule.param === 'request_log_retention_days' ? '请求日志保留（天）' :
+          rule.param === 'max_attempts_per_request' ? '单请求最大尝试次数' :
+          '重试预算（毫秒）'
         }}</span>
         <input
           :value="fields[rule.field]"
@@ -155,6 +166,11 @@ function fieldError(param: SettingParam): string {
           :aria-invalid="Boolean(fieldError(rule.param))"
           @input="(e: Event) => { const t = e.target as HTMLInputElement; (fields[rule.field] as string | number) = t.value; }"
         >
+        <span
+          v-if="rule.hint"
+          :data-testid="`hint-${rule.param}`"
+          class="mt-1 block text-xs text-[var(--color-text-muted)]"
+        >{{ rule.hint }}</span>
         <Transition name="fade">
           <span
             v-if="fieldError(rule.param)"

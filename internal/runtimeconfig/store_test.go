@@ -186,5 +186,7 @@ func validSnapshotForValidation() Snapshot {
 		FirstByteTimeoutMS: 60000, NonstreamTotalTimeoutMS: 300000,
 		ShutdownGraceMS: 60000, FailoverStatusCodes: "429,500,502,503,504",
 		RequestLogRetentionDays: 30,
+		MaxAttemptsPerRequest:   5,
+		RetryBudgetMS:           120000,
 	}
 }

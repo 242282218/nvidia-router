@@ -13,6 +13,8 @@ const settings: RuntimeSettings = {
   shutdown_grace_ms: 60_000,
   failover_status_codes: '429,500,502,503,504',
   request_log_retention_days: 30,
+  max_attempts_per_request: 5,
+  retry_budget_ms: 120_000,
 }
 
 const inputTestIds = {
@@ -23,6 +25,8 @@ const inputTestIds = {
   nonstream_total_timeout_minutes: 'nonstream-timeout-minutes',
   shutdown_grace_seconds: 'shutdown-grace-seconds',
   request_log_retention_days: 'request-log-retention-days',
+  max_attempts_per_request: 'max-attempts-per-request',
+  retry_budget_ms: 'retry-budget-ms',
 } as const
 
 function mountForm() {
@@ -113,6 +117,8 @@ describe('SettingsForm', () => {
         first_byte_timeout_seconds: 1,
         nonstream_total_timeout_minutes: 1 / 60,
         shutdown_grace_seconds: 1,
+        max_attempts_per_request: 1,
+        retry_budget_ms: 1_000,
       },
       {
         queue_capacity: 1,
@@ -123,6 +129,8 @@ describe('SettingsForm', () => {
         shutdown_grace_ms: 1_000,
         failover_status_codes: '429,500,502,503,504',
         request_log_retention_days: 30,
+        max_attempts_per_request: 1,
+        retry_budget_ms: 1_000,
       },
     ],
     [
@@ -133,6 +141,8 @@ describe('SettingsForm', () => {
         first_byte_timeout_seconds: 600,
         nonstream_total_timeout_minutes: 30,
         shutdown_grace_seconds: 600,
+        max_attempts_per_request: 50,
+        retry_budget_ms: 600_000,
       },
       {
         queue_capacity: 10_000,
@@ -143,6 +153,8 @@ describe('SettingsForm', () => {
         shutdown_grace_ms: 600_000,
         failover_status_codes: '429,500,502,503,504',
         request_log_retention_days: 30,
+        max_attempts_per_request: 50,
+        retry_budget_ms: 600_000,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {
@@ -175,5 +187,44 @@ describe('SettingsForm', () => {
 
     expect(wrapper.emitted('save')).toBeUndefined()
     expect(wrapper.get('[data-testid="error-request_log_retention_days"]').text()).toContain('范围')
+  })
+
+  it('renders attempt cap and retry budget with their backend values', () => {
+    const wrapper = mountForm()
+
+    expect((wrapper.get('[data-testid="max-attempts-per-request"]').element as HTMLInputElement).value).toBe('5')
+    expect((wrapper.get('[data-testid="retry-budget-ms"]').element as HTMLInputElement).value).toBe('120000')
+    expect(wrapper.get('[data-testid="hint-max_attempts_per_request"]').text()).toContain('1-50')
+    expect(wrapper.get('[data-testid="hint-retry_budget_ms"]').text()).toContain('1000-600000')
+  })
+
+  it('saves attempt cap and retry budget', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('[data-testid="max-attempts-per-request"]').setValue('3')
+    await wrapper.get('[data-testid="retry-budget-ms"]').setValue('45000')
+    await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
+
+    expect(wrapper.emitted('save')).toEqual([[
+      expect.objectContaining({
+        max_attempts_per_request: 3,
+        retry_budget_ms: 45_000,
+      }),
+    ]])
+  })
+
+  it.each([
+    ['max-attempts-per-request', '0', 'error-max_attempts_per_request'],
+    ['max-attempts-per-request', '51', 'error-max_attempts_per_request'],
+    ['retry-budget-ms', '999', 'error-retry_budget_ms'],
+    ['retry-budget-ms', '600001', 'error-retry_budget_ms'],
+  ])('rejects out-of-range retry setting %s=%s', async (inputId, value, errorId) => {
+    const wrapper = mountForm()
+
+    await wrapper.get(`[data-testid="${inputId}"]`).setValue(value)
+    await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
+
+    expect(wrapper.emitted('save')).toBeUndefined()
+    expect(wrapper.get(`[data-testid="${errorId}"]`).text()).toContain('范围')
   })
 })
