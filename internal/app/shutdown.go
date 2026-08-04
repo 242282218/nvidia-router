@@ -80,6 +80,11 @@ func (a *App) finishShutdown() error {
 	if a.healthDone != nil {
 		<-a.healthDone
 	}
+	// Close the reader pool before the writer: readers hold WAL read locks that
+	// would otherwise make the writer's final checkpoint contend.
+	if a.dbReader != nil {
+		shutdownErr = errors.Join(shutdownErr, a.dbReader.Close())
+	}
 	if a.db == nil {
 		return shutdownErr
 	}

@@ -28,6 +28,7 @@ type Service struct {
 	repository *Repository
 	keys       *crypto.KeySet
 	clock      clock.Clock
+	cache      *cache
 
 	usageMu      sync.Mutex
 	lastRecorded map[int64]time.Time
@@ -42,6 +43,7 @@ func NewService(repository *Repository, keys *crypto.KeySet, source clock.Clock)
 		repository:   repository,
 		keys:         keys,
 		clock:        source,
+		cache:        newCache(defaultCacheTTL, defaultCacheEntries),
 		lastRecorded: make(map[int64]time.Time),
 		pending:      make(map[int64]struct{}),
 	}
@@ -84,10 +86,15 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 	crypto.Zero(digestInput)
 	defer crypto.Zero(digest)
 
+	now := s.clock.Now()
+	if identity, ok := s.cache.lookup(digest, now); ok {
+		return identity, nil
+	}
 	identity, err := s.repository.Authenticate(ctx, digest)
 	if err != nil {
 		return AccessKeyIdentity{}, fmt.Errorf("authenticate access key: %w", err)
 	}
+	s.cache.store(digest, identity, now)
 	return identity, nil
 }
 
@@ -95,6 +102,10 @@ func (s *Service) Revoke(ctx context.Context, id int64) error {
 	if err := s.repository.Revoke(ctx, id, s.clock.Now()); err != nil {
 		return fmt.Errorf("revoke access key: %w", err)
 	}
+	// Revocation must take effect immediately rather than after the cache TTL.
+	// Entries are keyed by digest and the caller only has the ID, so drop all of
+	// them; revocation is a rare admin action and the cache refills on demand.
+	s.cache.invalidate()
 	// Drop usage-tracking entries so revoked keys do not accumulate forever.
 	s.usageMu.Lock()
 	delete(s.lastRecorded, id)

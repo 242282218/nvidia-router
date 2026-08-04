@@ -52,6 +52,7 @@ type App struct {
 	nvidiaClient    *nvidia.Client
 
 	db               *sql.DB
+	dbReader         *sql.DB
 	handler          http.Handler
 	requestRecorder  *observability.BufferRecorder
 	healthChecker    *nvidiakey.HealthChecker
@@ -76,33 +77,33 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDatabase(resolved)
+	db, reader, err := openDatabase(resolved)
 	if err != nil {
 		return nil, err
 	}
 	keys, err := initialize(ctx, db, resolved)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, err)
+		return nil, closeAfterInitializationError(db, reader, err)
 	}
 	settings, err := runtimeconfig.New(ctx, db)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize runtime settings store: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize runtime settings store: %w", err))
 	}
 	keyRepository := nvidiakey.NewRepository(db)
 	keySnapshots, err := keyRepository.ListSnapshots(ctx)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key scheduling snapshots: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("load NVIDIA key scheduling snapshots: %w", err))
 	}
 	modelRepository := modelcatalog.NewRepository(db)
 	modelBlocks, err := modelRepository.ListBlocks(ctx)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, fmt.Errorf("load NVIDIA key model blocks: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("load NVIDIA key model blocks: %w", err))
 	}
 	keyPool := pool.New(settings, resolved.Clock)
 	keyPool.LoadSnapshot(keySnapshots, modelBlocks)
 	descriptor, err := nvidiaDescriptor(resolved.Config)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, err)
+		return nil, closeAfterInitializationError(db, reader, err)
 	}
 	base := resolved.NVIDIAHTTPClient.Transport
 	if base == nil {
@@ -110,19 +111,19 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	}
 	baseTransport, ok := base.(*http.Transport)
 	if !ok {
-		return nil, closeAfterInitializationError(db, errors.New("initialize proxy manager: HTTP transport is required"))
+		return nil, closeAfterInitializationError(db, reader, errors.New("initialize proxy manager: HTTP transport is required"))
 	}
 	proxySettings, err := xkproxy.NewSettingsService(ctx, db, keys, xkproxy.EnvironmentConfig{
 		URL: resolved.Config.XKProxyURL, AuthKey: resolved.Config.XKProxyAuthKey,
 	}, baseTransport, resolved.Logger)
 	if err != nil {
-		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize proxy settings: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize proxy settings: %w", err))
 	}
 	proxy := proxySettings.Switcher()
 	nvidiaClient, err := nvidia.NewClient(resolved.NVIDIAHTTPClient, descriptor, settings, proxy)
 	if err != nil {
 		proxySettings.Close()
-		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize NVIDIA client: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize NVIDIA client: %w", err))
 	}
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
 	healthChecker := nvidiakey.NewHealthChecker(keyRepository, resolved.Clock, nvidiakey.HealthCheckerOptions{
@@ -134,7 +135,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	// immediately acquirable without waiting for the next restart.
 	healthChecker.WireSync(keyPool.ApplySuccess)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
-	accessKeys := accesskey.NewService(accesskey.NewRepository(db), keys, resolved.Clock)
+	accessKeys := accesskey.NewService(accesskey.NewRepository(db).WithReader(reader), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
 	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
@@ -145,7 +146,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		adminapi.NewProxyPool(proxySettings),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
-	observabilityRepository := observability.NewRepository(db)
+	observabilityRepository := observability.NewRepository(db).WithReader(reader)
 	// Wrap the repository with a buffering recorder so request_logs writes
 	// move off the hot path: per-request Record only enqueues, a background
 	// flusher persists batches in a single SQLite transaction (audit #25).
@@ -166,7 +167,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		nvidiaClient.Close()
 		proxySettings.Close()
-		return nil, closeAfterInitializationError(db, fmt.Errorf("initialize embedded frontend: %w", err))
+		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize embedded frontend: %w", err))
 	}
 
 	resolved.DB = db
@@ -178,7 +179,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	healthDone := make(chan struct{})
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	app := &App{
-		Dependencies: resolved, db: db, Pool: keyPool, RuntimeSettings: settings,
+		Dependencies: resolved, db: db, dbReader: reader, Pool: keyPool, RuntimeSettings: settings,
 		proxy: proxy, proxySettings: proxySettings, nvidiaClient: nvidiaClient,
 		requestRecorder: requestRecorder, healthChecker: healthChecker,
 
@@ -191,7 +192,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
 	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
-		health.New(db, keys, app.shutting.Load), chat, responses, embeddings, audio, speech, modelList, unsupported,
+		health.New(db, keys, app.shutting.Load).WithReader(reader), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
 		statsHandler, monitoringHandler,
 	)))
@@ -277,18 +278,28 @@ func resolveDependencies(dependencies Dependencies) (Dependencies, error) {
 	return dependencies, nil
 }
 
-func openDatabase(dependencies Dependencies) (*sql.DB, error) {
+// openDatabase returns the writer pool and, when this process owns the file, a
+// separate read-only pool. An injected DB (tests, CLI) has no path to reopen,
+// so the reader is nil there and repositories fall back to the writer.
+func openDatabase(dependencies Dependencies) (*sql.DB, *sql.DB, error) {
 	if dependencies.DB != nil {
-		return dependencies.DB, nil
+		return dependencies.DB, nil, nil
 	}
 	if err := os.MkdirAll(dependencies.Config.DataDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
+		return nil, nil, fmt.Errorf("create data directory: %w", err)
 	}
-	db, err := database.Open(filepath.Join(dependencies.Config.DataDir, routerDBFilename))
+	path := filepath.Join(dependencies.Config.DataDir, routerDBFilename)
+	db, err := database.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open router database: %w", err)
+		return nil, nil, fmt.Errorf("open router database: %w", err)
 	}
-	return db, nil
+	// Must follow Open: a read-only connection cannot create the WAL index, so
+	// the writer has to have initialized it first.
+	reader, err := database.OpenReader(path)
+	if err != nil {
+		return nil, nil, closeAfterInitializationError(db, nil, fmt.Errorf("open router database reader pool: %w", err))
+	}
+	return db, reader, nil
 }
 
 func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) (*crypto.KeySet, error) {
@@ -305,9 +316,14 @@ func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) (*cr
 	return keys, nil
 }
 
-func closeAfterInitializationError(db *sql.DB, operationErr error) error {
-	if closeErr := db.Close(); closeErr != nil {
-		return fmt.Errorf("initialize application and close database: %w", errors.Join(operationErr, closeErr))
+func closeAfterInitializationError(db *sql.DB, reader *sql.DB, operationErr error) error {
+	closeErrs := []error{operationErr}
+	if reader != nil {
+		closeErrs = append(closeErrs, reader.Close())
+	}
+	closeErrs = append(closeErrs, db.Close())
+	if joined := errors.Join(closeErrs[1:]...); joined != nil {
+		return fmt.Errorf("initialize application and close database: %w", errors.Join(operationErr, joined))
 	}
 	return operationErr
 }

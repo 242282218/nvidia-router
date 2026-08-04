@@ -10,7 +10,7 @@ import (
 	"nvidia-router/internal/database"
 )
 
-// readyProbeTimeout bounds every /health/ready probe. The database runs on a
+// readyProbeTimeout bounds every /health/ready probe. The writer runs on a
 // single shared connection with a 5s busy timeout, so without a probe deadline
 // a connection wedged behind a long write would make each probe wait up to 5s,
 // letting orchestrator probes pile up instead of failing fast.
@@ -18,12 +18,29 @@ const readyProbeTimeout = 2 * time.Second
 
 type Handler struct {
 	db       *sql.DB
+	reader   *sql.DB
 	keys     *crypto.KeySet
 	shutting func() bool
 }
 
 func New(db *sql.DB, keys *crypto.KeySet, shutting func() bool) *Handler {
 	return &Handler{db: db, keys: keys, shutting: shutting}
+}
+
+// WithReader routes the probe's query-based checks to the read-only pool. Both
+// pools are still probed, because serving requires both, but only the writer
+// liveness check has to contend with in-flight writes.
+func (h *Handler) WithReader(reader *sql.DB) *Handler {
+	clone := *h
+	clone.reader = reader
+	return &clone
+}
+
+func (h *Handler) read() *sql.DB {
+	if h.reader != nil {
+		return h.reader
+	}
+	return h.db
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -56,7 +73,11 @@ func (h *Handler) ready(ctx context.Context) bool {
 	if h.db.PingContext(probe) != nil {
 		return false
 	}
-	if database.VerifyMigrations(probe, h.db) != nil {
+	read := h.read()
+	if read != h.db && read.PingContext(probe) != nil {
+		return false
+	}
+	if database.VerifyMigrations(probe, read) != nil {
 		return false
 	}
 	// Deliberately do NOT gate readiness on must_change_password: that flag
@@ -65,7 +86,7 @@ func (h *Handler) ready(ctx context.Context) bool {
 	// /health/ready right after first boot would otherwise report the
 	// container as unhealthy until someone logs in, restarting it in a
 	// loop and locking out the very first sign-in the policy is waiting for.
-	if h.keys == nil || h.keys.ValidateSentinel(probe, h.db) != nil {
+	if h.keys == nil || h.keys.ValidateSentinel(probe, read) != nil {
 		return false
 	}
 	return true

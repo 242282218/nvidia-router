@@ -9,11 +9,28 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// WithReader routes monitoring queries to a separate connection pool. Those
+// queries scan request_logs and can run for seconds; on the single writer
+// connection they blocked request-log flushes and access-key authentication.
+func (r *Repository) WithReader(reader *sql.DB) *Repository {
+	clone := *r
+	clone.reader = reader
+	return &clone
+}
+
+func (r *Repository) read() *sql.DB {
+	if r.reader != nil {
+		return r.reader
+	}
+	return r.db
 }
 
 func (r *Repository) Record(ctx context.Context, record RequestRecord) error {

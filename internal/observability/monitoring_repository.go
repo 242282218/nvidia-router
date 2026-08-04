@@ -58,11 +58,11 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 	}
 	where, args := requestLogWhere(query.MonitoringQuery)
 	var total int64
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM request_logs WHERE "+where, args...).Scan(&total); err != nil {
+	if err := r.read().QueryRowContext(ctx, "SELECT COUNT(*) FROM request_logs WHERE "+where, args...).Scan(&total); err != nil {
 		return RequestLogsPage{}, fmt.Errorf("count monitoring request logs: %w", err)
 	}
 	offset := int64(page-1) * int64(pageSize)
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT request_id, endpoint, model_id, access_key_id, nvidia_key_id,
 		       http_status, outcome, error_code, is_stream, queue_ms,
 		       first_byte_ms, duration_ms, attempt_count, prompt_tokens,
@@ -96,7 +96,7 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 
 func (r *Repository) queryRequestAggregate(ctx context.Context, query MonitoringQuery) (monitoringAggregate, error) {
 	where, args := requestLogWhere(query)
-	row := r.db.QueryRowContext(ctx, `SELECT `+monitoringAggregateColumns+` FROM request_logs WHERE `+where, args...)
+	row := r.read().QueryRowContext(ctx, `SELECT `+monitoringAggregateColumns+` FROM request_logs WHERE `+where, args...)
 	aggregate, err := scanMonitoringAggregate(row, nil)
 	if err != nil {
 		return monitoringAggregate{}, fmt.Errorf("query monitoring request aggregate: %w", err)
@@ -107,7 +107,7 @@ func (r *Repository) queryRequestAggregate(ctx context.Context, query Monitoring
 func (r *Repository) queryRequestSeries(ctx context.Context, query MonitoringQuery) (map[string]monitoringAggregate, error) {
 	where, args := requestLogWhere(query)
 	bucket := requestBucketExpression(query.Range)
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT `+bucket+`, `+monitoringAggregateColumns+`
 		FROM request_logs WHERE `+where+`
 		GROUP BY `+bucket+`
@@ -120,7 +120,7 @@ func (r *Repository) queryRequestSeries(ctx context.Context, query MonitoringQue
 }
 
 func (r *Repository) queryDailyAggregate(ctx context.Context, query MonitoringQuery, dimensionType, dimensionID string) (monitoringAggregate, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.read().QueryRowContext(ctx, `
 		SELECT `+dailyAggregateColumns+`
 		FROM daily_stats
 		WHERE day >= ? AND day <= ? AND dimension_type = ? AND dimension_id = ?
@@ -133,7 +133,7 @@ func (r *Repository) queryDailyAggregate(ctx context.Context, query MonitoringQu
 }
 
 func (r *Repository) queryDailySeries(ctx context.Context, query MonitoringQuery, dimensionType, dimensionID string) (map[string]monitoringAggregate, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT day, `+dailyAggregateColumns+`
 		FROM daily_stats
 		WHERE day >= ? AND day <= ? AND dimension_type = ? AND dimension_id = ?

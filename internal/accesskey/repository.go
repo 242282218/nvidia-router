@@ -9,11 +9,28 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// WithReader routes read-only queries to a separate connection pool. The writer
+// pool is capped at one connection, so without this every authentication queued
+// behind in-flight writes.
+func (r *Repository) WithReader(reader *sql.DB) *Repository {
+	clone := *r
+	clone.reader = reader
+	return &clone
+}
+
+func (r *Repository) read() *sql.DB {
+	if r.reader != nil {
+		return r.reader
+	}
+	return r.db
 }
 
 func (r *Repository) Create(ctx context.Context, name string, digest []byte, prefix string, now time.Time) (Key, error) {
@@ -33,7 +50,7 @@ func (r *Repository) Create(ctx context.Context, name string, digest []byte, pre
 }
 
 func (r *Repository) List(ctx context.Context) ([]Key, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT id, name, key_prefix, created_at, last_used_at, revoked_at
 		FROM access_keys
 		ORDER BY id
@@ -59,7 +76,7 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 
 func (r *Repository) Authenticate(ctx context.Context, digest []byte) (AccessKeyIdentity, error) {
 	var identity AccessKeyIdentity
-	err := r.db.QueryRowContext(ctx, `
+	err := r.read().QueryRowContext(ctx, `
 		SELECT id, key_prefix
 		FROM access_keys
 		WHERE key_digest = ? AND revoked_at IS NULL

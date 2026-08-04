@@ -10,7 +10,7 @@ import (
 const maxRecentErrors = 100
 
 func (r *Repository) ListDailyStats(ctx context.Context, since time.Time) ([]DailyStat, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT day, dimension_type, dimension_id,
 		       request_count, success_count, failure_count,
 		       CAST(total_duration_ms AS REAL) / request_count,
@@ -52,7 +52,7 @@ func (r *Repository) ListRecentErrors(ctx context.Context, limit int) ([]RecentE
 	if limit > maxRecentErrors {
 		limit = maxRecentErrors
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT request_id, endpoint, model_id, nvidia_key_id, access_key_id,
 		       http_status, error_code, upstream_request_id, created_at
 		FROM request_logs
