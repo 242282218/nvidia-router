@@ -292,6 +292,33 @@ func TestZeroClearsBytes(t *testing.T) {
 	}
 }
 
+func TestVersionedKeySetEncryptsAndReadsLegacyVersion(t *testing.T) {
+	active := [32]byte{1}
+	legacy := [32]byte{2}
+	keys, err := NewVersioned(2, active)
+	if err != nil {
+		t.Fatalf("NewVersioned: %v", err)
+	}
+	keys, err = keys.WithLegacyMasterKey(1, legacy)
+	if err != nil {
+		t.Fatalf("WithLegacyMasterKey: %v", err)
+	}
+	ciphertext, nonce, err := keys.EncryptVersion(1, []byte("legacy"), testAAD)
+	if err != nil {
+		t.Fatalf("EncryptVersion: %v", err)
+	}
+	plaintext, err := keys.DecryptVersion(1, ciphertext, nonce, testAAD)
+	if err != nil || string(plaintext) != "legacy" {
+		t.Fatalf("DecryptVersion = %q/%v", plaintext, err)
+	}
+	if keys.ActiveVersion() != 2 {
+		t.Fatalf("ActiveVersion = %d, want 2", keys.ActiveVersion())
+	}
+	if _, err := keys.DecryptVersion(3, ciphertext, nonce, testAAD); err == nil {
+		t.Fatal("DecryptVersion accepted unknown key version")
+	}
+}
+
 func TestEncryptRejectsEmptyAAD(t *testing.T) {
 	if _, _, err := newTestKeySet(t, 1).Encrypt([]byte("nvapi-test-secret"), ""); err == nil {
 		t.Fatal("Encrypt() with empty AAD succeeded")
@@ -326,8 +353,9 @@ func newTestDatabase(t *testing.T) *sql.DB {
 func readSentinelSnapshot(t *testing.T, db *sql.DB) sentinelRecord {
 	t.Helper()
 	var record sentinelRecord
-	if err := db.QueryRow("SELECT version, nonce, ciphertext FROM crypto_sentinel WHERE id = 1").Scan(
+	if err := db.QueryRow("SELECT version, key_version, nonce, ciphertext FROM crypto_sentinel WHERE id = 1").Scan(
 		&record.version,
+		&record.keyVersion,
 		&record.nonce,
 		&record.ciphertext,
 	); err != nil {

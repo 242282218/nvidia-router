@@ -59,10 +59,13 @@ func TestEmbeddingsAppRetriesMalformedSuccessAndSurfacesProtocolError(t *testing
 	assertAuthorizationOrder(t, upstream.Requests(), "upstream-key-1", "upstream-key-2")
 }
 
-func TestEmbeddingsAppSkipsFailedKeyOnFollowingRequest(t *testing.T) {
+// TestEmbeddingsAppCredentialFailureDisablesKeyForFollowingRequest verifies the
+// R2.2 semantics at the app level: a credential 401 must not fail over to
+// another key (it disables the offending key instead), so the first request
+// returns 401 and the second skips the bad key and succeeds.
+func TestEmbeddingsAppCredentialFailureDisablesKeyForFollowingRequest(t *testing.T) {
 	upstream := mocknvidia.New(
 		mocknvidia.Script{Status: http.StatusUnauthorized, Body: `{"error":{"code":"invalid_api_key"}}`},
-		mocknvidia.Script{Status: http.StatusOK, Body: `{"data":[{"embedding":[0.1]}]}`},
 		mocknvidia.Script{Status: http.StatusOK, Body: `{"data":[{"embedding":[0.2]}]}`},
 	)
 	t.Cleanup(upstream.Close)
@@ -70,13 +73,15 @@ func TestEmbeddingsAppSkipsFailedKeyOnFollowingRequest(t *testing.T) {
 	server := httptest.NewServer(application.Handler())
 	t.Cleanup(server.Close)
 
-	for requestNumber := 1; requestNumber <= 2; requestNumber++ {
-		status, body := postEmbeddings(t, server.URL, accessToken, `{"model":"public-embed","input":"hi"}`)
-		if status != http.StatusOK {
-			t.Fatalf("request %d response = %d %s", requestNumber, status, body)
-		}
+	status, body := postEmbeddings(t, server.URL, accessToken, `{"model":"public-embed","input":"hi"}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("request 1 response = %d %s, want 401 (credential faults must not fail over)", status, body)
 	}
-	assertAuthorizationOrder(t, upstream.Requests(), "upstream-key-1", "upstream-key-2", "upstream-key-2")
+	status, body = postEmbeddings(t, server.URL, accessToken, `{"model":"public-embed","input":"hi"}`)
+	if status != http.StatusOK {
+		t.Fatalf("request 2 response = %d %s", status, body)
+	}
+	assertAuthorizationOrder(t, upstream.Requests(), "upstream-key-1", "upstream-key-2")
 }
 
 func newEmbeddingsTestApp(t *testing.T, upstream *mocknvidia.Server, upstreamSecrets []string) (*App, string) {

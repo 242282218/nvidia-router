@@ -9,12 +9,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"nvidia-router/internal/adminauth"
+	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
 )
 
@@ -66,6 +68,82 @@ func TestCLIResetPasswordHonorsCancelledContext(t *testing.T) {
 	err := runCLIContext(ctx, []string{"admin", "reset-password", "--password", "new CLI recovery password"}, io.Discard, io.Discard)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled reset error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCLIRotateMasterKeyCreatesBackupWithoutLeakingSecrets(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
+	var oldMaster, newMaster [32]byte
+	oldMaster[0], newMaster[0] = 1, 2
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY", base64.RawURLEncoding.EncodeToString(oldMaster[:]))
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY_VERSION", "1")
+	t.Setenv("NVIDIA_ROUTER_NEW_MASTER_KEY", base64.RawURLEncoding.EncodeToString(newMaster[:]))
+	db := openCLIData(t, dataDir)
+	oldKeys, err := crypto.New(oldMaster)
+	if err != nil {
+		t.Fatalf("crypto.New: %v", err)
+	}
+	if err := oldKeys.EnsureSentinel(context.Background(), db); err != nil {
+		t.Fatalf("EnsureSentinel: %v", err)
+	}
+	closeCLIDatabase(t, db)
+
+	backupPath := filepath.Join(t.TempDir(), "rotation-backup.db")
+	var stdout, stderr bytes.Buffer
+	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("runCLI rotate-master-key: %v", err)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), string(oldMaster[:])) || strings.Contains(stdout.String()+stderr.String(), string(newMaster[:])) {
+		t.Fatal("rotation output contains master key bytes")
+	}
+	backupDB, err := database.Open(backupPath)
+	if err != nil {
+		t.Fatalf("open rotation backup: %v", err)
+	}
+	defer closeCLIDatabase(t, backupDB)
+}
+
+func TestCLIRotateMasterKeyRejectsActiveWriter(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
+	var oldMaster, newMaster [32]byte
+	oldMaster[0], newMaster[0] = 1, 2
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY", base64.RawURLEncoding.EncodeToString(oldMaster[:]))
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY_VERSION", "1")
+	t.Setenv("NVIDIA_ROUTER_NEW_MASTER_KEY", base64.RawURLEncoding.EncodeToString(newMaster[:]))
+	db := openCLIData(t, dataDir)
+	oldKeys, err := crypto.New(oldMaster)
+	if err != nil {
+		t.Fatalf("crypto.New: %v", err)
+	}
+	if err := oldKeys.EnsureSentinel(context.Background(), db); err != nil {
+		t.Fatalf("EnsureSentinel: %v", err)
+	}
+	closeCLIDatabase(t, db)
+
+	backupPath := filepath.Join(t.TempDir(), "rotation-backup.db")
+
+	// A running server holds the database open, which keeps the WAL -shm
+	// sidecar alive; rotation must refuse instead of letting the live process
+	// keep writing old-version rows from a second process.
+	shmPath := filepath.Join(dataDir, "router.db-shm")
+	if err := os.WriteFile(shmPath, []byte("wal-index"), 0o600); err != nil {
+		t.Fatalf("write -shm sidecar: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "active writer") {
+		t.Fatalf("rotate with active writer error = %v, want refusal", err)
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rotation backup created despite active writer: %v", err)
+	}
+
+	if err := os.Remove(shmPath); err != nil {
+		t.Fatalf("remove -shm sidecar: %v", err)
+	}
+	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("rotate after service stop: %v", err)
 	}
 }
 

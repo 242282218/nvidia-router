@@ -1,6 +1,7 @@
 package adminauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -138,9 +139,9 @@ func (s *SessionService) Create(ctx context.Context) (CreatedSession, error) {
 	crypto.Zero(tokenBytes)
 	defer crypto.Zero(digest)
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO admin_sessions (id, token_digest, expires_at, created_at, last_seen_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, id, digest, timestamp(expiresAt), timestamp(now), timestamp(now)); err != nil {
+		INSERT INTO admin_sessions (id, token_digest, digest_key_version, expires_at, created_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, id, digest, s.keys.ActiveVersion(), timestamp(expiresAt), timestamp(now), timestamp(now)); err != nil {
 		return CreatedSession{}, fmt.Errorf("insert admin session: %w", err)
 	}
 	return CreatedSession{ID: id, Token: token, ExpiresAt: expiresAt}, nil
@@ -151,35 +152,47 @@ func (s *SessionService) Authenticate(ctx context.Context, token string) (Sessio
 		return Session{}, ErrInvalidSession
 	}
 	tokenBytes := []byte(token)
-	digest := s.keys.SessionDigest(tokenBytes)
+	digests := s.keys.SessionDigests(tokenBytes)
 	crypto.Zero(tokenBytes)
-	defer crypto.Zero(digest)
+	for _, digest := range digests {
+		defer crypto.Zero(digest)
+	}
 
 	var session Session
 	var expiresAt string
 	now := s.clock.Now().UTC()
-	// Bump last_seen_at at most once per interval; throttled or invalid
-	// sessions fall back to the SELECT below, which still enforces
-	// revoked/expired on every request.
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE admin_sessions
-		SET last_seen_at = ?
-		WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
-		  AND last_seen_at <= ?
-		RETURNING id, expires_at
-	`, timestamp(now), digest, timestamp(now), timestamp(now.Add(-sessionTouchInterval))).Scan(&session.ID, &expiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = s.db.QueryRowContext(ctx, `
+	var matchedDigest []byte
+	for _, digest := range digests {
+		// Bump last_seen_at at most once per interval; throttled or invalid
+		// sessions fall back to the SELECT below, which still enforces expiry.
+		err := s.db.QueryRowContext(ctx, `
+			UPDATE admin_sessions
+			SET last_seen_at = ?
+			WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
+			  AND last_seen_at <= ?
+			RETURNING id, expires_at
+		`, timestamp(now), digest, timestamp(now), timestamp(now.Add(-sessionTouchInterval))).Scan(&session.ID, &expiresAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = s.db.QueryRowContext(ctx, `
 			SELECT id, expires_at
 			FROM admin_sessions
 			WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?
-		`, digest, timestamp(now)).Scan(&session.ID, &expiresAt)
+			`, digest, timestamp(now)).Scan(&session.ID, &expiresAt)
+		}
+		if err == nil {
+			matchedDigest = digest
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Session{}, fmt.Errorf("load admin session: %w", err)
+		}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if matchedDigest == nil {
 		return Session{}, ErrInvalidSession
 	}
-	if err != nil {
-		return Session{}, fmt.Errorf("load admin session: %w", err)
+	activeDigest := digests[s.keys.ActiveVersion()]
+	if activeDigest != nil && !bytes.Equal(matchedDigest, activeDigest) {
+		_, _ = s.db.ExecContext(ctx, `UPDATE admin_sessions SET token_digest = ?, digest_key_version = ? WHERE token_digest = ? AND revoked_at IS NULL`, activeDigest, s.keys.ActiveVersion(), matchedDigest)
 	}
 	parsedExpiry, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {

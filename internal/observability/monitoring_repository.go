@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ type monitoringAggregate struct {
 	requestCount, successCount, failureCount int64
 	totalDurationMS, totalFirstByteMS        int64
 	firstByteCount, totalQueueMS             int64
+	totalFirstTokenMS, firstTokenCount       int64
 	totalAttempts, promptTokens              int64
 	completionTokens                         int64
 }
@@ -45,10 +48,67 @@ func (r *Repository) MonitoringSummary(ctx context.Context, query MonitoringQuer
 	if err != nil {
 		return MonitoringSnapshot{}, err
 	}
+	summary := aggregate.toSummary()
+	p50, p95, err := r.queryFirstTokenPercentiles(ctx, query)
+	if err != nil {
+		return MonitoringSnapshot{}, err
+	}
+	summary.FirstTokenP50MS = p50
+	summary.FirstTokenP95MS = p95
 	return MonitoringSnapshot{
 		Range: query.Range, From: query.From.UTC(), To: query.To.UTC(),
-		Summary: aggregate.toSummary(), Series: buildMonitoringSeries(query, spec, buckets),
+		Summary: summary, Series: buildMonitoringSeries(query, spec, buckets),
 	}, nil
+}
+
+// queryFirstTokenPercentiles computes TTFT p50/p95 from the actual
+// first_token_ms samples in request_logs within the query window and filter.
+// daily_stats only keeps sums and counts, so a true quantile must read the
+// per-request column; the scan is bounded by the request-log retention policy.
+func (r *Repository) queryFirstTokenPercentiles(ctx context.Context, query MonitoringQuery) (*int64, *int64, error) {
+	where, args := requestLogWhere(query)
+	rows, err := r.read().QueryContext(ctx, `
+		SELECT first_token_ms FROM request_logs
+		WHERE `+where+` AND first_token_ms IS NOT NULL
+		ORDER BY first_token_ms
+	`, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query first token percentiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	values := make([]int64, 0, 64)
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, nil, fmt.Errorf("scan first token percentile: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate first token percentiles: %w", err)
+	}
+	return percentile(values, 0.50), percentile(values, 0.95), nil
+}
+
+// percentile returns the nearest-rank quantile of values for q in [0,1], or
+// nil when values is empty. The rank clamps to the first/last sample, so a
+// single observation is both its p50 and p95.
+func percentile(values []int64, q float64) *int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	sorted := append([]int64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	rank := int(math.Ceil(q*float64(len(sorted)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(sorted) {
+		rank = len(sorted) - 1
+	}
+	value := sorted[rank]
+	return &value
 }
 
 func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery) (RequestLogsPage, error) {
@@ -65,8 +125,8 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 	rows, err := r.read().QueryContext(ctx, `
 		SELECT request_id, endpoint, model_id, access_key_id, nvidia_key_id,
 		       http_status, outcome, error_code, is_stream, queue_ms,
-		       first_byte_ms, duration_ms, attempt_count, prompt_tokens,
-		       completion_tokens, upstream_request_id, created_at
+		       first_byte_ms, first_token_ms, duration_ms, attempt_count,
+		       prompt_tokens, completion_tokens, upstream_request_id, created_at
 		FROM request_logs
 		WHERE `+where+`
 		ORDER BY created_at DESC, request_id DESC
@@ -154,6 +214,8 @@ const monitoringAggregateColumns = `
 	COALESCE(SUM(duration_ms), 0),
 	COALESCE(SUM(first_byte_ms), 0),
 	COALESCE(SUM(CASE WHEN first_byte_ms IS NOT NULL THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(first_token_ms), 0),
+	COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(queue_ms), 0),
 	COALESCE(SUM(attempt_count), 0),
 	COALESCE(SUM(prompt_tokens), 0),
@@ -166,6 +228,8 @@ const dailyAggregateColumns = `
 	COALESCE(SUM(total_duration_ms), 0),
 	COALESCE(SUM(total_first_byte_ms), 0),
 	COALESCE(SUM(first_byte_count), 0),
+	COALESCE(SUM(total_first_token_ms), 0),
+	COALESCE(SUM(first_token_count), 0),
 	COALESCE(SUM(total_queue_ms), 0),
 	COALESCE(SUM(total_attempts), 0),
 	COALESCE(SUM(prompt_tokens), 0),
@@ -174,11 +238,12 @@ const dailyAggregateColumns = `
 func (a monitoringAggregate) toSummary() MonitoringSummary {
 	return MonitoringSummary{
 		RequestCount: a.requestCount, SuccessCount: a.successCount, FailureCount: a.failureCount,
-		SuccessRate:        successRate(a.successCount, a.requestCount),
-		AverageDurationMS:  average(a.totalDurationMS, a.requestCount),
-		AverageFirstByteMS: average(a.totalFirstByteMS, a.firstByteCount),
-		AverageQueueMS:     average(a.totalQueueMS, a.requestCount),
-		TotalAttempts:      a.totalAttempts, PromptTokens: a.promptTokens, CompletionTokens: a.completionTokens,
+		SuccessRate:         successRate(a.successCount, a.requestCount),
+		AverageDurationMS:   average(a.totalDurationMS, a.requestCount),
+		AverageFirstByteMS:  average(a.totalFirstByteMS, a.firstByteCount),
+		AverageFirstTokenMS: average(a.totalFirstTokenMS, a.firstTokenCount),
+		AverageQueueMS:      average(a.totalQueueMS, a.requestCount),
+		TotalAttempts:       a.totalAttempts, PromptTokens: a.promptTokens, CompletionTokens: a.completionTokens,
 	}
 }
 
@@ -187,8 +252,9 @@ func (a monitoringAggregate) toSeriesPoint(bucket string) MonitoringSeriesPoint 
 	return MonitoringSeriesPoint{
 		Bucket: bucket, RequestCount: summary.RequestCount, SuccessCount: summary.SuccessCount,
 		FailureCount: summary.FailureCount, AverageDurationMS: summary.AverageDurationMS,
-		AverageFirstByteMS: summary.AverageFirstByteMS, AverageQueueMS: summary.AverageQueueMS,
-		TotalAttempts: summary.TotalAttempts, PromptTokens: summary.PromptTokens,
+		AverageFirstByteMS: summary.AverageFirstByteMS, AverageFirstTokenMS: summary.AverageFirstTokenMS,
+		AverageQueueMS: summary.AverageQueueMS,
+		TotalAttempts:  summary.TotalAttempts, PromptTokens: summary.PromptTokens,
 		CompletionTokens: summary.CompletionTokens,
 	}
 }
@@ -225,13 +291,14 @@ type monitoringScanner interface {
 
 func scanMonitoringAggregate(scanner monitoringScanner, bucket *string) (monitoringAggregate, error) {
 	var aggregate monitoringAggregate
-	arguments := make([]any, 0, 11)
+	arguments := make([]any, 0, 13)
 	if bucket != nil {
 		arguments = append(arguments, bucket)
 	}
 	arguments = append(arguments,
 		&aggregate.requestCount, &aggregate.successCount, &aggregate.failureCount,
 		&aggregate.totalDurationMS, &aggregate.totalFirstByteMS, &aggregate.firstByteCount,
+		&aggregate.totalFirstTokenMS, &aggregate.firstTokenCount,
 		&aggregate.totalQueueMS, &aggregate.totalAttempts, &aggregate.promptTokens,
 		&aggregate.completionTokens,
 	)
@@ -357,12 +424,12 @@ func normalizeRequestLogsPage(page, pageSize int) (int, int, error) {
 func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	var item RequestLog
 	var modelID, errorCode, upstreamRequestID sql.NullString
-	var accessKeyID, nvidiaKeyID, firstByteMS, promptTokens, completionTokens sql.NullInt64
+	var accessKeyID, nvidiaKeyID, firstByteMS, firstTokenMS, promptTokens, completionTokens sql.NullInt64
 	var isStream int
 	if err := rows.Scan(
 		&item.RequestID, &item.Endpoint, &modelID, &accessKeyID, &nvidiaKeyID,
 		&item.HTTPStatus, &item.Outcome, &errorCode, &isStream, &item.QueueMS,
-		&firstByteMS, &item.DurationMS, &item.AttemptCount, &promptTokens,
+		&firstByteMS, &firstTokenMS, &item.DurationMS, &item.AttemptCount, &promptTokens,
 		&completionTokens, &upstreamRequestID, &item.CreatedAt,
 	); err != nil {
 		return RequestLog{}, err
@@ -373,6 +440,7 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	item.ErrorCode = nullableStringPointer(errorCode)
 	item.IsStream = isStream != 0
 	item.FirstByteMS = nullableInt64Pointer(firstByteMS)
+	item.FirstTokenMS = nullableInt64Pointer(firstTokenMS)
 	item.PromptTokens = nullableInt64Pointer(promptTokens)
 	item.CompletionTokens = nullableInt64Pointer(completionTokens)
 	item.UpstreamRequestID = nullableStringPointer(upstreamRequestID)

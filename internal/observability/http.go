@@ -86,12 +86,18 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 			value := tracked.firstBodyAt.Sub(started).Milliseconds()
 			firstByteMS = &value
 		}
+		var firstTokenMS *int64
+		if metadata.IsStream && !metadata.FirstTokenAt.IsZero() {
+			value := metadata.FirstTokenAt.Sub(started).Milliseconds()
+			firstTokenMS = &value
+		}
 		record := RequestRecord{
 			RequestID: requestID, Endpoint: request.URL.Path, ModelID: metadata.ModelID,
 			AccessKeyID: metadata.AccessKeyID, NVIDIAKeyID: metadata.NVIDIAKeyID,
 			HTTPStatus: status, Outcome: outcome, ErrorCode: metadata.ErrorCode,
 			IsStream: metadata.IsStream, QueueMS: metadata.QueueMS, FirstByteMS: firstByteMS,
-			DurationMS: source.Now().Sub(started).Milliseconds(), AttemptCount: metadata.AttemptCount,
+			FirstTokenMS: firstTokenMS,
+			DurationMS:   source.Now().Sub(started).Milliseconds(), AttemptCount: metadata.AttemptCount,
 			PromptTokens: metadata.PromptTokens, CompletionTokens: metadata.CompletionTokens,
 			UpstreamRequestID: metadata.UpstreamRequestID, CreatedAt: started,
 		}

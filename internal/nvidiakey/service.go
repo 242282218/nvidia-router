@@ -168,11 +168,18 @@ func (s *Service) Import(ctx context.Context, token string) (ImportResult, error
 	}
 	masked, prefix, suffix := maskToken(token)
 	fingerprintInput := []byte(token)
-	fingerprint := s.keys.Fingerprint(fingerprintInput)
+	fingerprints := s.keys.Fingerprints(fingerprintInput)
 	crypto.Zero(fingerprintInput)
-	defer crypto.Zero(fingerprint)
+	for _, fingerprint := range fingerprints {
+		defer crypto.Zero(fingerprint)
+	}
+	fingerprint := fingerprints[s.keys.ActiveVersion()]
 
-	exists, err := s.repository.FingerprintExists(ctx, fingerprint)
+	fingerprintValues := make([][]byte, 0, len(fingerprints))
+	for _, value := range fingerprints {
+		fingerprintValues = append(fingerprintValues, value)
+	}
+	exists, err := s.repository.FingerprintExistsAny(ctx, fingerprintValues)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("check duplicate NVIDIA key: %w", err)
 	}
@@ -189,7 +196,7 @@ func (s *Service) Import(ctx context.Context, token string) (ImportResult, error
 	defer crypto.Zero(ciphertext)
 	defer crypto.Zero(nonce)
 
-	key, duplicate, err := s.repository.Create(ctx, ciphertext, nonce, fingerprint, prefix, suffix, s.clock.Now())
+	key, duplicate, err := s.repository.Create(ctx, ciphertext, nonce, fingerprint, prefix, suffix, s.clock.Now(), s.keys.ActiveVersion())
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("persist NVIDIA key: %w", err)
 	}
@@ -223,7 +230,7 @@ func (s *Service) WithSecret(ctx context.Context, id int64, callback func([]byte
 	if err != nil {
 		return fmt.Errorf("load NVIDIA key secret: %w", err)
 	}
-	secret, err := s.keys.Decrypt(encrypted.ciphertext, encrypted.nonce, nvidiaKeyAAD)
+	secret, err := s.keys.DecryptVersion(encrypted.keyVersion, encrypted.ciphertext, encrypted.nonce, nvidiaKeyAAD)
 	if err != nil {
 		return fmt.Errorf("decrypt NVIDIA key secret: %w", err)
 	}

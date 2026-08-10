@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-08-02T08:00:00Z",
+  "id": 4,
+  "key": "nvr_once_only_secret",
+  "key_prefix": "nvr_ci",
+  "max_concurrent": 4,
+  "name": "ci",
+  "rpm_limit": 60,
+  "tpm_limit": 10000
+}

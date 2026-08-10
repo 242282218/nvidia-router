@@ -140,6 +140,72 @@ func TestRepositoryRecordAggregatesFirstByteOnlyWhenKnown(t *testing.T) {
 	}
 }
 
+func TestRepositoryRecordStoresAndAggregatesFirstToken(t *testing.T) {
+	db := openObservabilityDB(t)
+	firstToken := int64(120)
+	record := RequestRecord{
+		RequestID: "first-token", Endpoint: "/v1/chat/completions", HTTPStatus: http.StatusOK,
+		Outcome: OutcomeSuccess, IsStream: true, DurationMS: 200, FirstTokenMS: &firstToken,
+		AttemptCount: 1, CreatedAt: time.Date(2026, 8, 3, 1, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var stored sql.NullInt64
+	if err := db.QueryRow("SELECT first_token_ms FROM request_logs WHERE request_id = ?", record.RequestID).Scan(&stored); err != nil {
+		t.Fatalf("read first token from request log: %v", err)
+	}
+	if !stored.Valid || stored.Int64 != firstToken {
+		t.Fatalf("stored first_token_ms = %#v, want %d", stored, firstToken)
+	}
+	var total, count int64
+	if err := db.QueryRow(`
+		SELECT total_first_token_ms, first_token_count
+		FROM daily_stats WHERE dimension_type = 'global' AND dimension_id = 'all'
+	`).Scan(&total, &count); err != nil {
+		t.Fatalf("read first token aggregate: %v", err)
+	}
+	if total != 120 || count != 1 {
+		t.Fatalf("first token aggregate = %d/%d, want 120/1", total, count)
+	}
+}
+
+func TestHTTPMiddlewareRecordsFirstTokenMSForStream(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "chat-model", true)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		SetFirstTokenAt(request.Context(), time.Now())
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if recorder.record.FirstTokenMS == nil {
+		t.Fatal("first_token_ms not recorded for a stream that produced a token")
+	}
+	if *recorder.record.FirstTokenMS < 0 {
+		t.Fatalf("first_token_ms = %d, want >= 0", *recorder.record.FirstTokenMS)
+	}
+}
+
+func TestHTTPMiddlewareLeavesFirstTokenMSNilWhenNoToken(t *testing.T) {
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "chat-model", true)
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if recorder.record.FirstTokenMS != nil {
+		t.Fatalf("first_token_ms = %d, want nil for a stream that never produced a token", *recorder.record.FirstTokenMS)
+	}
+}
+
 func TestRepositoryRecordRollsBackAllDimensionsOnDuplicateRequestID(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)

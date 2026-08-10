@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,6 +302,36 @@ func TestProxyCommitStateSetOnFirstDataEvent(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), ": keep-alive") {
 		t.Fatalf("leading comment was not preserved: %q", recorder.Body.String())
+	}
+}
+
+func TestProxyOnFirstDataFiresOnceAfterFirstDataEvent(t *testing.T) {
+	input := ": keep-alive\n\ndata: first-event\n\ndata: second-event\n\ndata: [DONE]\n\n"
+	upstream := &http.Response{Body: io.NopCloser(strings.NewReader(input))}
+
+	recorder := httptest.NewRecorder()
+	var calls atomic.Int32
+	err := Proxy(context.Background(), recorder, upstream, ProxyOptions{OnFirstData: func() { calls.Add(1) }})
+	if err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("OnFirstData calls = %d, want exactly 1", calls.Load())
+	}
+}
+
+func TestProxyOnFirstDataNotFiredForCommentOnlyStream(t *testing.T) {
+	input := ": keep-alive\n\n: keep-alive-2\n\n"
+	upstream := &http.Response{Body: io.NopCloser(strings.NewReader(input))}
+
+	recorder := httptest.NewRecorder()
+	var calls int
+	err := Proxy(context.Background(), recorder, upstream, ProxyOptions{OnFirstData: func() { calls++ }})
+	if !errors.Is(err, ErrStreamInterrupted) {
+		t.Fatalf("Proxy error = %v, want ErrStreamInterrupted", err)
+	}
+	if calls != 0 {
+		t.Fatalf("OnFirstData calls = %d, want 0 for a comment-only stream", calls)
 	}
 }
 

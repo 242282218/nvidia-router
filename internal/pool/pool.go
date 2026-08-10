@@ -90,6 +90,7 @@ func (p *Pool) Summary() Summary {
 		if state.busy {
 			summary.Active++
 		}
+		summary.Active += state.streamingBusy
 		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
 			summary.Keys.CoolingDown++
 			if summary.EarliestCooldown == nil || state.snapshot.CooldownUntil.Before(*summary.EarliestCooldown) {
@@ -266,13 +267,24 @@ func (p *Pool) SetModelBlock(keyID, modelID int64, blocked bool) {
 }
 
 func (p *Pool) tryAcquire(modelID int64, attempted map[int64]struct{}) (Lease, bool) {
+	return p.tryAcquireMode(modelID, attempted, false)
+}
+
+// tryAcquireStream acquires a streaming lease slot for tests, mirroring the
+// non-streaming tryAcquire helper.
+func (p *Pool) tryAcquireStream(modelID int64, attempted map[int64]struct{}) (Lease, bool) {
+	return p.tryAcquireMode(modelID, attempted, true)
+}
+
+func (p *Pool) tryAcquireMode(modelID int64, attempted map[int64]struct{}, stream bool) (Lease, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	lease, _ := p.tryAcquireLocked(modelID, attempted)
+	maxStreaming := resolveQueueSettings(p.currentSnapshot()).maxStreamingPerKey
+	lease, _ := p.tryAcquireLocked(modelID, attempted, stream, maxStreaming)
 	return lease, lease != nil
 }
 
-func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}) (Lease, unavailableState) {
+func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int) (Lease, unavailableState) {
 	now := p.clock.Now()
 	if enabled, known := p.models[modelID]; known && !enabled {
 		return nil, unavailableState{reason: UnavailableModelBlocked}
@@ -302,14 +314,25 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}) (Le
 			continue
 		}
 		hasReady = true
-		if state.busy {
-			continue
+		// Streaming and short requests draw from independent per-key quotas: a
+		// stream holds a streaming slot for its whole (possibly minute-long)
+		// lifetime instead of the single busy slot, so short requests on the
+		// same key are not stalled behind a slow generation (audit R4).
+		if stream {
+			if state.streamingBusy >= maxStreamingPerKey {
+				continue
+			}
+			state.streamingBusy++
+		} else {
+			if state.busy {
+				continue
+			}
+			state.busy = true
 		}
-		state.busy = true
 		p.cursor = (index + 1) % len(p.order)
 		return &lease{
 			keyID:   state.snapshot.ID,
-			release: func() { p.release(state) },
+			release: func() { p.release(state, stream) },
 		}, unavailableState{}
 	}
 	if !hasEnabled {
@@ -324,9 +347,13 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}) (Le
 	return nil, unavailableState{reason: UnavailableBusy}
 }
 
-func (p *Pool) release(state *keyState) {
+func (p *Pool) release(state *keyState, stream bool) {
 	p.mu.Lock()
-	state.busy = false
+	if stream {
+		state.streamingBusy--
+	} else {
+		state.busy = false
+	}
 	p.dispatchWaitersLocked()
 	p.mu.Unlock()
 }

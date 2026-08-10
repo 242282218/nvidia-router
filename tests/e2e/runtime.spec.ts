@@ -26,8 +26,21 @@ test.describe('runtime and responsive management UI', () => {
     await expect(page.getByTestId('runtime-key-counts')).toBeVisible()
     await expect(page.getByTestId('runtime-active')).toBeVisible()
     await page.getByTestId('queue-capacity').fill('120')
+    // retry_budget_ms is the wire name the front-end and back-end must agree on
+    // (audit R1.1); saving it exercises the full PATCH → store → echo path.
+    await page.getByTestId('retry-budget-ms').fill('150000')
     await page.getByTestId('runtime-settings-form').getByRole('button', { name: '保存设置' }).click()
     await expect(page.getByTestId('queue-capacity')).toHaveValue('120')
+    await expect(page.getByTestId('runtime-saved')).toBeVisible()
+    // Save-success assertion: the server must echo the submitted values back
+    // through the settings API, not just the optimistic local input state.
+    const settingsResponse = await page.request.get('/admin/api/settings')
+    expect(settingsResponse.ok()).toBeTruthy()
+    const settingsBody = (await settingsResponse.json()) as {
+      data: { queue_capacity: number; retry_budget_ms: number }
+    }
+    expect(settingsBody.data.queue_capacity).toBe(120)
+    expect(settingsBody.data.retry_budget_ms).toBe(150000)
     await expect(page.getByTestId('runtime-settings-form')).toBeVisible()
   })
 

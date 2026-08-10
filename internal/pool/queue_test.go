@@ -76,7 +76,7 @@ func TestQueueCapacityAndTimeoutReturnDistinctRetryableErrors(t *testing.T) {
 	queued := acquireAsync(p, context.Background(), 1)
 	waitForQueueLength(t, p, 1)
 
-	_, err := p.Acquire(context.Background(), 1, nil)
+	_, err := p.Acquire(context.Background(), 1, nil, false)
 	assertAPIError(t, err, http.StatusTooManyRequests, "queue_full", true)
 	assertAPIError(t, receiveAcquire(t, queued).err, http.StatusTooManyRequests, "queue_timeout", true)
 	holder.Release()
@@ -94,7 +94,7 @@ func TestQueueDefaultsToCapacity100(t *testing.T) {
 		waitForQueueLength(t, p, index+1)
 	}
 
-	_, err := p.Acquire(context.Background(), 1, nil)
+	_, err := p.Acquire(context.Background(), 1, nil, false)
 	assertAPIError(t, err, http.StatusTooManyRequests, "queue_full", true)
 	for _, cancel := range cancels {
 		cancel()
@@ -127,7 +127,7 @@ func TestAcquireClassifiesUnavailableKeys(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newQueueTestPool(queueSnapshot(10, time.Second))
 			p.LoadSnapshot(tt.keys, tt.blocks)
-			_, err := p.Acquire(context.Background(), 9, nil)
+			_, err := p.Acquire(context.Background(), 9, nil, false)
 			assertAPIError(t, err, tt.status, tt.code, tt.retry)
 		})
 	}
@@ -200,7 +200,7 @@ func TestShutdownRejectsQueuedAndFutureAcquire(t *testing.T) {
 	p.Shutdown()
 	p.Shutdown()
 	assertAPIError(t, receiveAcquire(t, waiter).err, http.StatusServiceUnavailable, "server_shutting_down", false)
-	_, err := p.Acquire(context.Background(), 1, nil)
+	_, err := p.Acquire(context.Background(), 1, nil, false)
 	assertAPIError(t, err, http.StatusServiceUnavailable, "server_shutting_down", false)
 	holder.Release()
 }
@@ -223,7 +223,7 @@ func acquireAsync(p *Pool, ctx context.Context, modelID int64) <-chan acquireCal
 func acquireAsyncWithAttempted(p *Pool, ctx context.Context, modelID int64, attempted map[int64]struct{}) <-chan acquireCallResult {
 	result := make(chan acquireCallResult, 1)
 	go func() {
-		lease, err := p.Acquire(ctx, modelID, attempted)
+		lease, err := p.Acquire(ctx, modelID, attempted, false)
 		result <- acquireCallResult{lease: lease, err: err}
 	}()
 	return result
@@ -236,7 +236,7 @@ func mustAcquire(t *testing.T, p *Pool, modelID int64) Lease {
 
 func mustAcquireWithAttempted(t *testing.T, p *Pool, modelID int64, attempted map[int64]struct{}) Lease {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), modelID, attempted)
+	lease, err := p.Acquire(context.Background(), modelID, attempted, false)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}

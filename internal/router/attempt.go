@@ -32,6 +32,7 @@ type KeyPool interface {
 		modelID int64,
 		attempted map[int64]struct{},
 		snapshot runtimeconfig.Snapshot,
+		stream bool,
 	) (pool.Lease, error)
 }
 
@@ -118,7 +119,7 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	var lastFault *fault.Fault
 	for {
 		queueStarted := a.clock.Now()
-		lease, err := a.acquire(requestCtx, settings, modelID, attempted)
+		lease, err := a.acquire(requestCtx, settings, modelID, attempted, stream)
 		totalQueue += a.clock.Now().Sub(queueStarted)
 		if err != nil {
 			if lastFault != nil && a.budgetExpired(requestCtx) {
@@ -165,7 +166,9 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		// Back off before the next key. Retrying immediately turned a struggling
 		// upstream into a burst of N requests as fast as the pool could hand out
 		// leases; the jitter keeps concurrent requests from re-synchronising.
-		if err := a.backoff(requestCtx, len(attempted), budget); err != nil {
+		// An upstream Retry-After (typically on 429) overrides the exponential
+		// delay so an account-level rate limit is not hammered again instantly.
+		if err := a.backoff(requestCtx, len(attempted), budget, currentFault); err != nil {
 			return AttemptResult{}, *currentFault
 		}
 	}
@@ -217,8 +220,9 @@ func (a *Attempt) acquire(
 	settings runtimeconfig.Snapshot,
 	modelID int64,
 	attempted map[int64]struct{},
+	stream bool,
 ) (pool.Lease, error) {
-	lease, err := a.keyPool.AcquireWithSnapshot(ctx, modelID, attempted, settings)
+	lease, err := a.keyPool.AcquireWithSnapshot(ctx, modelID, attempted, settings, stream)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, fault.Classify(nil, err, false, a.clock.Now())
 	}
@@ -297,26 +301,45 @@ func (a *Attempt) budgetExpired(ctx context.Context) bool {
 const (
 	retryBackoffBase = 100 * time.Millisecond
 	retryBackoffMax  = 2 * time.Second
+	// retryAfterMaxDelay caps how long a single backoff honours the upstream's
+	// Retry-After hint. A misconfigured proxy or an account-level cooldown of
+	// hours must not pin the retry loop to its whole value: the retry window
+	// itself still bounds the loop.
+	retryAfterMaxDelay = 5 * time.Minute
 )
 
 // backoff waits before the next key attempt. The delay doubles per attempt and
 // carries the same 0.8-1.2 jitter factor fault.CalculateCooldown uses, so
 // concurrent requests failing on the same upstream do not re-synchronise into
-// bursts. It never sleeps past the retry deadline, and returns the context
-// error if the client disconnects while waiting.
-func (a *Attempt) backoff(ctx context.Context, attempts int, budget Budget) error {
-	// The first retry is immediate. One bad key is the common case, and moving to
-	// a different key is not the same as hammering one endpoint, so paying a
-	// delay there would slow down every ordinary failover. Escalate only once
-	// failures repeat, which is the signal that the upstream itself is unwell.
-	if attempts <= 1 {
+// bursts. A Retry-After hint on the current fault (typically a 429) replaces
+// the exponential delay when it is longer, so an account-level rate limit is
+// not retried before the upstream says it is ready. It never sleeps past the
+// retry deadline, and returns the context error if the client disconnects
+// while waiting.
+func (a *Attempt) backoff(ctx context.Context, attempts int, budget Budget, currentFault *fault.Fault) error {
+	// A valid upstream Retry-After is authoritative even on the first key
+	// switch: account- or egress-level limits are not fixed by changing keys.
+	// Preserve the fast path for ordinary per-key failures without a hint.
+	if attempts <= 1 && (currentFault == nil || currentFault.RetryAfter <= 0) {
 		return nil
 	}
-	delay := retryBackoffBase << (attempts - 2)
+	delay := retryBackoffBase
+	if attempts > 1 {
+		delay = retryBackoffBase << (attempts - 2)
+	}
 	if delay > retryBackoffMax || delay <= 0 {
 		delay = retryBackoffMax
 	}
 	delay = time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+	if currentFault != nil && currentFault.RetryAfter > 0 {
+		suggested := currentFault.RetryAfter
+		if suggested > retryAfterMaxDelay {
+			suggested = retryAfterMaxDelay
+		}
+		if suggested > delay {
+			delay = suggested
+		}
+	}
 	if !budget.retryDeadline.IsZero() {
 		if remaining := budget.retryDeadline.Sub(a.clock.Now()); remaining < delay {
 			delay = remaining

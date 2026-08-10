@@ -28,6 +28,7 @@ type RequestRecord struct {
 	IsStream          bool
 	QueueMS           int64
 	FirstByteMS       *int64
+	FirstTokenMS      *int64
 	DurationMS        int64
 	AttemptCount      int
 	PromptTokens      *int64
@@ -37,17 +38,19 @@ type RequestRecord struct {
 }
 
 type DailyStat struct {
-	Day              string  `json:"day"`
-	DimensionType    string  `json:"dimension_type"`
-	DimensionID      string  `json:"dimension_id"`
-	RequestCount     int64   `json:"request_count"`
-	SuccessCount     int64   `json:"success_count"`
-	FailureCount     int64   `json:"failure_count"`
-	AverageDuration  float64 `json:"average_duration_ms"`
-	AverageQueue     float64 `json:"average_queue_ms"`
-	AverageAttempts  float64 `json:"average_attempts"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
+	Day                 string  `json:"day"`
+	DimensionType       string  `json:"dimension_type"`
+	DimensionID         string  `json:"dimension_id"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	FailureCount        int64   `json:"failure_count"`
+	AverageDuration     float64 `json:"average_duration_ms"`
+	AverageQueue        float64 `json:"average_queue_ms"`
+	AverageAttempts     float64 `json:"average_attempts"`
+	AverageFirstByteMS  float64 `json:"average_first_byte_ms"`
+	AverageFirstTokenMS float64 `json:"average_first_token_ms"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CompletionTokens    int64   `json:"completion_tokens"`
 }
 
 type RecentError struct {

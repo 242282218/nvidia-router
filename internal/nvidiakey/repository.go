@@ -18,6 +18,7 @@ type Repository struct {
 type encryptedKey struct {
 	ciphertext []byte
 	nonce      []byte
+	keyVersion int
 }
 
 func NewRepository(db *sql.DB) *Repository {
@@ -133,15 +134,22 @@ func parseOptionalTimestamp(value sql.NullString) (*time.Time, error) {
 }
 
 func (r *Repository) FingerprintExists(ctx context.Context, fingerprint []byte) (bool, error) {
-	var exists int
-	err := r.db.QueryRowContext(ctx, "SELECT 1 FROM nvidia_keys WHERE fingerprint = ?", fingerprint).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	return r.FingerprintExistsAny(ctx, [][]byte{fingerprint})
+}
+
+func (r *Repository) FingerprintExistsAny(ctx context.Context, fingerprints [][]byte) (bool, error) {
+	for _, fingerprint := range fingerprints {
+		var exists int
+		err := r.db.QueryRowContext(ctx, "SELECT 1 FROM nvidia_keys WHERE fingerprint = ?", fingerprint).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("query NVIDIA key fingerprint: %w", err)
+		}
+		return true, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("query NVIDIA key fingerprint: %w", err)
-	}
-	return true, nil
+	return false, nil
 }
 
 func (r *Repository) Create(
@@ -149,16 +157,21 @@ func (r *Repository) Create(
 	ciphertext, nonce, fingerprint []byte,
 	prefix, suffix string,
 	now time.Time,
+	keyVersions ...int,
 ) (Key, bool, error) {
+	keyVersion := 1
+	if len(keyVersions) > 0 && keyVersions[0] > 0 {
+		keyVersion = keyVersions[0]
+	}
 	timestamp := formatTimestamp(now)
 	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO nvidia_keys (
-			ciphertext, nonce, fingerprint, display_prefix, display_suffix,
-			enabled, auth_invalid, cooldown_level, consecutive_failures,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 1, 0, 0, 0, ?, ?)
+			INSERT INTO nvidia_keys (
+				ciphertext, nonce, fingerprint, display_prefix, display_suffix,
+				enabled, auth_invalid, cooldown_level, consecutive_failures,
+				key_version, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, 1, 0, 0, 0, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO NOTHING
-	`, ciphertext, nonce, fingerprint, prefix, suffix, timestamp, timestamp)
+	`, ciphertext, nonce, fingerprint, prefix, suffix, keyVersion, timestamp, timestamp)
 	if err != nil {
 		return Key{}, false, fmt.Errorf("insert NVIDIA key: %w", err)
 	}
@@ -187,10 +200,10 @@ func (r *Repository) Create(
 func (r *Repository) LoadEncrypted(ctx context.Context, id int64) (encryptedKey, error) {
 	var value encryptedKey
 	err := r.db.QueryRowContext(ctx, `
-		SELECT ciphertext, nonce
+		SELECT ciphertext, nonce, key_version
 		FROM nvidia_keys
 		WHERE id = ?
-	`, id).Scan(&value.ciphertext, &value.nonce)
+	`, id).Scan(&value.ciphertext, &value.nonce, &value.keyVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return encryptedKey{}, fmt.Errorf("load NVIDIA key ciphertext: %w", sql.ErrNoRows)
 	}

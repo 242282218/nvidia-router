@@ -324,6 +324,34 @@ func reasoningModel() modelcatalog.Model {
 	return model
 }
 
+func TestDeepSeekV4FlashReasoningUsesOpenAIWireFormat(t *testing.T) {
+	request, err := Parse([]byte(`{
+		"model":"nvidia/deepseek-ai/deepseek-v4-flash",
+		"messages":[{"role":"user","content":"long task"}],
+		"thinking":{"type":"enabled","budget_tokens":8192}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	model := reasoningModel()
+	model.PublicID = "nvidia/deepseek-ai/deepseek-v4-flash"
+	model.UpstreamID = "deepseek-ai/deepseek-v4-flash"
+	body, err := request.MarshalFor(model)
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got := string(fields["model"]); got != `"deepseek-ai/deepseek-v4-flash"` {
+		t.Fatalf("upstream model = %s", got)
+	}
+	if got := string(fields["reasoning_effort"]); got != `"medium"` {
+		t.Fatalf("reasoning_effort = %s", got)
+	}
+}
+
 func requireRequestError(t *testing.T, err error, code, param string) *apierror.Error {
 	t.Helper()
 	var publicError *apierror.Error

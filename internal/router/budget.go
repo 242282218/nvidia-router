@@ -11,7 +11,12 @@ type Budget struct {
 	connectTimeout    time.Duration
 	firstByteTimeout  time.Duration
 	firstByteDeadline time.Time
-	totalDeadline     time.Time
+	// firstTokenDeadline bounds the pre-commit wait for the first SSE data event
+	// on a streaming request. It is set alongside firstByteDeadline in forAttempt
+	// from streamFirstTokenTimeout; non-stream budgets leave it zero and
+	// FirstTokenDeadline falls back to the first-byte deadline.
+	firstTokenDeadline time.Time
+	totalDeadline      time.Time
 	// retryDeadline bounds the pre-commit acquire/retry loop only. A stream has
 	// no totalDeadline because its body legitimately runs for minutes, but that
 	// previously left the retry loop itself unbounded: a stream could walk the
@@ -22,6 +27,14 @@ type Budget struct {
 	// was the pool size, so a large pool turned one client request into that
 	// many upstream calls.
 	maxAttempts int
+	// streamFirstTokenTimeout is the pre-commit first-token window for streaming
+	// requests (runtimeconfig.StreamFirstTokenTimeoutMS). Zero on non-stream
+	// budgets, which keep firstByteTimeout as their only pre-commit window.
+	streamFirstTokenTimeout time.Duration
+	// streamIdleTimeout bounds silence between SSE data events once a stream is
+	// committed, so a stalled upstream cannot pin the lease forever while a
+	// slow-but-live generation is not truncated.
+	streamIdleTimeout time.Duration
 }
 
 func newBudget(settings runtimeconfig.Snapshot, now time.Time, stream bool) Budget {
@@ -44,6 +57,25 @@ func newBudget(settings runtimeconfig.Snapshot, now time.Time, stream bool) Budg
 	budget := Budget{
 		connectTimeout:   time.Duration(connectTimeoutMS) * time.Millisecond,
 		firstByteTimeout: firstByteTimeout,
+	}
+	// The stream idle guard is resolved for every budget even though only
+	// streaming handlers consume it, so StreamIdleTimeout never returns a zero
+	// that would silently disable the wrap (WithIdleTimeout passes bodies
+	// through unchanged on a non-positive idle).
+	streamIdleTimeoutMS := settings.StreamIdleTimeoutMS
+	if streamIdleTimeoutMS <= 0 {
+		streamIdleTimeoutMS = 1000
+	}
+	budget.streamIdleTimeout = time.Duration(streamIdleTimeoutMS) * time.Millisecond
+	// Streams split the pre-commit window: firstByteTimeout keeps bounding the
+	// transport's header wait, while streamFirstTokenTimeout bounds the prime
+	// phase until the first SSE data event arrives.
+	if stream {
+		firstTokenTimeoutMS := settings.StreamFirstTokenTimeoutMS
+		if firstTokenTimeoutMS <= 0 {
+			firstTokenTimeoutMS = 1000
+		}
+		budget.streamFirstTokenTimeout = time.Duration(firstTokenTimeoutMS) * time.Millisecond
 	}
 	if !stream {
 		totalTimeoutMS := settings.NonstreamTotalTimeoutMS
@@ -86,6 +118,23 @@ func (b Budget) FirstByteDeadline() time.Time {
 	return b.firstByteDeadline
 }
 
+// FirstTokenDeadline bounds the pre-commit wait for the first SSE data event.
+// Streaming budgets carry their own window (stream_first_token_timeout_ms);
+// non-stream budgets fall back to the first-byte deadline, which is the only
+// pre-commit window they have.
+func (b Budget) FirstTokenDeadline() time.Time {
+	if !b.firstTokenDeadline.IsZero() {
+		return b.firstTokenDeadline
+	}
+	return b.firstByteDeadline
+}
+
+// StreamIdleTimeout bounds silence between SSE data events once a streaming
+// response is committed. Non-stream budgets never consume it.
+func (b Budget) StreamIdleTimeout() time.Duration {
+	return b.streamIdleTimeout
+}
+
 func (b Budget) TotalDeadline() time.Time {
 	return b.totalDeadline
 }
@@ -106,6 +155,11 @@ func (b Budget) MaxAttempts() int {
 
 func (b Budget) forAttempt(now time.Time) Budget {
 	b.firstByteDeadline = now.Add(b.firstByteTimeout)
+	// Streams additionally pin the first-token deadline; the prime phase waits
+	// on this window instead of the transport-level first-byte window.
+	if b.streamFirstTokenTimeout > 0 {
+		b.firstTokenDeadline = now.Add(b.streamFirstTokenTimeout)
+	}
 	return b
 }
 

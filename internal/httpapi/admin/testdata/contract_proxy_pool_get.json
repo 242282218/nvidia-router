@@ -1,0 +1,8 @@
+{
+  "data": {
+    "auth_configured": true,
+    "enabled": true,
+    "proxy_url": "http://proxy-pool:8080",
+    "source": "database"
+  }
+}

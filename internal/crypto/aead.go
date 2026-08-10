@@ -9,10 +9,14 @@ import (
 )
 
 func (keys *KeySet) Encrypt(plaintext []byte, aad string) ([]byte, []byte, error) {
+	return keys.EncryptVersion(keys.ActiveVersion(), plaintext, aad)
+}
+
+func (keys *KeySet) EncryptVersion(version int, plaintext []byte, aad string) ([]byte, []byte, error) {
 	if aad == "" {
 		return nil, nil, fmt.Errorf("encrypt: AAD is empty")
 	}
-	gcm, err := keys.gcm()
+	gcm, err := keys.gcm(version)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create AES-GCM: %w", err)
 	}
@@ -24,10 +28,14 @@ func (keys *KeySet) Encrypt(plaintext []byte, aad string) ([]byte, []byte, error
 }
 
 func (keys *KeySet) Decrypt(ciphertext, nonce []byte, aad string) ([]byte, error) {
+	return keys.DecryptVersion(keys.ActiveVersion(), ciphertext, nonce, aad)
+}
+
+func (keys *KeySet) DecryptVersion(version int, ciphertext, nonce []byte, aad string) ([]byte, error) {
 	if aad == "" {
 		return nil, fmt.Errorf("decrypt: AAD is empty")
 	}
-	gcm, err := keys.gcm()
+	gcm, err := keys.gcm(version)
 	if err != nil {
 		return nil, fmt.Errorf("create AES-GCM: %w", err)
 	}
@@ -41,8 +49,15 @@ func (keys *KeySet) Decrypt(ciphertext, nonce []byte, aad string) ([]byte, error
 	return plaintext, nil
 }
 
-func (keys *KeySet) gcm() (cipher.AEAD, error) {
-	block, err := aes.NewCipher(keys.aeadKey[:])
+func (keys *KeySet) gcm(version int) (cipher.AEAD, error) {
+	if keys == nil {
+		return nil, fmt.Errorf("key set is nil")
+	}
+	derived, ok := keys.versions[version]
+	if !ok {
+		return nil, fmt.Errorf("unsupported key version %d", version)
+	}
+	block, err := aes.NewCipher(derived.aeadKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("create AES-256 block cipher: %w", err)
 	}

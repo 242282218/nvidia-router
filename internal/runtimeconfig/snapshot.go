@@ -31,6 +31,23 @@ type Snapshot struct {
 	// bound a committed stream: once the first byte reaches the client the
 	// response is no longer retryable and a long generation is legitimate.
 	RetryBudgetMS int
+	// MaxStreamingPerKey is the per-key quota of concurrent streaming requests.
+	// Streaming requests previously held the key's only busy slot for their whole
+	// (potentially minute-long) lifetime, stalling short requests routed to that
+	// key. The busy slot keeps serving short requests while streams draw from an
+	// independent per-key budget instead (audit R4).
+	MaxStreamingPerKey int
+	// StreamFirstTokenTimeoutMS bounds the pre-commit wait for the first SSE
+	// data event (TTFT) on a streaming request. It splits the old first-byte
+	// window: first_byte_timeout_ms keeps bounding the transport's header wait,
+	// while this setting bounds how long the prime phase may wait for the first
+	// token before the attempt loop gives up.
+	StreamFirstTokenTimeoutMS int
+	// StreamIdleTimeoutMS bounds the silence between SSE data events once a
+	// stream is committed. It replaces the reuse of first_byte_timeout_ms as the
+	// in-stream idle guard, so a slow-but-live generation is not truncated by a
+	// window sized for the first token.
+	StreamIdleTimeoutMS int
 	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
 	FirstByteDeadline time.Time
 }
@@ -81,6 +98,38 @@ func Validate(snapshot Snapshot) error {
 		{"request_log_retention_days", snapshot.RequestLogRetentionDays, 30, 365},
 		{"max_attempts_per_request", snapshot.MaxAttemptsPerRequest, 1, 50},
 		{"retry_budget_ms", snapshot.RetryBudgetMS, 1000, 600000},
+	}
+	// MaxStreamingPerKey deliberately skips the zero value: a snapshot built
+	// before the migration landed carries 0 for the new column, and the pool
+	// resolves 0 to the documented default of 2. Enforcing 1..10 on a
+	// pre-migration row would reject every existing deployment at startup.
+	if snapshot.MaxStreamingPerKey != 0 {
+		checks = append(checks, struct {
+			field string
+			value int
+			min   int
+			max   int
+		}{"max_streaming_per_key", snapshot.MaxStreamingPerKey, 1, 10})
+	}
+	// The stream timeout columns follow the same zero-skip convention: they are
+	// added by migration 014 with NOT NULL defaults, but a snapshot that has not
+	// been through the migration (or a test literal) carries 0 for both, and the
+	// budget layer resolves 0 to the documented defaults.
+	if snapshot.StreamFirstTokenTimeoutMS != 0 {
+		checks = append(checks, struct {
+			field string
+			value int
+			min   int
+			max   int
+		}{"stream_first_token_timeout_ms", snapshot.StreamFirstTokenTimeoutMS, 1000, 1800000})
+	}
+	if snapshot.StreamIdleTimeoutMS != 0 {
+		checks = append(checks, struct {
+			field string
+			value int
+			min   int
+			max   int
+		}{"stream_idle_timeout_ms", snapshot.StreamIdleTimeoutMS, 1000, 1800000})
 	}
 	for _, check := range checks {
 		if check.value < check.min || check.value > check.max {

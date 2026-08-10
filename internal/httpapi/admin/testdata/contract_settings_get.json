@@ -1,0 +1,17 @@
+{
+  "data": {
+    "connect_timeout_ms": 10000,
+    "failover_status_codes": "429,500,502,503,504",
+    "first_byte_timeout_ms": 60000,
+    "max_attempts_per_request": 5,
+    "max_streaming_per_key": 2,
+    "nonstream_total_timeout_ms": 300000,
+    "queue_capacity": 100,
+    "queue_wait_timeout_ms": 60000,
+    "request_log_retention_days": 30,
+    "retry_budget_ms": 120000,
+    "shutdown_grace_ms": 60000,
+    "stream_first_token_timeout_ms": 60000,
+    "stream_idle_timeout_ms": 180000
+  }
+}

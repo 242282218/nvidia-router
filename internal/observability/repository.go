@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 )
@@ -84,19 +85,53 @@ func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) e
 	return nil
 }
 
+// cleanupBatchSize bounds each DELETE pass. A single unbatched DELETE of a
+// large retention window held the shared SQLite writer connection for the whole
+// scan, stalling request-log flushes and access-key authentication (audit R7).
+const cleanupBatchSize = 5000
+
+type execContextFunc func(ctx context.Context, query string, args ...any) (sql.Result, error)
+
+// deleteBatched deletes rows matching a DELETE statement whose placeholders are
+// a cutoff value followed by a LIMIT batch size, looping until a pass removes
+// fewer rows than the batch. Each pass is short, so the writer connection is
+// never held for a full-table sweep.
+func deleteBatched(ctx context.Context, exec execContextFunc, batchSize int, statement string, cutoff any) (int64, error) {
+	var deleted int64
+	batch := 0
+	for {
+		batch++
+		started := time.Now()
+		result, err := exec(ctx, statement, cutoff, batchSize)
+		if err != nil {
+			return deleted, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+		slog.Default().Info("observability cleanup batch completed", "batch", batch, "deleted", count, "total_deleted", deleted, "duration_ms", time.Since(started).Milliseconds())
+		if count < int64(batchSize) {
+			return deleted, nil
+		}
+	}
+}
+
 func (r *Repository) DeleteRequestLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	// request_logs has a TEXT primary key, so the batched delete keys on the
+	// implicit rowid (SQLite always provides one for non-WITHOUT-ROWID tables).
+	deleted, err := deleteBatched(ctx, r.db.ExecContext, cleanupBatchSize, `
 		DELETE FROM request_logs
-		WHERE created_at < ?
-	`, formatTime(cutoff))
+		WHERE rowid IN (
+			SELECT rowid FROM request_logs
+			WHERE created_at < ?
+			LIMIT ?
+		)`, formatTime(cutoff))
 	if err != nil {
-		return 0, fmt.Errorf("delete expired request logs: %w", err)
+		return deleted, fmt.Errorf("delete expired request logs: %w", err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count deleted request logs: %w", err)
-	}
-	return count, nil
+	return deleted, nil
 }
 
 // DeleteDailyStatsBefore prunes aggregate rows older than cutoff. daily_stats
@@ -105,18 +140,17 @@ func (r *Repository) DeleteRequestLogsBefore(ctx context.Context, cutoff time.Ti
 // retention is deliberately much longer than request_logs, because surviving
 // request-log deletion is the whole point of the aggregates.
 func (r *Repository) DeleteDailyStatsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	deleted, err := deleteBatched(ctx, r.db.ExecContext, cleanupBatchSize, `
 		DELETE FROM daily_stats
-		WHERE day < ?
-	`, cutoff.UTC().Format("2006-01-02"))
+		WHERE rowid IN (
+			SELECT rowid FROM daily_stats
+			WHERE day < ?
+			LIMIT ?
+		)`, cutoff.UTC().Format("2006-01-02"))
 	if err != nil {
-		return 0, fmt.Errorf("delete expired daily stats: %w", err)
+		return deleted, fmt.Errorf("delete expired daily stats: %w", err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count deleted daily stats: %w", err)
-	}
-	return count, nil
+	return deleted, nil
 }
 
 // MetricsSummary returns label-free global request counters for Prometheus.
@@ -161,14 +195,14 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 		INSERT INTO request_logs (
 			request_id, endpoint, model_id, access_key_id, nvidia_key_id,
 			http_status, outcome, error_code, is_stream, queue_ms,
-			first_byte_ms, duration_ms, attempt_count, prompt_tokens,
-			completion_tokens, upstream_request_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			first_byte_ms, first_token_ms, duration_ms, attempt_count,
+			prompt_tokens, completion_tokens, upstream_request_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.RequestID, record.Endpoint, nullableString(record.ModelID), record.AccessKeyID, record.NVIDIAKeyID,
 		record.HTTPStatus, record.Outcome, record.ErrorCode, boolInt(record.IsStream), record.QueueMS,
-		record.FirstByteMS, record.DurationMS, record.AttemptCount, record.PromptTokens,
-		record.CompletionTokens, record.UpstreamRequestID, formatTime(record.CreatedAt),
+		record.FirstByteMS, record.FirstTokenMS, record.DurationMS, record.AttemptCount,
+		record.PromptTokens, record.CompletionTokens, record.UpstreamRequestID, formatTime(record.CreatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("insert request log: %w", err)
@@ -179,12 +213,15 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 func upsertDailyStat(ctx context.Context, tx *sql.Tx, record RequestRecord, dimension dimension) error {
 	success, failure := outcomeCounts(record.Outcome)
 	firstByteMS, firstByteCount := firstByteAggregate(record.FirstByteMS)
+	firstTokenMS, firstTokenCount := firstByteAggregate(record.FirstTokenMS)
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO daily_stats (
 			day, dimension_type, dimension_id, request_count, success_count,
 			failure_count, total_duration_ms, total_queue_ms, total_attempts,
-			total_first_byte_ms, first_byte_count, prompt_tokens, completion_tokens
-		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			total_first_byte_ms, first_byte_count,
+			total_first_token_ms, first_token_count,
+			prompt_tokens, completion_tokens
+		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
 			request_count = request_count + 1,
 			success_count = success_count + excluded.success_count,
@@ -194,12 +231,14 @@ func upsertDailyStat(ctx context.Context, tx *sql.Tx, record RequestRecord, dime
 			total_attempts = total_attempts + excluded.total_attempts,
 			total_first_byte_ms = total_first_byte_ms + excluded.total_first_byte_ms,
 			first_byte_count = first_byte_count + excluded.first_byte_count,
+			total_first_token_ms = total_first_token_ms + excluded.total_first_token_ms,
+			first_token_count = first_token_count + excluded.first_token_count,
 			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
 			completion_tokens = completion_tokens + excluded.completion_tokens
 	`,
 		record.CreatedAt.UTC().Format("2006-01-02"), dimension.typeName, dimension.id,
 		success, failure, record.DurationMS, record.QueueMS, record.AttemptCount,
-		firstByteMS, firstByteCount,
+		firstByteMS, firstByteCount, firstTokenMS, firstTokenCount,
 		valueOrZero(record.PromptTokens), valueOrZero(record.CompletionTokens),
 	)
 	if err != nil {

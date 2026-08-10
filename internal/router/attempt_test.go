@@ -87,7 +87,6 @@ func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 		name     string
 		response func() *http.Response
 	}{
-		{name: "401", response: func() *http.Response { return attemptResponse(401, "") }},
 		{name: "429", response: func() *http.Response {
 			response := attemptResponse(429, "")
 			response.Header.Set("Retry-After", "30")
@@ -130,6 +129,50 @@ func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 				t.Fatalf("second calls = %v, want [2]", secondCalls)
 			}
 		})
+	}
+}
+
+// TestAttemptCredentialFailureDoesNotFailover locks in the R2.2 tightening: a
+// 401 (or any credential fault) is per-key — replaying the doomed auth on
+// another key just burns that key's quota. The attempt must fail immediately
+// after the credential key, and that key must be disabled for later attempts.
+func TestAttemptCredentialFailureDoesNotFailover(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1, 2)
+	states := newAttemptStateWriter(time.Now())
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
+
+	var calls []int64
+	_, err := attempt.Run(context.Background(), 77, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		calls = append(calls, keyID)
+		if keyID == 1 {
+			return attemptResponse(401, ""), nil
+		}
+		return attemptResponse(200, `{}`), nil
+	})
+	var credentialFault fault.Fault
+	if !errors.As(err, &credentialFault) {
+		t.Fatalf("Run error = %T %v, want 401 Fault", err, err)
+	}
+	if credentialFault.HTTPStatus != http.StatusUnauthorized {
+		t.Fatalf("Fault status = %d, want 401", credentialFault.HTTPStatus)
+	}
+	if len(calls) != 1 || calls[0] != 1 {
+		t.Fatalf("Execute calls = %v, want [1] (credential faults must not switch keys)", calls)
+	}
+
+	// The failed key is disabled, so the next Run skips it entirely.
+	var secondCalls []int64
+	result, err := attempt.Run(context.Background(), 77, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		secondCalls = append(secondCalls, keyID)
+		return attemptResponse(200, `{}`), nil
+	})
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	defer result.Release()
+	if len(secondCalls) != 1 || secondCalls[0] != 2 {
+		t.Fatalf("second calls = %v, want [2]", secondCalls)
 	}
 }
 
@@ -187,7 +230,7 @@ func TestAttemptNon200StateWriteFailurePropagates(t *testing.T) {
 	if syncer.calls.Load() != 0 {
 		t.Fatal("StateSync ran before failed transaction")
 	}
-	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil, false)
 	if acquireErr != nil {
 		t.Fatalf("Acquire after state failure: %v", acquireErr)
 	}
@@ -230,7 +273,7 @@ func TestAttemptDoesNotPersistProxyFailureOrSwitchKey(t *testing.T) {
 	if states.failures != 0 || states.successes != 0 {
 		t.Fatalf("state writes = success:%d failure:%d, want zero", states.successes, states.failures)
 	}
-	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil, false)
 	if acquireErr != nil {
 		t.Fatalf("Acquire after proxy failure: %v", acquireErr)
 	}
@@ -264,11 +307,25 @@ func TestAttemptProxyFailureSkipsStateSyncAndModelBlockPropagation(t *testing.T)
 	}
 	// The key that hit the proxy error is released untouched and can be
 	// acquired again immediately.
-	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+	lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil, false)
 	if acquireErr != nil {
 		t.Fatalf("Acquire after proxy failure: %v", acquireErr)
 	}
 	lease.Release()
+}
+
+func TestAttemptBackoffHonorsRetryAfterOnFirstRetry(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	settings.snapshot.RetryBudgetMS = 200
+	attempt := NewAttempt(settings, newAttemptPool(settings, 1, 2), testSecrets{}, newAttemptStateWriter(time.Now()), nil, clock.RealClock{})
+	faultValue := fault.Fault{RetryAfter: 40 * time.Millisecond}
+	started := time.Now()
+	if err := attempt.backoff(context.Background(), 1, newBudget(settings.Snapshot(), started, false), &faultValue); err != nil {
+		t.Fatalf("backoff: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 30*time.Millisecond {
+		t.Fatalf("backoff elapsed %s, want at least 30ms", elapsed)
+	}
 }
 
 func TestAttemptReturnsLastFaultWhenCandidatesAreExhausted(t *testing.T) {
@@ -379,7 +436,7 @@ func TestAttemptReturnsQueueTimeoutWhenBudgetExpiresInQueue(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
 	settings.snapshot.QueueWaitTimeoutMS = 30
 	keyPool := newAttemptPool(settings, 1, 2)
-	holder, err := keyPool.Acquire(context.Background(), 1, nil)
+	holder, err := keyPool.Acquire(context.Background(), 1, nil, false)
 	if err != nil {
 		t.Fatalf("hold first key: %v", err)
 	}
@@ -405,7 +462,7 @@ func TestAttemptReturnsQueueTimeoutWhileWaitingForFirstKey(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
 	settings.snapshot.QueueWaitTimeoutMS = 30
 	keyPool := newAttemptPool(settings, 1)
-	holder, err := keyPool.Acquire(context.Background(), 1, nil)
+	holder, err := keyPool.Acquire(context.Background(), 1, nil, false)
 	if err != nil {
 		t.Fatalf("hold only key: %v", err)
 	}
@@ -481,7 +538,7 @@ func TestAttemptNonstreamStateCancellationDoesNotMaskTimeoutFault(t *testing.T) 
 			case <-time.After(500 * time.Millisecond):
 				t.Fatal("state writer was not called")
 			}
-			lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil)
+			lease, acquireErr := keyPool.Acquire(context.Background(), 1, nil, false)
 			if acquireErr != nil {
 				t.Fatalf("Acquire after persistence cancellation: %v", acquireErr)
 			}
@@ -528,7 +585,7 @@ func TestAttemptReleasesLeaseWhenExecutePanics(t *testing.T) {
 		})
 	}()
 
-	lease, err := keyPool.Acquire(context.Background(), 1, nil)
+	lease, err := keyPool.Acquire(context.Background(), 1, nil, false)
 	if err != nil {
 		t.Fatalf("Acquire after panic: %v", err)
 	}

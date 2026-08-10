@@ -1,0 +1,28 @@
+{
+  "data": [
+    {
+      "auth_invalid": false,
+      "consecutive_failures": 0,
+      "cooldown_level": 0,
+      "created_at": "2026-08-02T08:00:00Z",
+      "enabled": true,
+      "id": 7,
+      "masked": "nvapi-a1…b2c3",
+      "updated_at": "2026-08-02T08:00:00Z"
+    },
+    {
+      "auth_invalid": true,
+      "consecutive_failures": 3,
+      "cooldown_level": 2,
+      "cooldown_reason": "rate_limited",
+      "cooldown_until": "2026-08-02T10:00:00Z",
+      "created_at": "2026-08-02T08:00:00Z",
+      "enabled": false,
+      "id": 8,
+      "last_error_at": "2026-08-02T08:00:00Z",
+      "last_error_code": "upstream_rate_limited",
+      "masked": "nvapi-d4…e5f6",
+      "updated_at": "2026-08-02T08:00:00Z"
+    }
+  ]
+}

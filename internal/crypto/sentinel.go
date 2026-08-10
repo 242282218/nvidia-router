@@ -16,6 +16,7 @@ const (
 
 type sentinelRecord struct {
 	version    int
+	keyVersion int
 	nonce      []byte
 	ciphertext []byte
 }
@@ -39,9 +40,9 @@ func (keys *KeySet) EnsureSentinel(ctx context.Context, db *sql.DB) error {
 	defer Zero(nonce)
 
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO crypto_sentinel (id, version, nonce, ciphertext)
-		VALUES (1, ?, ?, ?)
-		ON CONFLICT(id) DO NOTHING`, sentinelVersion, nonce, ciphertext); err != nil {
+			INSERT INTO crypto_sentinel (id, version, key_version, nonce, ciphertext)
+			VALUES (1, ?, ?, ?, ?)
+			ON CONFLICT(id) DO NOTHING`, sentinelVersion, keys.ActiveVersion(), nonce, ciphertext); err != nil {
 		return fmt.Errorf("insert crypto sentinel: %w", err)
 	}
 
@@ -67,9 +68,9 @@ func (keys *KeySet) ValidateSentinel(ctx context.Context, db *sql.DB) error {
 func readSentinel(ctx context.Context, db *sql.DB) (sentinelRecord, error) {
 	var record sentinelRecord
 	err := db.QueryRowContext(ctx, `
-		SELECT version, nonce, ciphertext
+		SELECT version, key_version, nonce, ciphertext
 		FROM crypto_sentinel
-		WHERE id = 1`).Scan(&record.version, &record.nonce, &record.ciphertext)
+		WHERE id = 1`).Scan(&record.version, &record.keyVersion, &record.nonce, &record.ciphertext)
 	if err != nil {
 		return sentinelRecord{}, fmt.Errorf("query crypto sentinel: %w", err)
 	}
@@ -80,7 +81,7 @@ func (keys *KeySet) validateSentinel(record sentinelRecord) error {
 	if record.version != sentinelVersion {
 		return fmt.Errorf("validate crypto sentinel: unsupported version %d", record.version)
 	}
-	plaintext, err := keys.Decrypt(record.ciphertext, record.nonce, sentinelAAD)
+	plaintext, err := keys.DecryptVersion(record.keyVersion, record.ciphertext, record.nonce, sentinelAAD)
 	if err != nil {
 		return fmt.Errorf("decrypt crypto sentinel: %w", err)
 	}

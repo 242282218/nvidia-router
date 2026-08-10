@@ -56,7 +56,13 @@ go build -o "${HARNESS_BIN}" ./tests/e2e/harness
 # package-based while exposing the workspace's installed Playwright module.
 export NODE_PATH="${ROOT_DIR}/web/node_modules${NODE_PATH:+:${NODE_PATH}}"
 
-setsid "${HARNESS_BIN}" >"${HARNESS_LOG}" 2>&1 &
+if command -v setsid >/dev/null 2>&1; then
+  setsid "${HARNESS_BIN}" >"${HARNESS_LOG}" 2>&1 &
+else
+  # Git Bash on Windows may not ship setsid; the harness has its own signal
+  # handler, so a direct child is sufficient when process groups are unavailable.
+  "${HARNESS_BIN}" >"${HARNESS_LOG}" 2>&1 &
+fi
 HARNESS_PID=$!
 
 BASE_URL=""

@@ -97,4 +97,28 @@ test.describe('management resources', () => {
     await desktopAccessKeyRow.getByRole('button', { name: '撤销' }).click()
     await expect(desktopAccessKeyRow).toContainText('已撤销')
   })
+
+  test('edits an access key policy and persists the saved values', async ({ page }) => {
+    await page.getByTestId('nav-access-keys').click()
+    await page.getByTestId('open-create-access-key').click()
+    await page.getByTestId('access-key-name').fill('e2e-policy')
+    await page.getByTestId('create-access-key-form').getByRole('button', { name: '创建' }).click()
+    await expect(page.getByTestId('created-access-key')).toBeVisible()
+    await page.getByTestId('close-created-access-key').click()
+
+    const desktopAccessKeyRow = page.getByTestId('access-key-table').getByRole('row').filter({ hasText: 'e2e-policy' })
+    await expect(desktopAccessKeyRow).toBeVisible()
+    await desktopAccessKeyRow.getByRole('button', { name: '编辑策略' }).click()
+    await page.getByTestId('access-key-rpm-limit').fill('120')
+    await page.getByTestId('access-key-tpm-limit').fill('120000')
+    await page.getByTestId('access-key-max-concurrent').fill('10')
+    await page.getByTestId('save-access-key-policy').click()
+    await expect(page.getByTestId('edit-access-key-policy-form')).toHaveCount(0)
+
+    await desktopAccessKeyRow.getByRole('button', { name: '编辑策略' }).click()
+    await expect(page.getByTestId('access-key-rpm-limit')).toHaveValue('120')
+    await expect(page.getByTestId('access-key-tpm-limit')).toHaveValue('120000')
+    await expect(page.getByTestId('access-key-max-concurrent')).toHaveValue('10')
+    await page.getByRole('dialog').getByRole('button', { name: '取消' }).click()
+  })
 })

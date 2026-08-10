@@ -64,7 +64,7 @@ func TestSettingsPatchAppliesToSharedRuntimeStoreAndNewAcquires(t *testing.T) {
 	}
 
 	app.Pool.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true}}, nil)
-	lease, err := app.Pool.Acquire(context.Background(), 1, nil)
+	lease, err := app.Pool.Acquire(context.Background(), 1, nil, false)
 	if err != nil {
 		t.Fatalf("acquire active lease: %v", err)
 	}
@@ -73,14 +73,14 @@ func TestSettingsPatchAppliesToSharedRuntimeStoreAndNewAcquires(t *testing.T) {
 	defer cancelWait()
 	waitResult := make(chan error, 1)
 	go func() {
-		waitingLease, acquireErr := app.Pool.Acquire(waitCtx, 1, nil)
+		waitingLease, acquireErr := app.Pool.Acquire(waitCtx, 1, nil, false)
 		if waitingLease != nil {
 			waitingLease.Release()
 		}
 		waitResult <- acquireErr
 	}()
 	waitForQueueLength(t, app, 1)
-	_, err = app.Pool.Acquire(context.Background(), 1, nil)
+	_, err = app.Pool.Acquire(context.Background(), 1, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "queue") {
 		t.Fatalf("second queued acquire error = %v, want queue full", err)
 	}
@@ -159,7 +159,7 @@ func TestRuntimeSummaryEndpointUsesPoolSnapshot(t *testing.T) {
 	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
 	session := responseSessionCookie(t, login)
 	app.Pool.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true}, {ID: 2, Enabled: false}}, nil)
-	lease, err := app.Pool.Acquire(context.Background(), 1, nil)
+	lease, err := app.Pool.Acquire(context.Background(), 1, nil, false)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}

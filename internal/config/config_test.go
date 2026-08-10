@@ -38,8 +38,8 @@ func TestLoadFromEnv(t *testing.T) {
 				if cfg.NVIDIABaseURL.String() != "https://integrate.api.nvidia.com" {
 					t.Fatalf("NVIDIABaseURL = %q", cfg.NVIDIABaseURL)
 				}
-				if cfg.MasterKey != validMasterKeyBytes() {
-					t.Fatalf("MasterKey = %v", cfg.MasterKey)
+				if cfg.MasterKey != validMasterKeyBytes() || cfg.MasterKeyVersion != 1 || cfg.LegacyMasterKey != nil {
+					t.Fatalf("master key config = %#v", cfg)
 				}
 			},
 		},
@@ -196,6 +196,32 @@ func setBaseConfigEnv(t *testing.T) {
 	t.Setenv("NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD", testInitialAdminPassword)
 }
 
+func TestLoadFromEnvLoadsVersionedLegacyMasterKey(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	legacy := validMasterKeyBytes()
+	legacy[0] = 99
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY_VERSION", "2")
+	t.Setenv("NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION", "1")
+	t.Setenv("NVIDIA_ROUTER_LEGACY_MASTER_KEY", base64.RawURLEncoding.EncodeToString(legacy[:]))
+	cfg, err := LoadFromEnv(LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	if cfg.MasterKeyVersion != 2 || cfg.LegacyMasterKeyVersion != 1 || cfg.LegacyMasterKey == nil || *cfg.LegacyMasterKey != legacy {
+		t.Fatalf("versioned config = %#v", cfg)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidMasterKeyVersion(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_MASTER_KEY_VERSION", "0")
+	if _, err := LoadFromEnv(LoadOptions{}); err == nil || !strings.Contains(err.Error(), "MASTER_KEY_VERSION") {
+		t.Fatalf("LoadFromEnv error = %v", err)
+	}
+}
+
 func TestRequestBodyLimits(t *testing.T) {
 	if JSONBodyLimit != 32<<20 || ImageDecodedLimit != 20<<20 || AudioBodyLimit != 25<<20 {
 		t.Fatal("request body limits changed")
@@ -205,7 +231,7 @@ func TestRequestBodyLimits(t *testing.T) {
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
-		"NVIDIA_ROUTER_LISTEN_ADDR", "NVIDIA_ROUTER_DATA_DIR", "NVIDIA_ROUTER_TEMP_DIR", "NVIDIA_ROUTER_MASTER_KEY",
+		"NVIDIA_ROUTER_LISTEN_ADDR", "NVIDIA_ROUTER_DATA_DIR", "NVIDIA_ROUTER_TEMP_DIR", "NVIDIA_ROUTER_MASTER_KEY", "NVIDIA_ROUTER_MASTER_KEY_VERSION", "NVIDIA_ROUTER_LEGACY_MASTER_KEY", "NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION",
 		"NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD", "NVIDIA_ROUTER_ADMIN_SECURE_COOKIE", "NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN",
 		"NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS", "NVIDIA_ROUTER_NVIDIA_BASE_URL",
 		"NVIDIA_ROUTER_XK_PROXY_URL", "NVIDIA_ROUTER_XK_PROXY_AUTH_KEY",

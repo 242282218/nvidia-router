@@ -1,0 +1,33 @@
+{
+  "data": [
+    {
+      "blocked_by_key_ids": [],
+      "capability_verified_at": "2026-08-01T00:00:00Z",
+      "display_name": "Chat LLM",
+      "enabled": true,
+      "id": 1,
+      "kind": "chat",
+      "public_id": "chat-llm",
+      "reasoning_wire_format": "chain_of_thought",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true,
+      "upstream_id": "meta/llama-3.3-70b"
+    },
+    {
+      "blocked_by_key_ids": [
+        7
+      ],
+      "display_name": "Embedding QA",
+      "enabled": false,
+      "id": 2,
+      "kind": "embedding",
+      "public_id": "embed-qa",
+      "reasoning_wire_format": "",
+      "supports_reasoning": false,
+      "supports_tools": false,
+      "supports_vision": false,
+      "upstream_id": "nvidia/embed-qa-4"
+    }
+  ]
+}

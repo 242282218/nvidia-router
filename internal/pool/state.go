@@ -3,9 +3,10 @@ package pool
 import "nvidia-router/internal/keystate"
 
 type keyState struct {
-	snapshot keystate.KeySnapshot
-	busy     bool
-	blocks   map[int64]struct{}
+	snapshot      keystate.KeySnapshot
+	busy          bool
+	streamingBusy int
+	blocks        map[int64]struct{}
 }
 
 func newKeyState(snapshot keystate.KeySnapshot) *keyState {

@@ -85,12 +85,20 @@ func TestChatAppRetriesMalformedSuccessAndReturnsProtocolErrorAfterExhaustion(t 
 
 func TestChatAppSkipsFailedKeyOnFollowingRequest(t *testing.T) {
 	tests := []struct {
-		name    string
-		failure mocknvidia.Script
+		name                  string
+		failure               mocknvidia.Script
+		expectedFirstStatus   int
+		expectedAuthorization []string
 	}{
-		{name: "unauthorized", failure: mocknvidia.Script{Status: http.StatusUnauthorized, Body: `{"error":{"code":"invalid_api_key"}}`}},
-		{name: "rate limited", failure: mocknvidia.Script{Status: http.StatusTooManyRequests, Body: `{"error":{"message":"private"}}`}},
-		{name: "model forbidden", failure: mocknvidia.Script{Status: http.StatusForbidden, Body: `{"error":{"message":"private"}}`}},
+		{name: "unauthorized", failure: mocknvidia.Script{Status: http.StatusUnauthorized, Body: `{"error":{"code":"invalid_api_key"}}`},
+			expectedFirstStatus:   http.StatusUnauthorized,
+			expectedAuthorization: []string{"upstream-key-1", "upstream-key-2"}},
+		{name: "rate limited", failure: mocknvidia.Script{Status: http.StatusTooManyRequests, Body: `{"error":{"message":"private"}}`},
+			expectedFirstStatus:   http.StatusOK,
+			expectedAuthorization: []string{"upstream-key-1", "upstream-key-2", "upstream-key-2"}},
+		{name: "model forbidden", failure: mocknvidia.Script{Status: http.StatusForbidden, Body: `{"error":{"message":"private"}}`},
+			expectedFirstStatus:   http.StatusOK,
+			expectedAuthorization: []string{"upstream-key-1", "upstream-key-2", "upstream-key-2"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -104,13 +112,18 @@ func TestChatAppSkipsFailedKeyOnFollowingRequest(t *testing.T) {
 			server := httptest.NewServer(application.Handler())
 			t.Cleanup(server.Close)
 
+			// A credential 401 is per-key and must not fail over (R2.2): the first
+			// request surfaces the 401 and disables the key; the second request
+			// skips it and succeeds on the healthy key. Retryable faults (429,
+			// model 403) still fail over and the first request succeeds.
+			wantStatuses := []int{test.expectedFirstStatus, http.StatusOK}
 			for requestNumber := 1; requestNumber <= 2; requestNumber++ {
 				status, body := postChat(t, server.URL, accessToken, chatBody("public-model"))
-				if status != http.StatusOK {
-					t.Fatalf("request %d response = %d %s", requestNumber, status, body)
+				if status != wantStatuses[requestNumber-1] {
+					t.Fatalf("request %d response = %d %s, want %d", requestNumber, status, body, wantStatuses[requestNumber-1])
 				}
 			}
-			assertAuthorizationOrder(t, upstream.Requests(), "upstream-key-1", "upstream-key-2", "upstream-key-2")
+			assertAuthorizationOrder(t, upstream.Requests(), test.expectedAuthorization...)
 		})
 	}
 }

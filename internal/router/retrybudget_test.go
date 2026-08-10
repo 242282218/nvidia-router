@@ -74,7 +74,7 @@ func TestAttemptRetryBudgetStopsLoop(t *testing.T) {
 	}}
 	keyPool := newAttemptPool(settings, 1, 2, 3, 4, 5, 6)
 	states := newAttemptStateWriter(time.Now())
-	source := newRetryClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	source := newRetryClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, source)
 
 	calls := 0
@@ -105,7 +105,7 @@ func TestAttemptStreamBudgetNeverBoundsCommittedStream(t *testing.T) {
 	}}
 	keyPool := newAttemptPool(settings, 1, 2, 3)
 	states := newAttemptStateWriter(time.Now())
-	source := newRetryClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	source := newRetryClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, source)
 
 	var streamCtx context.Context
@@ -136,7 +136,7 @@ func TestAttemptFirstRetryIsImmediate(t *testing.T) {
 	}}
 	keyPool := newAttemptPool(settings, 1, 2)
 	states := newAttemptStateWriter(time.Now())
-	source := newRetryClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	source := newRetryClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, source)
 
 	result, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
@@ -163,7 +163,7 @@ func TestAttemptBacksOffOnRepeatedFailures(t *testing.T) {
 	}}
 	keyPool := newAttemptPool(settings, 1, 2, 3, 4)
 	states := newAttemptStateWriter(time.Now())
-	source := newRetryClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	source := newRetryClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, source)
 
 	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
@@ -193,7 +193,7 @@ func TestAttemptBacksOffOnRepeatedFailures(t *testing.T) {
 // TestBudgetRetryDeadlineNeverExceedsTotal keeps the non-stream contract: the
 // total timeout already bounds everything, so the retry window must not outlive it.
 func TestBudgetRetryDeadlineNeverExceedsTotal(t *testing.T) {
-	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	budget := newBudget(runtimeconfig.Snapshot{
 		ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000,
 		NonstreamTotalTimeoutMS: 5000, RetryBudgetMS: 600000,
@@ -206,7 +206,7 @@ func TestBudgetRetryDeadlineNeverExceedsTotal(t *testing.T) {
 // TestBudgetAppliesDefaultsWhenUnset guards the zero-Snapshot path so an
 // uninitialised provider cannot produce a zero cap that rejects every request.
 func TestBudgetAppliesDefaultsWhenUnset(t *testing.T) {
-	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	budget := newBudget(runtimeconfig.Snapshot{}, now, true)
 	if budget.maxAttempts != defaultMaxAttemptsPerRequest {
 		t.Fatalf("maxAttempts = %d, want default %d", budget.maxAttempts, defaultMaxAttemptsPerRequest)
@@ -216,6 +216,65 @@ func TestBudgetAppliesDefaultsWhenUnset(t *testing.T) {
 	}
 	if !budget.totalDeadline.IsZero() {
 		t.Fatal("stream must not carry a total deadline")
+	}
+}
+
+// TestBackoffRespectsRetryAfter locks in the R2.3 rhythm: a 429 with a
+// Retry-After hint must back off for at least that long before the next key,
+// capped at five minutes, instead of the sub-second exponential delay that
+// hammered an account-level rate limit before the upstream said it was ready.
+func TestBackoffRespectsRetryAfter(t *testing.T) {
+	tests := []struct {
+		name       string
+		retryAfter string
+		wantMin    time.Duration
+	}{
+		{name: "honors retry-after", retryAfter: "10", wantMin: 10 * time.Second},
+		{name: "caps retry-after at five minutes", retryAfter: "3600", wantMin: 5 * time.Minute},
+		{name: "no retry-after keeps exponential backoff", retryAfter: "", wantMin: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings := &countingProvider{snapshot: attemptSettings()}
+			settings.snapshot.MaxAttemptsPerRequest = 3
+			// Give the retry window room: attemptSettings' 10s non-stream total
+			// deadline would otherwise cap every backoff below the five-minute
+			// Retry-After case.
+			settings.snapshot.NonstreamTotalTimeoutMS = 600000
+			settings.snapshot.RetryBudgetMS = 600000
+			keyPool := newAttemptPool(settings, 1, 2, 3)
+			states := newAttemptStateWriter(time.Now())
+			source := newRetryClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+			attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, source)
+
+			_, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+				response := attemptResponse(429, "")
+				if tt.retryAfter != "" {
+					response.Header.Set("Retry-After", tt.retryAfter)
+				}
+				return response, nil
+			})
+			if err == nil {
+				t.Fatal("expected failure after the attempt cap")
+			}
+				wantDelays := 1
+				if tt.retryAfter != "" {
+					wantDelays = 2
+				}
+				if len(source.delays) != wantDelays {
+					t.Fatalf("backoff delays = %v, want %d", source.delays, wantDelays)
+				}
+				delay := source.delays[0]
+			if delay < tt.wantMin {
+				t.Fatalf("backoff delay %s < %s (Retry-After %q)", delay, tt.wantMin, tt.retryAfter)
+			}
+			if tt.retryAfter == "" && delay >= 10*time.Second {
+				t.Fatalf("backoff delay %s grew to a Retry-After magnitude without a hint", delay)
+			}
+			if tt.retryAfter == "3600" && delay > 5*time.Minute {
+				t.Fatalf("backoff delay %s exceeded the five-minute Retry-After cap", delay)
+			}
+		})
 	}
 }
 

@@ -10,10 +10,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"nvidia-router/internal/adminauth"
+	"nvidia-router/internal/config"
+	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
 )
 
@@ -24,6 +27,7 @@ const (
 		"  nvidia-router [--help]\n" +
 		"  nvidia-router serve\n" +
 		"  nvidia-router admin reset-password --password <new>\n" +
+		"  nvidia-router admin rotate-master-key --new-version <n> --backup <path>\n" +
 		"  nvidia-router db backup --output <path>\n"
 )
 
@@ -49,6 +53,9 @@ func runCLIContext(ctx context.Context, args []string, stdout, _ io.Writer) erro
 	}
 	if len(args) == 4 && args[0] == "admin" && args[1] == "reset-password" && args[2] == "--password" {
 		return runAdminPasswordReset(ctx, args[3], stdout)
+	}
+	if len(args) == 6 && args[0] == "admin" && args[1] == "rotate-master-key" && args[2] == "--new-version" && args[4] == "--backup" {
+		return runMasterKeyRotation(ctx, args[3], args[5], stdout)
 	}
 	if len(args) == 4 && args[0] == "db" && args[1] == "backup" && args[2] == "--output" {
 		return runDatabaseBackup(ctx, args[3], stdout)
@@ -91,6 +98,97 @@ func runAdminPasswordReset(ctx context.Context, password string, stdout io.Write
 	}
 	if _, err := fmt.Fprintln(stdout, "Administrator password reset; all sessions revoked."); err != nil {
 		return fmt.Errorf("write password reset result: %w", err)
+	}
+	return nil
+}
+
+func runMasterKeyRotation(ctx context.Context, versionText, backupPath string, stdout io.Writer) error {
+	newVersion, err := strconv.Atoi(versionText)
+	if err != nil || newVersion <= 0 {
+		return errors.New("new master key version must be a positive integer")
+	}
+	currentVersion, err := strconv.Atoi(valueOrDefaultEnv("NVIDIA_ROUTER_MASTER_KEY_VERSION", "1"))
+	if err != nil || currentVersion <= 0 || newVersion <= currentVersion {
+		return errors.New("new master key version must be greater than current version")
+	}
+	oldMaster, err := config.LoadMasterKey(os.Getenv("NVIDIA_ROUTER_MASTER_KEY"))
+	if err != nil {
+		return fmt.Errorf("load current master key: %w", err)
+	}
+	newMaster, err := config.LoadMasterKey(os.Getenv("NVIDIA_ROUTER_NEW_MASTER_KEY"))
+	if err != nil {
+		return fmt.Errorf("load new master key: %w", err)
+	}
+	if oldMaster == newMaster {
+		return errors.New("new master key must differ from current master key")
+	}
+	databasePath, err := routerDatabasePath()
+	if err != nil {
+		return err
+	}
+	same, err := sameDatabaseFile(databasePath, backupPath)
+	if err != nil {
+		return fmt.Errorf("validate rotation backup output: %w", err)
+	}
+	if same {
+		return errors.New("rotation backup output must differ from router database")
+	}
+	if err := ensureRouterDatabaseIdle(); err != nil {
+		return err
+	}
+	db, err := openExistingRouterDatabase()
+	if err != nil {
+		return err
+	}
+	if err := database.Backup(ctx, db, backupPath); err != nil {
+		return closeCLIData(db, fmt.Errorf("backup database before rotation: %w", err))
+	}
+	oldKeys, err := crypto.NewVersioned(currentVersion, oldMaster)
+	if err != nil {
+		return closeCLIData(db, fmt.Errorf("create current crypto key set: %w", err))
+	}
+	newKeys, err := crypto.NewVersioned(newVersion, newMaster)
+	if err != nil {
+		return closeCLIData(db, fmt.Errorf("create new crypto key set: %w", err))
+	}
+	result, operationErr := crypto.RotateDatabase(ctx, db, oldKeys, newKeys)
+	if err := closeCLIData(db, operationErr); err != nil {
+		return fmt.Errorf("rotate master key: %w", err)
+	}
+	if _, err := fmt.Fprintf(stdout, "Master key rotation completed: version %d; NVIDIA keys rotated %d; proxy secret rotated %t; legacy digests remaining %d.\n", newVersion, result.NVIDIAKeys, result.ProxyKey, result.LegacyDigests); err != nil {
+		return fmt.Errorf("write master key rotation result: %w", err)
+	}
+	return nil
+}
+
+func valueOrDefaultEnv(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// ensureRouterDatabaseIdle refuses offline commands while the router holds the
+// database open. SQLite WAL keeps the -shm sidecar file alive for as long as any
+// connection exists, so a non-zero-size sidecar is a cross-platform "an active
+// writer is present" signal — no flock/LockFileEx divergence between Linux
+// containers and Windows hosts. Rotating from a second process would let the
+// live server keep encrypting new rows with the old key version, leaving the
+// mixed-version data that rotation exists to avoid.
+func ensureRouterDatabaseIdle() error {
+	databasePath, err := routerDatabasePath()
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(databasePath + "-shm")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect router database shared-memory file: %w", err)
+	}
+	if info.Size() > 0 {
+		return errors.New("detected an active writer; master key rotation must run with the service stopped")
 	}
 	return nil
 }

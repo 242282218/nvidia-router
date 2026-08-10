@@ -43,13 +43,15 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 			queue_capacity = ?, queue_wait_timeout_ms = ?, connect_timeout_ms = ?,
 			first_byte_timeout_ms = ?, nonstream_total_timeout_ms = ?, shutdown_grace_ms = ?,
 			failover_status_codes = ?, request_log_retention_days = ?,
-			max_attempts_per_request = ?, retry_budget_ms = ?,
+			max_attempts_per_request = ?, retry_budget_ms = ?, max_streaming_per_key = ?,
+			stream_first_token_timeout_ms = ?, stream_idle_timeout_ms = ?,
 			updated_at = ?
 		WHERE id = 1`,
 		next.QueueCapacity, next.QueueWaitTimeoutMS, next.ConnectTimeoutMS,
 		next.FirstByteTimeoutMS, next.NonstreamTotalTimeoutMS, next.ShutdownGraceMS,
 		next.FailoverStatusCodes, next.RequestLogRetentionDays,
-		next.MaxAttemptsPerRequest, next.RetryBudgetMS,
+		next.MaxAttemptsPerRequest, next.RetryBudgetMS, next.MaxStreamingPerKey,
+		next.StreamFirstTokenTimeoutMS, next.StreamIdleTimeoutMS,
 		formatTimestamp(time.Now()),
 	)
 	if err != nil {
@@ -83,7 +85,8 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 		SELECT queue_capacity, queue_wait_timeout_ms, connect_timeout_ms,
 			first_byte_timeout_ms, nonstream_total_timeout_ms, shutdown_grace_ms,
 			failover_status_codes, request_log_retention_days,
-			max_attempts_per_request, retry_budget_ms
+			max_attempts_per_request, retry_budget_ms, max_streaming_per_key,
+			stream_first_token_timeout_ms, stream_idle_timeout_ms
 		FROM runtime_settings WHERE id = 1`).Scan(
 		&snapshot.QueueCapacity,
 		&snapshot.QueueWaitTimeoutMS,
@@ -95,6 +98,9 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 		&snapshot.RequestLogRetentionDays,
 		&snapshot.MaxAttemptsPerRequest,
 		&snapshot.RetryBudgetMS,
+		&snapshot.MaxStreamingPerKey,
+		&snapshot.StreamFirstTokenTimeoutMS,
+		&snapshot.StreamIdleTimeoutMS,
 	)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load runtime settings: %w", err)

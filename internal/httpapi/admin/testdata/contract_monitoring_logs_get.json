@@ -1,0 +1,36 @@
+{
+  "data": {
+    "has_more": false,
+    "items": [
+      {
+        "attempt_count": 1,
+        "completion_tokens": 20,
+        "created_at": "2026-08-02T07:00:00.000Z",
+        "duration_ms": 921,
+        "endpoint": "/v1/chat/completions",
+        "first_token_ms": 120,
+        "http_status": 200,
+        "is_stream": true,
+        "model_id": "chat-llm",
+        "outcome": "success",
+        "prompt_tokens": 100,
+        "queue_ms": 13,
+        "request_id": "req-safe"
+      },
+      {
+        "attempt_count": 2,
+        "created_at": "2026-08-02T07:05:00.000Z",
+        "duration_ms": 40,
+        "endpoint": "/v1/responses",
+        "http_status": 502,
+        "is_stream": false,
+        "outcome": "failure",
+        "queue_ms": 0,
+        "request_id": "req-failed"
+      }
+    ],
+    "page": 1,
+    "page_size": 50,
+    "total": 2
+  }
+}

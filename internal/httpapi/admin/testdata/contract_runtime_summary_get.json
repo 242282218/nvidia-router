@@ -1,0 +1,19 @@
+{
+  "data": {
+    "active": 2,
+    "earliest_cooldown": "2026-08-02T10:00:00Z",
+    "keys": {
+      "auth_invalid": 0,
+      "cooling_down": 1,
+      "disabled": 1,
+      "enabled": 2,
+      "ready": 1,
+      "total": 3
+    },
+    "queue": {
+      "capacity": 9,
+      "length": 4
+    },
+    "shutting_down": false
+  }
+}

@@ -118,6 +118,10 @@ func TestChatFirstEventTimeoutFailsOverBeforeCommit(t *testing.T) {
 		settings: runtimeconfig.Snapshot{
 			QueueCapacity: 10, QueueWaitTimeoutMS: 1000, ConnectTimeoutMS: 1000,
 			FirstByteTimeoutMS: 1000, NonstreamTotalTimeoutMS: 3000, ShutdownGraceMS: 1000,
+			// The first-event window is its own setting since the 014 split:
+			// the first SSE data event must arrive within this budget or the
+			// attempt fails over before committing.
+			StreamFirstTokenTimeoutMS: 1000,
 		},
 	})
 
@@ -132,16 +136,19 @@ func TestChatFirstEventTimeoutFailsOverBeforeCommit(t *testing.T) {
 
 func TestRetryableStatusMatrix(t *testing.T) {
 	tests := []struct {
-		status  int
-		headers http.Header
+		status       int
+		headers      http.Header
+		wantFailover bool
 	}{
-		{status: http.StatusUnauthorized},
-		{status: http.StatusForbidden},
-		{status: http.StatusTooManyRequests, headers: http.Header{"Retry-After": []string{"2"}}},
-		{status: http.StatusInternalServerError},
-		{status: http.StatusBadGateway},
-		{status: http.StatusServiceUnavailable},
-		{status: http.StatusGatewayTimeout},
+		// A credential 401 is per-key (R2.2): it must not fail over to the
+		// healthy key; it disables the offending key instead.
+		{status: http.StatusUnauthorized, wantFailover: false},
+		{status: http.StatusForbidden, wantFailover: true},
+		{status: http.StatusTooManyRequests, headers: http.Header{"Retry-After": []string{"2"}}, wantFailover: true},
+		{status: http.StatusInternalServerError, wantFailover: true},
+		{status: http.StatusBadGateway, wantFailover: true},
+		{status: http.StatusServiceUnavailable, wantFailover: true},
+		{status: http.StatusGatewayTimeout, wantFailover: true},
 	}
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("status_%d", test.status), func(t *testing.T) {
@@ -156,10 +163,17 @@ func TestRetryableStatusMatrix(t *testing.T) {
 			status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", `{
 				"model":"public-chat","messages":[{"role":"user","content":"hello"}]
 			}`)
-			if status != http.StatusOK || !strings.Contains(body, "fallback") {
-				t.Fatalf("response = %d %s", status, body)
+			if test.wantFailover {
+				if status != http.StatusOK || !strings.Contains(body, "fallback") {
+					t.Fatalf("response = %d %s", status, body)
+				}
+				assertAuthorizationOrder(t, upstream.Requests(), firstSecret, secondSecret)
+			} else {
+				if status != http.StatusUnauthorized {
+					t.Fatalf("response = %d %s, want 401 (credential faults must not fail over)", status, body)
+				}
+				assertAuthorizationOrder(t, upstream.Requests(), firstSecret)
 			}
-			assertAuthorizationOrder(t, upstream.Requests(), firstSecret, secondSecret)
 			assertStatusSideEffect(t, harness, test.status)
 		})
 	}
@@ -459,6 +473,50 @@ func TestChatSSEPassthroughAndCommitBoundaries(t *testing.T) {
 	})
 }
 
+func TestDeepSeekV4FlashReasoningStreamThroughRouter(t *testing.T) {
+	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
+		{Data: "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep-thought\"}}]}\n\n"},
+		{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"final-answer\"}}]}\n\n"},
+		{Data: "data: [DONE]\n\n"},
+	}})
+	harness := newAppHarnessWithOptions(t, harnessOptions{
+		upstream: upstream,
+		secrets:  []string{"nvapi-ds-flash-1"},
+		prepare: func(t *testing.T, db *sql.DB, _ []int64, _ int64) {
+			if err := modelcatalog.NewRepository(db).SaveSelections(context.Background(), []modelcatalog.Selection{{
+				PublicID: "deepseek-ai/deepseek-v4-flash", UpstreamID: "deepseek-ai/deepseek-v4-flash",
+				DisplayName: "DeepSeek V4 Flash", Kind: modelcatalog.KindChat, Enabled: true,
+				SupportsReasoning: true, ReasoningWireFormat: "openai",
+			}}, time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatalf("save deepseek flash model: %v", err)
+			}
+		},
+	})
+
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", `{
+		"model":"deepseek-ai/deepseek-v4-flash",
+		"messages":[{"role":"user","content":"long task"}],
+		"thinking":{"type":"enabled","budget_tokens":8192},
+		"stream":true
+	}`)
+	if status != http.StatusOK {
+		t.Fatalf("response = %d %s", status, body)
+	}
+	if !strings.Contains(body, "deep-thought") || !strings.Contains(body, "final-answer") {
+		t.Fatalf("response body lost reasoning or content: %s", body)
+	}
+	requests := upstream.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("upstream requests = %d, want 1", len(requests))
+	}
+	if !strings.Contains(string(requests[0].Body), `"reasoning_effort":"medium"`) {
+		t.Fatalf("upstream body did not normalize native thinking: %s", requests[0].Body)
+	}
+	if strings.Contains(string(requests[0].Body), `"thinking"`) {
+		t.Fatalf("upstream body still carries native thinking field: %s", requests[0].Body)
+	}
+}
+
 func TestClientCancellationStopsCommittedStreamWithoutRetry(t *testing.T) {
 	upstream := mocknvidia.New(
 		mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
@@ -596,8 +654,13 @@ func assertStatusSideEffect(t *testing.T, harness *appHarness, status int) {
 			t.Fatalf("parse cooldown %q: %v", raw, err)
 		}
 		remaining := time.Until(until)
-		if remaining < time.Second || remaining > 3*time.Second {
-			t.Fatalf("Retry-After cooldown remaining = %v, want about 2s", remaining)
+		// The router honours the upstream Retry-After (2s) before switching keys
+		// (R6), so by the time the fallback response returns the cooldown has
+		// already elapsed. Assert the key is parked just about now — the cooldown
+		// must not be 2s in the future (the Retry-After was ignored) nor long past
+		// (the cooldown was not anchored to the 429).
+		if remaining > time.Second || -remaining > 3*time.Second {
+			t.Fatalf("Retry-After cooldown remaining = %v, want just-expired after the Retry-After backoff", remaining)
 		}
 	}
 }
@@ -837,6 +900,15 @@ func storeRuntimeSettings(t *testing.T, db *sql.DB, settings runtimeconfig.Snaps
 	if err != nil {
 		t.Fatalf("store runtime settings: %v", err)
 	}
+	// The stream timeout split (migration 014) defaults to 60000/180000; only
+	// overwrite a column when a test opts into a custom value, because 0 is
+	// outside the CHECK range and means "unset" on the Snapshot.
+	if settings.StreamFirstTokenTimeoutMS != 0 {
+		mustExec(t, db, `UPDATE runtime_settings SET stream_first_token_timeout_ms = ? WHERE id = 1`, settings.StreamFirstTokenTimeoutMS)
+	}
+	if settings.StreamIdleTimeoutMS != 0 {
+		mustExec(t, db, `UPDATE runtime_settings SET stream_idle_timeout_ms = ? WHERE id = 1`, settings.StreamIdleTimeoutMS)
+	}
 }
 
 func assertAuthorizationOrder(t *testing.T, requests []mocknvidia.Request, secrets ...string) {
@@ -864,6 +936,7 @@ type tlsUpstreamRequest struct {
 	Path          string
 	Authorization string
 	ContentType   string
+	Body          string
 }
 
 type tlsUpstreamFixture struct {
@@ -874,6 +947,37 @@ type tlsUpstreamFixture struct {
 	// tests that need a deterministic "headers arrived, first token pending"
 	// window (e.g. reproducing the proxy streaming context-cancel bug).
 	sseDelay time.Duration
+	// chatAnswerByKey overrides the non-stream /v1/chat/completions response for
+	// a request whose Authorization matches the map key exactly. A key without an
+	// entry keeps answering 200. Used to throttle one specific key (429/529)
+	// while the fallback key stays healthy in the proxy retry tests.
+	chatAnswerByKey map[string]tlsUpstreamChatAnswer
+}
+
+type tlsUpstreamChatAnswer struct {
+	status     int
+	retryAfter string
+}
+
+// throttleKey makes every non-stream chat request carrying exactly this
+// Authorization answer with status, plus retryAfter as the Retry-After header
+// when non-empty. The router must then switch to a different key while the
+// client transport itself must not replay the request (a transport replay would
+// re-send the same throttled key and hit the same status again).
+func (f *tlsUpstreamFixture) throttleKey(authorization string, status int, retryAfter string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.chatAnswerByKey == nil {
+		f.chatAnswerByKey = make(map[string]tlsUpstreamChatAnswer)
+	}
+	f.chatAnswerByKey[authorization] = tlsUpstreamChatAnswer{status: status, retryAfter: retryAfter}
+}
+
+func (f *tlsUpstreamFixture) chatAnswer(authorization string) (tlsUpstreamChatAnswer, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	answer, ok := f.chatAnswerByKey[authorization]
+	return answer, ok
 }
 
 // newTLSNVIDIAUpstream starts a minimal NVIDIA-compatible HTTPS upstream. Its
@@ -893,6 +997,7 @@ func newTLSNVIDIAUpstream(t *testing.T) *tlsUpstreamFixture {
 			Path:          request.URL.Path,
 			Authorization: request.Header.Get("Authorization"),
 			ContentType:   request.Header.Get("Content-Type"),
+			Body:          string(body),
 		})
 		fixture.mu.Unlock()
 		switch request.URL.Path {
@@ -909,11 +1014,30 @@ func newTLSNVIDIAUpstream(t *testing.T) *tlsUpstreamFixture {
 				if fixture.sseDelay > 0 {
 					time.Sleep(fixture.sseDelay)
 				}
+				// DeepSeek-style reasoning streams: when the client asked for a
+				// reasoning model (normalized thinking -> reasoning_effort), emit a
+				// reasoning_content delta before the answer content so the proxy
+				// relay path is exercised end to end.
+				if bytes.Contains(body, []byte(`"reasoning_effort"`)) {
+					_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"proxied-reasoning\"}}]}\n\n")
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
 				_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"proxied-stream\"}}]}\n\n")
 				if flusher, ok := writer.(http.Flusher); ok {
 					flusher.Flush()
 				}
 				_, _ = io.WriteString(writer, "data: [DONE]\n\n")
+				return
+			}
+			if answer, throttled := fixture.chatAnswer(request.Header.Get("Authorization")); throttled {
+				writer.Header().Set("Content-Type", "application/json")
+				if answer.retryAfter != "" {
+					writer.Header().Set("Retry-After", answer.retryAfter)
+				}
+				writer.WriteHeader(answer.status)
+				_, _ = io.WriteString(writer, `{"error":{"message":"upstream throttled"}}`)
 				return
 			}
 			writer.Header().Set("Content-Type", "application/json")
@@ -976,14 +1100,22 @@ func (f *proxyFixture) connectCount() int32 { return f.connectProxy.connects.Loa
 
 func (f *proxyFixture) failNextConnect() { f.connectProxy.failNext.Store(1) }
 
+// failNextConnectWithStatus makes the next CONNECT answer with an HTTP status,
+// which the client surfaces as a transport error that must NOT be replayed
+// (R2.2: a 5xx proxy answer means the proxy is up and already refused).
+func (f *proxyFixture) failNextConnectWithStatus(status int) {
+	f.connectProxy.failNextStatus.Store(int64(status))
+}
+
 // connectProxyFixture is a minimal HTTP CONNECT proxy. Every CONNECT is counted
 // and the tunnel is forwarded to the configured target host.
 type connectProxyFixture struct {
-	listener net.Listener
-	server   *http.Server
-	target   string
-	connects atomic.Int32
-	failNext atomic.Int32
+	listener       net.Listener
+	server         *http.Server
+	target         string
+	connects       atomic.Int32
+	failNext       atomic.Int32
+	failNextStatus atomic.Int64
 }
 
 func newConnectProxyFixture(t *testing.T, target string) *connectProxyFixture {
@@ -1015,7 +1147,20 @@ func (p *connectProxyFixture) handle(writer http.ResponseWriter, request *http.R
 	}
 	p.connects.Add(1)
 	if p.failNext.CompareAndSwap(1, 0) {
-		http.Error(writer, "temporary proxy failure", http.StatusBadGateway)
+		// A raw transport-level failure: accept the tunnel then drop it before
+		// any HTTP response, so the client sees a genuine connection error that
+		// is worth one replay.
+		client, buffered, err := hijackProxyConn(writer)
+		if err != nil {
+			return
+		}
+		_ = buffered.Flush()
+		_ = client.Close()
+		return
+	}
+	if status := p.failNextStatus.Load(); status != 0 {
+		p.failNextStatus.Store(0)
+		http.Error(writer, "temporary proxy failure", int(status))
 		return
 	}
 	upstream, err := net.DialTimeout("tcp", p.target, time.Second)
@@ -1048,6 +1193,14 @@ func (p *connectProxyFixture) handle(writer http.ResponseWriter, request *http.R
 	_, _ = io.Copy(client, upstream)
 	_ = client.Close()
 	_ = upstream.Close()
+}
+
+func hijackProxyConn(writer http.ResponseWriter) (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := writer.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("writer does not support hijacking")
+	}
+	return hijacker.Hijack()
 }
 
 var probeWAVBytes = []byte{

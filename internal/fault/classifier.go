@@ -57,7 +57,7 @@ func Classify(response *http.Response, requestErr error, modelsRequest bool, now
 		}
 	case status == 400 || status == 404 || status == 409 || status == 422:
 		return requestFault(status, summary.message)
-	case status == 500 || status == 502 || status == 503 || status == 504:
+	case status == 500 || status == 502 || status == 503 || status == 504 || status == 529:
 		return upstreamFault(status, true, "upstream_error", "The upstream service is temporarily unavailable.", nil)
 	case status >= 500 && status <= 599:
 		return upstreamFault(status, false, "upstream_error", "The upstream service rejected the request.", nil)
@@ -89,8 +89,12 @@ func classifyRequestError(err error) Fault {
 }
 
 func credentialFault(status int) Fault {
+	// A credential fault is per-key: the token itself is bad, so replaying the
+	// same request on another key just burns another key's quota on the same
+	// doomed auth (audit R5). The key is disabled (DisableKey) and cooled down
+	// instead of being retried across the pool.
 	return Fault{
-		HTTPStatus: status, Scope: ScopeCredential, Retryable: true, DisableKey: true,
+		HTTPStatus: status, Scope: ScopeCredential, Retryable: false, DisableKey: true,
 		PublicType: "authentication_error", PublicCode: "invalid_api_key",
 		PublicMessage: "The upstream credential is invalid.",
 	}

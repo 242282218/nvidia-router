@@ -80,7 +80,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 			t.Fatalf("list leaked %q: %s", forbidden, payload)
 		}
 	}
-	lease, err := app.Pool.Acquire(context.Background(), 0, nil)
+	lease, err := app.Pool.Acquire(context.Background(), 0, nil, false)
 	if err != nil {
 		t.Fatalf("acquire imported key: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 		t.Fatalf("unblock status=%d body=%s", unblocked.StatusCode, readResponse(t, unblocked))
 	}
 	_ = unblocked.Body.Close()
-	lease, err = app.Pool.Acquire(context.Background(), modelID, nil)
+	lease, err = app.Pool.Acquire(context.Background(), modelID, nil, false)
 	if err != nil {
 		t.Fatalf("acquire after unblock: %v", err)
 	}
@@ -141,7 +141,7 @@ func assertPoolAcquireFails(t *testing.T, app *App, modelID int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if lease, err := app.Pool.Acquire(ctx, modelID, nil); err == nil {
+	if lease, err := app.Pool.Acquire(ctx, modelID, nil, false); err == nil {
 		lease.Release()
 		t.Fatalf("Acquire(%d) succeeded", modelID)
 	}

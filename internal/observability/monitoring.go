@@ -39,29 +39,37 @@ type MetricsSummary struct {
 }
 
 type MonitoringSummary struct {
-	RequestCount       int64   `json:"request_count"`
-	SuccessCount       int64   `json:"success_count"`
-	FailureCount       int64   `json:"failure_count"`
-	SuccessRate        float64 `json:"success_rate"`
-	AverageDurationMS  float64 `json:"average_duration_ms"`
-	AverageFirstByteMS float64 `json:"average_first_byte_ms"`
-	AverageQueueMS     float64 `json:"average_queue_ms"`
-	TotalAttempts      int64   `json:"total_attempts"`
-	PromptTokens       int64   `json:"prompt_tokens"`
-	CompletionTokens   int64   `json:"completion_tokens"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	FailureCount        int64   `json:"failure_count"`
+	SuccessRate         float64 `json:"success_rate"`
+	AverageDurationMS   float64 `json:"average_duration_ms"`
+	AverageFirstByteMS  float64 `json:"average_first_byte_ms"`
+	AverageFirstTokenMS float64 `json:"average_first_token_ms"`
+	AverageQueueMS      float64 `json:"average_queue_ms"`
+	TotalAttempts       int64   `json:"total_attempts"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CompletionTokens    int64   `json:"completion_tokens"`
+	// FirstTokenP50MS / FirstTokenP95MS are true nearest-rank quantiles over the
+	// first_token_ms samples in the window, not aggregates of the daily_stats
+	// totals (which only keep sum+count and cannot reproduce percentiles). They
+	// are absent while no streaming request in the window produced a token.
+	FirstTokenP50MS *int64 `json:"first_token_p50_ms,omitempty"`
+	FirstTokenP95MS *int64 `json:"first_token_p95_ms,omitempty"`
 }
 
 type MonitoringSeriesPoint struct {
-	Bucket             string  `json:"bucket"`
-	RequestCount       int64   `json:"request_count"`
-	SuccessCount       int64   `json:"success_count"`
-	FailureCount       int64   `json:"failure_count"`
-	AverageDurationMS  float64 `json:"average_duration_ms"`
-	AverageFirstByteMS float64 `json:"average_first_byte_ms"`
-	AverageQueueMS     float64 `json:"average_queue_ms"`
-	TotalAttempts      int64   `json:"total_attempts"`
-	PromptTokens       int64   `json:"prompt_tokens"`
-	CompletionTokens   int64   `json:"completion_tokens"`
+	Bucket              string  `json:"bucket"`
+	RequestCount        int64   `json:"request_count"`
+	SuccessCount        int64   `json:"success_count"`
+	FailureCount        int64   `json:"failure_count"`
+	AverageDurationMS   float64 `json:"average_duration_ms"`
+	AverageFirstByteMS  float64 `json:"average_first_byte_ms"`
+	AverageFirstTokenMS float64 `json:"average_first_token_ms"`
+	AverageQueueMS      float64 `json:"average_queue_ms"`
+	TotalAttempts       int64   `json:"total_attempts"`
+	PromptTokens        int64   `json:"prompt_tokens"`
+	CompletionTokens    int64   `json:"completion_tokens"`
 }
 
 type MonitoringSnapshot struct {
@@ -84,6 +92,7 @@ type RequestLog struct {
 	IsStream          bool    `json:"is_stream"`
 	QueueMS           int64   `json:"queue_ms"`
 	FirstByteMS       *int64  `json:"first_byte_ms,omitempty"`
+	FirstTokenMS      *int64  `json:"first_token_ms,omitempty"`
 	DurationMS        int64   `json:"duration_ms"`
 	AttemptCount      int64   `json:"attempt_count"`
 	PromptTokens      *int64  `json:"prompt_tokens,omitempty"`

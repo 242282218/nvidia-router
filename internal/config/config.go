@@ -25,17 +25,20 @@ const (
 )
 
 type Config struct {
-	ListenAddress        string
-	DataDir              string
-	TempDir              string
-	MasterKey            [32]byte
-	InitialAdminPassword string
-	AdminSecureCookie    bool
-	AdminExternalOrigin  *url.URL
-	TrustedProxyCIDRs    []*net.IPNet
-	NVIDIABaseURL        *url.URL
-	XKProxyURL           *url.URL
-	XKProxyAuthKey       string
+	ListenAddress          string
+	DataDir                string
+	TempDir                string
+	MasterKey              [32]byte
+	MasterKeyVersion       int
+	LegacyMasterKey        *[32]byte
+	LegacyMasterKeyVersion int
+	InitialAdminPassword   string
+	AdminSecureCookie      bool
+	AdminExternalOrigin    *url.URL
+	TrustedProxyCIDRs      []*net.IPNet
+	NVIDIABaseURL          *url.URL
+	XKProxyURL             *url.URL
+	XKProxyAuthKey         string
 }
 
 type LoadOptions struct {
@@ -46,6 +49,21 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	masterKey, err := loadMasterKey(os.Getenv("NVIDIA_ROUTER_MASTER_KEY"))
 	if err != nil {
 		return Config{}, fmt.Errorf("load master key: %w", err)
+	}
+	masterKeyVersion, err := loadPositiveInt("NVIDIA_ROUTER_MASTER_KEY_VERSION", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	legacyMasterKey, err := loadOptionalMasterKey(os.Getenv("NVIDIA_ROUTER_LEGACY_MASTER_KEY"))
+	if err != nil {
+		return Config{}, fmt.Errorf("load legacy master key: %w", err)
+	}
+	legacyMasterKeyVersion, err := loadPositiveInt("NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	if legacyMasterKey != nil && legacyMasterKeyVersion == masterKeyVersion {
+		return Config{}, errors.New("NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION must differ from NVIDIA_ROUTER_MASTER_KEY_VERSION")
 	}
 	initialAdminPassword := os.Getenv("NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD")
 	if initialAdminPassword == "" {
@@ -79,17 +97,20 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	}
 
 	return Config{
-		ListenAddress:        valueOrDefault("NVIDIA_ROUTER_LISTEN_ADDR", defaultListenAddress),
-		DataDir:              valueOrDefault("NVIDIA_ROUTER_DATA_DIR", defaultDataDir),
-		TempDir:              valueOrDefault("NVIDIA_ROUTER_TEMP_DIR", defaultTempDir),
-		MasterKey:            masterKey,
-		InitialAdminPassword: initialAdminPassword,
-		AdminSecureCookie:    secureCookie,
-		AdminExternalOrigin:  externalOrigin,
-		TrustedProxyCIDRs:    trustedProxyCIDRs,
-		NVIDIABaseURL:        nvidiaBaseURL,
-		XKProxyURL:           xkProxyURL,
-		XKProxyAuthKey:       xkProxyAuthKey,
+		ListenAddress:          valueOrDefault("NVIDIA_ROUTER_LISTEN_ADDR", defaultListenAddress),
+		DataDir:                valueOrDefault("NVIDIA_ROUTER_DATA_DIR", defaultDataDir),
+		TempDir:                valueOrDefault("NVIDIA_ROUTER_TEMP_DIR", defaultTempDir),
+		MasterKey:              masterKey,
+		MasterKeyVersion:       masterKeyVersion,
+		LegacyMasterKey:        legacyMasterKey,
+		LegacyMasterKeyVersion: legacyMasterKeyVersion,
+		InitialAdminPassword:   initialAdminPassword,
+		AdminSecureCookie:      secureCookie,
+		AdminExternalOrigin:    externalOrigin,
+		TrustedProxyCIDRs:      trustedProxyCIDRs,
+		NVIDIABaseURL:          nvidiaBaseURL,
+		XKProxyURL:             xkProxyURL,
+		XKProxyAuthKey:         xkProxyAuthKey,
 	}, nil
 }
 
@@ -169,6 +190,36 @@ func valueOrDefault(name, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func loadPositiveInt(name string, defaultValue int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+// LoadMasterKey decodes the same 32-byte Raw URL Base64 format used by the
+// runtime configuration. It is exposed for offline commands that must avoid
+// duplicating secret parsing rules.
+func LoadMasterKey(encoded string) ([32]byte, error) {
+	return loadMasterKey(encoded)
+}
+
+func loadOptionalMasterKey(encoded string) (*[32]byte, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return nil, nil
+	}
+	key, err := loadMasterKey(encoded)
+	if err != nil {
+		return nil, err
+	}
+	return &key, nil
 }
 
 func loadMasterKey(encoded string) ([32]byte, error) {

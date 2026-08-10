@@ -52,7 +52,7 @@ func TestCloseRejectsNewPoolAcquires(t *testing.T) {
 	application := &App{Pool: keyPool}
 
 	application.beginShutdown(time.Second)
-	_, err := keyPool.Acquire(context.Background(), 1, nil)
+	_, err := keyPool.Acquire(context.Background(), 1, nil, false)
 	var publicError *apierror.Error
 	if !errors.As(err, &publicError) || publicError.Status != http.StatusServiceUnavailable || publicError.Code != "server_shutting_down" {
 		t.Fatalf("Acquire error = %v, want server_shutting_down", err)

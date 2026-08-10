@@ -16,6 +16,10 @@ var ErrStreamInterrupted = errors.New("upstream stream interrupted before [DONE]
 
 type ProxyOptions struct {
 	CommitState *router.CommitState
+	// OnFirstData fires exactly once, after the first SSE data event has been
+	// written and flushed to the client. It lets the streaming handler record
+	// time-to-first-token without coupling the proxy to observability.
+	OnFirstData func()
 }
 
 func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, opts ProxyOptions) error {
@@ -51,6 +55,7 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 
 	seenDone := false
 	firstDataWritten := false
+	firstDataNotified := false
 	var pending bytes.Buffer
 
 	for {
@@ -117,6 +122,15 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		}
 
 		flusher.Flush()
+
+		// The first token has reached the client once the first data event is
+		// flushed; notify exactly once so TTFT sampling ignores trailing events.
+		if !firstDataNotified && firstDataWritten {
+			firstDataNotified = true
+			if opts.OnFirstData != nil {
+				opts.OnFirstData()
+			}
+		}
 
 		if seenDone {
 			return nil

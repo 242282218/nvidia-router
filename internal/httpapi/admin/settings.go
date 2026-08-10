@@ -19,16 +19,19 @@ type Settings struct {
 }
 
 type settingsDTO struct {
-	QueueCapacity           int    `json:"queue_capacity"`
-	QueueWaitTimeoutMS      int    `json:"queue_wait_timeout_ms"`
-	ConnectTimeoutMS        int    `json:"connect_timeout_ms"`
-	FirstByteTimeoutMS      int    `json:"first_byte_timeout_ms"`
-	NonstreamTotalTimeoutMS int    `json:"nonstream_total_timeout_ms"`
-	ShutdownGraceMS         int    `json:"shutdown_grace_ms"`
-	FailoverStatusCodes     string `json:"failover_status_codes"`
-	RequestLogRetentionDays int    `json:"request_log_retention_days"`
-	MaxAttemptsPerRequest   int    `json:"max_attempts_per_request"`
-	RetryBudgetMS           int    `json:"retry_window_ms"`
+	QueueCapacity             int    `json:"queue_capacity"`
+	QueueWaitTimeoutMS        int    `json:"queue_wait_timeout_ms"`
+	ConnectTimeoutMS          int    `json:"connect_timeout_ms"`
+	FirstByteTimeoutMS        int    `json:"first_byte_timeout_ms"`
+	NonstreamTotalTimeoutMS   int    `json:"nonstream_total_timeout_ms"`
+	ShutdownGraceMS           int    `json:"shutdown_grace_ms"`
+	FailoverStatusCodes       string `json:"failover_status_codes"`
+	RequestLogRetentionDays   int    `json:"request_log_retention_days"`
+	MaxAttemptsPerRequest     int    `json:"max_attempts_per_request"`
+	RetryBudgetMS             int    `json:"retry_budget_ms"`
+	MaxStreamingPerKey        int    `json:"max_streaming_per_key"`
+	StreamFirstTokenTimeoutMS int    `json:"stream_first_token_timeout_ms"`
+	StreamIdleTimeoutMS       int    `json:"stream_idle_timeout_ms"`
 }
 
 type settingsPatch struct {
@@ -42,10 +45,13 @@ type settingsPatch struct {
 	// nil keeps the persisted value; an explicit empty string is the legitimate
 	// "never fail over" sentinel — we let Validate pass it through and let the
 	// runtime layer fall back to the documented default set.
-	FailoverStatusCodes     *string `json:"failover_status_codes"`
-	RequestLogRetentionDays *int    `json:"request_log_retention_days"`
-	MaxAttemptsPerRequest   *int    `json:"max_attempts_per_request"`
-	RetryBudgetMS           *int    `json:"retry_window_ms"`
+	FailoverStatusCodes       *string `json:"failover_status_codes"`
+	RequestLogRetentionDays   *int    `json:"request_log_retention_days"`
+	MaxAttemptsPerRequest     *int    `json:"max_attempts_per_request"`
+	RetryBudgetMS             *int    `json:"retry_budget_ms"`
+	MaxStreamingPerKey        *int    `json:"max_streaming_per_key"`
+	StreamFirstTokenTimeoutMS *int    `json:"stream_first_token_timeout_ms"`
+	StreamIdleTimeoutMS       *int    `json:"stream_idle_timeout_ms"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -120,6 +126,15 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.RetryBudgetMS != nil {
 		current.RetryBudgetMS = *patch.RetryBudgetMS
 	}
+	if patch.MaxStreamingPerKey != nil {
+		current.MaxStreamingPerKey = *patch.MaxStreamingPerKey
+	}
+	if patch.StreamFirstTokenTimeoutMS != nil {
+		current.StreamFirstTokenTimeoutMS = *patch.StreamFirstTokenTimeoutMS
+	}
+	if patch.StreamIdleTimeoutMS != nil {
+		current.StreamIdleTimeoutMS = *patch.StreamIdleTimeoutMS
+	}
 	return current
 }
 
@@ -128,10 +143,13 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		QueueCapacity: snapshot.QueueCapacity, QueueWaitTimeoutMS: snapshot.QueueWaitTimeoutMS,
 		ConnectTimeoutMS: snapshot.ConnectTimeoutMS, FirstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
 		NonstreamTotalTimeoutMS: snapshot.NonstreamTotalTimeoutMS, ShutdownGraceMS: snapshot.ShutdownGraceMS,
-		FailoverStatusCodes:     snapshot.FailoverStatusCodes,
-		RequestLogRetentionDays: snapshot.RequestLogRetentionDays,
-		MaxAttemptsPerRequest:   snapshot.MaxAttemptsPerRequest,
-		RetryBudgetMS:           snapshot.RetryBudgetMS,
+		FailoverStatusCodes:       snapshot.FailoverStatusCodes,
+		RequestLogRetentionDays:   snapshot.RequestLogRetentionDays,
+		MaxAttemptsPerRequest:     snapshot.MaxAttemptsPerRequest,
+		RetryBudgetMS:             snapshot.RetryBudgetMS,
+		MaxStreamingPerKey:        snapshot.MaxStreamingPerKey,
+		StreamFirstTokenTimeoutMS: snapshot.StreamFirstTokenTimeoutMS,
+		StreamIdleTimeoutMS:       snapshot.StreamIdleTimeoutMS,
 	}
 }
 

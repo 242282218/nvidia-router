@@ -67,7 +67,7 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedKey, error) {
 	crypto.Zero(digestInput)
 	defer crypto.Zero(digest)
 
-	created, err := s.repository.Create(ctx, name, digest, plaintext[:displayPrefixLength], s.clock.Now())
+	created, err := s.repository.Create(ctx, name, digest, plaintext[:displayPrefixLength], s.clock.Now(), s.keys.ActiveVersion())
 	if err != nil {
 		return CreatedKey{}, fmt.Errorf("create access key: %w", err)
 	}
@@ -87,26 +87,37 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 		return AccessKeyIdentity{}, ErrInvalidAccessKey
 	}
 	digestInput := []byte(plaintext)
-	digest := s.keys.AccessKeyDigest(digestInput)
+	digests := s.keys.AccessKeyDigests(digestInput)
 	crypto.Zero(digestInput)
-	defer crypto.Zero(digest)
+	for _, digest := range digests {
+		defer crypto.Zero(digest)
+	}
 
 	now := s.clock.Now()
-	if identity, ok := s.cache.lookup(digest, now); ok {
+	activeVersion := s.keys.ActiveVersion()
+	activeDigest := digests[activeVersion]
+	if identity, ok := s.cache.lookup(activeDigest, now); ok {
 		if identity.ExpiresAt != nil && !now.Before(*identity.ExpiresAt) {
 			s.cache.invalidate()
 			return AccessKeyIdentity{}, ErrInvalidAccessKey
 		}
 		return identity, nil
 	}
-	identity, err := s.repository.Authenticate(ctx, digest)
+	identity, matchedVersion, err := s.repository.Authenticate(ctx, digests)
 	if err != nil {
 		return AccessKeyIdentity{}, fmt.Errorf("authenticate access key: %w", err)
 	}
 	if identity.ExpiresAt != nil && !now.Before(*identity.ExpiresAt) {
 		return AccessKeyIdentity{}, ErrInvalidAccessKey
 	}
-	s.cache.store(digest, identity, now)
+	if matchedVersion != activeVersion && activeDigest != nil {
+		if err := s.repository.UpdateDigest(ctx, identity.ID, activeDigest, activeVersion); err == nil {
+			matchedVersion = activeVersion
+		} else {
+			slog.Warn("migrate access key digest", "error_type", fmt.Sprintf("%T", err))
+		}
+	}
+	s.cache.store(activeDigest, identity, now)
 	return identity, nil
 }
 

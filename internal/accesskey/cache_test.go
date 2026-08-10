@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"nvidia-router/internal/crypto"
 )
 
 func TestAuthenticateServesRepeatLookupsFromCache(t *testing.T) {
@@ -31,6 +33,36 @@ func TestAuthenticateServesRepeatLookupsFromCache(t *testing.T) {
 	}
 	if second != first {
 		t.Fatalf("cached identity = %+v, want %+v", second, first)
+	}
+}
+
+func TestAuthenticateMigratesLegacyDigest(t *testing.T) {
+	source := newManualClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	legacyService, db := newTestServiceWithClock(t, filepath.Join(t.TempDir(), "router.db"), source)
+	created, err := legacyService.Create(context.Background(), "legacy")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var activeMaster [32]byte
+	activeMaster[0] = 2
+	activeKeys, err := crypto.NewVersioned(2, activeMaster)
+	if err != nil {
+		t.Fatalf("NewVersioned: %v", err)
+	}
+	activeKeys, err = activeKeys.WithLegacyMasterKey(1, [32]byte{1})
+	if err != nil {
+		t.Fatalf("WithLegacyMasterKey: %v", err)
+	}
+	service := NewService(NewRepository(db), activeKeys, source)
+	if _, err := service.Authenticate(context.Background(), created.Plaintext); err != nil {
+		t.Fatalf("Authenticate legacy key: %v", err)
+	}
+	var version int
+	if err := db.QueryRow("SELECT digest_key_version FROM access_keys WHERE id = ?", created.Key.ID).Scan(&version); err != nil {
+		t.Fatalf("read digest version: %v", err)
+	}
+	if version != activeKeys.ActiveVersion() {
+		t.Fatalf("digest version = %d, want %d", version, activeKeys.ActiveVersion())
 	}
 }
 

@@ -198,7 +198,7 @@ func TestApplySuccessClearsAuthInvalidForAcquireWithSnapshot(t *testing.T) {
 	p.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true, AuthInvalid: true}}, nil)
 
 	p.ApplySuccess(1)
-	lease, err := p.AcquireWithSnapshot(context.Background(), 100, nil, runtimeconfig.Snapshot{})
+	lease, err := p.AcquireWithSnapshot(context.Background(), 100, nil, runtimeconfig.Snapshot{}, false)
 	if err != nil {
 		t.Fatalf("AcquireWithSnapshot after ApplySuccess: %v", err)
 	}

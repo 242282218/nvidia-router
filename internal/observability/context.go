@@ -21,7 +21,12 @@ type RequestState struct {
 	PromptTokens      *int64
 	CompletionTokens  *int64
 	UpstreamRequestID *string
-	UsageRecorder     func(*int64, *int64)
+	// FirstTokenAt is set by the streaming handler the instant the first SSE
+	// data event reaches the client. The middleware converts it to a TTFT in
+	// milliseconds, mirroring first_byte_ms.
+	FirstTokenAt       time.Time
+	firstTokenRecorded bool
+	UsageRecorder      func(*int64, *int64)
 }
 
 func WithRequestState(ctx context.Context) (context.Context, *RequestState) {
@@ -54,6 +59,22 @@ func SetUpstreamRequestID(ctx context.Context, value string) {
 		return
 	}
 	updateState(ctx, func(state *RequestState) { state.UpstreamRequestID = stringPointer(value) })
+}
+
+// SetFirstTokenAt records the instant the first SSE data event reached the
+// client. Only the first call wins so a replayed or re-entered stream never
+// overwrites the original TTFT. A zero time is ignored.
+func SetFirstTokenAt(ctx context.Context, at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	updateState(ctx, func(state *RequestState) {
+		if state.firstTokenRecorded {
+			return
+		}
+		state.FirstTokenAt = at
+		state.firstTokenRecorded = true
+	})
 }
 
 func SetErrorCode(ctx context.Context, code string) {
@@ -105,6 +126,7 @@ func (s *RequestState) Snapshot() RequestState {
 		ErrorCode: s.ErrorCode, IsStream: s.IsStream, QueueMS: s.QueueMS,
 		AttemptCount: s.AttemptCount, PromptTokens: s.PromptTokens,
 		CompletionTokens: s.CompletionTokens, UpstreamRequestID: s.UpstreamRequestID,
+		FirstTokenAt: s.FirstTokenAt,
 	}
 }
 

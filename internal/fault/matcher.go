@@ -8,9 +8,9 @@ import (
 )
 
 // DefaultFailoverStatusCodes is the spec used when runtime config has no
-// failover status code matcher. It mirrors the previous hardcoded behaviour:
-// 429 + the common 5xx gateway codes trigger a key switch.
-const DefaultFailoverStatusCodes = "429,500,502,503,504"
+// failover status code matcher. NVIDIA may use 529 for temporary overload;
+// keep it in the default key-switch set alongside the common gateway codes.
+const DefaultFailoverStatusCodes = "429,500,502,503,504,529"
 
 // FailoverMatcher decides whether a given upstream HTTP status code should
 // trigger a switch to a different key for retry. It replaces the previous

@@ -33,12 +33,16 @@ func (r *Repository) read() *sql.DB {
 	return r.db
 }
 
-func (r *Repository) Create(ctx context.Context, name string, digest []byte, prefix string, now time.Time) (Key, error) {
+func (r *Repository) Create(ctx context.Context, name string, digest []byte, prefix string, now time.Time, digestVersions ...int) (Key, error) {
+	digestVersion := 1
+	if len(digestVersions) > 0 && digestVersions[0] > 0 {
+		digestVersion = digestVersions[0]
+	}
 	timestamp := formatTime(now)
 	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO access_keys (name, key_digest, key_prefix, created_at)
-		VALUES (?, ?, ?, ?)
-	`, name, digest, prefix, timestamp)
+		INSERT INTO access_keys (name, key_digest, key_prefix, digest_key_version, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, name, digest, prefix, digestVersion, timestamp)
 	if err != nil {
 		return Key{}, fmt.Errorf("insert access key: %w", err)
 	}
@@ -74,26 +78,48 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	return keys, nil
 }
 
-func (r *Repository) Authenticate(ctx context.Context, digest []byte) (AccessKeyIdentity, error) {
+func (r *Repository) Authenticate(ctx context.Context, digests map[int][]byte) (AccessKeyIdentity, int, error) {
+	if len(digests) == 0 {
+		return AccessKeyIdentity{}, 0, ErrInvalidAccessKey
+	}
 	var identity AccessKeyIdentity
+	var digestKeyVersion int
 	var expiresAt sql.NullString
-	err := r.read().QueryRowContext(ctx, `
-		SELECT id, key_prefix, expires_at, rpm_limit, tpm_limit, max_concurrent
-		FROM access_keys
-		WHERE key_digest = ? AND revoked_at IS NULL
-	`, digest).Scan(&identity.ID, &identity.Prefix, &expiresAt, &identity.RPMLimit, &identity.TPMLimit, &identity.MaxConcurrent)
-	if errors.Is(err, sql.ErrNoRows) {
-		return AccessKeyIdentity{}, ErrInvalidAccessKey
+	for version, digest := range digests {
+		err := r.read().QueryRowContext(ctx, `
+			SELECT id, key_prefix, digest_key_version, expires_at, rpm_limit, tpm_limit, max_concurrent
+			FROM access_keys
+			WHERE key_digest = ? AND revoked_at IS NULL
+		`, digest).Scan(&identity.ID, &identity.Prefix, &digestKeyVersion, &expiresAt, &identity.RPMLimit, &identity.TPMLimit, &identity.MaxConcurrent)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return AccessKeyIdentity{}, 0, fmt.Errorf("authenticate access key: %w", err)
+		}
+		var parseErr error
+		identity.ExpiresAt, parseErr = parseOptionalTime(expiresAt)
+		if parseErr != nil {
+			return AccessKeyIdentity{}, 0, fmt.Errorf("parse access key expiration: %w", parseErr)
+		}
+		return identity, version, nil
 	}
+	return AccessKeyIdentity{}, 0, ErrInvalidAccessKey
+}
+
+func (r *Repository) UpdateDigest(ctx context.Context, id int64, digest []byte, version int) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET key_digest = ?, digest_key_version = ? WHERE id = ? AND revoked_at IS NULL`, digest, version, id)
 	if err != nil {
-		return AccessKeyIdentity{}, fmt.Errorf("authenticate access key: %w", err)
+		return fmt.Errorf("update access key digest: %w", err)
 	}
-	var parseErr error
-	identity.ExpiresAt, parseErr = parseOptionalTime(expiresAt)
-	if parseErr != nil {
-		return AccessKeyIdentity{}, fmt.Errorf("parse access key expiration: %w", parseErr)
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated access key digest count: %w", err)
 	}
-	return identity, nil
+	if changed == 0 {
+		return ErrAccessKeyNotFound
+	}
+	return nil
 }
 
 func (r *Repository) Revoke(ctx context.Context, id int64, now time.Time) error {

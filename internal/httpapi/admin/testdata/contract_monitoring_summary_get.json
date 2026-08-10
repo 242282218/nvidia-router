@@ -1,0 +1,50 @@
+{
+  "data": {
+    "from": "2026-08-01T05:00:00Z",
+    "range": "24h",
+    "series": [
+      {
+        "average_duration_ms": 800,
+        "average_first_byte_ms": 600,
+        "average_first_token_ms": 180,
+        "average_queue_ms": 10,
+        "bucket": "2026-08-01T05:00:00Z",
+        "completion_tokens": 200,
+        "failure_count": 2,
+        "prompt_tokens": 400,
+        "request_count": 40,
+        "success_count": 38,
+        "total_attempts": 44
+      },
+      {
+        "average_duration_ms": 950,
+        "average_first_byte_ms": 750,
+        "average_first_token_ms": 230,
+        "average_queue_ms": 14,
+        "bucket": "2026-08-01T06:00:00Z",
+        "completion_tokens": 300,
+        "failure_count": 3,
+        "prompt_tokens": 600,
+        "request_count": 60,
+        "success_count": 57,
+        "total_attempts": 66
+      }
+    ],
+    "summary": {
+      "average_duration_ms": 900,
+      "average_first_byte_ms": 700,
+      "average_first_token_ms": 210,
+      "average_queue_ms": 12,
+      "completion_tokens": 500,
+      "failure_count": 5,
+      "first_token_p50_ms": 120,
+      "first_token_p95_ms": 840,
+      "prompt_tokens": 1000,
+      "request_count": 100,
+      "success_count": 95,
+      "success_rate": 95,
+      "total_attempts": 110
+    },
+    "to": "2026-08-02T08:00:00Z"
+  }
+}

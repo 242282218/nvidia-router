@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	defaultQueueCapacity = 100
-	defaultQueueWait     = 60 * time.Second
-	queueRetryAfter      = time.Second
+	defaultQueueCapacity     = 100
+	defaultQueueWait         = 60 * time.Second
+	defaultMaxStreamingPerKey = 2
+	queueRetryAfter          = time.Second
 )
 
 type UnavailableReason uint8
@@ -36,11 +37,13 @@ type acquireResult struct {
 }
 
 type waiter struct {
-	ctx       context.Context
-	modelID   int64
-	attempted map[int64]struct{}
-	result    chan acquireResult
-	element   *list.Element
+	ctx                context.Context
+	modelID            int64
+	attempted          map[int64]struct{}
+	stream             bool
+	maxStreamingPerKey int
+	result             chan acquireResult
+	element            *list.Element
 }
 
 type waitQueue struct {
@@ -72,8 +75,8 @@ func (q *waitQueue) remove(waiter *waiter) bool {
 	return true
 }
 
-func (p *Pool) Acquire(ctx context.Context, modelID int64, attempted map[int64]struct{}) (Lease, error) {
-	return p.acquire(ctx, modelID, attempted, p.queueSettings())
+func (p *Pool) Acquire(ctx context.Context, modelID int64, attempted map[int64]struct{}, stream bool) (Lease, error) {
+	return p.acquire(ctx, modelID, attempted, stream, p.queueSettings())
 }
 
 func (p *Pool) AcquireWithSnapshot(
@@ -81,14 +84,16 @@ func (p *Pool) AcquireWithSnapshot(
 	modelID int64,
 	attempted map[int64]struct{},
 	snapshot runtimeconfig.Snapshot,
+	stream bool,
 ) (Lease, error) {
-	return p.acquire(ctx, modelID, attempted, resolveQueueSettings(snapshot))
+	return p.acquire(ctx, modelID, attempted, stream, resolveQueueSettings(snapshot))
 }
 
 func (p *Pool) acquire(
 	ctx context.Context,
 	modelID int64,
 	attempted map[int64]struct{},
+	stream bool,
 	settings resolvedQueueSettings,
 ) (Lease, error) {
 	if err := ctx.Err(); err != nil {
@@ -102,7 +107,7 @@ func (p *Pool) acquire(
 	}
 	p.dispatchWaitersLocked()
 	if p.waiters.Len() == 0 {
-		lease, unavailable := p.tryAcquireLocked(modelID, attempted)
+		lease, unavailable := p.tryAcquireLocked(modelID, attempted, stream, settings.maxStreamingPerKey)
 		if lease != nil {
 			p.mu.Unlock()
 			return lease, nil
@@ -118,10 +123,12 @@ func (p *Pool) acquire(
 	}
 
 	waiter := &waiter{
-		ctx:       ctx,
-		modelID:   modelID,
-		attempted: cloneAttempted(attempted),
-		result:    make(chan acquireResult, 1),
+		ctx:                ctx,
+		modelID:            modelID,
+		attempted:          cloneAttempted(attempted),
+		stream:             stream,
+		maxStreamingPerKey: settings.maxStreamingPerKey,
+		result:             make(chan acquireResult, 1),
 	}
 	p.waiters.push(waiter)
 	p.dispatchWaitersLocked()
@@ -144,8 +151,9 @@ func (p *Pool) Shutdown() {
 }
 
 type resolvedQueueSettings struct {
-	capacity int
-	wait     time.Duration
+	capacity            int
+	wait                time.Duration
+	maxStreamingPerKey  int
 }
 
 func (p *Pool) queueSettings() resolvedQueueSettings {
@@ -165,7 +173,11 @@ func resolveQueueSettings(snapshot runtimeconfig.Snapshot) resolvedQueueSettings
 	if wait <= 0 {
 		wait = defaultQueueWait
 	}
-	return resolvedQueueSettings{capacity: capacity, wait: wait}
+	maxStreaming := snapshot.MaxStreamingPerKey
+	if maxStreaming <= 0 {
+		maxStreaming = defaultMaxStreamingPerKey
+	}
+	return resolvedQueueSettings{capacity: capacity, wait: wait, maxStreamingPerKey: maxStreaming}
 }
 
 func (p *Pool) waitForResult(ctx context.Context, waiter *waiter, wait time.Duration) (Lease, error) {
@@ -210,7 +222,7 @@ func (p *Pool) dispatchWaitersLocked() {
 			remaining--
 			continue
 		}
-		lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted)
+		lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey)
 		if lease == nil && unavailable.reason == UnavailableBusy {
 			// A busy head waiter must not stall the queue: rotate it to the
 			// tail and keep scanning. remaining bounds the pass so a queue of

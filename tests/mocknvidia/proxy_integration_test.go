@@ -311,6 +311,189 @@ func TestProxyFirstBrokenThenHealthyRetriesOnceSameKey(t *testing.T) {
 	}
 }
 
+// TestProxy5xxConnectDoesNotRetrySameKey locks in the R2.2 tightening at the
+// integration level: a 5xx CONNECT answer means the proxy is up and already
+// refused the request, so the client must not replay — the request surfaces the
+// proxy error and the healthy second CONNECT is never attempted.
+func TestProxy5xxConnectDoesNotRetrySameKey(t *testing.T) {
+	fixture := newProxyFixture(t)
+	fixture.failNextConnectWithStatus(http.StatusServiceUnavailable)
+	harness := newAppHarnessWithOptions(t, harnessOptions{
+		upstream:    mocknvidia.New(),
+		secrets:     []string{"nvapi-proxy-5xx-no-replay"},
+		tlsUpstream: fixture.upstream,
+		proxyURL:    fixture.proxyURL(t),
+	})
+
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", proxyChatBody())
+	if status != http.StatusBadGateway {
+		t.Fatalf("response = %d %s, want 502 proxy error", status, body)
+	}
+	if got := fixture.connectCount(); got != 1 {
+		t.Fatalf("proxy CONNECT count = %d, want 1 (5xx CONNECT must not be replayed)", got)
+	}
+	if got := fixture.upstream.count(); got != 0 {
+		t.Fatalf("TLS upstream requests = %d, want 0", got)
+	}
+}
+
+// TestProxyUpstream429RetriesNextKeyHonoringRetryAfter proves that in proxy
+// mode an upstream 429 with Retry-After drives the status-based key switch: the
+// throttled key is parked for the Retry-After window while the request retries
+// on a different key. The upstream must see exactly one request per key — the
+// client transport must not replay the 429 (a replay would re-send the same
+// throttled key instead of moving on).
+func TestProxyUpstream429RetriesNextKeyHonoringRetryAfter(t *testing.T) {
+	firstSecret := "nvapi-proxy-429-000001"
+	secondSecret := "nvapi-proxy-429-000002"
+	fixture := newProxyFixture(t)
+	fixture.upstream.throttleKey("Bearer "+firstSecret, http.StatusTooManyRequests, "2")
+	harness := newAppHarnessWithOptions(t, harnessOptions{
+		upstream:    mocknvidia.New(),
+		secrets:     []string{firstSecret, secondSecret},
+		tlsUpstream: fixture.upstream,
+		proxyURL:    fixture.proxyURL(t),
+	})
+	keyID := harness.keyIDs[0]
+
+	start := time.Now()
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", proxyChatBody())
+	if status != http.StatusOK || !strings.Contains(body, "proxied-ok") {
+		t.Fatalf("response = %d %s", status, body)
+	}
+	elapsed := time.Since(start)
+
+	requests := fixture.upstream.requestsSnapshot()
+	if len(requests) != 2 {
+		t.Fatalf("TLS upstream requests = %d, want 2 (one per key; no transport replay)", len(requests))
+	}
+	if requests[0].Authorization != "Bearer "+firstSecret {
+		t.Fatalf("request 1 Authorization = %q, want the throttled key first", requests[0].Authorization)
+	}
+	if requests[1].Authorization != "Bearer "+secondSecret {
+		t.Fatalf("request 2 Authorization = %q, want the healthy key second", requests[1].Authorization)
+	}
+	state := readKeyState(t, harness.db, keyID)
+	if state.authInvalid != 0 || state.consecutiveFailures != 1 || state.lastErrorCode.String != "rate_limit_exceeded" {
+		t.Fatalf("429 key state = %+v, want one rate-limit failure, key still enabled", state)
+	}
+	// Retry-After honoured: the router slept the 2s hint before switching keys,
+	// so the request could not have returned before the backoff, and the
+	// throttled key's cooldown (anchored to the 429) is just about elapsed.
+	if elapsed < 1500*time.Millisecond {
+		t.Fatalf("request returned after %s, want the Retry-After backoff to have been honored", elapsed)
+	}
+	assertProxyRetryAfterElapsed(t, harness, keyID)
+}
+
+// TestProxyUpstream529RetriesNextKeyWithoutTransportReplay proves the
+// NVIDIA-specific overload status 529 is treated as a retryable upstream fault
+// in proxy mode too: the throttled key is failed over to a healthy key and the
+// upstream sees exactly one request per key (an HTTP status answer is not a
+// transport error, so the client transport must not replay it).
+func TestProxyUpstream529RetriesNextKeyWithoutTransportReplay(t *testing.T) {
+	firstSecret := "nvapi-proxy-529-000001"
+	secondSecret := "nvapi-proxy-529-000002"
+	fixture := newProxyFixture(t)
+	fixture.upstream.throttleKey("Bearer "+firstSecret, 529, "")
+	harness := newAppHarnessWithOptions(t, harnessOptions{
+		upstream:    mocknvidia.New(),
+		secrets:     []string{firstSecret, secondSecret},
+		tlsUpstream: fixture.upstream,
+		proxyURL:    fixture.proxyURL(t),
+	})
+	keyID := harness.keyIDs[0]
+
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", proxyChatBody())
+	if status != http.StatusOK || !strings.Contains(body, "proxied-ok") {
+		t.Fatalf("response = %d %s", status, body)
+	}
+	requests := fixture.upstream.requestsSnapshot()
+	if len(requests) != 2 {
+		t.Fatalf("TLS upstream requests = %d, want 2 (one per key; no transport replay)", len(requests))
+	}
+	if requests[0].Authorization != "Bearer "+firstSecret {
+		t.Fatalf("request 1 Authorization = %q, want the 529 key first", requests[0].Authorization)
+	}
+	if requests[1].Authorization != "Bearer "+secondSecret {
+		t.Fatalf("request 2 Authorization = %q, want the healthy key second", requests[1].Authorization)
+	}
+	state := readKeyState(t, harness.db, keyID)
+	if state.authInvalid != 0 || state.consecutiveFailures != 1 || state.lastErrorCode.String != "upstream_error" {
+		t.Fatalf("529 key state = %+v, want one upstream failure, key still enabled", state)
+	}
+	if !state.cooldownUntil.Valid {
+		t.Fatalf("529 key was not cooled down")
+	}
+}
+
+// TestProxyDeepSeekV4FlashReasoningStream proves the full DeepSeek v4-flash
+// long-task path through the proxy: the native `thinking` parameter is
+// normalized to the OpenAI reasoning wire format upstream, and the SSE
+// reasoning_content relay reaches the client over the CONNECT tunnel.
+func TestProxyDeepSeekV4FlashReasoningStream(t *testing.T) {
+	fixture := newProxyFixture(t)
+	harness := newAppHarnessWithOptions(t, harnessOptions{
+		upstream:    mocknvidia.New(),
+		secrets:     []string{"nvapi-proxy-ds-flash-1"},
+		tlsUpstream: fixture.upstream,
+		proxyURL:    fixture.proxyURL(t),
+		prepare: func(t *testing.T, db *sql.DB, _ []int64, _ int64) {
+			if err := modelcatalog.NewRepository(db).SaveSelections(context.Background(), []modelcatalog.Selection{{
+				PublicID: "deepseek-ai/deepseek-v4-flash", UpstreamID: "deepseek-ai/deepseek-v4-flash",
+				DisplayName: "DeepSeek V4 Flash", Kind: modelcatalog.KindChat, Enabled: true,
+				SupportsReasoning: true, ReasoningWireFormat: "openai",
+			}}, time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatalf("save deepseek flash model: %v", err)
+			}
+		},
+	})
+
+	status, body, _ := harness.request(t, http.MethodPost, "/v1/chat/completions", `{
+		"model":"deepseek-ai/deepseek-v4-flash",
+		"messages":[{"role":"user","content":"long task"}],
+		"thinking":{"type":"enabled","budget_tokens":8192},
+		"stream":true
+	}`)
+	if status != http.StatusOK || !strings.Contains(body, "proxied-reasoning") || !strings.Contains(body, "proxied-stream") {
+		t.Fatalf("response = %d %s", status, body)
+	}
+	if got := fixture.connectCount(); got != 1 {
+		t.Fatalf("proxy CONNECT count = %d, want 1", got)
+	}
+	requests := fixture.upstream.requestsSnapshot()
+	if len(requests) != 1 {
+		t.Fatalf("TLS upstream requests = %d, want 1", len(requests))
+	}
+	if !strings.Contains(requests[0].Body, `"reasoning_effort":"medium"`) {
+		t.Fatalf("upstream body did not normalize native thinking: %s", requests[0].Body)
+	}
+	if strings.Contains(requests[0].Body, `"thinking"`) {
+		t.Fatalf("upstream body still carries native thinking field: %s", requests[0].Body)
+	}
+}
+
+// assertProxyRetryAfterElapsed asserts the throttled key's cooldown is just
+// about now: the router slept the upstream Retry-After before switching keys, so
+// the parked window has almost elapsed when the fallback response returns. A
+// still-future cooldown means the Retry-After was ignored; a long-past one means
+// it was never anchored to the 429.
+func assertProxyRetryAfterElapsed(t *testing.T, harness *appHarness, keyID int64) {
+	t.Helper()
+	var raw string
+	if err := harness.db.QueryRow(`SELECT cooldown_until FROM nvidia_keys WHERE id = ?`, keyID).Scan(&raw); err != nil {
+		t.Fatalf("load cooldown: %v", err)
+	}
+	until, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("parse cooldown %q: %v", raw, err)
+	}
+	remaining := time.Until(until)
+	if remaining > time.Second || -remaining > 3*time.Second {
+		t.Fatalf("Retry-After cooldown remaining = %v, want just-expired after the Retry-After backoff", remaining)
+	}
+}
+
 // TestProxyErrorNoSecretLeakageInHTTPAndLogs injects a failing proxy-pool
 // endpoint and a fake proxy authentication key, then asserts none of the
 // secrets leak into the HTTP response or application logs.
