@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"nvidia-router/internal/fault"
@@ -17,6 +21,29 @@ import (
 )
 
 const maxErrorBodyBytes = 8 << 10
+
+// xkStickySessionHeader is the outer-CONNECT session header the pool reads to bind
+// every request of one NVIDIA key to the same exit IP. The pool strips it before it
+// can reach the target, and the TLS layer keeps it out of the NVIDIA request headers.
+const xkStickySessionHeader = "X-XK-Session"
+
+// xkStickySessionSize bounds the session value the pool accepts as a header, matching
+// the pool's own sticky header handling. It is intentionally independent of how many
+// bytes the database key ID would need.
+const xkStickySessionSize = 64
+
+type stickySessionKeyCtx struct{}
+
+// WithStickySession carries the NVIDIA key id that should pin the pool's exit for
+// this request. It is read in proxy mode only; direct mode ignores it.
+func WithStickySession(ctx context.Context, keyID int64) context.Context {
+	return context.WithValue(ctx, stickySessionKeyCtx{}, keyID)
+}
+
+func stickySessionFrom(ctx context.Context) (int64, bool) {
+	value, ok := ctx.Value(stickySessionKeyCtx{}).(int64)
+	return value, ok
+}
 
 var ErrProtocol = errors.New("NVIDIA models protocol error")
 
@@ -182,6 +209,13 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 	if ctx.Err() != nil {
 		return nil, err
 	}
+	// Only a pure transport failure is worth one immediate replay. An error the
+	// proxy produced from an HTTP response (e.g. a 5xx CONNECT answer) means the
+	// proxy is up and already refused the request; replaying would just double
+	// the upstream load on a known-bad path (audit R5).
+	if !replayableProxyError(err) {
+		return nil, err
+	}
 	response, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
 	if err == nil || response != nil {
 		return response, err
@@ -193,6 +227,22 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 		return nil, err
 	}
 	return nil, xkproxy.NewTransportError(err)
+}
+
+// replayableProxyError reports whether a failed proxy transport attempt is worth
+// one replay. Only connection-level failures qualify: a dial that never
+// connected, a reset before any byte, or a timeout. Go wraps proxy HTTP error
+// responses in a url.Error whose inner error is a plain errorString (the proxy's
+// status text, e.g. "Service Unavailable"), not a net.Error — unwrap it so those
+// 5xx answers fall out of the replay path instead of being retried.
+func replayableProxyError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
 }
 
 func (c *Client) effectiveSnapshot(snapshot runtimeconfig.Snapshot) runtimeconfig.Snapshot {
@@ -221,7 +271,14 @@ func (c *Client) doDirect(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 }
 
 func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, bool, bool, error) {
-	handle, err := c.proxy.Acquire(ctx, snapshot)
+	// The session label travels through xkproxy.Acquire so the Manager can put the
+	// CONNECT header on the outer proxy request. It must never be written to the
+	// target request header: NVIDIA would see it and the pool would not.
+	session := ""
+	if keyID, ok := stickySessionFrom(ctx); ok {
+		session = strconv.FormatInt(keyID, 10)
+	}
+	handle, err := c.proxy.Acquire(ctx, snapshot, session)
 	if err != nil {
 		return nil, false, false, err
 	}

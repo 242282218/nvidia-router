@@ -35,11 +35,11 @@ func TestManagerUsesProxyPoolBasicAuthAndReusesTransport(t *testing.T) {
 	}
 	t.Cleanup(manager.Close)
 
-	first, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000})
+	first, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}, "")
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
-	second, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000})
+	second, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}, "")
 	if err != nil {
 		t.Fatalf("second Acquire: %v", err)
 	}
@@ -87,18 +87,18 @@ func TestManagerBoundsTransportCacheWithLRU(t *testing.T) {
 
 	firstKey := transportKey{connectTimeoutMS: 1, firstByteTimeoutMS: 1}
 	secondKey := transportKey{connectTimeoutMS: 2, firstByteTimeoutMS: 2}
-	first, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1, FirstByteTimeoutMS: 1})
+	first, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1, FirstByteTimeoutMS: 1}, "")
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
-	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 2, FirstByteTimeoutMS: 2}); err != nil {
+	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 2, FirstByteTimeoutMS: 2}, ""); err != nil {
 		t.Fatalf("second Acquire: %v", err)
 	}
-	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1, FirstByteTimeoutMS: 1}); err != nil {
+	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1, FirstByteTimeoutMS: 1}, ""); err != nil {
 		t.Fatalf("touch first transport: %v", err)
 	}
 	for timeout := 3; timeout <= maxCachedTransports+1; timeout++ {
-		if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: timeout, FirstByteTimeoutMS: timeout}); err != nil {
+		if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: timeout, FirstByteTimeoutMS: timeout}, ""); err != nil {
 			t.Fatalf("Acquire timeout %d: %v", timeout, err)
 		}
 	}
@@ -119,7 +119,7 @@ func TestManagerBoundsTransportCacheWithLRU(t *testing.T) {
 	if manager.Enabled() {
 		t.Fatal("closed manager remains enabled")
 	}
-	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}); err == nil {
+	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, ""); err == nil {
 		t.Fatal("Acquire succeeded after Close")
 	}
 }

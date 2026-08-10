@@ -62,6 +62,9 @@ func TestDescriptorCapabilityHintsAreConservative(t *testing.T) {
 		"z-ai/glm-5.2",
 		"deepseek-ai/deepseek-v4-pro",
 		"deepseek-ai/deepseek-v4-flash",
+		"deepseek-ai/deepseek-v4-flash-0731",
+		"nvidia/deepseek-ai/deepseek-v4-flash",
+		"nvidia/deepseek-ai/deepseek-v4-flash-0731",
 	} {
 		hint := descriptor.CapabilityHint(modelID)
 		if hint.Kind != KindChat || !hint.SupportsReasoning || hint.ReasoningWireFormat != ReasoningWireOpenAI {

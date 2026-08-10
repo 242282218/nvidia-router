@@ -42,9 +42,9 @@ func (r *audioIdleReadCloser) Read(payload []byte) (int, error) {
 	read, err := r.ReadCloser.Read(payload)
 	if read > 0 {
 		// Reset under the lock so it stays ordered with expire():
-	 // once expire() has flipped expired to true the timer is
-	 // already firing and Resetting it would resurrect it racing
-	 // the in-flight body.Close, double-closing the body.
+		// once expire() has flipped expired to true the timer is
+		// already firing and Resetting it would resurrect it racing
+		// the in-flight body.Close, double-closing the body.
 		r.mu.Lock()
 		if !r.expired && !r.closed {
 			r.expired = false

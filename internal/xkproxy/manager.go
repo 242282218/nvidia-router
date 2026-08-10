@@ -44,7 +44,7 @@ func NewTransportError(cause error) *Error {
 type Provider interface {
 	Configured() bool
 	Enabled() bool
-	Acquire(context.Context, runtimeconfig.Snapshot) (*Handle, error)
+	Acquire(context.Context, runtimeconfig.Snapshot, string) (*Handle, error)
 }
 
 type Manager struct {
@@ -57,7 +57,7 @@ type Manager struct {
 	closed     bool
 }
 
-const maxCachedTransports = 8
+const maxCachedTransports = 64
 
 type cachedTransport struct {
 	transport *http.Transport
@@ -73,6 +73,9 @@ type Handle struct {
 type transportKey struct {
 	connectTimeoutMS   int
 	firstByteTimeoutMS int
+	// session isolates one NVIDIA key's exit so different keys never share a
+	// CONNECT. The empty session is the shared pool for callers without affinity.
+	session string
 }
 
 func New(proxyURL *url.URL, authKey string, base *http.Transport, logger *slog.Logger) (*Manager, error) {
@@ -121,7 +124,7 @@ func (m *Manager) Enabled() bool {
 	return !m.closed
 }
 
-func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot) (*Handle, error) {
+func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, session string) (*Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -137,6 +140,7 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot) 
 	key := transportKey{
 		connectTimeoutMS:   snapshot.ConnectTimeoutMS,
 		firstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
+		session:            session,
 	}
 	entry := m.transports[key]
 	if entry == nil {
@@ -168,6 +172,16 @@ func (m *Manager) evictLeastRecentlyUsed() {
 func (m *Manager) newTransport(key transportKey) *http.Transport {
 	transport := m.base.Clone()
 	transport.Proxy = http.ProxyURL(m.proxyURL)
+	// Pin the session on the outer proxy request so the pool can bind the exit.
+	// GetProxyConnectHeader is only consulted for HTTPS CONNECT, which is the only
+	// path this router uses through the pool.
+	if key.session != "" {
+		transport.GetProxyConnectHeader = func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
+			header := make(http.Header)
+			header.Set("X-XK-Session", key.session)
+			return header, nil
+		}
+	}
 	connectTimeout := time.Duration(key.connectTimeoutMS) * time.Millisecond
 	baseDialContext := transport.DialContext
 	if baseDialContext == nil {

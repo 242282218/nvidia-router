@@ -50,7 +50,9 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	proxy := newConnectProxy(t)
-	proxy.FailNextConnect()
+	// A pure transport failure (connection dropped before any HTTP response) is
+	// worth one replay; the second CONNECT succeeds and the request goes through.
+	proxy.FailNextConnectRaw()
 	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
 	descriptor := DefaultDescriptor()
 	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
@@ -75,6 +77,39 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 	}
 }
 
+// TestClientDoesNotReplayProxy5xxConnectResponse locks in the R2.2 tightening: a
+// 5xx CONNECT answer from the proxy means the proxy is up and already refused
+// the request, so the client must not replay — replaying would double upstream
+// load on a path known to be failing.
+func TestClientDoesNotReplayProxy5xxConnectResponse(t *testing.T) {
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamRequests.Add(1)
+		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newConnectProxy(t)
+	proxy.FailNextConnect() // proxy answers CONNECT with 502
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
+	descriptor := DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 1000}, "same-key", []byte(`{"model":"vendor/model"}`), false)
+	if err == nil {
+		t.Fatal("Chat succeeded despite a 5xx proxy CONNECT response")
+	}
+	if proxy.Connects() != 1 {
+		t.Fatalf("proxy CONNECTs = %d, want 1 (5xx must not be replayed)", proxy.Connects())
+	}
+	if upstreamRequests.Load() != 0 {
+		t.Fatalf("upstream requests = %d, want 0", upstreamRequests.Load())
+	}
+}
+
 func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -96,7 +131,7 @@ func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("Chat succeeded after first-byte deadline")
 	}
-	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, "")
 	if err != nil {
 		t.Fatalf("Acquire after deadline: %v", err)
 	}
@@ -160,10 +195,14 @@ func (fixedSettings) Snapshot() runtimeconfig.Snapshot {
 }
 
 type connectProxy struct {
-	server   *http.Server
-	listener net.Listener
-	connects atomic.Int32
-	failNext atomic.Int32
+	server      *http.Server
+	listener    net.Listener
+	connects    atomic.Int32
+	failNext    atomic.Int32
+	failNextRaw atomic.Bool
+	// recordConnect is an optional hook invoked for every CONNECT with the request.
+	// It lets sticky tests observe the outer header the pool would read.
+	recordConnect func(*http.Request)
 }
 
 func newConnectProxy(t *testing.T) *connectProxy {
@@ -186,7 +225,14 @@ func (p *connectProxy) Address() string { return p.listener.Addr().String() }
 
 func (p *connectProxy) Connects() int32 { return p.connects.Load() }
 
-func (p *connectProxy) FailNextConnect() { p.failNext.Store(1) }
+// FailNextConnect makes the next CONNECT answer with an HTTP 5xx status, which
+// the client surfaces as a transport error that must NOT be replayed.
+func (p *connectProxy) FailNextConnect() { p.failNext.Store(http.StatusBadGateway) }
+
+// FailNextConnectRaw makes the next CONNECT fail at the transport level: the
+// proxy accepts the tunnel then closes it without an HTTP response, so the
+// client observes a genuine connection error rather than a proxy HTTP status.
+func (p *connectProxy) FailNextConnectRaw() { p.failNextRaw.Store(true) }
 
 func (p *connectProxy) handle(writer http.ResponseWriter, request *http.Request) {
 	if request.Header.Get("Proxy-Authorization") != "Basic cHJveHk6cHJveHktc2VjcmV0" {
@@ -197,9 +243,22 @@ func (p *connectProxy) handle(writer http.ResponseWriter, request *http.Request)
 		http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
 		return
 	}
+	if p.recordConnect != nil {
+		p.recordConnect(request)
+	}
 	p.connects.Add(1)
-	if p.failNext.CompareAndSwap(1, 0) {
-		http.Error(writer, "temporary proxy failure", http.StatusBadGateway)
+	if p.failNextRaw.CompareAndSwap(true, false) {
+		client, buffered, err := hijack(writer)
+		if err != nil {
+			return
+		}
+		_ = buffered.Flush()
+		_ = client.Close()
+		return
+	}
+	if status := p.failNext.Load(); status != 0 {
+		p.failNext.Store(0)
+		http.Error(writer, "temporary proxy failure", int(status))
 		return
 	}
 	upstream, err := net.DialTimeout("tcp", request.Host, time.Second)

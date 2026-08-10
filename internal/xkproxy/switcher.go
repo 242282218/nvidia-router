@@ -42,7 +42,7 @@ func (s *Switcher) Enabled() bool {
 	return s.enabled && !s.closed
 }
 
-func (s *Switcher) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot) (*Handle, error) {
+func (s *Switcher) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, session string) (*Handle, error) {
 	if s == nil {
 		return nil, errors.New("proxy switcher is nil")
 	}
@@ -57,7 +57,7 @@ func (s *Switcher) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot)
 	if s.manager == nil {
 		return nil, &Error{reason: ReasonTransportFailed, cause: errors.New("proxy manager is unavailable")}
 	}
-	return s.manager.Acquire(ctx, snapshot)
+	return s.manager.Acquire(ctx, snapshot, session)
 }
 
 // Apply atomically publishes a manager. The old manager only closes idle

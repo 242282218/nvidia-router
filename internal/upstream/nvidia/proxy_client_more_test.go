@@ -76,7 +76,7 @@ func TestClientCancelDoesNotRetireHealthyProxy(t *testing.T) {
 	if err == nil {
 		t.Fatal("Chat succeeded after cancel")
 	}
-	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, "")
 	if err != nil {
 		t.Fatalf("Acquire after cancel retired healthy proxy: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestClientResponseHeaderTimeoutAfterWriteDoesNotRefreshProxy(t *testing.T) 
 	if err == nil {
 		t.Fatal("Chat succeeded despite response header timeout")
 	}
-	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, "")
 	if err != nil {
 		t.Fatalf("Acquire after header timeout retired proxy: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestClientWroteRequestThenDisconnectDoesNotRetireProxy(t *testing.T) {
 	if !strings.HasPrefix(string(body), "partial") {
 		t.Fatalf("response body = %q, want prefix partial", body)
 	}
-	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, "")
 	if err != nil {
 		t.Fatalf("Acquire after post-write disconnect retired proxy: %v", err)
 	}

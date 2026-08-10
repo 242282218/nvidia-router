@@ -76,7 +76,7 @@ func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
 	if err := app.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, err = app.proxy.Acquire(context.Background(), runtimeconfig.Snapshot{})
+	_, err = app.proxy.Acquire(context.Background(), runtimeconfig.Snapshot{}, "")
 	var proxyErr *xkproxy.Error
 	if !errors.As(err, &proxyErr) {
 		t.Fatalf("Acquire after Close error = %T %v, want manager closed", err, err)
@@ -273,6 +273,7 @@ func TestRunCLIHelpProcess(t *testing.T) {
 		"  nvidia-router [--help]\n" +
 		"  nvidia-router serve\n" +
 		"  nvidia-router admin reset-password --password <new>\n" +
+		"  nvidia-router admin rotate-master-key --new-version <n> --backup <path>\n" +
 		"  nvidia-router db backup --output <path>\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q", stdout)

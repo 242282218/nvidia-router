@@ -29,14 +29,14 @@ func TestSwitcherKeepsOldHandleUsableAfterReplacement(t *testing.T) {
 		t.Fatalf("New second manager: %v", err)
 	}
 	switcher := NewSwitcher(first, true)
-	oldHandle, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000})
+	oldHandle, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000}, "")
 	if err != nil {
 		t.Fatalf("Acquire old handle: %v", err)
 	}
 	if err := switcher.Apply(second, true); err != nil {
 		t.Fatalf("Apply replacement: %v", err)
 	}
-	newHandle, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000})
+	newHandle, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000}, "")
 	if err != nil {
 		t.Fatalf("Acquire new handle: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSwitcherDisabledModeIsDirectAndCloseRejectsAcquire(t *testing.T) {
 		t.Fatal("disabled switcher reports proxy enabled")
 	}
 	switcher.Close()
-	if _, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{}); err == nil {
+	if _, err := switcher.Acquire(context.Background(), runtimeconfig.Snapshot{}, ""); err == nil {
 		t.Fatal("closed switcher accepted Acquire")
 	}
 }
