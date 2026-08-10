@@ -1,0 +1,68 @@
+# 公网双服务部署覆盖。
+#
+# 用法（在 hangzhou2-2 上，见 docs/部署说明）：
+#   docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
+#
+# 相比基础 docker-compose.yml，本覆盖：
+#   1) 把反代监听改为公网 0.0.0.0:3756；
+#   2) 增加 star-proxy-pool 代理池服务（公网 0.0.0.0:18081）；
+#   3) 把两个服务加入外部网络 router-internal，反代用 Docker 内网
+#      http://proxy-pool:8080 访问代理池，不绕宿主公网。
+#
+# 代理池镜像标签由部署脚本传入（POOL_IMAGE），默认使用当前目录
+# 构建出的 star-proxy-pool:deploy。
+
+services:
+  app:
+    ports:
+      - "0.0.0.0:3756:3756"
+    environment:
+      NVIDIA_ROUTER_LISTEN_ADDR: "${NVIDIA_ROUTER_LISTEN_ADDR:-0.0.0.0:3756}"
+      # 内网代理地址：Compose 服务名 proxy-pool，端口 8080。
+      NVIDIA_ROUTER_XK_PROXY_URL: "http://proxy-pool:8080"
+      NVIDIA_ROUTER_XK_PROXY_AUTH_KEY: "${NVIDIA_ROUTER_XK_PROXY_AUTH_KEY:?需在 .env 配置代理池 PROXY_AUTH_KEY}"
+    networks:
+      - router-internal
+
+  proxy-pool:
+    image: "${POOL_IMAGE:-star-proxy-pool:deploy}"
+    restart: unless-stopped
+    init: true
+    ports:
+      - "0.0.0.0:18081:8080"
+    env_file:
+      - pool.env
+    environment:
+      RUNTIME_CONFIG_FILE: /data/runtime-config.json
+      STICKY_ENABLED: "true"
+      STICKY_SESSION_HEADER: "X-XK-Session"
+      STICKY_TTL: "60s"
+      KEEP_ALIVE_ENABLED: "true"
+    volumes:
+      - ./pool-data:/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 512m
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - router-internal
+
+networks:
+  router-internal:
+    external: true
