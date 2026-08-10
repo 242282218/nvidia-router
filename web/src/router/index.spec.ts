@@ -66,8 +66,8 @@ vi.mock('../features/runtime/api', () => ({
 
 vi.mock('../features/statistics/api', () => ({
   statisticsApi: {
-    getDaily: vi.fn().mockResolvedValue({ data: [] }),
-    getRecentErrors: vi.fn().mockResolvedValue({ data: [] }),
+    getSummary: vi.fn().mockResolvedValue({ data: { range: '24h', from: '', to: '', summary: { request_count: 0, success_count: 0, failure_count: 0, success_rate: 0, average_duration_ms: 0, average_first_byte_ms: 0, average_queue_ms: 0, total_attempts: 0, prompt_tokens: 0, completion_tokens: 0 }, series: [] } }),
+    getLogs: vi.fn().mockResolvedValue({ data: { items: [], page: 1, page_size: 50, total: 0, has_more: false } }),
   },
 }))
 

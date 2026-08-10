@@ -24,6 +24,9 @@ const settings = {
   request_log_retention_days: 30,
   max_attempts_per_request: 5,
   retry_budget_ms: 120_000,
+  max_streaming_per_key: 2,
+  stream_first_token_timeout_ms: 60_000,
+  stream_idle_timeout_ms: 180_000,
 }
 
 beforeEach(() => {
@@ -100,7 +103,24 @@ describe('RuntimeView', () => {
     await wrapper.get('[data-testid="runtime-settings-form"]').trigger('submit')
     await flushPromises()
 
-    expect(runtimeApi.updateSettings).toHaveBeenCalledWith(settings, expect.any(AbortSignal))
+    // The form intentionally does not manage max_streaming_per_key yet (the
+    // streaming-quota UI is a separate front-end task); the emitted payload
+    // omits it and the server keeps its stored value on PATCH.
+    expect(runtimeApi.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queue_capacity: 100,
+        queue_wait_timeout_ms: 60_000,
+        connect_timeout_ms: 10_000,
+        first_byte_timeout_ms: 60_000,
+        nonstream_total_timeout_ms: 300_000,
+        shutdown_grace_ms: 60_000,
+        failover_status_codes: '429,500,502,503,504',
+        request_log_retention_days: 30,
+        max_attempts_per_request: 5,
+        retry_budget_ms: 120_000,
+      }),
+      expect.any(AbortSignal),
+    )
   })
 
   it('keeps save success even when the summary refresh fails (audit #63)', async () => {

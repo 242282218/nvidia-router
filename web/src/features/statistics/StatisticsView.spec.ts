@@ -7,8 +7,6 @@ import type { MonitoringSnapshot, RequestLogsPage } from './types'
 
 vi.mock('./api', () => ({
   statisticsApi: {
-    getDaily: vi.fn(),
-    getRecentErrors: vi.fn(),
     getSummary: vi.fn(),
     getLogs: vi.fn(),
   },
@@ -25,10 +23,13 @@ const snapshot: MonitoringSnapshot = {
     success_rate: 98.87,
     average_duration_ms: 921.4,
     average_first_byte_ms: 779.2,
+    average_first_token_ms: 210.4,
     average_queue_ms: 13.5,
     total_attempts: 1260,
     prompt_tokens: 955700,
     completion_tokens: 3200,
+    first_token_p50_ms: 120.5,
+    first_token_p95_ms: 840.2,
   },
   series: [
     {
@@ -38,6 +39,7 @@ const snapshot: MonitoringSnapshot = {
       failure_count: 2,
       average_duration_ms: 800,
       average_first_byte_ms: 700,
+      average_first_token_ms: 180,
       average_queue_ms: 10,
       total_attempts: 510,
       prompt_tokens: 400000,
@@ -50,6 +52,7 @@ const snapshot: MonitoringSnapshot = {
       failure_count: 12,
       average_duration_ms: 1000,
       average_first_byte_ms: 800,
+      average_first_token_ms: 230,
       average_queue_ms: 16,
       total_attempts: 750,
       prompt_tokens: 555700,
@@ -97,6 +100,10 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(wrapper.text()).toContain('监控')
     expect(wrapper.text()).toContain('1,234')
     expect(wrapper.text()).toContain('98.9%')
+    expect(wrapper.text()).toContain('TTFT P50')
+    expect(wrapper.text()).toContain('120.5 ms')
+    expect(wrapper.text()).toContain('TTFT P95')
+    expect(wrapper.text()).toContain('840.2 ms')
     expect(wrapper.text()).toContain('请求趋势')
     expect(wrapper.text()).toContain('延迟趋势')
     expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('req-safe')

@@ -125,6 +125,18 @@ docker compose up -d app
 
 密码重置会撤销全部管理员会话，不会删除或重新加密 NVIDIA Key。命令行中的密码可能进入 Shell history；生产操作应使用受控的秘密注入方式，并在完成后清理历史记录。
 
+主密钥轮转必须停服执行。旧密钥由 `NVIDIA_ROUTER_MASTER_KEY` 提供，新密钥只由 `NVIDIA_ROUTER_NEW_MASTER_KEY` 提供，二者都不能写入命令参数、日志或仓库：
+
+```bash
+docker compose stop app
+NVIDIA_ROUTER_MASTER_KEY="$OLD_KEY" \
+NVIDIA_ROUTER_NEW_MASTER_KEY="$NEW_KEY" \
+docker compose run --rm --no-deps app \
+  admin rotate-master-key --new-version 2 --backup /data-backups/router-before-rotation.db
+```
+
+成功后把新密钥设为 `NVIDIA_ROUTER_MASTER_KEY`，并在兼容窗口保留旧密钥为 `NVIDIA_ROUTER_LEGACY_MASTER_KEY`。Access Key 和管理员 session 摘要会在认证成功时懒迁移；确认旧摘要清零并完成备份恢复演练后再删除旧密钥。
+
 数据库备份命令及恢复顺序见 [备份与恢复说明](备份与恢复说明.md)。
 
 ## 升级检查

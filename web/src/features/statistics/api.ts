@@ -1,27 +1,17 @@
 import { apiRequest } from '../../shared/api/client'
 import type {
-  DailyStatisticsResponse,
   MonitoringFilter,
   MonitoringRange,
   MonitoringSnapshot,
-  RecentErrorsResponse,
   RequestLogsPage,
 } from './types'
 
 export interface StatisticsApi {
-  getDaily(days: number, signal?: AbortSignal): Promise<DailyStatisticsResponse>
-  getRecentErrors(limit: number, signal?: AbortSignal): Promise<RecentErrorsResponse>
   getSummary(range: MonitoringRange, filter?: MonitoringFilter, signal?: AbortSignal): Promise<{ data: MonitoringSnapshot }>
   getLogs(range: MonitoringRange, filter?: MonitoringFilter, page?: number, pageSize?: number, signal?: AbortSignal): Promise<{ data: RequestLogsPage }>
 }
 
 export const statisticsApi: StatisticsApi = {
-  getDaily(days, signal) {
-    return apiRequest(`/admin/api/stats?days=${days}`, { signal })
-  },
-  getRecentErrors(limit, signal) {
-    return apiRequest(`/admin/api/errors?limit=${limit}`, { signal })
-  },
   getSummary(range, filter = {}, signal) {
     return apiRequest(`/admin/api/monitoring/summary?${monitoringQuery(range, filter)}`, { signal })
   },

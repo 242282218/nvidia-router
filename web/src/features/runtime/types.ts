@@ -29,6 +29,9 @@ export interface RuntimeSettings {
   request_log_retention_days: number
   max_attempts_per_request: number
   retry_budget_ms: number
+  max_streaming_per_key: number
+  stream_first_token_timeout_ms: number
+  stream_idle_timeout_ms: number
 }
 
 export interface RuntimeSummaryResponse {

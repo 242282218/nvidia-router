@@ -4,11 +4,14 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { accessKeysApi } from './api'
 import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
+import EditAccessKeyPolicyDialog from './EditAccessKeyPolicyDialog.vue'
 import type { AccessKey } from './types'
 
 const keys = ref<AccessKey[]>([])
 const loading = ref(false)
 const dialogOpen = ref(false)
+const editDialogOpen = ref(false)
+const editingKey = ref<AccessKey | null>(null)
 const busyId = ref<number | null>(null)
 const errorMessage = ref('')
 let loadSequence = 0
@@ -51,10 +54,19 @@ function isAccessKey(value: unknown): value is AccessKey {
     && typeof value.created_at === 'string'
     && isOptionalString(value.last_used_at)
     && isOptionalString(value.revoked_at)
+    && isOptionalString(value.expires_at)
+    && isFiniteNumber(value.rpm_limit)
+    && isFiniteNumber(value.tpm_limit)
+    && isFiniteNumber(value.max_concurrent)
 }
 
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string'
+}
+
+function openEditPolicy(key: AccessKey): void {
+  editingKey.value = key
+  editDialogOpen.value = true
 }
 
 async function revokeKey(key: AccessKey): Promise<void> {
@@ -199,15 +211,26 @@ function formatDate(value?: string): string {
                   <span>{{ formatDate(key.last_used_at) }}</span>
                 </div>
               </div>
-              <button
-                :data-testid="`mobile-revoke-access-key-${key.id}`"
-                class="btn-danger mt-4 w-full rounded-lg py-2 text-sm"
-                type="button"
-                :disabled="Boolean(key.revoked_at) || busyId === key.id"
-                @click="revokeKey(key)"
-              >
-                撤销
-              </button>
+              <div class="mt-4 flex gap-2">
+                <button
+                  :data-testid="`mobile-edit-access-key-policy-${key.id}`"
+                  class="btn-secondary flex-1 rounded-lg py-2 text-sm"
+                  type="button"
+                  :disabled="Boolean(key.revoked_at)"
+                  @click="openEditPolicy(key)"
+                >
+                  编辑策略
+                </button>
+                <button
+                  :data-testid="`mobile-revoke-access-key-${key.id}`"
+                  class="btn-danger flex-1 rounded-lg py-2 text-sm"
+                  type="button"
+                  :disabled="Boolean(key.revoked_at) || busyId === key.id"
+                  @click="revokeKey(key)"
+                >
+                  撤销
+                </button>
+              </div>
             </article>
           </div>
 
@@ -268,8 +291,17 @@ function formatDate(value?: string): string {
                 </td>
                 <td class="data-table-td text-right">
                   <button
+                    :data-testid="`edit-access-key-policy-${key.id}`"
+                    class="btn-secondary rounded-md px-3 py-1 text-xs"
+                    type="button"
+                    :disabled="Boolean(key.revoked_at)"
+                    @click="openEditPolicy(key)"
+                  >
+                    编辑策略
+                  </button>
+                  <button
                     :data-testid="`revoke-access-key-${key.id}`"
-                    class="btn-danger rounded-md px-3 py-1 text-xs"
+                    class="btn-danger ml-2 rounded-md px-3 py-1 text-xs"
                     type="button"
                     :disabled="Boolean(key.revoked_at) || busyId === key.id"
                     @click="revokeKey(key)"
@@ -288,6 +320,12 @@ function formatDate(value?: string): string {
       :open="dialogOpen"
       @close="dialogOpen = false"
       @created="loadKeys"
+    />
+    <EditAccessKeyPolicyDialog
+      :open="editDialogOpen"
+      :access-key="editingKey"
+      @close="editDialogOpen = false"
+      @saved="loadKeys"
     />
   </div>
 </template>

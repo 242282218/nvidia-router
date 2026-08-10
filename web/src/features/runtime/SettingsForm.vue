@@ -13,6 +13,9 @@ interface SettingsFields {
   request_log_retention_days: number | string
   max_attempts_per_request: number | string
   retry_budget_ms: number | string
+  max_streaming_per_key: number | string
+  stream_first_token_timeout_seconds: number | string
+  stream_idle_timeout_seconds: number | string
   failover_status_codes: string
 }
 
@@ -51,6 +54,9 @@ const fields = reactive<SettingsFields>({
   request_log_retention_days: 30,
   max_attempts_per_request: 5,
   retry_budget_ms: 120_000,
+  max_streaming_per_key: 2,
+  stream_first_token_timeout_seconds: 60,
+  stream_idle_timeout_seconds: 180,
   failover_status_codes: '429,500,502,503,504',
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
@@ -70,6 +76,9 @@ const settingRules: SettingRule[] = [
   { field: 'request_log_retention_days', integerInput: true, min: 30, max: 365, multiplier: 1, param: 'request_log_retention_days', testId: 'request-log-retention-days' },
   { field: 'max_attempts_per_request', hint: '单个客户端请求最多尝试的 NVIDIA Key 数量，允许范围 1-50。', integerInput: true, min: 1, max: 50, multiplier: 1, param: 'max_attempts_per_request', testId: 'max-attempts-per-request' },
   { field: 'retry_budget_ms', hint: '提交前重试阶段的时间上限，允许范围 1000-600000 毫秒；不限制已提交的流式响应。', integerInput: true, min: 1_000, max: 600_000, multiplier: 1, param: 'retry_budget_ms', testId: 'retry-budget-ms' },
+  { field: 'max_streaming_per_key', hint: '单个 NVIDIA Key 同时处理的流式请求数，允许范围 1-10。', integerInput: true, min: 1, max: 10, multiplier: 1, param: 'max_streaming_per_key', testId: 'max-streaming-per-key' },
+  { field: 'stream_first_token_timeout_seconds', hint: '流式请求等待首个 token 的时间上限，允许范围 1-1800 秒。', integerInput: true, min: 1_000, max: 1_800_000, multiplier: 1_000, param: 'stream_first_token_timeout_ms', testId: 'stream-first-token-timeout-seconds' },
+  { field: 'stream_idle_timeout_seconds', hint: '流式响应中相邻两次输出的空闲上限，允许范围 1-1800 秒。', integerInput: true, min: 1_000, max: 1_800_000, multiplier: 1_000, param: 'stream_idle_timeout_ms', testId: 'stream-idle-timeout-seconds' },
 ]
 
 watch(() => props.settings, (settings) => {
@@ -84,6 +93,9 @@ watch(() => props.settings, (settings) => {
   fields.request_log_retention_days = settings.request_log_retention_days
   fields.max_attempts_per_request = settings.max_attempts_per_request
   fields.retry_budget_ms = settings.retry_budget_ms
+  fields.max_streaming_per_key = settings.max_streaming_per_key
+  fields.stream_first_token_timeout_seconds = settings.stream_first_token_timeout_ms / 1000
+  fields.stream_idle_timeout_seconds = settings.stream_idle_timeout_ms / 1000
   fields.failover_status_codes = settings.failover_status_codes
 }, { immediate: true })
 
@@ -153,7 +165,10 @@ function fieldError(param: SettingParam): string {
           rule.param === 'shutdown_grace_ms' ? '关闭宽限期（秒）' :
           rule.param === 'request_log_retention_days' ? '请求日志保留（天）' :
           rule.param === 'max_attempts_per_request' ? '单请求最大尝试次数' :
-          '重试预算（毫秒）'
+          rule.param === 'retry_budget_ms' ? '重试预算（毫秒）' :
+          rule.param === 'stream_first_token_timeout_ms' ? '首 token 超时（秒）' :
+          rule.param === 'stream_idle_timeout_ms' ? '流式空闲超时（秒）' :
+          '单 Key 流式并发上限'
         }}</span>
         <input
           :value="fields[rule.field]"

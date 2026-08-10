@@ -11,6 +11,7 @@ const point = (bucket: string, requestCount: number): MonitoringSeriesPoint => (
   failure_count: 0,
   average_duration_ms: 120,
   average_first_byte_ms: 80,
+  average_first_token_ms: 60,
   average_queue_ms: 10,
   total_attempts: requestCount,
   prompt_tokens: 100,

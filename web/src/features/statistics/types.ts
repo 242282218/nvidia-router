@@ -1,40 +1,4 @@
-﻿export type StatisticsDimension = 'global' | 'model' | 'nvidia_key' | 'access_key'
-
-export interface DailyStatistic {
-  day: string
-  dimension_type: StatisticsDimension
-  dimension_id: string
-  request_count: number
-  success_count: number
-  failure_count: number
-  average_duration_ms: number
-  average_queue_ms: number
-  average_attempts: number
-  prompt_tokens: number
-  completion_tokens: number
-}
-
-export interface RecentError {
-  request_id: string
-  endpoint: string
-  model_id?: string
-  nvidia_key_id?: number
-  access_key_id?: number
-  http_status: number
-  error_code: string
-  upstream_request_id?: string
-  created_at: string
-}
-
-export interface DailyStatisticsResponse {
-  data: DailyStatistic[]
-}
-
-export interface RecentErrorsResponse {
-  data: RecentError[]
-}
-
-export type MonitoringRange = '24h' | '7d' | '30d'
+﻿export type MonitoringRange = '24h' | '7d' | '30d'
 
 export interface MonitoringFilter {
   search?: string
@@ -53,6 +17,7 @@ export interface MonitoringSeriesPoint {
   failure_count: number
   average_duration_ms: number
   average_first_byte_ms: number
+  average_first_token_ms: number
   average_queue_ms: number
   total_attempts: number
   prompt_tokens: number
@@ -66,10 +31,13 @@ export interface MonitoringSummary {
   success_rate: number
   average_duration_ms: number
   average_first_byte_ms: number
+  average_first_token_ms: number
   average_queue_ms: number
   total_attempts: number
   prompt_tokens: number
   completion_tokens: number
+  first_token_p50_ms?: number
+  first_token_p95_ms?: number
 }
 
 export interface MonitoringSnapshot {
@@ -92,6 +60,7 @@ export interface RequestLog {
   is_stream: boolean
   queue_ms: number
   first_byte_ms?: number
+  first_token_ms?: number
   duration_ms: number
   attempt_count: number
   prompt_tokens?: number

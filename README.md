@@ -79,6 +79,9 @@ docker compose stop app
 | 变量 | 默认值或要求 | 说明 |
 | --- | --- | --- |
 | `NVIDIA_ROUTER_MASTER_KEY` | 必填 | 32 字节 Raw URL Base64 主密钥；错误或缺失会阻止服务正常启动 |
+| `NVIDIA_ROUTER_MASTER_KEY_VERSION` | `1` | 当前主密钥版本；轮转完成后切换到新版本 |
+| `NVIDIA_ROUTER_LEGACY_MASTER_KEY` | 空 | 轮转兼容窗口内的旧主密钥；只从运行时环境注入，不写入数据库或日志 |
+| `NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION` | `1` | 旧主密钥版本 |
 | `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD` | 必填 | 首次初始化密码，至少 12 个字符；已有管理员时不会覆盖密码 |
 | `NVIDIA_ROUTER_ADMIN_SECURE_COOKIE` | `false` | HTTPS 反向代理部署设为 `true` |
 | `NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN` | 空 | 反向代理公开的完整 `http(s)` origin，不含路径或 query |
@@ -94,6 +97,8 @@ docker compose stop app
 
 代理池和本项目独立 Compose 部署时，应把两个容器接入同一个 Docker 网络，或使用代理池宿主机的可达地址；`NVIDIA_ROUTER_XK_PROXY_URL` 使用代理池的 `8080` 端点。代理用户名固定为 `proxy`，认证 Key 必须与代理池的 `PROXY_AUTH_KEY` 一致。管理员也可以在 Web 的“代理池”页面修改启用状态、地址和认证 Key；数据库配置优先于环境变量，认证 Key 以现有主密钥加密后保存，不会写入日志或 API 响应。
 
+流式请求的运行时设置将首 token 等待与已提交响应的空闲窗口分开：`stream_first_token_timeout_ms` 默认 60000，`stream_idle_timeout_ms` 默认 180000。DeepSeek v4-flash 这类长思考模型建议保留较大的 idle 窗口；窗口越大，单个 Key 的流式槽位被占用时间越长。429 会尊重上游 `Retry-After` 后再切换 Key，NVIDIA 529 临时过载也会进入有界重试和冷却，不会通过代理失败静默回退直连。
+
 ## CLI
 
 镜像入口为 `/usr/local/bin/nvidia-router`，默认容器命令为 `serve`。当前 CLI 入口和参数如下：
@@ -102,6 +107,7 @@ docker compose stop app
 nvidia-router --help
 nvidia-router serve
 nvidia-router admin reset-password --password <new>
+nvidia-router admin rotate-master-key --new-version <n> --backup <path>
 nvidia-router db backup --output <path>
 ```
 
@@ -114,7 +120,7 @@ docker compose stop app
 docker compose run --rm --no-deps -v "$(pwd)/backups:/data-backups" app db backup --output /data-backups/router.db
 ```
 
-恢复前请阅读 [docs/备份与恢复说明.md](docs/备份与恢复说明.md)。密码重置不会重新加密或删除 NVIDIA Key，但重置后会撤销全部管理员会话：
+恢复前请阅读 [docs/备份与恢复说明.md](docs/备份与恢复说明.md)。每日自动备份与保留策略见 [docs/自动备份方案.md](docs/自动备份方案.md)。密码重置不会重新加密或删除 NVIDIA Key，但重置后会撤销全部管理员会话：
 
 ```bash
 docker compose run --rm --no-deps app admin reset-password --password '<new-password>'
@@ -185,6 +191,9 @@ go run ./cmd/nvidia-router db backup --output <path>
 
 - [Linux 单机部署说明](docs/Linux单机部署说明.md)
 - [备份与恢复说明](docs/备份与恢复说明.md)
+- [自动备份方案](docs/自动备份方案.md)
+- [多实例部署注意事项](docs/多实例部署注意事项.md)
+- [安全加固检查清单](docs/安全加固检查清单.md)
 - [API 兼容范围](docs/API兼容范围.md)
 - [NVIDIA 真实联调说明](docs/NVIDIA真实联调说明.md)
 - [第一轮需求文档](docs/NVIDIA%20API路由器第一轮需求文档.md)

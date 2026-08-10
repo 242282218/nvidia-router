@@ -15,6 +15,9 @@ const settings: RuntimeSettings = {
   request_log_retention_days: 30,
   max_attempts_per_request: 5,
   retry_budget_ms: 120_000,
+  max_streaming_per_key: 2,
+  stream_first_token_timeout_ms: 60_000,
+  stream_idle_timeout_ms: 180_000,
 }
 
 const inputTestIds = {
@@ -27,6 +30,9 @@ const inputTestIds = {
   request_log_retention_days: 'request-log-retention-days',
   max_attempts_per_request: 'max-attempts-per-request',
   retry_budget_ms: 'retry-budget-ms',
+  max_streaming_per_key: 'max-streaming-per-key',
+  stream_first_token_timeout_seconds: 'stream-first-token-timeout-seconds',
+  stream_idle_timeout_seconds: 'stream-idle-timeout-seconds',
 } as const
 
 function mountForm() {
@@ -119,6 +125,9 @@ describe('SettingsForm', () => {
         shutdown_grace_seconds: 1,
         max_attempts_per_request: 1,
         retry_budget_ms: 1_000,
+        max_streaming_per_key: 2,
+        stream_first_token_timeout_seconds: 1,
+        stream_idle_timeout_seconds: 1,
       },
       {
         queue_capacity: 1,
@@ -131,6 +140,9 @@ describe('SettingsForm', () => {
         request_log_retention_days: 30,
         max_attempts_per_request: 1,
         retry_budget_ms: 1_000,
+        max_streaming_per_key: 2,
+        stream_first_token_timeout_ms: 1_000,
+        stream_idle_timeout_ms: 1_000,
       },
     ],
     [
@@ -143,6 +155,9 @@ describe('SettingsForm', () => {
         shutdown_grace_seconds: 600,
         max_attempts_per_request: 50,
         retry_budget_ms: 600_000,
+        max_streaming_per_key: 10,
+        stream_first_token_timeout_seconds: 1_800,
+        stream_idle_timeout_seconds: 1_800,
       },
       {
         queue_capacity: 10_000,
@@ -155,6 +170,9 @@ describe('SettingsForm', () => {
         request_log_retention_days: 30,
         max_attempts_per_request: 50,
         retry_budget_ms: 600_000,
+        max_streaming_per_key: 10,
+        stream_first_token_timeout_ms: 1_800_000,
+        stream_idle_timeout_ms: 1_800_000,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {

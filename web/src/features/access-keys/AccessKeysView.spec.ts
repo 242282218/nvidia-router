@@ -10,6 +10,7 @@ vi.mock('./api', () => ({
   accessKeysApi: {
     list: vi.fn(),
     create: vi.fn(),
+    updatePolicy: vi.fn(),
     revoke: vi.fn(),
   },
 }))
@@ -20,6 +21,9 @@ const listedKey = {
   key_prefix: 'nvr_abcd',
   created_at: '2026-07-30T08:00:00Z',
   last_used_at: '2026-07-30T09:30:00Z',
+  rpm_limit: 60,
+  tpm_limit: 60000,
+  max_concurrent: 5,
 }
 
 function deferred<T>() {
@@ -264,5 +268,51 @@ describe('AccessKeysView', () => {
 
     expect(confirm).toHaveBeenCalledTimes(2)
     expect(accessKeysApi.revoke).toHaveBeenCalledWith(4)
+  })
+
+  it('pre-fills the policy dialog, saves the updated policy, and reloads the list', async () => {
+    vi.mocked(accessKeysApi.updatePolicy).mockResolvedValue(undefined)
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="edit-access-key-policy-4"]').trigger('click')
+    await flushPromises()
+
+    const rpm = wrapper.get('[data-testid="access-key-rpm-limit"]')
+    expect((rpm.element as HTMLInputElement).value).toBe('60')
+    expect((wrapper.get('[data-testid="access-key-tpm-limit"]').element as HTMLInputElement).value).toBe('60000')
+    expect((wrapper.get('[data-testid="access-key-max-concurrent"]').element as HTMLInputElement).value).toBe('5')
+
+    await rpm.setValue('120')
+    await wrapper.get('[data-testid="access-key-tpm-limit"]').setValue('120000')
+    await wrapper.get('[data-testid="access-key-max-concurrent"]').setValue('10')
+    await wrapper.get('[data-testid="edit-access-key-policy-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(accessKeysApi.updatePolicy).toHaveBeenCalledWith(4, {
+      expires_at: null,
+      rpm_limit: 120,
+      tpm_limit: 120000,
+      max_concurrent: 10,
+    })
+    expect(accessKeysApi.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects an out-of-range policy inline without calling the API', async () => {
+    vi.mocked(accessKeysApi.updatePolicy).mockResolvedValue(undefined)
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="edit-access-key-policy-4"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="access-key-rpm-limit"]').setValue('200000')
+    await wrapper.get('[data-testid="access-key-max-concurrent"]').setValue('-1')
+    await wrapper.get('[data-testid="edit-access-key-policy-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="access-key-rpm-error"]').text()).toContain('0-100000')
+    expect(wrapper.get('[data-testid="access-key-max-concurrent-error"]').text()).toContain('0-10000')
+    expect(accessKeysApi.updatePolicy).not.toHaveBeenCalled()
   })
 })

@@ -158,6 +158,10 @@ function formatLatency(value: number): string {
   return `${value.toFixed(1)} ms`
 }
 
+function formatOptionalLatency(value: number | undefined): string {
+  return value === undefined ? '—' : formatLatency(value)
+}
+
 function formatTokens(value: number): string {
   return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
@@ -192,20 +196,26 @@ function isMonitoringSummary(value: unknown): boolean {
   const successRate = value.success_rate
   const duration = value.average_duration_ms
   const firstByte = value.average_first_byte_ms
+  const firstToken = value.average_first_token_ms
   const queue = value.average_queue_ms
   const attempts = value.total_attempts
   const promptTokens = value.prompt_tokens
   const completionTokens = value.completion_tokens
+  const firstTokenP50 = value.first_token_p50_ms
+  const firstTokenP95 = value.first_token_p95_ms
   if (!isNonNegativeNumber(requestCount)
     || !isNonNegativeNumber(successCount)
     || !isNonNegativeNumber(failureCount)
     || !isNonNegativeNumber(successRate)
     || !isNonNegativeNumber(duration)
     || !isNonNegativeNumber(firstByte)
+    || !isNonNegativeNumber(firstToken)
     || !isNonNegativeNumber(queue)
     || !isNonNegativeNumber(attempts)
     || !isNonNegativeNumber(promptTokens)
-    || !isNonNegativeNumber(completionTokens)) return false
+    || !isNonNegativeNumber(completionTokens)
+    || (firstTokenP50 !== undefined && !isNonNegativeNumber(firstTokenP50))
+    || (firstTokenP95 !== undefined && !isNonNegativeNumber(firstTokenP95))) return false
   return successRate <= 100
     && successCount + failureCount === requestCount
 }
@@ -227,6 +237,7 @@ function isMonitoringSeriesPoint(value: unknown): value is MonitoringSeriesPoint
     success_rate: requestCount === 0 ? 0 : (successCount / requestCount) * 100,
     average_duration_ms: value.average_duration_ms,
     average_first_byte_ms: value.average_first_byte_ms,
+    average_first_token_ms: value.average_first_token_ms,
     average_queue_ms: value.average_queue_ms,
     total_attempts: value.total_attempts,
     prompt_tokens: value.prompt_tokens,
@@ -263,7 +274,7 @@ function isRequestLog(value: unknown): value is RequestLog {
   if (!numericFields.every((field) => isFiniteNumber(value[field]) && value[field] >= 0)) return false
   return ['model_id', 'error_code', 'upstream_request_id']
     .every((field) => value[field] === undefined || typeof value[field] === 'string')
-    && ['access_key_id', 'nvidia_key_id', 'first_byte_ms', 'prompt_tokens', 'completion_tokens']
+    && ['access_key_id', 'nvidia_key_id', 'first_byte_ms', 'first_token_ms', 'prompt_tokens', 'completion_tokens']
       .every((field) => value[field] === undefined || (isFiniteNumber(value[field]) && value[field] >= 0))
 }
 
@@ -338,7 +349,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
         <div
           v-if="summary"
-          class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8"
+          class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-10"
         >
           <article class="stat-card">
             <p class="text-xs text-[var(--color-text-muted)]">
@@ -378,6 +389,22 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             </p>
             <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
               {{ formatLatency(summary.average_first_byte_ms) }}
+            </p>
+          </article>
+          <article class="stat-card">
+            <p class="text-xs text-[var(--color-text-muted)]">
+              TTFT P50
+            </p>
+            <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
+              {{ formatOptionalLatency(summary.first_token_p50_ms) }}
+            </p>
+          </article>
+          <article class="stat-card">
+            <p class="text-xs text-[var(--color-text-muted)]">
+              TTFT P95
+            </p>
+            <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
+              {{ formatOptionalLatency(summary.first_token_p95_ms) }}
             </p>
           </article>
           <article class="stat-card">
