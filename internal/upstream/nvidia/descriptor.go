@@ -89,6 +89,10 @@ func reasoningHints() map[string]CapabilityHint {
 		"z-ai/glm-5.2",
 		"deepseek-ai/deepseek-v4-pro",
 		"deepseek-ai/deepseek-v4-flash",
+		// NVIDIA versioned the flash model ID with a date suffix (the bare
+		// deepseek-v4-flash now answers 410 Gone); keep both so discovery does
+		// not downgrade reasoning for whichever ID is live.
+		"deepseek-ai/deepseek-v4-flash-0731",
 	}
 	hints := make(map[string]CapabilityHint, len(models))
 	for _, model := range models {
@@ -102,10 +106,25 @@ func reasoningHints() map[string]CapabilityHint {
 }
 
 func (d Descriptor) CapabilityHint(modelID string) CapabilityHint {
-	if hint, ok := d.CapabilityHints[modelID]; ok {
-		return hint
+	for _, candidate := range capabilityModelIDs(modelID) {
+		if hint, ok := d.CapabilityHints[candidate]; ok {
+			return hint
+		}
 	}
 	return CapabilityHint{Kind: KindChat, ReasoningWireFormat: ReasoningWireNone}
+}
+
+func capabilityModelIDs(modelID string) []string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	candidates := []string{modelID}
+	const prefix = "nvidia/"
+	if strings.HasPrefix(strings.ToLower(modelID), prefix) {
+		candidates = append(candidates, modelID[len(prefix):])
+	}
+	return candidates
 }
 
 func (d Descriptor) NewRequest(endpoint Endpoint, stream bool, token string) (*http.Request, error) {

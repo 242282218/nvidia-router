@@ -1,9 +1,12 @@
 package xkproxy
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -122,4 +125,113 @@ func TestManagerBoundsTransportCacheWithLRU(t *testing.T) {
 	if _, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{}, ""); err == nil {
 		t.Fatal("Acquire succeeded after Close")
 	}
+}
+
+// TestManagerIsolatesSessionsFromTransportReuse proves the session label is part of
+// the transport identity: two requests with the same session and timeout share a
+// transport, different sessions never do even with identical timeouts.
+func TestManagerIsolatesSessionsFromTransportReuse(t *testing.T) {
+	proxyURL, err := url.Parse("http://proxy-pool:8080")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	manager, err := New(proxyURL, "proxy-secret", http.DefaultTransport.(*http.Transport), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	first, err := manager.Acquire(context.Background(), snapshot, "session-a")
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	second, err := manager.Acquire(context.Background(), snapshot, "session-a")
+	if err != nil {
+		t.Fatalf("second Acquire: %v", err)
+	}
+	if first.Transport() != second.Transport() {
+		t.Fatal("same session + timeout did not reuse Transport")
+	}
+
+	other, err := manager.Acquire(context.Background(), snapshot, "session-b")
+	if err != nil {
+		t.Fatalf("other-session Acquire: %v", err)
+	}
+	if other.Transport() == first.Transport() {
+		t.Fatal("different sessions shared a Transport; CONNECT tunnels would cross keys")
+	}
+	unkeyed, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("unkeyed Acquire: %v", err)
+	}
+	if unkeyed.Transport() == first.Transport() || unkeyed.Transport() == other.Transport() {
+		t.Fatal("unkeyed request shared a keyed Transport")
+	}
+	first.Release()
+	second.Release()
+	other.Release()
+	unkeyed.Release()
+}
+
+// TestManagerSetsStickyHeaderOnOuterConnect proves the manager wires the session
+// label onto the proxy CONNECT via GetProxyConnectHeader, where the pool can read it,
+// rather than leaving it to leak onto the target request.
+func TestManagerSetsStickyHeaderOnOuterConnect(t *testing.T) {
+	const wantHeader = "X-XK-Session"
+	var gotSession string
+	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodConnect {
+			http.Error(writer, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		gotSession = request.Header.Get(wantHeader)
+		// Simulate the pool accepting the tunnel; the client only needs to see the
+		// 200 to proceed, and the connection is closed immediately after.
+		conn, _, err := hijackProxyConn(writer)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		_ = conn.Close()
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	manager, err := New(proxyURL, "proxy-secret", http.DefaultTransport.(*http.Transport), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}, "session-sticky")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(handle.Release)
+
+	// An HTTPS target forces the Transport to open a CONNECT tunnel, which is the
+	// only path that consults GetProxyConnectHeader. The tunnel then immediately
+	// closes so the TLS handshake to the fake target fails; that is fine — the
+	// header was already captured on the CONNECT itself.
+	request, err := http.NewRequest(http.MethodGet, "https://target.example.test/health", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := &http.Client{Transport: handle.Transport()}
+	_, _ = client.Do(request) //nolint:bodyclose // response body is never opened on the failed handshake
+	if gotSession != "session-sticky" {
+		t.Fatalf("CONNECT %s = %q, want %q", wantHeader, gotSession, "session-sticky")
+	}
+}
+
+func hijackProxyConn(writer http.ResponseWriter) (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := writer.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("proxy writer does not support hijacking")
+	}
+	return hijacker.Hijack()
 }

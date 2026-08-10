@@ -11,20 +11,21 @@ import (
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/observability"
 	embeddingsprotocol "nvidia-router/internal/protocol/embeddings"
+	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
 // Embeddings proxies OpenAI Embeddings requests through the same ModelCatalog,
-// Pool, Attempt orchestrator and NVIDIA Client as the Chat and Responses
+// Pool, Attempt orchestrator and NVIDIA provider as the Chat and Responses
 // handlers, so no parallel key scheduling path exists. It is non-streaming.
 type Embeddings struct {
 	models   ModelResolver
 	attempts AttemptRunner
-	client   *nvidia.Client
+	client   provider.Provider
 }
 
-func NewEmbeddings(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Embeddings {
+func NewEmbeddings(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Embeddings {
 	return &Embeddings{models: models, attempts: attempts, client: client}
 }
 
@@ -81,7 +82,8 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 }
 
 func (h *Embeddings) execute(body []byte) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Embeddings(ctx, snapshotFromBudget(ctx), string(secret), body)
 		if err != nil {
 			return nil, err

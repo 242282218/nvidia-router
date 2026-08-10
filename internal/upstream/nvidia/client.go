@@ -2,6 +2,11 @@ package nvidia
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -9,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -32,10 +36,18 @@ const xkStickySessionHeader = "X-XK-Session"
 // bytes the database key ID would need.
 const xkStickySessionSize = 64
 
+// xkStickySessionHMACKeySize is the per-process HMAC key used to derive the session
+// label. A fresh random key per process keeps the label stable for the lifetime of
+// the transport cache while preventing the proxy pool from reversing it back to the
+// internal database key ID (or from correlating labels across process restarts).
+const xkStickySessionHMACKeySize = 32
+
 type stickySessionKeyCtx struct{}
 
 // WithStickySession carries the NVIDIA key id that should pin the pool's exit for
-// this request. It is read in proxy mode only; direct mode ignores it.
+// this request. It is read in proxy mode only; direct mode ignores it. The label sent
+// on the outer CONNECT is derived from this id (see stickySessionLabel), so callers
+// never need to build their own session string.
 func WithStickySession(ctx context.Context, keyID int64) context.Context {
 	return context.WithValue(ctx, stickySessionKeyCtx{}, keyID)
 }
@@ -43,6 +55,32 @@ func WithStickySession(ctx context.Context, keyID int64) context.Context {
 func stickySessionFrom(ctx context.Context) (int64, bool) {
 	value, ok := ctx.Value(stickySessionKeyCtx{}).(int64)
 	return value, ok
+}
+
+// stickySessionLabel derives a stable, irreversible label from a key ID. The pool
+// sees this label on the outer CONNECT and binds one exit per distinct value, so it
+// must be deterministic for the same key within a process but must not reveal the
+// database row id (a raw keyID in a header would let the proxy pool correlate its
+// bindings with our internal numbering). HMAC-SHA256 with a per-process random key
+// gives both properties without new dependencies.
+func stickySessionLabel(secret []byte, keyID int64) string {
+	mac := hmac.New(sha256.New, secret)
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], uint64(keyID))
+	_, _ = mac.Write(encoded[:])
+	digest := mac.Sum(nil)
+	if len(digest) > xkStickySessionSize/2 {
+		digest = digest[:xkStickySessionSize/2]
+	}
+	return hex.EncodeToString(digest)
+}
+
+func newStickySessionKey() ([]byte, error) {
+	key := make([]byte, xkStickySessionHMACKeySize)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate sticky session HMAC key: %w", err)
+	}
+	return key, nil
 }
 
 var ErrProtocol = errors.New("NVIDIA models protocol error")
@@ -53,9 +91,11 @@ type Client struct {
 	settings   runtimeconfig.Provider
 	proxy      xkproxy.Provider
 	directPool *directTransportPool
-	closeOnce  sync.Once
+	// stickySessionKey derives the per-process sticky label so the proxy pool never
+	// sees the internal database key id. It is only used in proxy mode.
+	stickySessionKey []byte
+	closeOnce        sync.Once
 }
-
 type requestFactory func(context.Context) (*http.Request, error)
 
 type ValidationState uint8
@@ -94,12 +134,23 @@ func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimec
 		return nil, errors.New("new NVIDIA client: direct mode requires an HTTP transport")
 	}
 
+	// The sticky label key is only needed when the proxy pool is enabled; direct mode
+	// never sends a session header. Generate it unconditionally so the failure surface
+	// is construction-time rather than per-request. A fresh random key per process keeps
+	// the label stable within a process (so transports reuse it) but unreversible by the
+	// proxy pool, and uncorrelated across restarts.
+	stickyKey, err := newStickySessionKey()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Client{
-		httpClient: httpClient,
-		descriptor: descriptor,
-		settings:   settings,
-		proxy:      proxy,
-		directPool: newDirectTransportPool(httpClient.Transport),
+		httpClient:       httpClient,
+		descriptor:       descriptor,
+		settings:         settings,
+		proxy:            proxy,
+		directPool:       newDirectTransportPool(httpClient.Transport),
+		stickySessionKey: stickyKey,
 	}, nil
 }
 
@@ -212,9 +263,11 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 	// Only a pure transport failure is worth one immediate replay. An error the
 	// proxy produced from an HTTP response (e.g. a 5xx CONNECT answer) means the
 	// proxy is up and already refused the request; replaying would just double
-	// the upstream load on a known-bad path (audit R5).
+	// the upstream load on a known-bad path (audit R5). Such proxy-produced
+	// answers are also NOT an NVIDIA key fault: wrap them as xkproxy.Error so the
+	// router's executeLease short-circuits instead of cooldowning the key.
 	if !replayableProxyError(err) {
-		return nil, err
+		return nil, xkproxy.NewTransportError(err)
 	}
 	response, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
 	if err == nil || response != nil {
@@ -273,10 +326,12 @@ func (c *Client) doDirect(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, bool, bool, error) {
 	// The session label travels through xkproxy.Acquire so the Manager can put the
 	// CONNECT header on the outer proxy request. It must never be written to the
-	// target request header: NVIDIA would see it and the pool would not.
+	// target request header: NVIDIA would see it and the pool would not. The label is
+	// derived from the key ID with a per-process HMAC so the pool cannot read our
+	// internal numbering back out of the header.
 	session := ""
 	if keyID, ok := stickySessionFrom(ctx); ok {
-		session = strconv.FormatInt(keyID, 10)
+		session = stickySessionLabel(c.stickySessionKey, keyID)
 	}
 	handle, err := c.proxy.Acquire(ctx, snapshot, session)
 	if err != nil {

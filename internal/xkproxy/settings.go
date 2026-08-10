@@ -79,6 +79,7 @@ type storedProxyConfig struct {
 	nonce      []byte
 	ciphertext []byte
 	version    int
+	keyVersion int
 }
 
 func NewSettingsService(ctx context.Context, db *sql.DB, keys *crypto.KeySet, env EnvironmentConfig, base *http.Transport, logger *slog.Logger) (*SettingsService, error) {
@@ -202,9 +203,9 @@ func (s *SettingsService) loadStored(ctx context.Context) (*storedProxyConfig, e
 	var enabled int
 	var stored storedProxyConfig
 	err := s.db.QueryRowContext(ctx, `
-		SELECT enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version
+		SELECT enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version
 		FROM proxy_pool_settings WHERE id = 1`).Scan(
-		&enabled, &stored.proxyURL, &stored.nonce, &stored.ciphertext, &stored.version,
+		&enabled, &stored.proxyURL, &stored.nonce, &stored.ciphertext, &stored.version, &stored.keyVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -223,11 +224,14 @@ func (s *SettingsService) databaseProxyConfig(stored storedProxyConfig) (proxyCo
 	if stored.version != 1 {
 		return proxyConfig{}, fmt.Errorf("load proxy settings: unsupported version %d", stored.version)
 	}
+	if stored.keyVersion <= 0 {
+		return proxyConfig{}, fmt.Errorf("load proxy settings: unsupported key version %d", stored.keyVersion)
+	}
 	proxyURL, err := parseProxyURL(stored.proxyURL)
 	if err != nil {
 		return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
 	}
-	authKey, err := s.decryptAuthKey(stored.nonce, stored.ciphertext)
+	authKey, err := s.decryptAuthKey(stored.keyVersion, stored.nonce, stored.ciphertext)
 	if err != nil {
 		return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
 	}
@@ -237,14 +241,14 @@ func (s *SettingsService) databaseProxyConfig(stored storedProxyConfig) (proxyCo
 	return makeProxyConfig(stored.enabled, proxyURL, authKey, SourceDatabase), nil
 }
 
-func (s *SettingsService) decryptAuthKey(nonce, ciphertext []byte) (string, error) {
+func (s *SettingsService) decryptAuthKey(keyVersion int, nonce, ciphertext []byte) (string, error) {
 	if len(nonce) == 0 && len(ciphertext) == 0 {
 		return "", nil
 	}
 	if len(nonce) == 0 || len(ciphertext) == 0 {
 		return "", errors.New("proxy authentication data is incomplete")
 	}
-	plaintext, err := s.keys.Decrypt(ciphertext, nonce, proxyPoolAuthKeyAAD)
+	plaintext, err := s.keys.DecryptVersion(keyVersion, ciphertext, nonce, proxyPoolAuthKeyAAD)
 	if err != nil {
 		return "", fmt.Errorf("decrypt proxy authentication key: %w", err)
 	}
@@ -317,16 +321,17 @@ func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO proxy_pool_settings (
-			id, enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, updated_at
-		) VALUES (1, ?, ?, ?, ?, 1, ?)
-		ON CONFLICT(id) DO UPDATE SET
+			id, enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
+			) VALUES (1, ?, ?, ?, ?, 1, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
 			enabled = excluded.enabled,
 			proxy_url = excluded.proxy_url,
 			auth_key_nonce = excluded.auth_key_nonce,
 			auth_key_ciphertext = excluded.auth_key_ciphertext,
-			version = excluded.version,
-			updated_at = excluded.updated_at`,
-		boolInt(config.snapshot.Enabled), config.snapshot.ProxyURL, nonce, ciphertext, proxyTimestamp())
+				version = excluded.version,
+				key_version = excluded.key_version,
+				updated_at = excluded.updated_at`,
+		boolInt(config.snapshot.Enabled), config.snapshot.ProxyURL, nonce, ciphertext, s.keys.ActiveVersion(), proxyTimestamp())
 	if err != nil {
 		return fmt.Errorf("persist proxy settings: %w", err)
 	}

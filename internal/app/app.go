@@ -305,9 +305,23 @@ func openDatabase(dependencies Dependencies) (*sql.DB, *sql.DB, error) {
 }
 
 func initialize(ctx context.Context, db *sql.DB, dependencies Dependencies) (*crypto.KeySet, error) {
-	keys, err := crypto.New(dependencies.Config.MasterKey)
+	activeVersion := dependencies.Config.MasterKeyVersion
+	if activeVersion <= 0 {
+		activeVersion = 1
+	}
+	keys, err := crypto.NewVersioned(activeVersion, dependencies.Config.MasterKey)
 	if err != nil {
 		return nil, fmt.Errorf("create crypto key set: %w", err)
+	}
+	if dependencies.Config.LegacyMasterKey != nil {
+		legacyVersion := dependencies.Config.LegacyMasterKeyVersion
+		if legacyVersion <= 0 {
+			legacyVersion = 1
+		}
+		keys, err = keys.WithLegacyMasterKey(legacyVersion, *dependencies.Config.LegacyMasterKey)
+		if err != nil {
+			return nil, fmt.Errorf("add legacy crypto key: %w", err)
+		}
 	}
 	if err := keys.EnsureSentinel(ctx, db); err != nil {
 		return nil, fmt.Errorf("ensure crypto sentinel: %w", err)

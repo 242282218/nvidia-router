@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/observability"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
@@ -305,6 +308,62 @@ func TestChatExecutionPreservesResponseReadFailureClassification(t *testing.T) {
 func validChatRequest(stream bool) string {
 	return `{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":` +
 		map[bool]string{false: "false", true: "true"}[stream] + `,"future":{"kept":true}}`
+}
+
+// TestChatStreamRecordsFirstTokenThroughMiddleware locks the TTFT chain for the
+// streaming path: the first SSE data event must land in the recorded request
+// metadata as first_token_ms, distinct from the first-byte metric.
+func TestChatStreamRecordsFirstTokenThroughMiddleware(t *testing.T) {
+	sseBody := "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(sseBody))
+	}))
+	t.Cleanup(upstream.Close)
+
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	lease := &releaseTrackingLease{id: 5}
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, lease.id, []byte("stream-key"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Lease: lease, Attempts: 1}, err
+	})
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, runner, client))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(validChatRequest(true)))
+
+	handler.ServeHTTP(response, request)
+
+	if !strings.Contains(response.Body.String(), "[DONE]") {
+		t.Fatalf("SSE [DONE] not found in response: %s", response.Body.String())
+	}
+	if recorded.FirstTokenMS == nil {
+		t.Fatal("first_token_ms not recorded for a stream that produced a token")
+	}
+	if *recorded.FirstTokenMS < 0 {
+		t.Fatalf("first_token_ms = %d, want >= 0", *recorded.FirstTokenMS)
+	}
+	if !recorded.IsStream {
+		t.Fatalf("recorded IsStream = false, want true")
+	}
+}
+
+type requestRecorderFunc func(context.Context, observability.RequestRecord) error
+
+func (f requestRecorderFunc) Record(ctx context.Context, record observability.RequestRecord) error {
+	return f(ctx, record)
 }
 
 func assertChatError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {

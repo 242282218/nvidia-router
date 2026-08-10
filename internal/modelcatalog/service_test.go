@@ -87,19 +87,20 @@ func TestDiscoverCandidatesDoesNotMutateWhitelist(t *testing.T) {
 	if secrets.lastKeyID != 11 || discoverer.lastToken != "secret-for-11" {
 		t.Fatalf("secret/discovery = %d/%q", secrets.lastKeyID, discoverer.lastToken)
 	}
-	assertModelCount(t, db, 0)
+	// The DeepSeek alias migration seeds one model; discovery must not add any.
+	assertModelCount(t, db, 1)
 
 	selected := Selection{PublicID: "public-a", UpstreamID: "model-a", DisplayName: "Model A", Kind: KindChat, Enabled: true}
 	if err := service.SaveSelection(context.Background(), []Selection{selected}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	assertModelCount(t, db, 1)
+	assertModelCount(t, db, 2)
 
 	discoverer.models = []string{"new-model"}
 	if _, err := service.DiscoverCandidates(context.Background(), 12); err != nil {
 		t.Fatalf("DiscoverCandidates second key: %v", err)
 	}
-	assertModelCount(t, db, 1)
+	assertModelCount(t, db, 2)
 }
 
 func TestDiscoverCandidatesPreservesProxyError(t *testing.T) {
@@ -127,18 +128,21 @@ func TestWhitelistMapsPublicIDAndDisablesImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEnabled: %v", err)
 	}
-	if len(models) != 1 || models[0].PublicID != "chat-public" {
-		t.Fatalf("enabled models = %+v", models)
-	}
-	resolved, err := service.Resolve(context.Background(), "chat-public", Requirements{Kind: KindChat})
+	// The DeepSeek seed migration (015) inserts an enabled model, so the enabled
+	// set is the seed plus the one the test enables. Resolve by public id below,
+	// not by position, because the seed sorts before "chat-public".
+	chatModel, err := service.Resolve(context.Background(), "chat-public", Requirements{Kind: KindChat})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if resolved.UpstreamID != "vendor/chat" {
-		t.Fatalf("upstream ID = %q", resolved.UpstreamID)
+	if len(models) < 2 {
+		t.Fatalf("enabled models = %+v, want seed + chat-public", models)
+	}
+	if chatModel.UpstreamID != "vendor/chat" {
+		t.Fatalf("upstream ID = %q", chatModel.UpstreamID)
 	}
 
-	if err := service.SetEnabled(context.Background(), resolved.ID, false); err != nil {
+	if err := service.SetEnabled(context.Background(), chatModel.ID, false); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
 	if _, err := service.Resolve(context.Background(), "chat-public", Requirements{Kind: KindChat}); !errors.Is(err, ErrModelNotFound) {
@@ -168,6 +172,11 @@ func TestPatchConcurrentChangesPreserveBothFields(t *testing.T) {
 		}
 	})
 	service := NewService(NewRepository(primaryDB), &fakeSecrets{}, &fakeDiscoverer{}, nvidia.DefaultDescriptor(), catalogClock{})
+	// The migrations seed the deepseek-v4-flash alias; this test reasons about the
+	// single model it inserts, so clear the seeded whitelist first.
+	if _, err := primaryDB.Exec(`DELETE FROM models`); err != nil {
+		t.Fatalf("clear seeded models: %v", err)
+	}
 	if err := service.SaveSelection(context.Background(), []Selection{{
 		PublicID: "concurrent", UpstreamID: "vendor/concurrent", DisplayName: "Original", Kind: KindChat,
 	}}); err != nil {
@@ -249,11 +258,7 @@ func TestConcurrentModelUpdatesAdvanceRevision(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	models, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	model := models[0]
+	model := modelByPublicID(t, service, "revision-concurrent")
 	verifiedAt := time.Date(2026, 7, 30, 5, 0, 0, 0, time.UTC)
 	const updatesPerMethod = 32
 	start := make(chan struct{})
@@ -275,13 +280,10 @@ func TestConcurrentModelUpdatesAdvanceRevision(t *testing.T) {
 		}
 	}
 
-	updated, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List updated model: %v", err)
-	}
+	updatedModel := modelByPublicID(t, service, "revision-concurrent")
 	wantRevision := model.updatedAt.Add(updatesPerMethod * 2 * time.Nanosecond)
-	if !updated[0].updatedAt.Equal(wantRevision) {
-		t.Fatalf("updated_at = %s, want %s after %d concurrent updates", updated[0].updatedAt, wantRevision, updatesPerMethod*2)
+	if !updatedModel.updatedAt.Equal(wantRevision) {
+		t.Fatalf("updated_at = %s, want %s after %d concurrent updates", updatedModel.updatedAt, wantRevision, updatesPerMethod*2)
 	}
 }
 
@@ -294,18 +296,14 @@ func TestVerifyAndUnblockMapsExistingModelConditionalUpdateMissToConflict(t *tes
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	models, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	model := models[0]
+	model := modelByPublicID(t, service, "conditional-conflict")
 	if _, err := db.Exec("UPDATE models SET updated_at = ? WHERE id = ?", "2026-07-30T04:00:00.000Z", model.ID); err != nil {
 		t.Fatalf("rewrite model revision: %v", err)
 	}
 
-	_, err = service.repository.VerifyAndUnblock(context.Background(), 1, model.ID, model.updatedAt, verifiedAt)
-	if !errors.Is(err, ErrModelVersionConflict) {
-		t.Fatalf("VerifyAndUnblock error = %v, want model version conflict", err)
+	_, verifyErr := service.repository.VerifyAndUnblock(context.Background(), 1, model.ID, model.updatedAt, verifiedAt)
+	if !errors.Is(verifyErr, ErrModelVersionConflict) {
+		t.Fatalf("VerifyAndUnblock error = %v, want model version conflict", verifyErr)
 	}
 }
 
@@ -316,11 +314,7 @@ func TestVerifyAndUnblockRejectsModelChangedDuringTest(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	models, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	modelID := models[0].ID
+	modelID := modelByPublicID(t, service, "verify-race").ID
 	keyID := insertNVIDIAKey(t, db)
 	status := 403
 	if err := service.BlockKeyModel(context.Background(), keyID, modelID, "model_forbidden", &status); err != nil {
@@ -483,11 +477,7 @@ func TestChangingModelKindClearsCapabilityVerification(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	models, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	model := models[0]
+	model := modelByPublicID(t, service, "speech")
 
 	chat, err := service.Patch(context.Background(), model.ID, Patch{Kind: kindPointer(KindChat)})
 	if err != nil {
@@ -981,6 +971,24 @@ func assertModelCount(t *testing.T, db *sql.DB, want int) {
 	}
 }
 
+// modelByPublicID returns the model with the given public ID. Tests that create a
+// selection and then read it back used models[0], which the DeepSeek seed migration
+// (015) shifted because it inserts a row earlier than the test's selection.
+func modelByPublicID(t *testing.T, service *Service, publicID string) Model {
+	t.Helper()
+	models, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, model := range models {
+		if model.PublicID == publicID {
+			return model
+		}
+	}
+	t.Fatalf("model %q not found in %v", publicID, models)
+	return Model{}
+}
+
 func insertNVIDIAKey(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	result, err := db.Exec(`
@@ -1045,11 +1053,7 @@ func TestListIncludesBlockedNVIDIAKeyIDs(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	models, err := service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List before block: %v", err)
-	}
-	modelID := models[0].ID
+	modelID := modelByPublicID(t, service, "blocked-list").ID
 	status := 403
 	if err := service.BlockKeyModel(context.Background(), secondKeyID, modelID, "model_forbidden", &status); err != nil {
 		t.Fatalf("Block second key: %v", err)
@@ -1058,11 +1062,7 @@ func TestListIncludesBlockedNVIDIAKeyIDs(t *testing.T) {
 		t.Fatalf("Block first key: %v", err)
 	}
 
-	models, err = service.List(context.Background())
-	if err != nil {
-		t.Fatalf("List after block: %v", err)
-	}
-	if got := models[0].BlockedByKeyIDs; !reflect.DeepEqual(got, []int64{firstKeyID, secondKeyID}) {
+	if got := modelByPublicID(t, service, "blocked-list").BlockedByKeyIDs; !reflect.DeepEqual(got, []int64{firstKeyID, secondKeyID}) {
 		t.Fatalf("BlockedByKeyIDs = %v, want [%d %d]", got, firstKeyID, secondKeyID)
 	}
 }

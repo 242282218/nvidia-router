@@ -15,26 +15,27 @@ import (
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/observability"
 	audiocollections "nvidia-router/internal/protocol/audio"
+	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
 // Audio proxies OpenAI Audio Transcriptions requests through the same
-// ModelCatalog, Pool, Attempt orchestrator and NVIDIA Client as the other
+// ModelCatalog, Pool, Attempt orchestrator and NVIDIA provider as the other
 // handlers. It is non-streaming and relies on the Attempt loop for first-byte
 // failover: a 503 before the first byte retries the next key, but once bytes
 // reach the client the key is locked in.
 type Audio struct {
 	models   ModelResolver
 	attempts AttemptRunner
-	client   *nvidia.Client
+	client   provider.Provider
 	tempDir  string
 	// bodyReadTimeout bounds reading the wire multipart body. Tests override it
 	// to exercise the slow-upload path without waiting for the production value.
 	bodyReadTimeout time.Duration
 }
 
-func NewAudio(models ModelResolver, attempts AttemptRunner, client *nvidia.Client, tempDirs ...string) *Audio {
+func NewAudio(models ModelResolver, attempts AttemptRunner, client provider.Provider, tempDirs ...string) *Audio {
 	tempDir := os.TempDir()
 	if len(tempDirs) > 0 && tempDirs[0] != "" {
 		tempDir = tempDirs[0]
@@ -141,7 +142,8 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Audio) execute(body router.ReplayableBody, contentType, responseFormat string) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.AudioTranscriptionsReplay(ctx, snapshotFromBudget(ctx), string(secret), body, contentType)
 		if err != nil {
 			return nil, err
@@ -198,10 +200,10 @@ func verifyMultipartAudio(request *http.Request) error {
 type Speech struct {
 	models   ModelResolver
 	attempts AttemptRunner
-	client   *nvidia.Client
+	client   provider.Provider
 }
 
-func NewSpeech(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Speech {
+func NewSpeech(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Speech {
 	return &Speech{models: models, attempts: attempts, client: client}
 }
 
@@ -266,7 +268,8 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Speech) execute(body []byte) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, commit *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, keyID int64, secret []byte, commit *router.CommitState) (*http.Response, error) {
+		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.AudioSpeech(ctx, snapshotFromBudget(ctx), string(secret), body)
 		if err != nil {
 			return nil, err
@@ -277,7 +280,7 @@ func (h *Speech) execute(body []byte) router.ExecuteFunc {
 		primeCtx := ctx
 		cancel := func() {}
 		if budget, ok := router.BudgetFromContext(ctx); ok {
-			primeCtx, cancel = context.WithDeadline(ctx, budget.FirstByteDeadline())
+			primeCtx, cancel = context.WithDeadline(ctx, budget.FirstTokenDeadline())
 		}
 		defer cancel()
 		if err := nvidia.PrimeAudioSpeech(primeCtx, response); err != nil {
@@ -287,7 +290,7 @@ func (h *Speech) execute(body []byte) router.ExecuteFunc {
 			return response, err
 		}
 		if budget, ok := router.BudgetFromContext(ctx); ok {
-			response.Body = nvidia.WithAudioIdleTimeout(response.Body, budget.FirstByteTimeout())
+			response.Body = nvidia.WithAudioIdleTimeout(response.Body, budget.StreamIdleTimeout())
 		}
 		commit.Commit()
 		return response, nil

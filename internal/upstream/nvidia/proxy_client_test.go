@@ -80,7 +80,8 @@ func TestClientRetriesProxyFailureBeforeRequestWrite(t *testing.T) {
 // TestClientDoesNotReplayProxy5xxConnectResponse locks in the R2.2 tightening: a
 // 5xx CONNECT answer from the proxy means the proxy is up and already refused
 // the request, so the client must not replay — replaying would double upstream
-// load on a path known to be failing.
+// load on a path known to be failing. It also asserts the error surfaces as an
+// xkproxy.Error so the router short-circuits instead of cooldowning the key.
 func TestClientDoesNotReplayProxy5xxConnectResponse(t *testing.T) {
 	var upstreamRequests atomic.Int32
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -102,11 +103,49 @@ func TestClientDoesNotReplayProxy5xxConnectResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("Chat succeeded despite a 5xx proxy CONNECT response")
 	}
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("error = %T %v, want *xkproxy.Error so the router does not cooldown the key", err, err)
+	}
+	if proxyErr.Reason() != xkproxy.ReasonTransportFailed {
+		t.Fatalf("proxy error reason = %q, want transport_failed", proxyErr.Reason())
+	}
 	if proxy.Connects() != 1 {
 		t.Fatalf("proxy CONNECTs = %d, want 1 (5xx must not be replayed)", proxy.Connects())
 	}
 	if upstreamRequests.Load() != 0 {
 		t.Fatalf("upstream requests = %d, want 0", upstreamRequests.Load())
+	}
+}
+
+// TestClientWrapsProxyAuthRequiredConnectAsProxyError proves a 407 CONNECT answer
+// (proxy authentication rejected) is also classified as a proxy fault, not an
+// NVIDIA key fault, and is never replayed.
+func TestClientWrapsProxyAuthRequiredConnectAsProxyError(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newConnectProxy(t)
+	proxy.FailNextConnectStatus(http.StatusProxyAuthRequired)
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
+	descriptor := DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 1000}, "same-key", []byte(`{"model":"vendor/model"}`), false)
+	if err == nil {
+		t.Fatal("Chat succeeded despite a 407 proxy CONNECT response")
+	}
+	var proxyErr *xkproxy.Error
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("error = %T %v, want *xkproxy.Error", err, err)
+	}
+	if proxy.Connects() != 1 {
+		t.Fatalf("proxy CONNECTs = %d, want 1 (407 must not be replayed)", proxy.Connects())
 	}
 }
 
@@ -228,6 +267,10 @@ func (p *connectProxy) Connects() int32 { return p.connects.Load() }
 // FailNextConnect makes the next CONNECT answer with an HTTP 5xx status, which
 // the client surfaces as a transport error that must NOT be replayed.
 func (p *connectProxy) FailNextConnect() { p.failNext.Store(http.StatusBadGateway) }
+
+// FailNextConnectStatus makes the next CONNECT answer with an explicit status code,
+// so a test can distinguish a 407 auth rejection from a generic 5xx.
+func (p *connectProxy) FailNextConnectStatus(status int) { p.failNext.Store(int32(status)) }
 
 // FailNextConnectRaw makes the next CONNECT fail at the transport level: the
 // proxy accepts the tunnel then closes it without an HTTP response, so the

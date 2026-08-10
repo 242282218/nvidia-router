@@ -13,6 +13,7 @@ import (
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
 	chatprotocol "nvidia-router/internal/protocol/chat"
+	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/sse"
@@ -31,10 +32,10 @@ type AttemptRunner interface {
 type Chat struct {
 	models   ModelResolver
 	attempts AttemptRunner
-	client   *nvidia.Client
+	client   provider.Provider
 }
 
-func NewChat(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Chat {
+func NewChat(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Chat {
 	return &Chat{models: models, attempts: attempts, client: client}
 }
 
@@ -90,7 +91,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {
 			return nil, err
@@ -126,7 +128,12 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
 	commit := &router.CommitState{}
-	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{CommitState: commit})
+	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{
+		CommitState: commit,
+		// TTFT is the first SSE data event reaching the client, distinct from
+		// the first-byte metric which also fires for error bodies before commit.
+		OnFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
+	})
 	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) {
 		// Clean completion, or an interrupted stream whose first byte already
 		// reached the client: the client observes truncation and nothing more
@@ -223,15 +230,18 @@ func primeSSE(ctx context.Context, response *http.Response) error {
 	cancel := func() {}
 	var idle time.Duration
 	if budget, ok := router.BudgetFromContext(ctx); ok {
-		primeCtx, cancel = context.WithDeadline(ctx, budget.FirstByteDeadline())
-		idle = budget.FirstByteTimeout()
+		// The prime phase waits for the first SSE data event, so it is bounded by
+		// the first-token window, not the transport-level first-byte window. The
+		// idle guard that wraps the body below is the separate in-stream window.
+		primeCtx, cancel = context.WithDeadline(ctx, budget.FirstTokenDeadline())
+		idle = budget.StreamIdleTimeout()
 	}
 	defer cancel()
 	if err := sse.Prime(primeCtx, response); err != nil {
 		return err
 	}
 	// After the headers are committed a stalled upstream would pin the lease
-	// forever; wrap the body so silence beyond the first-byte window returns
+	// forever; wrap the body so silence beyond the idle window returns
 	// ErrStreamIdle instead of blocking the decode loop indefinitely.
 	response.Body = sse.WithIdleTimeout(response.Body, idle)
 	return nil

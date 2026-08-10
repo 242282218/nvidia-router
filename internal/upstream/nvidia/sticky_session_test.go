@@ -64,11 +64,50 @@ func TestClientPinsSessionOnOuterConnectAndOmitsFromTarget(t *testing.T) {
 	if err := harness.chat(WithStickySession(context.Background(), 42)); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := harness.sessionHeader.Load().(string); got != "42" {
-		t.Fatalf("CONNECT X-XK-Session = %q, want 42", got)
+	got := harness.sessionHeader.Load().(string)
+	if got == "" {
+		t.Fatal("CONNECT X-XK-Session is empty, want a sticky label")
 	}
-	if got := harness.targetHeader.Load().(string); got != "" {
-		t.Fatalf("target request X-XK-Session = %q, want empty (must not leak to NVIDIA)", got)
+	if len(got) > xkStickySessionSize {
+		t.Fatalf("CONNECT X-XK-Session length = %d, want <= %d", len(got), xkStickySessionSize)
+	}
+	if got == "42" {
+		t.Fatal("CONNECT X-XK-Session is the raw key id; it must be an irreversible label")
+	}
+	if want := stickySessionLabel(harness.client.stickySessionKey, 42); got != want {
+		t.Fatalf("CONNECT X-XK-Session = %q, want derived label %q", got, want)
+	}
+	if target := harness.targetHeader.Load().(string); target != "" {
+		t.Fatalf("target request X-XK-Session = %q, want empty (must not leak to NVIDIA)", target)
+	}
+}
+
+// TestClientStickySessionLabelIsStableAndKeyed locks in the label properties: the same
+// key and secret always derive the same label, different keys never collide with a
+// digest check, and the label leaks no key-id bits.
+func TestClientStickySessionLabelIsStableAndKeyed(t *testing.T) {
+	key, err := newStickySessionKey()
+	if err != nil {
+		t.Fatalf("newStickySessionKey: %v", err)
+	}
+	first := stickySessionLabel(key, 7)
+	second := stickySessionLabel(key, 7)
+	if first != second {
+		t.Fatal("same key produced different sticky labels")
+	}
+	other := stickySessionLabel(key, 8)
+	if first == other {
+		t.Fatal("distinct key ids produced the same sticky label")
+	}
+	if first == "7" {
+		t.Fatal("sticky label leaked the raw key id")
+	}
+	otherKey, err := newStickySessionKey()
+	if err != nil {
+		t.Fatalf("newStickySessionKey: %v", err)
+	}
+	if stickySessionLabel(otherKey, 7) == first {
+		t.Fatal("sticky label is not keyed by the per-process secret")
 	}
 }
 
@@ -87,5 +126,28 @@ func TestClientOmitsStickySessionHeaderWithoutContextKey(t *testing.T) {
 	}
 }
 
-// recordSession makes the proxy stash the X-XK-Session header value from the CONNECT.
-// It is defined as a method on connectProxy so sticky tests can wrap the handler.
+// TestClientSameKeyReusesConnectAndDifferentKeysDoNot proves that the session label is
+// part of the transport identity: requests for the same NVIDIA key share the CONNECT
+// tunnel, requests for different keys never do.
+func TestClientSameKeyReusesConnectAndDifferentKeysDoNot(t *testing.T) {
+	harness := newStickyHarness(t)
+	sameKey := WithStickySession(context.Background(), 11)
+	if err := harness.chat(sameKey); err != nil {
+		t.Fatalf("first Chat: %v", err)
+	}
+	firstConnects := harness.proxy.Connects()
+	if err := harness.chat(sameKey); err != nil {
+		t.Fatalf("second Chat: %v", err)
+	}
+	if got := harness.proxy.Connects(); got != firstConnects {
+		t.Fatalf("same-key CONNECTs grew from %d to %d, want reuse", firstConnects, got)
+	}
+
+	otherKey := WithStickySession(context.Background(), 12)
+	if err := harness.chat(otherKey); err != nil {
+		t.Fatalf("different-key Chat: %v", err)
+	}
+	if got := harness.proxy.Connects(); got <= firstConnects {
+		t.Fatalf("different-key CONNECTs = %d, want a fresh tunnel", got)
+	}
+}

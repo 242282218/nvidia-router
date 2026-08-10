@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
 	responsesprotocol "nvidia-router/internal/protocol/responses"
+	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
@@ -21,15 +23,15 @@ import (
 
 // Responses proxies OpenAI Responses API requests by translating them to
 // Chat Completions upstream and back. It shares the same ModelCatalog, Pool,
-// Attempt orchestrator and NVIDIA Chat client as the Chat handler, so no
+// Attempt orchestrator and NVIDIA Chat provider as the Chat handler, so no
 // parallel key scheduling path exists.
 type Responses struct {
 	models   ModelResolver
 	attempts AttemptRunner
-	client   *nvidia.Client
+	client   provider.Provider
 }
 
-func NewResponses(models ModelResolver, attempts AttemptRunner, client *nvidia.Client) *Responses {
+func NewResponses(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Responses {
 	return &Responses{models: models, attempts: attempts, client: client}
 }
 
@@ -89,7 +91,8 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 }
 
 func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.Model, stream bool) router.ExecuteFunc {
-	return func(ctx context.Context, _ int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {
 			return nil, err
@@ -138,6 +141,9 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		commit:  commit,
 		flusher: writer,
 		header:  false,
+		// TTFT for Responses streams: the first emitted event is the first data
+		// event reaching the client (response.created or the first delta).
+		onFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
 	}
 	source := &chatDeltaSource{decoder: sse.NewDecoder(upstream.Body)}
 	cancelDone := make(chan struct{})
@@ -207,10 +213,12 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 // responsesSSEEmitter writes Responses events to the HTTP response and commits
 // on the first event. The done event is rendered as the final [DONE] marker.
 type responsesSSEEmitter struct {
-	encoder *sse.Encoder
-	commit  *router.CommitState
-	flusher http.ResponseWriter
-	header  bool
+	encoder     *sse.Encoder
+	commit      *router.CommitState
+	flusher     http.ResponseWriter
+	header      bool
+	notified    bool
+	onFirstData func()
 }
 
 func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
@@ -234,6 +242,12 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 	}
 	if flusher, ok := e.flusher.(http.Flusher); ok {
 		flusher.Flush()
+	}
+	if !e.notified {
+		e.notified = true
+		if e.onFirstData != nil {
+			e.onFirstData()
+		}
 	}
 	return nil
 }
