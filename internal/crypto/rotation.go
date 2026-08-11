@@ -84,7 +84,7 @@ func rotateNVIDIAKeys(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet,
 	if err != nil {
 		return fmt.Errorf("rotate NVIDIA keys: query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id, version int
 		var ciphertext, nonce []byte
@@ -127,7 +127,7 @@ func rotateProviderCredentials(ctx context.Context, tx *sql.Tx, oldKeys, newKeys
 	if err != nil {
 		return fmt.Errorf("rotate provider credentials: query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id, version int
 		var ciphertext, nonce []byte
