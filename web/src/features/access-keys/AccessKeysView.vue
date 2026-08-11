@@ -92,6 +92,19 @@ function formatDate(value?: string): string {
   const pad = (part: number) => String(part).padStart(2, '0')
   return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
 }
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return String(value)
+}
+
+// budgetUsagePercent returns the fraction of a key's token budget already
+// consumed (0..100). Unlimited keys (budget 0) show no meter.
+function budgetUsagePercent(key: AccessKey): number {
+  if (key.token_budget <= 0) return 0
+  return Math.min(100, Math.round((key.consumed_tokens / key.token_budget) * 100))
+}
 </script>
 
 <template>
@@ -254,6 +267,9 @@ function formatDate(value?: string): string {
                   最后使用
                 </th>
                 <th class="data-table-th">
+                  Token 预算
+                </th>
+                <th class="data-table-th">
                   状态
                 </th>
                 <th class="data-table-th text-right">
@@ -278,6 +294,31 @@ function formatDate(value?: string): string {
                 </td>
                 <td class="data-table-td text-[var(--color-text-secondary)]">
                   {{ formatDate(key.last_used_at) }}
+                </td>
+                <td class="data-table-td">
+                  <div
+                    v-if="key.token_budget > 0"
+                    class="w-32"
+                    :data-testid="`access-key-budget-${key.id}`"
+                  >
+                    <div class="flex justify-between font-mono text-[11px] text-[var(--color-text-muted)]">
+                      <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}</span>
+                      <span>{{ budgetUsagePercent(key) }}%</span>
+                    </div>
+                    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
+                      <div
+                        class="h-full rounded-full transition-all"
+                        :class="budgetUsagePercent(key) >= 90 ? 'bg-[#EF4444]' : budgetUsagePercent(key) >= 60 ? 'bg-[#F59E0B]' : 'bg-[var(--color-success)]'"
+                        :style="{ width: `${budgetUsagePercent(key)}%` }"
+                      />
+                    </div>
+                  </div>
+                  <span
+                    v-else
+                    class="text-xs text-[var(--color-text-subtle)]"
+                  >
+                    不限
+                  </span>
                 </td>
                 <td class="data-table-td">
                   <span

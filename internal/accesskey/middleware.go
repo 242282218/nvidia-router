@@ -37,6 +37,10 @@ func Middleware(service *Service, next http.Handler) http.Handler {
 		}
 
 		if err := service.BeginRequest(identity); err != nil {
+			if errors.Is(err, ErrBudgetExceeded) {
+				apierror.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "access_key_budget_exceeded", Message: "The access key token budget has been exhausted.", RetryAfter: time.Hour}.Write(writer)
+				return
+			}
 			apierror.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "access_key_rate_limited", Message: "The access key rate limit has been exceeded.", RetryAfter: time.Minute}.Write(writer)
 			return
 		}

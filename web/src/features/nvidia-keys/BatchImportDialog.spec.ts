@@ -89,6 +89,34 @@ describe('BatchImportDialog', () => {
     expect(submitButton.attributes('disabled')).toBeUndefined()
   })
 
+  it('runs upstream probes for newly imported keys when requested', async () => {
+    const importedId = 7
+    vi.mocked(nvidiaKeysApi.importBatch).mockResolvedValue({
+      data: [
+        { line: 1, masked: 'nvapi…k1', status: 'imported', key: { id: importedId, masked: 'nvapi…k1', enabled: true, auth_invalid: false, cooldown_level: 0, consecutive_failures: 0, created_at: '2026-08-11T00:00:00Z', updated_at: '2026-08-11T00:00:00Z' } },
+        { line: 2, masked: 'nvapi…dup', status: 'duplicate' },
+      ],
+    })
+    vi.mocked(nvidiaKeysApi.test).mockResolvedValue({ id: importedId, status: 'valid' })
+
+    const wrapper = mount(BatchImportDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: false } },
+    })
+    await wrapper.get('textarea').setValue('nvapi-k1')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    // Button only appears when at least one key was actually imported.
+    const probe = wrapper.get('[data-testid="test-newly-imported"]')
+    expect(probe.text()).toContain('测活新增 1 个')
+    await probe.trigger('click')
+    await flushPromises()
+
+    expect(nvidiaKeysApi.test).toHaveBeenCalledWith(importedId)
+    expect(wrapper.get('[data-testid="batch-import-test-results"]').text()).toContain('valid')
+  })
+
   it('does not submit empty input', async () => {
     const wrapper = mount(BatchImportDialog, {
       props: { open: true },

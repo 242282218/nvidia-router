@@ -24,6 +24,8 @@ const listedKey = {
   rpm_limit: 60,
   tpm_limit: 60000,
   max_concurrent: 5,
+  token_budget: 1000000,
+  consumed_tokens: 250000,
 }
 
 function deferred<T>() {
@@ -282,10 +284,13 @@ describe('AccessKeysView', () => {
     expect((rpm.element as HTMLInputElement).value).toBe('60')
     expect((wrapper.get('[data-testid="access-key-tpm-limit"]').element as HTMLInputElement).value).toBe('60000')
     expect((wrapper.get('[data-testid="access-key-max-concurrent"]').element as HTMLInputElement).value).toBe('5')
+    expect((wrapper.get('[data-testid="access-key-token-budget"]').element as HTMLInputElement).value).toBe('1000000')
+    expect(wrapper.get('[data-testid="access-key-budget-4"]').text()).toContain('K')
 
     await rpm.setValue('120')
     await wrapper.get('[data-testid="access-key-tpm-limit"]').setValue('120000')
     await wrapper.get('[data-testid="access-key-max-concurrent"]').setValue('10')
+    await wrapper.get('[data-testid="access-key-token-budget"]').setValue('2000000')
     await wrapper.get('[data-testid="edit-access-key-policy-form"]').trigger('submit')
     await flushPromises()
 
@@ -294,6 +299,7 @@ describe('AccessKeysView', () => {
       rpm_limit: 120,
       tpm_limit: 120000,
       max_concurrent: 10,
+      token_budget: 2000000,
     })
     expect(accessKeysApi.list).toHaveBeenCalledTimes(2)
   })

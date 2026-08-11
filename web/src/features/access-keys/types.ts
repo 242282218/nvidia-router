@@ -9,6 +9,8 @@
   rpm_limit: number
   tpm_limit: number
   max_concurrent: number
+  token_budget: number
+  consumed_tokens: number
 }
 
 export interface AccessKeyPolicy {
@@ -16,6 +18,7 @@ export interface AccessKeyPolicy {
   rpm_limit: number
   tpm_limit: number
   max_concurrent: number
+  token_budget?: number
 }
 
 export interface CreatedAccessKey extends AccessKey {

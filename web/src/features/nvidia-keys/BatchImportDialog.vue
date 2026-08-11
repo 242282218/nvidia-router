@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { ApiError, isRecord } from '../../shared/api/client'
 import { nvidiaKeysApi } from './api'
 import { isImportResult } from './types'
-import type { ImportResult } from './types'
+import type { ImportResult, KeyTestResult } from './types'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ close: []; imported: [] }>()
@@ -12,12 +12,16 @@ const text = ref('')
 const results = ref<ImportResult[]>([])
 const errorMessage = ref('')
 const submitting = ref(false)
+const testing = ref(false)
+const testResults = ref<KeyTestResult[]>([])
 
 watch(() => props.open, (open) => {
   if (!open) {
     text.value = ''
     results.value = []
     errorMessage.value = ''
+    testResults.value = []
+    testing.value = false
   }
 })
 
@@ -44,6 +48,7 @@ async function submit(): Promise<void> {
   const keys = text.value
   text.value = ''
   results.value = []
+  testResults.value = []
   errorMessage.value = ''
   if (!keys.trim()) {
     errorMessage.value = '请先输入至少一行 NVIDIA Key。'
@@ -63,6 +68,40 @@ async function submit(): Promise<void> {
   } finally {
     submitting.value = false
   }
+}
+
+// newlyImported returns the IDs of keys that were actually saved this batch, so
+// the "test new keys" action only probes what the import added rather than
+// re-running the whole pool (which the list view already exposes).
+function newlyImportedIds(): number[] {
+  return results.value
+    .filter((result) => result.status === 'imported' && result.key?.id)
+    .map((result) => result.key!.id)
+}
+
+async function testNewlyImported(): Promise<void> {
+  const ids = newlyImportedIds()
+  if (ids.length === 0 || testing.value) return
+  testing.value = true
+  errorMessage.value = ''
+  testResults.value = []
+  try {
+    // Sequential probing, same as the list view's "test all": avoids hammering
+    // the upstream validator with parallel model fetches for a fresh batch.
+    const outcomes: KeyTestResult[] = []
+    for (const id of ids) {
+      outcomes.push(await nvidiaKeysApi.test(id))
+    }
+    testResults.value = outcomes
+  } catch (error) {
+    errorMessage.value = error instanceof ApiError ? error.message : '新增 Key 测活失败，请稍后重试。'
+  } finally {
+    testing.value = false
+  }
+}
+
+function testStatusClass(status: string): string {
+  return status === 'valid' ? 'badge-success' : 'badge-danger'
 }
 </script>
 
@@ -177,6 +216,16 @@ async function submit(): Promise<void> {
                     v-if="resultSummary.failed"
                     class="badge-warning"
                   >需处理 {{ resultSummary.failed }}</span>
+                  <button
+                    v-if="resultSummary.imported > 0"
+                    class="btn-secondary ml-1 rounded-md px-2.5 py-1 text-xs"
+                    type="button"
+                    :disabled="testing"
+                    data-testid="test-newly-imported"
+                    @click="testNewlyImported"
+                  >
+                    {{ testing ? '测活中…' : `测活新增 ${resultSummary.imported} 个` }}
+                  </button>
                 </div>
               </div>
               <div
@@ -228,6 +277,34 @@ async function submit(): Promise<void> {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+
+              <!-- Probe outcomes for newly imported keys -->
+              <div
+                v-if="testResults.length"
+                data-testid="batch-import-test-results"
+                class="border-t border-[var(--color-border)] px-4 py-3"
+              >
+                <h4 class="text-xs font-medium text-[var(--color-text-muted)]">
+                  测活结果
+                </h4>
+                <ul class="mt-2 space-y-1">
+                  <li
+                    v-for="result in testResults"
+                    :key="result.id"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <code class="truncate font-mono text-[var(--color-info)]">#{{ result.id }}</code>
+                    <span :class="'px-2 py-0.5 rounded ' + testStatusClass(result.status)">
+                      {{ result.status }}
+                    </span>
+                    <span
+                      v-if="result.reason"
+                      class="truncate text-[var(--color-text-muted)]"
+                      :title="result.reason"
+                    >{{ result.reason }}</span>
+                  </li>
+                </ul>
               </div>
             </div>
           </Transition>

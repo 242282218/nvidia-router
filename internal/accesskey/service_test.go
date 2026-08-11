@@ -83,7 +83,7 @@ func TestAuthenticateRejectsExpiredKeyAndPolicyUpdatesInvalidateCache(t *testing
 		t.Fatalf("Authenticate: %v", err)
 	}
 	expires := source.Now().Add(time.Minute)
-	if err := service.UpdatePolicy(context.Background(), created.Key.ID, &expires, 7, 11, 2); err != nil {
+	if err := service.UpdatePolicy(context.Background(), created.Key.ID, &expires, 7, 11, 2, 0); err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
 	identity, err := service.Authenticate(context.Background(), created.Plaintext)

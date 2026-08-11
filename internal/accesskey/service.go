@@ -37,6 +37,13 @@ type Service struct {
 	usageMu      sync.Mutex
 	lastRecorded map[int64]time.Time
 	pending      map[int64]struct{}
+
+	// consumedWriteMu guards the throttled budget persistence: consumed tokens
+	// are only written back at most once per minimum interval, mirroring the
+	// last-used write path so the hot request path never hits the DB.
+	consumedWriteMu sync.Mutex
+	lastConsumed    map[int64]time.Time
+	pendingConsumed map[int64]struct{}
 }
 
 func NewService(repository *Repository, keys *crypto.KeySet, source clock.Clock) *Service {
@@ -44,13 +51,15 @@ func NewService(repository *Repository, keys *crypto.KeySet, source clock.Clock)
 		source = clock.RealClock{}
 	}
 	return &Service{
-		repository:   repository,
-		keys:         keys,
-		clock:        source,
-		cache:        newCache(defaultCacheTTL, defaultCacheEntries),
-		limiter:      newLimiter(),
-		lastRecorded: make(map[int64]time.Time),
-		pending:      make(map[int64]struct{}),
+		repository:      repository,
+		keys:            keys,
+		clock:           source,
+		cache:           newCache(defaultCacheTTL, defaultCacheEntries),
+		limiter:         newLimiter(),
+		lastRecorded:    make(map[int64]time.Time),
+		pending:         make(map[int64]struct{}),
+		lastConsumed:    make(map[int64]time.Time),
+		pendingConsumed: make(map[int64]struct{}),
 	}
 }
 
@@ -122,7 +131,8 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 }
 
 func (s *Service) BeginRequest(identity AccessKeyIdentity) error {
-	return s.limiter.begin(identity.ID, identity.RPMLimit, identity.TPMLimit, identity.MaxConcurrent, s.clock.Now())
+	persisted := identity.ConsumedTokens
+	return s.limiter.begin(identity.ID, identity.RPMLimit, identity.TPMLimit, identity.MaxConcurrent, identity.TokenBudget, persisted, s.clock.Now())
 }
 
 func (s *Service) ChargeUsage(identity AccessKeyIdentity, prompt, completion *int64) {
@@ -130,18 +140,26 @@ func (s *Service) ChargeUsage(identity AccessKeyIdentity, prompt, completion *in
 		return
 	}
 	s.limiter.charge(identity.ID, identity.TPMLimit, valueOrZero(prompt), valueOrZero(completion), s.clock.Now())
+	// Persist the budget counter so a restart does not lose the spend. Throttled
+	// to at most one write per key per minute, exactly like last-used updates.
+	if identity.TokenBudget > 0 {
+		s.persistConsumed(identity.ID)
+	}
 }
 
 func (s *Service) EndRequest(identity AccessKeyIdentity) {
 	s.limiter.release(identity.ID)
 }
 
-func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int) error {
+func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget int64) error {
 	if id <= 0 {
 		return fmt.Errorf("update access key policy: invalid id")
 	}
 	if rpm < 0 || rpm > 100000 || tpm < 0 || tpm > 1000000000 || maxConcurrent < 0 || maxConcurrent > 10000 {
 		return fmt.Errorf("update access key policy: limit is out of range")
+	}
+	if tokenBudget < 0 || tokenBudget > 1000000000000 {
+		return fmt.Errorf("update access key policy: token budget is out of range")
 	}
 	if expiresAt != nil {
 		expiry := expiresAt.UTC()
@@ -150,12 +168,44 @@ func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Ti
 		}
 		expiresAt = &expiry
 	}
-	if err := s.repository.UpdatePolicy(ctx, id, expiresAt, rpm, tpm, maxConcurrent); err != nil {
+	if err := s.repository.UpdatePolicy(ctx, id, expiresAt, rpm, tpm, maxConcurrent, tokenBudget); err != nil {
 		return fmt.Errorf("update access key policy: %w", err)
 	}
-	// Policy changes must not wait for the authentication cache TTL.
+	// Policy changes must not wait for the authentication cache TTL. The budget
+	// cap itself is read fresh on every begin via the identity, so dropping the
+	// auth cache is enough to pick up a raised/lowered cap immediately.
 	s.cache.invalidate()
 	return nil
+}
+
+// persistConsumed writes the in-memory budget counter to the database at most
+// once per minute per key. It mirrors recordUse's throttling so a high-volume
+// key does not hammer the single SQLite writer on every charged request.
+func (s *Service) persistConsumed(id int64) {
+	now := s.clock.Now().UTC().Truncate(time.Second)
+	s.consumedWriteMu.Lock()
+	last, recorded := s.lastConsumed[id]
+	_, pending := s.pendingConsumed[id]
+	if pending || recorded && now.Sub(last) < lastUsedWriteMinimum {
+		s.consumedWriteMu.Unlock()
+		return
+	}
+	s.pendingConsumed[id] = struct{}{}
+	s.consumedWriteMu.Unlock()
+
+	go func() {
+		consumed := s.limiter.consumedTotal(id)
+		err := s.repository.UpdateConsumedTokens(context.Background(), id, consumed)
+		if err != nil {
+			slog.Error("update access key consumed tokens", "error_type", fmt.Sprintf("%T", err))
+		}
+		s.consumedWriteMu.Lock()
+		delete(s.pendingConsumed, id)
+		if err == nil {
+			s.lastConsumed[id] = now
+		}
+		s.consumedWriteMu.Unlock()
+	}()
 }
 
 func valueOrZero(value *int64) int64 {
@@ -178,6 +228,11 @@ func (s *Service) Revoke(ctx context.Context, id int64) error {
 	delete(s.lastRecorded, id)
 	delete(s.pending, id)
 	s.usageMu.Unlock()
+	// Also drop the throttled budget-write tracker for the same reason.
+	s.consumedWriteMu.Lock()
+	delete(s.lastConsumed, id)
+	delete(s.pendingConsumed, id)
+	s.consumedWriteMu.Unlock()
 	return nil
 }
 

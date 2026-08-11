@@ -14,7 +14,7 @@ type accessKeyManager interface {
 	List(context.Context) ([]accesskey.Key, error)
 	Create(context.Context, string) (accesskey.CreatedKey, error)
 	Revoke(context.Context, int64) error
-	UpdatePolicy(context.Context, int64, *time.Time, int, int, int) error
+	UpdatePolicy(context.Context, int64, *time.Time, int, int, int, int64) error
 }
 
 type AccessKeys struct{ service accessKeyManager }
@@ -30,6 +30,8 @@ type accessKeyDTO struct {
 	RPMLimit      int        `json:"rpm_limit"`
 	TPMLimit      int        `json:"tpm_limit"`
 	MaxConcurrent int        `json:"max_concurrent"`
+	TokenBudget   int64      `json:"token_budget"`
+	ConsumedTokens int64     `json:"consumed_tokens"`
 }
 
 type createdAccessKeyDTO struct {
@@ -102,10 +104,11 @@ func (h *AccessKeys) create(writer http.ResponseWriter, request *http.Request) {
 
 func (h *AccessKeys) updatePolicy(writer http.ResponseWriter, request *http.Request, id int64) {
 	var input struct {
-		ExpiresAt     *time.Time `json:"expires_at"`
-		RPMLimit      *int       `json:"rpm_limit"`
-		TPMLimit      *int       `json:"tpm_limit"`
-		MaxConcurrent *int       `json:"max_concurrent"`
+		ExpiresAt      *time.Time `json:"expires_at"`
+		RPMLimit       *int       `json:"rpm_limit"`
+		TPMLimit       *int       `json:"tpm_limit"`
+		MaxConcurrent  *int       `json:"max_concurrent"`
+		TokenBudget    *int64     `json:"token_budget"`
 	}
 	if err := decodeJSON(writer, request, &input); err != nil {
 		writeInvalidRequest(writer, "The access key policy is invalid.", err)
@@ -115,7 +118,13 @@ func (h *AccessKeys) updatePolicy(writer http.ResponseWriter, request *http.Requ
 		writeInvalidRequest(writer, "The access key policy must include all limits.", errors.New("all limits are required"))
 		return
 	}
-	if err := h.service.UpdatePolicy(request.Context(), id, input.ExpiresAt, *input.RPMLimit, *input.TPMLimit, *input.MaxConcurrent); err != nil {
+	// token_budget is optional for backward compatibility: an omitted field
+	// keeps the existing value, an explicit 0 disables the cap.
+	tokenBudget := int64(0)
+	if input.TokenBudget != nil {
+		tokenBudget = *input.TokenBudget
+	}
+	if err := h.service.UpdatePolicy(request.Context(), id, input.ExpiresAt, *input.RPMLimit, *input.TPMLimit, *input.MaxConcurrent, tokenBudget); err != nil {
 		if errors.Is(err, accesskey.ErrAccessKeyNotFound) {
 			writeAdminError(writer, http.StatusNotFound, "access_key_not_found", "The access key was not found.", err)
 			return
@@ -123,9 +132,9 @@ func (h *AccessKeys) updatePolicy(writer http.ResponseWriter, request *http.Requ
 		writeInvalidRequest(writer, "The access key policy is invalid.", err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"id": id, "expires_at": input.ExpiresAt, "rpm_limit": *input.RPMLimit, "tpm_limit": *input.TPMLimit, "max_concurrent": *input.MaxConcurrent})
+	writeJSON(writer, http.StatusOK, map[string]any{"id": id, "expires_at": input.ExpiresAt, "rpm_limit": *input.RPMLimit, "tpm_limit": *input.TPMLimit, "max_concurrent": *input.MaxConcurrent, "token_budget": tokenBudget})
 }
 
 func toAccessKeyDTO(key accesskey.Key) accessKeyDTO {
-	return accessKeyDTO{ID: key.ID, Name: key.Name, Prefix: key.Prefix, CreatedAt: key.CreatedAt, LastUsedAt: key.LastUsedAt, RevokedAt: key.RevokedAt, ExpiresAt: key.ExpiresAt, RPMLimit: key.RPMLimit, TPMLimit: key.TPMLimit, MaxConcurrent: key.MaxConcurrent}
+	return accessKeyDTO{ID: key.ID, Name: key.Name, Prefix: key.Prefix, CreatedAt: key.CreatedAt, LastUsedAt: key.LastUsedAt, RevokedAt: key.RevokedAt, ExpiresAt: key.ExpiresAt, RPMLimit: key.RPMLimit, TPMLimit: key.TPMLimit, MaxConcurrent: key.MaxConcurrent, TokenBudget: key.TokenBudget, ConsumedTokens: key.ConsumedTokens}
 }

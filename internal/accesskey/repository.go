@@ -55,7 +55,7 @@ func (r *Repository) Create(ctx context.Context, name string, digest []byte, pre
 
 func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	rows, err := r.read().QueryContext(ctx, `
-		SELECT id, name, key_prefix, created_at, last_used_at, revoked_at, expires_at, rpm_limit, tpm_limit, max_concurrent
+		SELECT id, name, key_prefix, created_at, last_used_at, revoked_at, expires_at, rpm_limit, tpm_limit, max_concurrent, token_budget, consumed_tokens
 		FROM access_keys
 		ORDER BY id
 	`)
@@ -87,10 +87,10 @@ func (r *Repository) Authenticate(ctx context.Context, digests map[int][]byte) (
 	var expiresAt sql.NullString
 	for version, digest := range digests {
 		err := r.read().QueryRowContext(ctx, `
-			SELECT id, key_prefix, digest_key_version, expires_at, rpm_limit, tpm_limit, max_concurrent
+			SELECT id, key_prefix, digest_key_version, expires_at, rpm_limit, tpm_limit, max_concurrent, token_budget, consumed_tokens
 			FROM access_keys
 			WHERE key_digest = ? AND revoked_at IS NULL
-		`, digest).Scan(&identity.ID, &identity.Prefix, &digestKeyVersion, &expiresAt, &identity.RPMLimit, &identity.TPMLimit, &identity.MaxConcurrent)
+		`, digest).Scan(&identity.ID, &identity.Prefix, &digestKeyVersion, &expiresAt, &identity.RPMLimit, &identity.TPMLimit, &identity.MaxConcurrent, &identity.TokenBudget, &identity.ConsumedTokens)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -146,8 +146,8 @@ func (r *Repository) UpdateLastUsed(ctx context.Context, id int64, usedAt time.T
 	return nil
 }
 
-func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET expires_at = ?, rpm_limit = ?, tpm_limit = ?, max_concurrent = ? WHERE id = ? AND revoked_at IS NULL`, optionalTime(expiresAt), rpm, tpm, maxConcurrent, id)
+func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget int64) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET expires_at = ?, rpm_limit = ?, tpm_limit = ?, max_concurrent = ?, token_budget = ? WHERE id = ? AND revoked_at IS NULL`, optionalTime(expiresAt), rpm, tpm, maxConcurrent, tokenBudget, id)
 	if err != nil {
 		return fmt.Errorf("update access key policy: %w", err)
 	}
@@ -157,6 +157,16 @@ func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time
 	}
 	if changed == 0 {
 		return ErrAccessKeyNotFound
+	}
+	return nil
+}
+
+// UpdateConsumedTokens persists the in-memory budget counter back to the row.
+// The write is best-effort: budget enforcement reads the in-memory limiter, so
+// a stale value here only affects restart recovery and the admin display.
+func (r *Repository) UpdateConsumedTokens(ctx context.Context, id int64, consumed int64) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE access_keys SET consumed_tokens = ? WHERE id = ? AND revoked_at IS NULL`, consumed, id); err != nil {
+		return fmt.Errorf("update access key consumed tokens: %w", err)
 	}
 	return nil
 }
@@ -178,7 +188,7 @@ func scanKey(row rowScanner) (Key, error) {
 	var lastUsedAt sql.NullString
 	var revokedAt sql.NullString
 	var expiresAt sql.NullString
-	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsedAt, &revokedAt, &expiresAt, &key.RPMLimit, &key.TPMLimit, &key.MaxConcurrent); err != nil {
+	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsedAt, &revokedAt, &expiresAt, &key.RPMLimit, &key.TPMLimit, &key.MaxConcurrent, &key.TokenBudget, &key.ConsumedTokens); err != nil {
 		return Key{}, fmt.Errorf("scan access key: %w", err)
 	}
 	parsedCreatedAt, err := parseTime(createdAt)
