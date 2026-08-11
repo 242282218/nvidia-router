@@ -50,6 +50,8 @@ type Provider interface {
 type Manager struct {
 	mu         sync.Mutex
 	proxyURL   *url.URL
+	pool       *Pool       // Built-in proxy pool (optional)
+	collector  *Collector  // Proxy collector (optional)
 	base       *http.Transport
 	logger     *slog.Logger
 	transports map[transportKey]*cachedTransport
@@ -68,6 +70,7 @@ type Handle struct {
 	manager   *Manager
 	key       transportKey
 	transport *http.Transport
+	proxyKey  string // Track which proxy this handle uses for failure reporting
 }
 
 type transportKey struct {
@@ -100,6 +103,37 @@ func New(proxyURL *url.URL, authKey string, base *http.Transport, logger *slog.L
 		logger:     logger,
 		transports: make(map[transportKey]*cachedTransport),
 	}, nil
+}
+
+// NewWithPool creates a manager with built-in proxy pool
+func NewWithPool(cfg CollectorConfig, authKey string, base *http.Transport, logger *slog.Logger) (*Manager, error) {
+	if strings.TrimSpace(authKey) == "" {
+		return nil, errors.New("initialize proxy manager: proxy authentication key is required")
+	}
+	if base == nil {
+		return nil, errors.New("initialize proxy manager: HTTP transport is required")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	pool := NewPool()
+	collector := NewCollector(cfg, pool, logger)
+
+	return &Manager{
+		pool:       pool,
+		collector:  collector,
+		base:       base,
+		logger:     logger,
+		transports: make(map[transportKey]*cachedTransport),
+	}, nil
+}
+
+// StartCollector starts the proxy collection loop
+func (m *Manager) StartCollector(ctx context.Context) {
+	if m.collector != nil {
+		m.collector.Start(ctx)
+	}
 }
 
 func validateProxyURL(value *url.URL) error {
@@ -137,6 +171,17 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	if m.closed {
 		return nil, &Error{reason: ReasonManagerClosed}
 	}
+
+	// If we have a pool, use it to get a proxy
+	var selectedProxy Proxy
+	var hasProxy bool
+	if m.pool != nil {
+		selectedProxy, hasProxy = m.pool.Get(time.Now())
+		if !hasProxy {
+			return nil, errors.New("no healthy proxy available")
+		}
+	}
+
 	key := transportKey{
 		connectTimeoutMS:   snapshot.ConnectTimeoutMS,
 		firstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
@@ -144,7 +189,7 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	}
 	entry := m.transports[key]
 	if entry == nil {
-		entry = &cachedTransport{transport: m.newTransport(key)}
+		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy)}
 		m.transports[key] = entry
 	}
 	m.clock++
@@ -152,7 +197,7 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	if len(m.transports) > maxCachedTransports {
 		m.evictLeastRecentlyUsed()
 	}
-	return &Handle{manager: m, key: key, transport: entry.transport}, nil
+	return &Handle{manager: m, key: key, transport: entry.transport, proxyKey: selectedProxy.Key()}, nil
 }
 
 func (m *Manager) evictLeastRecentlyUsed() {
@@ -169,9 +214,18 @@ func (m *Manager) evictLeastRecentlyUsed() {
 	delete(m.transports, oldestKey)
 }
 
-func (m *Manager) newTransport(key transportKey) *http.Transport {
+func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
 	transport := m.base.Clone()
-	transport.Proxy = http.ProxyURL(m.proxyURL)
+
+	// If we have a proxy from the pool, use it; otherwise use the configured proxyURL
+	if proxy.Address != "" {
+		proxyURL, err := proxy.URL()
+		if err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+	} else if m.proxyURL != nil {
+		transport.Proxy = http.ProxyURL(m.proxyURL)
+	}
 	// Pin the session on the outer proxy request so the pool can bind the exit.
 	// GetProxyConnectHeader is only consulted for HTTPS CONNECT, which is the only
 	// path this router uses through the pool.
@@ -225,6 +279,17 @@ func (m *Manager) retire(handle *Handle, reason RetireReason) {
 	}
 	handle.transport.CloseIdleConnections()
 	m.logger.Info("proxy_transport_retired", "reason", reason)
+
+	// Report failure to pool if we have one
+	if m.pool != nil && handle.proxyKey != "" {
+		policy := EjectionPolicy{
+			FailureLimit: 3,
+			BaseDuration: 10 * time.Second,
+			MaxDuration:  60 * time.Second,
+			MaxEjections: 3,
+		}
+		m.pool.ReportFailure(handle.proxyKey, time.Now(), policy)
+	}
 }
 
 func (m *Manager) Close() {
@@ -237,11 +302,35 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closed = true
+
+	if m.collector != nil {
+		m.collector.Close()
+	}
+
 	for _, entry := range m.transports {
 		entry.transport.CloseIdleConnections()
 	}
 	m.transports = nil
 	m.logger.Info("proxy_manager_closed")
+}
+
+// PoolStatus returns current pool status for monitoring
+func (m *Manager) PoolStatus() PoolStatus {
+	if m == nil || m.pool == nil {
+		return PoolStatus{}
+	}
+	now := time.Now()
+	return PoolStatus{
+		TotalSize:   m.pool.LiveSize(now),
+		HealthySize: m.pool.Size(now),
+		Proxies:     m.pool.List(now),
+	}
+}
+
+type PoolStatus struct {
+	TotalSize   int
+	HealthySize int
+	Proxies     []Proxy
 }
 
 func (h *Handle) Transport() http.RoundTripper {
