@@ -37,6 +37,16 @@ func CalculateCooldown(f Fault, level int, random RandomSource) (time.Duration, 
 		return applyJitter(base, random), nextLevel
 	}
 	if f.Retryable && f.HTTPStatus >= 500 && f.HTTPStatus <= 599 {
+		// Honour an explicit upstream Retry-After on a server fault (e.g. a 503
+		// with a retry window) instead of the fixed transient cooldown, so a key
+		// is not re-fired into a still-draining upstream. Capped the same way as
+		// the 429 path.
+		if f.RetryAfter > 0 {
+			if f.RetryAfter > maximumRateLimitCooldown {
+				return maximumRateLimitCooldown, level
+			}
+			return f.RetryAfter, level
+		}
 		return transientCooldown, level
 	}
 	return 0, level

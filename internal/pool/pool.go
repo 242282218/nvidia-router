@@ -295,11 +295,11 @@ func (p *Pool) tryAcquireMode(modelID int64, attempted map[int64]struct{}, strea
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	maxStreaming := resolveQueueSettings(p.currentSnapshot()).maxStreamingPerKey
-	lease, _ := p.tryAcquireLocked(modelID, attempted, stream, maxStreaming, false)
+	lease, _ := p.tryAcquireLocked(modelID, attempted, stream, maxStreaming, false, false)
 	return lease, lease != nil
 }
 
-func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int, latencyEnabled bool) (Lease, unavailableState) {
+func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int, latencyEnabled bool, retryAttempted bool) (Lease, unavailableState) {
 	now := p.clock.Now()
 	if enabled, known := p.models[modelID]; known && !enabled {
 		return nil, unavailableState{reason: UnavailableModelBlocked}
@@ -319,9 +319,6 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	for offset := range p.order {
 		index := (p.cursor + offset) % len(p.order)
 		state := p.keys[p.order[index]]
-		if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
-			continue
-		}
 		if !state.snapshot.Enabled || state.snapshot.AuthInvalid {
 			continue
 		}
@@ -337,6 +334,17 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 			continue
 		}
 		hasReady = true
+		// An attempted key counts toward hasEnabled/hasReady above: excluding it
+		// must not turn "the only ready key is one I already tried" into
+		// UnavailableDisabled, which aborts acquire without queueing. The key is
+		// still excluded from this acquire; the busy/streaming checks below let a
+		// relaxed pass retry it when it is the only candidate (single-key pool
+		// after a failover).
+		if !retryAttempted {
+			if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
+				continue
+			}
+		}
 		// Streaming and short requests draw from independent per-key quotas: a
 		// stream holds a streaming slot for its whole (possibly minute-long)
 		// lifetime instead of the single busy slot, so short requests on the

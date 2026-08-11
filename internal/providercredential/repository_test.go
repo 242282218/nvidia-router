@@ -116,3 +116,33 @@ func TestResolveUnknownReturnsErrNotFound(t *testing.T) {
 		t.Fatal("Resolve of unknown credential succeeded")
 	}
 }
+
+func TestMaskNeverExposesMoreThanAQuarter(t *testing.T) {
+	tests := []struct {
+		token      string
+		wantPrefix string
+		wantSuffix string
+	}{
+		// Short tokens must not leak most of their characters.
+		{token: "abcdefgh", wantPrefix: "ab"},
+		{token: "abcde", wantPrefix: "ab"},
+		// A medium token exposes a small prefix (quarter budget) and no tail.
+		{token: "nvapi-1234567890abcdef", wantPrefix: "nvapi"},
+		// A long token exposes up to 8 prefix chars plus a short tail, bounded by
+		// the quarter budget.
+		{token: "nvapi-1234567890abcdef1234567890abcdef1234567890", wantPrefix: "nvapi-12", wantSuffix: "7890"},
+	}
+	for _, tt := range tests {
+		prefix, suffix := mask(tt.token)
+		if tt.wantPrefix != "" && prefix != tt.wantPrefix {
+			t.Fatalf("mask(%q) prefix = %q, want %q", tt.token, prefix, tt.wantPrefix)
+		}
+		if tt.wantSuffix != "" && suffix != tt.wantSuffix {
+			t.Fatalf("mask(%q) suffix = %q, want %q", tt.token, suffix, tt.wantSuffix)
+		}
+		revealed := len(prefix) + len(suffix)
+		if revealed > len(tt.token)/4+1 {
+			t.Fatalf("mask(%q) revealed %d/%d chars, exceeds quarter budget", tt.token, revealed, len(tt.token))
+		}
+	}
+}

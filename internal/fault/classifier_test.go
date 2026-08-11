@@ -31,7 +31,10 @@ func TestClassifierResponseTable(t *testing.T) {
 		{name: "request 404", status: 404, scope: ScopeRequest},
 		{name: "request 409", status: 409, scope: ScopeRequest},
 		{name: "request 422", status: 422, scope: ScopeRequest},
-		{name: "explicit invalid key on 400", status: 400, body: `{"error":{"code":"invalid_api_key"}}`, scope: ScopeCredential, disableKey: true},
+		// A non-401 body naming a credential code is a request fault that must
+		// NOT disable the key (no automatic recovery) and must NOT forward the
+		// upstream message (credential-adjacent detail may leak).
+		{name: "invalid key code on 400 is request fault", status: 400, body: `{"error":{"code":"invalid_api_key"}}`, scope: ScopeRequest},
 		{name: "unauthorized", status: 401, scope: ScopeCredential, disableKey: true},
 		{name: "models forbidden", status: 403, models: true, scope: ScopeCredential, disableKey: true},
 		{name: "model forbidden", status: 403, scope: ScopeModelCredential, retryable: true, blockModel: true},
@@ -42,9 +45,9 @@ func TestClassifierResponseTable(t *testing.T) {
 		{name: "server 500", status: 500, scope: ScopeUpstreamGlobal, retryable: true},
 		{name: "server 502", status: 502, scope: ScopeUpstreamGlobal, retryable: true},
 		{name: "server 503", status: 503, scope: ScopeUpstreamGlobal, retryable: true},
-			{name: "server 504", status: 504, scope: ScopeUpstreamGlobal, retryable: true},
-			{name: "NVIDIA overload 529", status: 529, scope: ScopeUpstreamGlobal, retryable: true},
-			{name: "other 5xx", status: 501, scope: ScopeUpstreamGlobal},
+		{name: "server 504", status: 504, scope: ScopeUpstreamGlobal, retryable: true},
+		{name: "NVIDIA overload 529", status: 529, scope: ScopeUpstreamGlobal, retryable: true},
+		{name: "other 5xx", status: 501, scope: ScopeUpstreamGlobal},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -609,10 +610,14 @@ func TestTrackingWriterRetainsSSEAndDropsUncapturableBodies(t *testing.T) {
 		stream       bool
 		payload      []byte
 		wantRetained bool
+		wantTail     bool // body keeps a tail window (captureComplete still true)
 	}{
 		{name: "sse", endpoint: "/v1/chat/completions", content: "text/event-stream", stream: true, payload: []byte("data: {\"usage\":{\"prompt_tokens\":1}}\n\n"), wantRetained: true},
 		{name: "audio", endpoint: "/v1/audio/speech", content: "audio/mpeg", payload: bytes.Repeat([]byte("audio"), 32)},
-		{name: "large json", endpoint: "/v1/chat/completions", content: "application/json", payload: bytes.Repeat([]byte("x"), usageCaptureLimit+1)},
+		// A large JSON response is no longer dropped wholesale: its usage block
+		// sits at the end of the body, so the tail window is retained and
+		// parseUsage can still extract prompt/completion tokens (audit #19/N4).
+		{name: "large json", endpoint: "/v1/chat/completions", content: "application/json", payload: bytes.Repeat([]byte("x"), usageCaptureLimit+1), wantTail: true},
 	}
 
 	for _, test := range tests {
@@ -628,6 +633,12 @@ func TestTrackingWriterRetainsSSEAndDropsUncapturableBodies(t *testing.T) {
 			if test.wantRetained {
 				if !tracking.captureComplete || tracking.body.Len() == 0 {
 					t.Fatalf("SSE body retained length/completeness = %d/%v, want >0/true", tracking.body.Len(), tracking.captureComplete)
+				}
+				return
+			}
+			if test.wantTail {
+				if tracking.body.Len() == 0 || !tracking.captureComplete {
+					t.Fatalf("tail body length/completeness = %d/%v, want >0/true", tracking.body.Len(), tracking.captureComplete)
 				}
 				return
 			}
@@ -784,5 +795,29 @@ func TestRepositoryListDailyCostsSkipsUnPricedModelsButReportsPricedFalse(t *tes
 	}
 	if row.TotalCostUSD != 0 {
 		t.Fatalf("unpriced model cost = %f, want 0", row.TotalCostUSD)
+	}
+}
+
+func TestHTTPMiddlewareExtractsUsageFromLargeJSONTail(t *testing.T) {
+	// Regression for audit #19/N4: a non-stream JSON response larger than the
+	// capture limit used to lose its usage entirely (body reset to empty). The
+	// tail window now keeps the trailing usage object so long responses still
+	// meter tokens.
+	recorder := &observabilityRecorder{}
+	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		SetModel(request.Context(), "chat-model", false)
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		// Pad far past the capture limit, then end with a valid usage object so
+		// the retained tail contains it.
+		prefix := strings.Repeat("x", usageCaptureLimit+64<<10)
+		_, _ = writer.Write([]byte(prefix + `{"usage":{"prompt_tokens":5,"completion_tokens":9}}`))
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if recorder.record.PromptTokens == nil || *recorder.record.PromptTokens != 5 || recorder.record.CompletionTokens == nil || *recorder.record.CompletionTokens != 9 {
+		t.Fatalf("usage = %v/%v, want 5/9", recorder.record.PromptTokens, recorder.record.CompletionTokens)
 	}
 }

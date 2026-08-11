@@ -232,23 +232,24 @@ func TestRepositoryListDailyStatsAveragesFirstToken(t *testing.T) {
 	}
 }
 
-func TestPercentileReturnsNearestRankQuantiles(t *testing.T) {
-	if value := percentile(nil, 0.50); value != nil {
-		t.Fatalf("percentile(nil) = %v, want nil", *value)
+func TestNearestRankIndexReturnsQuantileOffsets(t *testing.T) {
+	// A single sample is both p50 and p95 (rank clamped to index 0).
+	if got := nearestRankIndex(1, 0.50); got != 0 {
+		t.Fatalf("nearestRankIndex(1, 0.5) = %d, want 0", got)
 	}
-	single := int64(42)
-	if value := percentile([]int64{single}, 0.95); value == nil || *value != single {
-		t.Fatalf("percentile(single) = %v, want %d", value, single)
+	// 10 samples: p50 -> rank 4 (the 5th value), p95 -> rank 9 (the max), p0 -> rank 0.
+	if got := nearestRankIndex(10, 0.50); got != 4 {
+		t.Fatalf("nearestRankIndex(10, 0.5) = %d, want 4", got)
 	}
-	values := []int64{100, 10, 90, 20, 80, 30, 70, 40, 60, 50}
-	if value := percentile(values, 0.50); value == nil || *value != 50 {
-		t.Fatalf("p50 = %v, want 50", value)
+	if got := nearestRankIndex(10, 0.95); got != 9 {
+		t.Fatalf("nearestRankIndex(10, 0.95) = %d, want 9", got)
 	}
-	if value := percentile(values, 0.95); value == nil || *value != 100 {
-		t.Fatalf("p95 = %v, want 100", value)
+	if got := nearestRankIndex(10, 0.00); got != 0 {
+		t.Fatalf("nearestRankIndex(10, 0.0) = %d, want 0", got)
 	}
-	if value := percentile(values, 0.00); value == nil || *value != 10 {
-		t.Fatalf("p0 = %v, want 10", value)
+	// q=1.0 clamps to the last index.
+	if got := nearestRankIndex(10, 1.00); got != 9 {
+		t.Fatalf("nearestRankIndex(10, 1.0) = %d, want 9", got)
 	}
 }
 

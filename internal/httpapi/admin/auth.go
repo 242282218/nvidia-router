@@ -27,11 +27,18 @@ type Auth struct {
 	originPolicy adminauth.OriginPolicy
 
 	// must-change-password state is read on every /v1 request; cache it after
-	// the first read and clear it once the password is rotated.
-	mustChangeMu     sync.Mutex
-	mustChangeLoaded bool
-	mustChangeValue  bool
+	// the first read and clear it once the password is rotated. The cache is
+	// also refreshed on a short TTL so an out-of-process `admin reset-password`
+	// (which writes must_change_password=0 directly) takes effect without a
+	// restart instead of leaving every /v1 request gated behind a stale true.
+	mustChangeMu       sync.Mutex
+	mustChangeLoaded   bool
+	mustChangeValue    bool
+	mustChangeLoadedAt time.Time
+	mustChangeTTL      time.Duration
 }
+
+const mustChangeCacheTTL = 30 * time.Second
 
 type sessionResponse struct {
 	Authenticated      bool `json:"authenticated"`
@@ -53,7 +60,7 @@ func NewAuth(repository *adminauth.Repository, sessions *adminauth.SessionServic
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
-	return &Auth{repository: repository, sessions: sessions, limiter: limiter, originPolicy: policy}
+	return &Auth{repository: repository, sessions: sessions, limiter: limiter, originPolicy: policy, mustChangeTTL: mustChangeCacheTTL}
 }
 
 func (a *Auth) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -93,20 +100,31 @@ func (a *Auth) RequirePasswordChanged(next http.Handler) http.Handler {
 }
 
 // mustChangePassword returns the cached must-change flag, loading it from the
-// repository on first use. The value only flips via ChangePassword, which
-// clears the cache, so the single-process cache never goes stale.
+// repository on first use. The value flips via ChangePassword (which clears
+// the cache) and via an out-of-process `admin reset-password`, which is picked
+// up by the TTL refresh below so the single-process cache does not go stale.
 func (a *Auth) mustChangePassword(ctx context.Context) (bool, error) {
 	a.mustChangeMu.Lock()
 	defer a.mustChangeMu.Unlock()
-	if a.mustChangeLoaded {
+	ttl := a.mustChangeTTL
+	if ttl <= 0 {
+		ttl = mustChangeCacheTTL
+	}
+	if a.mustChangeLoaded && time.Since(a.mustChangeLoadedAt) < ttl {
 		return a.mustChangeValue, nil
 	}
 	value, err := a.repository.MustChangePassword(ctx)
 	if err != nil {
+		// Keep serving the previous value on a transient DB error; the next
+		// request retries after the TTL instead of failing the whole /v1 path.
+		if a.mustChangeLoaded {
+			return a.mustChangeValue, nil
+		}
 		return false, err
 	}
 	a.mustChangeValue = value
 	a.mustChangeLoaded = true
+	a.mustChangeLoadedAt = time.Now()
 	return value, nil
 }
 
@@ -114,6 +132,7 @@ func (a *Auth) clearMustChangePassword() {
 	a.mustChangeMu.Lock()
 	a.mustChangeValue = false
 	a.mustChangeLoaded = true
+	a.mustChangeLoadedAt = time.Now()
 	a.mustChangeMu.Unlock()
 }
 

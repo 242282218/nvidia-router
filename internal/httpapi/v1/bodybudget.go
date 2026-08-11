@@ -17,6 +17,13 @@ const (
 	maxInFlightBodyBytes   = 64 << 20
 	jsonBodyReadTimeout    = 30 * time.Second
 	audioBodyReadTimeout   = 2 * time.Minute
+	// chunkedReserveBytes is the placeholder byte budget reserved for a chunked
+	// body before its size is known. Reserving the whole endpoint limit meant
+	// two concurrent chunked uploads exhausted the 64MiB pool and every third
+	// request (even a small Content-Length one) got 429 server_busy. The reserve
+	// only marks "a chunked body is in flight"; the actual size is reconciled
+	// once the body is read, and MaxBytesReader still caps each request.
+	chunkedReserveBytes = 1 << 20
 )
 
 // bodyReadSemaphore bounds the number of concurrent body reads. It stays
@@ -49,6 +56,22 @@ func (l *bodyLease) Release() {
 	l.releaseSlot()
 }
 
+// reconcile adjusts the reserved byte budget to the actual body size once the
+// body has been read. A chunked body reserved a small placeholder; charge the
+// difference so concurrent in-flight bytes track reality instead of either the
+// oversized limit reserve or the undersized placeholder.
+func (l *bodyLease) reconcile(actual int64) {
+	if l == nil {
+		return
+	}
+	delta := actual - l.bytes
+	if delta == 0 {
+		return
+	}
+	inFlightBodyBytes.Add(delta)
+	l.bytes = actual
+}
+
 func acquireBodyLease(request *http.Request, limit int64) (*bodyLease, error) {
 	if request == nil || request.Body == nil {
 		return nil, invalidBodyRead("The request body is required.")
@@ -67,9 +90,10 @@ func acquireBodyLease(request *http.Request, limit int64) (*bodyLease, error) {
 	}
 	reserved := request.ContentLength
 	if reserved < 0 {
-		// A chunked body can grow to the endpoint limit, so reserve the same
-		// budget as a known-size body before reading any bytes.
-		reserved = limit
+		// A chunked body has no declared size; reserve a small placeholder and
+		// reconcile to the actual read size once the body is consumed. Reserving
+		// the endpoint limit let two chunked uploads drain the whole pool.
+		reserved = chunkedReserveBytes
 	}
 	if reserved == 0 {
 		reserved = 1
@@ -94,7 +118,9 @@ func readBodyWithLease(request *http.Request, limit int64, timeout time.Duration
 	payload, readErr := readBoundedBody(request, limit, timeout)
 	// The body is fully in memory once the read returns; release the read slot
 	// now so long-lived requests do not monopolize the concurrency budget. The
-	// byte budget stays reserved until Release() at the end of the handler.
+	// byte budget stays reserved until Release() at the end of the handler,
+	// reconciled to the actual size read (a chunked body reserved a placeholder).
+	lease.reconcile(int64(len(payload)))
 	lease.releaseSlot()
 	if readErr != nil {
 		lease.Release()

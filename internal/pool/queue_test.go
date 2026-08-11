@@ -308,3 +308,75 @@ func (s *countingSettings) Snapshot() runtimeconfig.Snapshot {
 	s.reads.Add(1)
 	return s.snapshot
 }
+
+func TestSingleKeyPoolAttemptedWaiterRecoversAfterRelease(t *testing.T) {
+	// A single-key pool with an attempted set covering that key must not deadlock:
+	// the waiter's attempted set excludes the only key, so without a relaxed pass
+	// it would rotate forever while the key sits idle after release.
+	p := newQueueTestPool(queueSnapshot(10, 2*time.Second), 1)
+	holder := mustAcquire(t, p, 1)
+
+	waiter := acquireAsyncWithAttempted(p, context.Background(), 1, map[int64]struct{}{1: {}})
+	waitForQueueLength(t, p, 1)
+
+	// The key is busy, so the attempted waiter is stalled behind it (expected).
+	holder.Release()
+
+	// Once the key frees up, the relaxed pass must hand it to the only waiter
+	// instead of letting it time out.
+	result := receiveAcquire(t, waiter)
+	if result.err != nil {
+		t.Fatalf("single-key attempted waiter after release: %v", result.err)
+	}
+	if got := result.lease.KeyID(); got != 1 {
+		t.Fatalf("waiter Lease key = %d, want 1", got)
+	}
+	result.lease.Release()
+}
+
+func TestSingleKeyPoolAttemptedWaiterTimesOutWithoutRelease(t *testing.T) {
+	// Sanity: with the key held forever, an attempted waiter still times out
+	// (the relaxed pass must not grant a busy key).
+	p := newQueueTestPool(queueSnapshot(10, 150*time.Millisecond), 1)
+	holder := mustAcquire(t, p, 1)
+
+	waiter := acquireAsyncWithAttempted(p, context.Background(), 1, map[int64]struct{}{1: {}})
+	waitForQueueLength(t, p, 1)
+
+	result := receiveAcquire(t, waiter)
+	if result.err == nil {
+		t.Fatal("attempted waiter should time out while the only key stays busy")
+	}
+	holder.Release()
+}
+
+func TestQueueFullAndTimeoutRetryAfterReflectConfiguredWait(t *testing.T) {
+	// queue_full / queue_timeout used to advertise a fixed 1s Retry-After, which
+	// did not match the configured queue wait (a 60s queue should tell clients to
+	// back off ~60s, not retry after 1s). The Retry-After now mirrors the queue
+	// wait setting (audit P2-2).
+	const wait = 2 * time.Second
+	p := newQueueTestPool(queueSnapshot(1, wait), 1)
+	holder := mustAcquire(t, p, 1)
+	queued := acquireAsync(p, context.Background(), 1)
+	waitForQueueLength(t, p, 1)
+
+	_, err := p.Acquire(context.Background(), 1, nil, false)
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("queue_full error = %T %v", err, err)
+	}
+	if publicError.RetryAfter != wait {
+		t.Fatalf("queue_full RetryAfter = %s, want %s", publicError.RetryAfter, wait)
+	}
+
+	// The queued waiter times out with the same configured window.
+	result := receiveAcquire(t, queued)
+	if !errors.As(result.err, &publicError) {
+		t.Fatalf("queue_timeout error = %T %v", result.err, result.err)
+	}
+	if publicError.RetryAfter != wait {
+		t.Fatalf("queue_timeout RetryAfter = %s, want %s", publicError.RetryAfter, wait)
+	}
+	holder.Release()
+}

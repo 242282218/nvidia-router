@@ -195,12 +195,26 @@ func (r *Repository) SetEnabled(ctx context.Context, id int64, enabled bool) err
 }
 
 func mask(token string) (prefix, suffix string) {
-	const visible = 4
-	if len(token) <= visible*2 {
-		prefix = token
-		return prefix, ""
+	// Same reveal budget as nvidiakey: never expose more than a quarter of the
+	// token, and never show a suffix unless the prefix already leaves room for
+	// one. A fixed 8+4 default leaked most of a short token; short tokens are
+	// now prefix-only so the tail stays unbrute-forceable.
+	characters := []rune(token)
+	totalRevealBudget := max(2, len(characters)/4)
+	prefixLength := min(8, totalRevealBudget)
+	if prefixLength > len(characters) {
+		prefixLength = len(characters)
 	}
-	return token[:visible], token[len(token)-visible:]
+	prefix = string(characters[:prefixLength])
+
+	suffixLength := 0
+	if len(characters)-prefixLength > 4 {
+		suffixLength = min(4, totalRevealBudget-prefixLength)
+	}
+	if suffixLength > 0 {
+		suffix = string(characters[len(characters)-suffixLength:])
+	}
+	return prefix, suffix
 }
 
 func timestamp(value time.Time) string {

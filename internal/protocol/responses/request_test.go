@@ -406,3 +406,20 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+func TestToChatRejectsUnsupportedReasoningEffortValues(t *testing.T) {
+	// Both the native reasoning_effort field and the structured reasoning object
+	// must reject an unsupported effort locally instead of passing it through to
+	// the upstream (audit P3-1: the chat path validates these, Responses did not).
+	mustFail(t, `{"model":"public-chat","input":"hi","reasoning_effort":"banana"}`, "invalid_parameter")
+	mustFail(t, `{"model":"public-chat","input":"hi","reasoning":{"effort":"banana"}}`, "invalid_parameter")
+	// Supported values still pass on a reasoning-capable model.
+	for _, body := range []string{
+		`{"model":"public-chat","input":"hi","reasoning_effort":"high"}`,
+		`{"model":"public-chat","input":"hi","reasoning":{"effort":"low"}}`,
+	} {
+		if _, err := ToChat([]byte(body), chatModel()); err != nil {
+			t.Fatalf("ToChat(%s): %v", body, err)
+		}
+	}
+}

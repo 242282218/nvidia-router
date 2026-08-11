@@ -11,15 +11,16 @@ import (
 )
 
 type fakeAccessKeys struct {
-	keys          []accesskey.Key
-	created       accesskey.CreatedKey
-	revoked       int64
-	policyCalled  bool
-	policyID      int64
-	policyRPM     int
-	policyTPM     int
-	policyBudget  int64
-	policyExpiry  *time.Time
+	keys            []accesskey.Key
+	created         accesskey.CreatedKey
+	revoked         int64
+	policyCalled    bool
+	policyID        int64
+	policyRPM       int
+	policyTPM       int
+	policyBudget    int64
+	policyBudgetNil bool
+	policyExpiry    *time.Time
 }
 
 func (f *fakeAccessKeys) List(context.Context) ([]accesskey.Key, error) {
@@ -29,8 +30,12 @@ func (f *fakeAccessKeys) Create(context.Context, string) (accesskey.CreatedKey, 
 	return f.created, nil
 }
 func (f *fakeAccessKeys) Revoke(_ context.Context, id int64) error { f.revoked = id; return nil }
-func (f *fakeAccessKeys) UpdatePolicy(_ context.Context, id int64, expiresAt *time.Time, rpm, tpm, _ int, tokenBudget int64) error {
-	f.policyCalled, f.policyID, f.policyRPM, f.policyTPM, f.policyBudget, f.policyExpiry = true, id, rpm, tpm, tokenBudget, expiresAt
+func (f *fakeAccessKeys) UpdatePolicy(_ context.Context, id int64, expiresAt *time.Time, rpm, tpm, _ int, tokenBudget *int64) error {
+	f.policyCalled, f.policyID, f.policyRPM, f.policyTPM, f.policyExpiry = true, id, rpm, tpm, expiresAt
+	f.policyBudgetNil = tokenBudget == nil
+	if tokenBudget != nil {
+		f.policyBudget = *tokenBudget
+	}
 	return nil
 }
 
@@ -78,5 +83,31 @@ func TestAccessKeyAPIExposesBudgetMeterAndOmittedBudgetKeepsValues(t *testing.T)
 	response = performAdminRequest(handler, http.MethodPatch, "/admin/api/access-keys/2", `{"rpm_limit":1,"tpm_limit":2,"max_concurrent":3,"token_budget":0}`)
 	if response.Code != http.StatusOK || service.policyBudget != 0 {
 		t.Fatalf("clear-budget status=%d body=%s budget=%d", response.Code, response.Body.String(), service.policyBudget)
+	}
+}
+
+func TestAccessKeyPolicyPatchOmittingTokenBudgetKeepsExistingValue(t *testing.T) {
+	now := time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)
+	service := &fakeAccessKeys{keys: []accesskey.Key{{ID: 2, Name: "ci", Prefix: "nvr_prefix", CreatedAt: now}}}
+	handler := NewAccessKeys(service)
+
+	// A partial PATCH without token_budget must pass nil through (keep the
+	// existing cap) instead of clearing it to 0.
+	response := performAdminRequest(handler, http.MethodPatch, "/admin/api/access-keys/2", `{"rpm_limit":10,"tpm_limit":1000,"max_concurrent":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !service.policyCalled || !service.policyBudgetNil {
+		t.Fatalf("token_budget should be nil when omitted, got budgetNil=%t called=%t", service.policyBudgetNil, service.policyCalled)
+	}
+
+	// An explicit token_budget:0 must be forwarded as a value (disable the cap),
+	// distinguishable from an omitted field.
+	response = performAdminRequest(handler, http.MethodPatch, "/admin/api/access-keys/2", `{"rpm_limit":10,"tpm_limit":1000,"max_concurrent":2,"token_budget":0}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit-zero patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	if service.policyBudgetNil || service.policyBudget != 0 {
+		t.Fatalf("explicit token_budget:0 should be non-nil value 0, got nil=%t budget=%d", service.policyBudgetNil, service.policyBudget)
 	}
 }

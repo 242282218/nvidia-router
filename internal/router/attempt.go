@@ -257,7 +257,18 @@ func (a *Attempt) acquire(
 ) (pool.Lease, error) {
 	lease, err := a.keyPool.AcquireWithSnapshot(ctx, modelID, attempted, settings, stream)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, fault.Classify(nil, err, false, a.clock.Now())
+		// During acquire the only thing we waited on is a free credential slot:
+		// no upstream call happened yet, so a deadline here is a queue wait, not
+		// an upstream timeout. Report it as retryable 429 queue_timeout instead of
+		// 504 so clients back off and retry instead of treating the service as
+		// unhealthy. This also keeps queue_timeout reachable when the operator
+		// configures queue_wait_timeout_ms larger than the non-stream total
+		// deadline (the pool timer would otherwise lose the race to ctx.Done).
+		return nil, &apierror.Error{
+			Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "queue_timeout",
+			Message:    "The request timed out while waiting for an upstream credential.",
+			RetryAfter: time.Second,
+		}
 	}
 	return lease, err
 }
@@ -406,7 +417,11 @@ func chooseAcquireError(err error, lastFault *fault.Fault) error {
 		return fmt.Errorf("acquire NVIDIA key: %w", err)
 	}
 	var publicError *apierror.Error
-	if errors.As(err, &publicError) && publicError.Code == "no_available_keys" {
+	// Every candidate was tried and faulted; the pool has nothing else to offer
+	// (disabled, cooling down, or busy-with-no-alternative). Surface the last
+	// fault rather than an opaque acquire error so the caller sees the real
+	// upstream outcome.
+	if errors.As(err, &publicError) && (publicError.Code == "no_available_keys" || publicError.Code == "all_keys_cooling_down") {
 		return *lastFault
 	}
 	return fmt.Errorf("acquire NVIDIA key: %w", err)

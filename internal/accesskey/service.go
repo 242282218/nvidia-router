@@ -149,14 +149,14 @@ func (s *Service) EndRequest(identity AccessKeyIdentity) {
 	s.limiter.release(identity.ID)
 }
 
-func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget int64) error {
+func (s *Service) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget *int64) error {
 	if id <= 0 {
 		return fmt.Errorf("update access key policy: invalid id")
 	}
 	if rpm < 0 || rpm > 100000 || tpm < 0 || tpm > 1000000000 || maxConcurrent < 0 || maxConcurrent > 10000 {
 		return fmt.Errorf("update access key policy: limit is out of range")
 	}
-	if tokenBudget < 0 || tokenBudget > 1000000000000 {
+	if tokenBudget != nil && (*tokenBudget < 0 || *tokenBudget > 1000000000000) {
 		return fmt.Errorf("update access key policy: token budget is out of range")
 	}
 	if expiresAt != nil {
@@ -231,6 +231,10 @@ func (s *Service) Revoke(ctx context.Context, id int64) error {
 	delete(s.lastConsumed, id)
 	delete(s.pendingConsumed, id)
 	s.consumedWriteMu.Unlock()
+	// Drop the rate-limit bucket so a revoked key's state does not accumulate in
+	// the limiter map for the process lifetime (in-flight requests already
+	// drained; a re-created key seeds a fresh bucket on its first use).
+	s.limiter.remove(id)
 	return nil
 }
 

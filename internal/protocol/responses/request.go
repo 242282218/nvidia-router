@@ -11,6 +11,18 @@ import (
 
 const maxResponsesBytes = 32 << 20
 
+// validReasoningEfforts mirrors the chat path's allow-list (protocol/chat/rules.go)
+// so Responses callers cannot slip an unsupported effort value through to the
+// upstream without validation. Values are matched case-insensitively.
+var validReasoningEfforts = map[string]struct{}{
+	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {},
+}
+
+func isValidReasoningEffort(effort string) bool {
+	_, ok := validReasoningEfforts[strings.ToLower(strings.TrimSpace(effort))]
+	return ok
+}
+
 // ToChat converts a Responses API request body into an OpenAI Chat Completions
 // request body targeting the resolved upstream model. It owns the full mapping:
 // nothing from the Responses request is forwarded verbatim.
@@ -348,6 +360,14 @@ func mapReasoning(fields map[string]json.RawMessage, model modelcatalog.Model, c
 			if !model.SupportsReasoning || model.ReasoningWireFormat != "openai" {
 				return unsupportedResponses("reasoning_effort", "The selected model does not support reasoning.")
 			}
+			// Validate the effort value the same way the chat path does so an
+			// unsupported string is rejected locally instead of silently passed
+			// through to the upstream (which may accept or choke on it
+			// arbitrarily).
+			var effort string
+			if err := json.Unmarshal(native, &effort); err != nil || !isValidReasoningEffort(effort) {
+				return invalidResponses("invalid_parameter", "reasoning_effort", "The reasoning_effort value is not supported.")
+			}
 			chat["reasoning_effort"] = native
 			return nil
 		}
@@ -361,6 +381,9 @@ func mapReasoning(fields map[string]json.RawMessage, model modelcatalog.Model, c
 	}
 	if !model.SupportsReasoning || model.ReasoningWireFormat != "openai" {
 		return unsupportedResponses("reasoning", "The selected model does not support reasoning.")
+	}
+	if !isValidReasoningEffort(reasoning.Effort) {
+		return invalidResponses("invalid_parameter", "reasoning", "The reasoning effort value is not supported.")
 	}
 	chat["reasoning_effort"] = jsonRawString(reasoning.Effort)
 	return nil

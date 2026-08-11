@@ -734,3 +734,33 @@ func (s *recordingStateSync) ApplyFailure(int64, int64, fault.Fault, keystate.Ke
 	s.calls.Add(1)
 }
 func (*recordingStateSync) SetModelBlock(int64, int64, bool) {}
+
+func TestAttemptQueueTimeoutReachableWhenQueueWaitExceedsTotalDeadline(t *testing.T) {
+	// Regression: when the operator configures queue_wait_timeout_ms larger than
+	// the non-stream total deadline, the request context (total deadline) fires
+	// before the pool's queue timer. The acquire stage must still report a
+	// retryable 429 queue_timeout rather than classifying the ctx deadline as an
+	// upstream 504 — no upstream call has happened yet.
+	settings := &countingProvider{snapshot: attemptSettings()}
+	settings.snapshot.QueueWaitTimeoutMS = 20000
+	settings.snapshot.NonstreamTotalTimeoutMS = 50
+	settings.snapshot.RetryBudgetMS = 500
+	keyPool := newAttemptPool(settings, 1)
+	holder, err := keyPool.Acquire(context.Background(), 1, nil, false)
+	if err != nil {
+		t.Fatalf("hold only key: %v", err)
+	}
+	defer holder.Release()
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+
+	_, err = attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		return attemptResponse(200, ""), nil
+	})
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("Run error = %T %v, want *apierror.Error", err, err)
+	}
+	if publicError.Status != http.StatusTooManyRequests || publicError.Code != "queue_timeout" {
+		t.Fatalf("Run error = status %d code %q, want 429 queue_timeout", publicError.Status, publicError.Code)
+	}
+}

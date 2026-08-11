@@ -105,3 +105,37 @@ func TestClassifierInvalidRetryAfterUsesExponentialFallback(t *testing.T) {
 		t.Fatalf("invalid Retry-After cooldown = %s, next %d; want 20s, 3", got, nextLevel)
 	}
 }
+
+func TestCooldownServerFaultHonoursUpstreamRetryAfter(t *testing.T) {
+	// A 503 with an explicit Retry-After must cool the key down for that window
+	// instead of the fixed 15s transient (audit P2-3). Without Retry-After the
+	// transient default stays.
+	withRetryAfter := Fault{HTTPStatus: 503, Retryable: true, RetryAfter: 37 * time.Second}
+	got, nextLevel := CalculateCooldown(withRetryAfter, 3, nil)
+	if got != 37*time.Second || nextLevel != 3 {
+		t.Fatalf("503+RetryAfter cooldown = %s, next %d; want 37s, 3", got, nextLevel)
+	}
+
+	without := Fault{HTTPStatus: 503, Retryable: true}
+	got, _ = CalculateCooldown(without, 3, nil)
+	if got != transientCooldown {
+		t.Fatalf("503 without RetryAfter cooldown = %s, want %s", got, transientCooldown)
+	}
+
+	capped := Fault{HTTPStatus: 503, Retryable: true, RetryAfter: 24 * time.Hour}
+	got, _ = CalculateCooldown(capped, 1, nil)
+	if got != maximumRateLimitCooldown {
+		t.Fatalf("oversized 503 RetryAfter cooldown = %s, want cap %s", got, maximumRateLimitCooldown)
+	}
+}
+
+func TestClassifyCarriesRetryAfterIntoServerFault(t *testing.T) {
+	response := responseForClassifier(503, "", "42")
+	got := Classify(response, nil, false, time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC))
+	if got.HTTPStatus != 503 || !got.Retryable {
+		t.Fatalf("503 fault = %+v", got)
+	}
+	if got.RetryAfter != 42*time.Second {
+		t.Fatalf("503 RetryAfter = %s, want 42s", got.RetryAfter)
+	}
+}

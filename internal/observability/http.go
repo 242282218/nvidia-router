@@ -184,8 +184,15 @@ func (w *trackingWriter) Write(payload []byte) (int, error) {
 			if len(payload) <= remaining {
 				_, _ = w.body.Write(payload)
 			} else {
-				w.captureComplete = false
+				// Non-stream JSON also carries its usage block at the end of the
+				// body. Once the window is full, switch to tail retention (the
+				// same mode SSE uses) so a long response still yields its usage
+				// instead of losing it entirely (audit #19/N4): parseUsage only
+				// needs the trailing usage object. captureComplete stays true so
+				// the retained tail is parsed.
 				w.body.Reset()
+				w.tailCapture = true
+				w.appendTail(payload)
 			}
 		}
 	}
@@ -258,6 +265,14 @@ func parseUsage(payload []byte, complete, enabled bool, status int, contentType 
 	switch {
 	case strings.EqualFold(mediaType, "application/json"):
 		body = payload
+		// A large non-stream response is captured only as a tail window that may
+		// start mid-JSON; a direct unmarshal then fails. Fall back to extracting
+		// the trailing "usage" object so the retained tail still meters tokens.
+		if json.Valid(body) == false {
+			if extracted := extractUsageFromJSON(body); extracted != nil {
+				body = extracted
+			}
+		}
 	case strings.EqualFold(mediaType, "text/event-stream"):
 		body = lastSSEEventData(payload)
 	default:
@@ -293,6 +308,42 @@ func parseUsage(payload []byte, complete, enabled bool, status int, contentType 
 		envelope.Usage.CompletionTokens = envelope.Response.Usage.OutputTokens
 	}
 	return envelope.Usage.PromptTokens, envelope.Usage.CompletionTokens
+}
+
+// extractUsageFromJSON pulls the trailing "usage" object out of a JSON fragment
+// that may start mid-document (a large non-stream response captured only as a
+// tail window). It scans backwards for the last `"usage"` key, balances braces
+// to return the complete object, and wraps it in a fresh envelope so the caller
+// can unmarshal it with the same Usage struct. Returns nil when no well-formed
+// usage object is present.
+func extractUsageFromJSON(payload []byte) []byte {
+	index := bytes.LastIndex(payload, []byte(`"usage"`))
+	if index < 0 {
+		return nil
+	}
+	open := bytes.IndexByte(payload[index+len(`"usage"`):], '{')
+	if open < 0 {
+		return nil
+	}
+	start := index + len(`"usage"`) + open
+	depth := 0
+	for cursor := start; cursor < len(payload); cursor++ {
+		switch payload[cursor] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				object := payload[start : cursor+1]
+				envelope := make([]byte, 0, len(object)+len(`{"usage":}`))
+				envelope = append(envelope, `{"usage":`...)
+				envelope = append(envelope, object...)
+				envelope = append(envelope, '}')
+				return envelope
+			}
+		}
+	}
+	return nil
 }
 
 // lastSSEEventData returns the JSON payload of the final data: event in an SSE

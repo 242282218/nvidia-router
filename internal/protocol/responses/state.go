@@ -80,9 +80,12 @@ type streamState struct {
 	reasoning      *stringsBuilder
 	openTools      map[int]*toolItem
 	toolOrder      []int
-	finished       bool
-	usage          *ChatUsage
-	finalized      bool
+	// finishReason is the delta-level finish_reason from the last chunk. It is
+	// consumed by finalize to report length/content_filter truncation as an
+	// incomplete response instead of a silent completed one.
+	finishReason string
+	usage        *ChatUsage
+	finalized    bool
 }
 
 type toolItem struct {

@@ -92,7 +92,10 @@ func (s *streamState) applyDelta(delta ChatDelta, emit Emitter, responseID strin
 		}
 	}
 	if delta.FinishReason != "" {
-		s.finished = true
+		// Keep the most specific signal: later finish_reason values supersede
+		// earlier empty ones, and a terminal length/content_filter must survive
+		// to finalize so truncation is reported as incomplete.
+		s.finishReason = delta.FinishReason
 	}
 	return nil
 }
@@ -257,6 +260,31 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 	if failed {
 		terminal = "response.failed"
 		status = "failed"
+	} else if reason, ok := incompleteReason(s.finishReason); ok {
+		// A delta-level finish_reason of length/content_filter means the upstream
+		// truncated the response (max_output_tokens, content filter). Report it as
+		// incomplete — the same semantics the non-stream path applies — so clients
+		// that gate on response.status do not mistake truncation for a full answer.
+		terminal = "response.incomplete"
+		status = "incomplete"
+		response := s.responseObject(responseID, model, status)
+		response["incomplete_details"] = map[string]any{"reason": reason}
+		response["output"] = s.outputItems()
+		if usage := convertUsage(s.usage); usage != nil {
+			response["usage"] = usage
+		}
+		data := map[string]any{
+			"sequence_number": s.nextSequence(),
+			"response":        response,
+		}
+		if err := emit.Emit(EmittedEvent{Event: terminal, Data: data}); err != nil {
+			return fmt.Errorf("emit %s: %w", terminal, err)
+		}
+		done := EmittedEvent{Event: "done", Data: map[string]any{"sequence_number": s.nextSequence(), "done": true}}
+		if err := emit.Emit(done); err != nil {
+			return fmt.Errorf("emit done: %w", err)
+		}
+		return nil
 	}
 	response := s.responseObject(responseID, model, status)
 	// SDKs read the assembled result from response.output on the terminal event

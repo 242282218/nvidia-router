@@ -110,6 +110,17 @@ func (l *limiter) release(id int64) {
 	}
 }
 
+// remove drops a key's bucket entirely. Called on revocation so a deleted key's
+// rate-limit state does not accumulate in the map for the process lifetime.
+func (l *limiter) remove(id int64) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	delete(l.buckets, id)
+	l.mu.Unlock()
+}
+
 func (l *limiter) bucketLocked(id int64, now time.Time) *limitBucket {
 	bucket := l.buckets[id]
 	if bucket == nil {

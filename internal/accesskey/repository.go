@@ -146,8 +146,8 @@ func (r *Repository) UpdateLastUsed(ctx context.Context, id int64, usedAt time.T
 	return nil
 }
 
-func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget int64) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET expires_at = ?, rpm_limit = ?, tpm_limit = ?, max_concurrent = ?, token_budget = ? WHERE id = ? AND revoked_at IS NULL`, optionalTime(expiresAt), rpm, tpm, maxConcurrent, tokenBudget, id)
+func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time.Time, rpm, tpm, maxConcurrent int, tokenBudget *int64) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE access_keys SET expires_at = ?, rpm_limit = ?, tpm_limit = ?, max_concurrent = ?, token_budget = COALESCE(?, token_budget) WHERE id = ? AND revoked_at IS NULL`, optionalTime(expiresAt), rpm, tpm, maxConcurrent, optionalInt64(tokenBudget), id)
 	if err != nil {
 		return fmt.Errorf("update access key policy: %w", err)
 	}
@@ -159,6 +159,13 @@ func (r *Repository) UpdatePolicy(ctx context.Context, id int64, expiresAt *time
 		return ErrAccessKeyNotFound
 	}
 	return nil
+}
+
+func optionalInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 // UpdateConsumedTokens persists the in-memory budget counter back to the row.

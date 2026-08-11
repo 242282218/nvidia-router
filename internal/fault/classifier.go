@@ -37,17 +37,24 @@ func Classify(response *http.Response, requestErr error, modelsRequest bool, now
 	summary := readErrorSummary(response.Body)
 	switch {
 	case status == http.StatusUnauthorized:
-		return credentialFault(status)
-	case status >= 400 && status <= 499 && summary.invalidCredential():
-		return credentialFault(status)
+		return credentialFault(status, true)
+	case status == http.StatusForbidden && summary.invalidCredential():
+		return credentialFault(status, true)
 	case status == http.StatusForbidden && modelsRequest:
-		return credentialFault(status)
+		return credentialFault(status, true)
 	case status == http.StatusForbidden:
 		return Fault{
 			HTTPStatus: status, Scope: ScopeModelCredential, Retryable: true, BlockModel: true,
 			PublicType: "invalid_request_error", PublicCode: "model_not_available",
 			PublicMessage: "The upstream credential cannot access this model.",
 		}
+	// A non-401/403 response whose body names a credential error code is
+	// ambiguous: the upstream may be reusing a generic error string. Recognise
+	// it as a request fault (message suppressed, not retried) but do NOT disable
+	// the key — DisableKey has no automatic recovery, and a one-off
+	// misclassified response would otherwise take a healthy key offline forever.
+	case status >= 400 && status <= 499 && summary.invalidCredential():
+		return credentialFault(status, false)
 	case status == http.StatusTooManyRequests:
 		retryAfter, retryAfterValid := ParseRetryAfter(response.Header.Get("Retry-After"), now)
 		return Fault{
@@ -58,7 +65,17 @@ func Classify(response *http.Response, requestErr error, modelsRequest bool, now
 	case status == 400 || status == 404 || status == 409 || status == 422:
 		return requestFault(status, summary.message)
 	case status == 500 || status == 502 || status == 503 || status == 504 || status == 529:
-		return upstreamFault(status, true, "upstream_error", "The upstream service is temporarily unavailable.", nil)
+		// Carry an upstream Retry-After into the key cooldown so a 5xx that names
+		// a retry window is honoured instead of the fixed transient 15s. attempt
+		// backoff already respects RetryAfter on 429; this extends it to server
+		// faults the operator widened into the failover set (audit P2-3).
+		retryAfter, retryAfterValid := ParseRetryAfter(response.Header.Get("Retry-After"), now)
+		fault := upstreamFault(status, true, "upstream_error", "The upstream service is temporarily unavailable.", nil)
+		if retryAfter > 0 {
+			fault.RetryAfter = retryAfter
+			fault.retryAfterValid = retryAfterValid
+		}
+		return fault
 	case status >= 500 && status <= 599:
 		return upstreamFault(status, false, "upstream_error", "The upstream service rejected the request.", nil)
 	case status >= 400 && status <= 499:
@@ -88,16 +105,27 @@ func classifyRequestError(err error) Fault {
 	return upstreamFault(http.StatusBadGateway, false, "upstream_error", "The upstream request failed.", err)
 }
 
-func credentialFault(status int) Fault {
+func credentialFault(status int, disableKey bool) Fault {
 	// A credential fault is per-key: the token itself is bad, so replaying the
 	// same request on another key just burns another key's quota on the same
 	// doomed auth (audit R5). The key is disabled (DisableKey) and cooled down
 	// instead of being retried across the pool.
-	return Fault{
-		HTTPStatus: status, Scope: ScopeCredential, Retryable: false, DisableKey: true,
+	fault := Fault{
+		HTTPStatus: status, Scope: ScopeCredential, Retryable: false, DisableKey: disableKey,
 		PublicType: "authentication_error", PublicCode: "invalid_api_key",
 		PublicMessage: "The upstream credential is invalid.",
 	}
+	if !disableKey {
+		// A non-401/403 body that names a credential error code is treated as a
+		// non-retryable request fault: the message is suppressed (a body that
+		// claims an auth error may carry credential-adjacent detail), but the key
+		// is not disabled — the status is not authoritative, so disabling on it
+		// would take a healthy key offline with no automatic recovery.
+		fault.Scope = ScopeRequest
+		fault.PublicCode = "upstream_request_rejected"
+		fault.PublicMessage = "The upstream service rejected the request."
+	}
+	return fault
 }
 
 func requestFault(status int, upstreamMessage string) Fault {

@@ -628,3 +628,67 @@ func TestStreamMalformedAfterDeltaEmitsFailedTerminal(t *testing.T) {
 		t.Fatal("response.completed should not appear on malformed stream")
 	}
 }
+
+func TestStreamLengthFinishReasonReportsIncomplete(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "partial answer"},
+		{FinishReason: "length"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_x", "public-chat"); err != nil {
+		t.Fatalf("Convert err = %v, want nil", err)
+	}
+	if terminalCount(emit.events, "response.incomplete") != 1 {
+		t.Fatalf("response.incomplete count = %d, want 1; events=%v", terminalCount(emit.events, "response.incomplete"), eventNames(emit.events))
+	}
+	if terminalCount(emit.events, "response.completed") != 0 {
+		t.Fatal("response.completed should not appear when finish_reason=length")
+	}
+	for _, e := range emit.events {
+		if e.Event != "response.incomplete" {
+			continue
+		}
+		response, ok := e.Data["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("incomplete event missing nested response: %#v", e.Data)
+		}
+		if response["status"] != "incomplete" {
+			t.Fatalf("status = %v, want incomplete", response["status"])
+		}
+		details, ok := response["incomplete_details"].(map[string]any)
+		if !ok || details["reason"] != "max_output_tokens" {
+			t.Fatalf("incomplete_details = %#v, want reason=max_output_tokens", response["incomplete_details"])
+		}
+	}
+}
+
+func TestStreamContentFilterFinishReasonReportsIncomplete(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "text"},
+		{FinishReason: "content_filter"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_x", "public-chat"); err != nil {
+		t.Fatalf("Convert err = %v, want nil", err)
+	}
+	if terminalCount(emit.events, "response.incomplete") != 1 {
+		t.Fatalf("response.incomplete count = %d, want 1", terminalCount(emit.events, "response.incomplete"))
+	}
+}
+
+func TestStreamStopFinishReasonStaysCompleted(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{Content: "full answer"},
+		{FinishReason: "stop"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_x", "public-chat"); err != nil {
+		t.Fatalf("Convert err = %v, want nil", err)
+	}
+	if terminalCount(emit.events, "response.completed") != 1 {
+		t.Fatalf("response.completed count = %d, want 1; events=%v", terminalCount(emit.events, "response.completed"), eventNames(emit.events))
+	}
+	if terminalCount(emit.events, "response.incomplete") != 0 {
+		t.Fatal("response.incomplete should not appear when finish_reason=stop")
+	}
+}

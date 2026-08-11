@@ -83,7 +83,8 @@ func TestAuthenticateRejectsExpiredKeyAndPolicyUpdatesInvalidateCache(t *testing
 		t.Fatalf("Authenticate: %v", err)
 	}
 	expires := source.Now().Add(time.Minute)
-	if err := service.UpdatePolicy(context.Background(), created.Key.ID, &expires, 7, 11, 2, 0); err != nil {
+	zero := int64(0)
+	if err := service.UpdatePolicy(context.Background(), created.Key.ID, &expires, 7, 11, 2, &zero); err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
 	identity, err := service.Authenticate(context.Background(), created.Plaintext)
@@ -165,6 +166,10 @@ func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
 	service.lastRecorded[created.Key.ID] = time.Now()
 	service.pending[created.Key.ID] = struct{}{}
 	service.usageMu.Unlock()
+	// Seed a rate-limit bucket so revocation must clean it up too.
+	service.limiter.mu.Lock()
+	service.limiter.buckets[created.Key.ID] = &limitBucket{windowStart: time.Now(), rpmCount: 3}
+	service.limiter.mu.Unlock()
 
 	if err := service.Revoke(context.Background(), created.Key.ID); err != nil {
 		t.Fatalf("Revoke: %v", err)
@@ -177,6 +182,11 @@ func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
 	}
 	if _, ok := service.pending[created.Key.ID]; ok {
 		t.Fatal("Revoke left a pending entry")
+	}
+	service.limiter.mu.Lock()
+	defer service.limiter.mu.Unlock()
+	if _, ok := service.limiter.buckets[created.Key.ID]; ok {
+		t.Fatal("Revoke left a rate-limit bucket")
 	}
 }
 

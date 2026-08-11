@@ -230,7 +230,8 @@ func TestAuthRejectsOversizedBodyWithJSON413(t *testing.T) {
 const sameOrigin = "http://example.com"
 
 type authFixture struct {
-	auth *Auth
+	auth       *Auth
+	repository *adminauth.Repository
 }
 
 func newAuthFixture(t *testing.T) authFixture {
@@ -254,7 +255,7 @@ func newAuthFixture(t *testing.T) authFixture {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	sessions := adminauth.NewSessionService(db, testClock, keys, false)
-	return authFixture{auth: NewAuth(repository, sessions, adminauth.NewLoginLimiter(testClock))}
+	return authFixture{auth: NewAuth(repository, sessions, adminauth.NewLoginLimiter(testClock)), repository: repository}
 }
 
 func (f authFixture) request(method, path, body string, cookie *http.Cookie, origin string) *httptest.ResponseRecorder {
@@ -345,3 +346,34 @@ type instantClock struct {
 func (c instantClock) Now() time.Time { return c.now }
 
 func (instantClock) NewTimer(time.Duration) *time.Timer { return time.NewTimer(0) }
+
+func TestAuthMustChangeCacheRefreshesAfterTTLForOutOfProcessReset(t *testing.T) {
+	fixture := newAuthFixture(t)
+	next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { writer.WriteHeader(http.StatusNoContent) })
+
+	// Warm the cache: first request reads must_change_password=true from DB and
+	// caches it.
+	blocked := serve(fixture.auth.RequirePasswordChanged(next), http.MethodPost, "/v1/models", "", nil, "")
+	assertAPIError(t, blocked, http.StatusForbidden, "password_change_required")
+
+	// Simulate an out-of-process `admin reset-password`: write must_change_password=0
+	// directly to the DB (the CLI path uses ResetPassword; here we hit the same
+	// column). The running process must observe it after the cache TTL.
+	if err := fixture.repository.ResetPassword(context.Background(), "fresh-password-12345"); err != nil {
+		t.Fatalf("reset password: %v", err)
+	}
+
+	// Within the TTL the cache still reports true (stale is expected until refresh).
+	stillBlocked := serve(fixture.auth.RequirePasswordChanged(next), http.MethodPost, "/v1/models", "", nil, "")
+	assertAPIError(t, stillBlocked, http.StatusForbidden, "password_change_required")
+
+	// Force the TTL to expire so the next read re-queries the DB.
+	fixture.auth.mustChangeMu.Lock()
+	fixture.auth.mustChangeLoadedAt = time.Now().Add(-mustChangeCacheTTL - time.Second)
+	fixture.auth.mustChangeMu.Unlock()
+
+	allowed := serve(fixture.auth.RequirePasswordChanged(next), http.MethodPost, "/v1/models", "", nil, "")
+	if allowed.Code != http.StatusNoContent {
+		t.Fatalf("data guard status = %d, want 204: %s", allowed.Code, allowed.Body.String())
+	}
+}
