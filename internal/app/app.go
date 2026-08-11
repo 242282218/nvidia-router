@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nvidia-router/internal/accesskey"
+	"nvidia-router/internal/adminaudit"
 	"nvidia-router/internal/adminauth"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
@@ -140,11 +141,14 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
 	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
+	auditRepository := adminaudit.NewRepository(db).WithReader(reader)
+	auditRecorder := adminaudit.NewRecorder(auditRepository, resolved.Logger)
 	adminManagement := adminapi.NewManagement(
 		adminapi.NewNVIDIAKeys(nvidiaKeys, keyPool),
 		adminapi.NewAccessKeys(accessKeys),
 		adminapi.NewModels(models, nvidiaKeys, keyPool),
 		adminapi.NewProxyPool(proxySettings),
+		adminapi.NewAuditLogs(auditRepository),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
 	observabilityRepository := observability.NewRepository(db).WithReader(reader)
@@ -193,11 +197,16 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
 	metricsHandler := metricsapi.New(keyPool, observabilityRepository)
-	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, httpapi.NewRouter(
+	// The audit middleware wraps the full router so it observes both management
+	// mutations (already carrying a principal from RequireManagement) and
+	// unauthenticated attempts at /admin/api/auth/*; its path guard leaves
+	// /v1, /metrics and the frontend untouched.
+	router := adminapi.AuditMiddleware(auditRecorder, resolved.Config.TrustedProxyCIDRs, httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load).WithReader(reader), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
 		statsHandler, monitoringHandler, metricsHandler,
-	)))
+	))
+	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, router))
 	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger, settings)
 	adminSessionWorker := adminauth.NewSessionCleanupWorker(adminRepository, resolved.Clock, resolved.Logger)
 	var cleanupWorkers sync.WaitGroup

@@ -121,4 +121,17 @@ test.describe('management resources', () => {
     await expect(page.getByTestId('access-key-max-concurrent')).toHaveValue('10')
     await page.getByRole('dialog').getByRole('button', { name: '取消' }).click()
   })
+
+  test('records management actions in the audit trail', async ({ page }) => {
+    await page.getByTestId('nav-access-keys').click()
+    await page.getByTestId('open-create-access-key').click()
+    await page.getByTestId('access-key-name').fill('e2e-audited')
+    await page.getByTestId('create-access-key-form').getByRole('button', { name: '创建' }).click()
+    await expect(page.getByTestId('created-access-key')).toBeVisible()
+    await page.getByTestId('close-created-access-key').click()
+
+    await page.getByTestId('nav-audit').click()
+    await expect(page).toHaveURL(/\/admin\/audit$/)
+    await expect(page.getByText('access_keys.create')).toBeVisible()
+  })
 })

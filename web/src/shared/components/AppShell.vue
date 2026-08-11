@@ -18,6 +18,7 @@ const navItems = [
   { path: '/runtime', label: '运行状态', icon: 'runtime', testId: 'nav-runtime' },
   { path: '/statistics', label: '监控', icon: 'stats', testId: 'nav-statistics' },
   { path: '/proxy-pool', label: '代理池', icon: 'proxy', testId: 'nav-proxy-pool' },
+  { path: '/audit', label: '审计日志', icon: 'audit', testId: 'nav-audit' },
 ] as const
 
 const currentLabel = computed(() => navItems.find((item) => item.path === route.path)?.label ?? 'NVIDIA Key')
@@ -224,6 +225,21 @@ globalThis.addEventListener('keydown', onKeydown)
               stroke-linejoin="round"
               stroke-width="1.5"
               d="M4.5 7.5h15m-12 4.5h9m-12 4.5h15M6.75 4.5h10.5A2.25 2.25 0 0119.5 6.75v10.5a2.25 2.25 0 01-2.25 2.25H6.75a2.25 2.25 0 01-2.25-2.25V6.75A2.25 2.25 0 016.75 4.5z"
+            />
+          </svg>
+          <svg
+            v-else-if="item.icon === 'audit'"
+            class="h-4 w-4 shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
             />
           </svg>
           <svg

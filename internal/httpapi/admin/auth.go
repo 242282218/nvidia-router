@@ -123,10 +123,18 @@ func (a *Auth) RequireManagement(next http.Handler) http.Handler {
 			writeInvalidOrigin(writer)
 			return
 		}
-		if _, ok := a.requireSession(writer, request, true); !ok {
+		session, ok := a.requireSession(writer, request, true)
+		if !ok {
 			return
 		}
-		next.ServeHTTP(writer, request)
+		// Attribute every downstream admin mutation to this session + address so
+		// the audit trail knows who changed what (and from where), even for a
+		// rotated password where session IDs are the only stable identity.
+		ctx := adminauth.ContextWithPrincipal(request.Context(), adminauth.Principal{
+			SessionID: session.ID,
+			ClientIP:  adminauth.ClientIP(request, a.originPolicy.TrustedProxies),
+		})
+		next.ServeHTTP(writer, request.WithContext(ctx))
 	})
 }
 
