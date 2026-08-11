@@ -54,13 +54,23 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for the replay to hit the recorder, then cancel to unblock the loop.
+	// Wait for the replay to hit the recorder. httptest.ResponseRecorder is not
+	// safe for concurrent read (Body.String) and write (handler writing), so
+	// wait for the handler to complete before reading the body. The replayed
+	// event should appear quickly; if not, the timeout will fire.
 	deadline := time.Now().Add(2 * time.Second)
-	for !contains(response.Body.String(), "a") && time.Now().Before(deadline) {
+	found := false
+	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
+		// Peek at length without reading the buffer to avoid the race. The
+		// replayed event "a" plus SSE framing is at least 10 bytes.
+		if response.Body.Len() > 10 {
+			found = true
+			break
+		}
 	}
-	if !contains(response.Body.String(), "a") {
-		t.Fatalf("stream body missing replayed event: %q", response.Body.String())
+	if !found {
+		t.Fatal("stream did not emit replayed event within timeout")
 	}
 	cancel()
 	select {
@@ -70,6 +80,11 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 	}
 	wg.Wait()
 
+	// Now safe to read the body after the handler goroutine has exited.
+	body := response.Body.String()
+	if !contains(body, "a") {
+		t.Fatalf("stream body missing replayed event: %q", body)
+	}
 	if contentType := response.Header().Get("Content-Type"); contentType != "text/event-stream" {
 		t.Fatalf("content type = %q", contentType)
 	}
