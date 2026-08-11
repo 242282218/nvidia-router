@@ -13,7 +13,7 @@ if [[ "${NVIDIA_ROUTER_WEB_DIST_SELF_TEST:-0}" == "1" ]]; then
   run_case() {
     local name="$1" expect="$2" root="$3"
     local status=0
-    NVIDIA_ROUTER_WEB_DIST_ROOT="$root" bash "$0" >/dev/null 2>&1 || status=$?
+    NVIDIA_ROUTER_WEB_DIST_SELF_TEST=0 NVIDIA_ROUTER_WEB_DIST_ROOT="$root" bash "$0" >/dev/null 2>&1 || status=$?
     if [[ "$expect" == "pass" && "$status" -ne 0 ]]; then
       printf 'self-test %s: expected pass, got exit %d\n' "$name" "$status" >&2
       exit 1
