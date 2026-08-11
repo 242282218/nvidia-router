@@ -60,6 +60,16 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir,
       emptyOutDir: true,
+      rollupOptions: {
+        output: {
+          // Use deterministic chunk names to ensure builds are reproducible
+          // across different environments (Windows vs CI Linux). Content-based
+          // hashing can vary due to line-ending or timestamp differences.
+          entryFileNames: 'assets/[name].js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/[name].[ext]',
+        },
+      },
     },
   }
 })
