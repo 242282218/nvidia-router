@@ -97,6 +97,7 @@ jobs:
           bash -n scripts/check-web-dist.sh
 
       - name: Run Live parser self-test
+        timeout-minutes: 2
         run: |
           NVIDIA_ROUTER_LIVE_SELF_TEST=1 bash scripts/test/live-nvidia.sh
           NVIDIA_ROUTER_COMPOSE_SELF_TEST=1 bash scripts/test/compose-acceptance.sh
