@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/xkproxy"
 )
@@ -64,6 +65,7 @@ type fakeProxyPoolService struct {
 	snapshot  xkproxy.Snapshot
 	patch     xkproxy.Patch
 	updateErr error
+	status    xkproxy.PoolStatus
 }
 
 func (f *fakeProxyPoolService) Snapshot(context.Context) (xkproxy.Snapshot, error) {
@@ -76,4 +78,43 @@ func (f *fakeProxyPoolService) Update(_ context.Context, patch xkproxy.Patch) (x
 		return xkproxy.Snapshot{}, f.updateErr
 	}
 	return f.snapshot, nil
+}
+
+func (f *fakeProxyPoolService) PoolStatus() xkproxy.PoolStatus {
+	return f.status
+}
+
+func TestProxyPoolHandlerStatusEndpoint(t *testing.T) {
+	service := &fakeProxyPoolService{status: xkproxy.PoolStatus{
+		TotalSize: 3, HealthySize: 2,
+		Proxies: []xkproxy.Proxy{
+			{Address: "10.0.0.1:8080", LatencyEWMA: 150 * time.Millisecond, SuccessCount: 5, ExpiresAt: time.Now().Add(time.Minute)},
+			{Address: "10.0.0.2:8080", LatencyEWMA: 800 * time.Millisecond, FailureCount: 2},
+		},
+	}}
+	handler := NewProxyPool(service)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/proxy-pool/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			TotalSize   int `json:"total_size"`
+			HealthySize int `json:"healthy_size"`
+			Proxies     []xkproxy.ProxyStatus `json:"proxies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if body.Data.TotalSize != 3 || body.Data.HealthySize != 2 {
+		t.Fatalf("counts = %d/%d, want 3/2", body.Data.TotalSize, body.Data.HealthySize)
+	}
+	if len(body.Data.Proxies) != 2 {
+		t.Fatalf("proxies len = %d, want 2", len(body.Data.Proxies))
+	}
+	if body.Data.Proxies[0].LatencyEWMAMS != 150 {
+		t.Fatalf("latency = %d, want 150", body.Data.Proxies[0].LatencyEWMAMS)
+	}
 }
