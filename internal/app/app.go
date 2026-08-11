@@ -20,6 +20,7 @@ import (
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/eventhub"
 	"nvidia-router/internal/httpapi"
 	adminapi "nvidia-router/internal/httpapi/admin"
 	"nvidia-router/internal/httpapi/health"
@@ -158,9 +159,21 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	requestRecorder := observability.NewBufferRecorder(observabilityRepository, resolved.Clock, observability.BufferOptions{
 		Logger: resolved.Logger,
 	})
+	// The event hub feeds the admin live view: every completed request record is
+	// broadcast (with a bounded replay ring) so a connected SSE client sees
+	// activity in near-real time without polling the DB. Publish is off the hot
+	// path (non-blocking hub fan-out).
+	eventHub := eventhub.New(0)
+	requestEventSink := func(record observability.RequestRecord) error {
+		if record.Endpoint == "" {
+			return nil
+		}
+		eventHub.Publish(eventhub.Event{Type: "request", Serialized: adminapi.RequestEventLine(record)})
+		return nil
+	}
 	observe := func(next http.Handler) http.Handler {
 		guarded := httpapi.DataMiddleware(accessKeys, next)
-		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded)
+		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded, requestEventSink)
 	}
 	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
 	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
@@ -204,7 +217,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	router := adminapi.AuditMiddleware(auditRecorder, resolved.Config.TrustedProxyCIDRs, httpapi.NewRouter(
 		health.New(db, keys, app.shutting.Load).WithReader(reader), chat, responses, embeddings, audio, speech, modelList, unsupported,
 		adminSecurity, adminManagement, adminapi.NewSettings(settings), adminapi.NewRuntime(keyPool), frontend,
-		statsHandler, monitoringHandler, metricsHandler,
+		statsHandler, monitoringHandler, metricsHandler, adminapi.NewEventStream(eventHub),
 	))
 	app.handler = httpapi.RecoverMiddleware(resolved.Logger, shutdownMiddleware(app.shutting.Load, router))
 	observabilityWorker := observability.NewCleanupWorker(observabilityRepository, resolved.Clock, resolved.Logger, settings)

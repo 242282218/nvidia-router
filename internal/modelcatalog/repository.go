@@ -140,7 +140,14 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 		return Model{}, "", fmt.Errorf("validate model patch: %w", err)
 	}
 	updatedAt := formatRevisionTime(now, model.updatedAt)
-	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_wire_format = ?, capability_verified_at = ?, updated_at = ? WHERE id = ?`, selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningWireFormat, optionalTimestamp(selection.CapabilityVerifiedAt), updatedAt, id)
+	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_wire_format = ?, capability_verified_at = ?,
+		input_usd_per_mtok  = CASE WHEN ? IS NULL THEN input_usd_per_mtok  ELSE ? END,
+		output_usd_per_mtok = CASE WHEN ? IS NULL THEN output_usd_per_mtok ELSE ? END,
+		updated_at = ? WHERE id = ?`,
+		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningWireFormat, optionalTimestamp(selection.CapabilityVerifiedAt),
+		patch.InputUSDPerMTok, patchDeref(patch.InputUSDPerMTok),
+		patch.OutputUSDPerMTok, patchDeref(patch.OutputUSDPerMTok),
+		updatedAt, id)
 	if err != nil {
 		return Model{}, "", fmt.Errorf("save model patch: %w", err)
 	}
@@ -456,10 +463,11 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 	return blocks, nil
 }
 
-const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, enabled,
-	supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
-	capability_verified_at, created_at, updated_at,
-	stream_first_token_timeout_ms, stream_idle_timeout_ms FROM models`
+	const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, enabled,
+		supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
+		capability_verified_at, created_at, updated_at,
+		stream_first_token_timeout_ms, stream_idle_timeout_ms,
+		input_usd_per_mtok, output_usd_per_mtok FROM models`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -496,9 +504,10 @@ func scanModel(row rowScanner) (Model, error) {
 	var enabled, vision, tools, reasoning int
 	var verifiedAt, createdAt, updatedAt sql.NullString
 	var streamFirstToken, streamIdle sql.NullInt64
+	var inputPrice, outputPrice sql.NullFloat64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
 		&enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &verifiedAt, &createdAt, &updatedAt,
-		&streamFirstToken, &streamIdle); err != nil {
+		&streamFirstToken, &streamIdle, &inputPrice, &outputPrice); err != nil {
 		return Model{}, err
 	}
 	model.Enabled = enabled == 1
@@ -533,6 +542,14 @@ func scanModel(row rowScanner) (Model, error) {
 	if streamIdle.Valid {
 		v := int(streamIdle.Int64)
 		model.StreamIdleTimeoutMS = &v
+	}
+	if inputPrice.Valid {
+		value := inputPrice.Float64
+		model.InputUSDPerMTok = &value
+	}
+	if outputPrice.Valid {
+		value := outputPrice.Float64
+		model.OutputUSDPerMTok = &value
 	}
 	return model, nil
 }
@@ -601,6 +618,15 @@ func optionalTimestamp(value *time.Time) any {
 		return nil
 	}
 	return formatTimestamp(*value)
+}
+
+// patchDeref is the ELSE branch of the pricing CASE: nil preserves the stored
+// price (omitted field), a non-nil value (including explicit 0.0) replaces it.
+func patchDeref(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func formatTimestamp(value time.Time) string {

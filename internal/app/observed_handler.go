@@ -9,6 +9,6 @@ import (
 	"nvidia-router/internal/observability"
 )
 
-func observedHandler(recorder observability.RequestRecorder, source clock.Clock, logger *slog.Logger, next http.Handler) http.Handler {
-	return observability.HTTPMiddleware(recorder, source, logger, httpapi.RecoverMiddleware(logger, next))
+func observedHandler(recorder observability.RequestRecorder, source clock.Clock, logger *slog.Logger, next http.Handler, sinks ...observability.EventSink) http.Handler {
+	return observability.HTTPMiddleware(recorder, source, logger, httpapi.RecoverMiddleware(logger, next), sinks...)
 }

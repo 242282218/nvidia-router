@@ -63,6 +63,8 @@ type modelDTO struct {
 	SupportsReasoning    bool              `json:"supports_reasoning"`
 	ReasoningWireFormat  string            `json:"reasoning_wire_format"`
 	CapabilityVerifiedAt *time.Time        `json:"capability_verified_at,omitempty"`
+	InputUSDPerMTok      *float64          `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok     *float64          `json:"output_usd_per_mtok,omitempty"`
 	BlockedByKeyIDs      []int64           `json:"blocked_by_key_ids"`
 }
 type selectionDTO struct {
@@ -270,6 +272,8 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		SupportsReasoning:    v.SupportsReasoning,
 		ReasoningWireFormat:  v.ReasoningWireFormat,
 		CapabilityVerifiedAt: v.CapabilityVerifiedAt,
+		InputUSDPerMTok:      v.InputUSDPerMTok,
+		OutputUSDPerMTok:     v.OutputUSDPerMTok,
 		BlockedByKeyIDs:      v.BlockedByKeyIDs,
 	}
 }

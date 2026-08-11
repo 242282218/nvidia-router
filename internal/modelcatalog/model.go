@@ -43,8 +43,13 @@ type Model struct {
 	// StreamIdleTimeoutMS overrides the global stream_idle_timeout_ms for this
 	// model when non-nil.
 	StreamIdleTimeoutMS *int
-	BlockedByKeyIDs     []int64
-	updatedAt           time.Time
+	// InputUSDPerMTok / OutputUSDPerMTok are optional per-token prices (USD per
+	// 1M tokens) used for cost estimation in the monitoring surface. A nil
+	// value means the model is not priced and counts as $0.
+	InputUSDPerMTok  *float64
+	OutputUSDPerMTok *float64
+	BlockedByKeyIDs  []int64
+	updatedAt        time.Time
 }
 
 type MutationResult struct {
@@ -91,6 +96,10 @@ type Patch struct {
 	SupportsTools       *bool   `json:"supports_tools,omitempty"`
 	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
 	ReasoningWireFormat *string `json:"reasoning_wire_format,omitempty"`
+	// Pricing is kept separate from capability Selection (which models
+	// upstream-discovered attributes): these are operator-owned cost columns.
+	InputUSDPerMTok  *float64 `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok *float64 `json:"output_usd_per_mtok,omitempty"`
 }
 
 func normalizeModelSelection(selection Selection) (Selection, error) {

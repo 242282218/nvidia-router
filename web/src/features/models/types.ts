@@ -18,6 +18,8 @@ export interface Model extends Candidate {
   public_id: string
   enabled: boolean
   capability_verified_at?: string
+  input_usd_per_mtok?: number
+  output_usd_per_mtok?: number
   blocked_by_key_ids?: number[]
 }
 
@@ -34,6 +36,8 @@ export interface ModelPatch {
   supports_tools?: boolean
   supports_reasoning?: boolean
   reasoning_wire_format?: string
+  input_usd_per_mtok?: number
+  output_usd_per_mtok?: number
 }
 
 export interface CandidatesResponse {

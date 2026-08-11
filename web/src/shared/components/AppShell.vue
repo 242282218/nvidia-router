@@ -17,6 +17,7 @@ const navItems = [
   { path: '/access-keys', label: 'Access Key', icon: 'access', testId: 'nav-access-keys' },
   { path: '/runtime', label: '运行状态', icon: 'runtime', testId: 'nav-runtime' },
   { path: '/statistics', label: '监控', icon: 'stats', testId: 'nav-statistics' },
+  { path: '/live', label: '实时', icon: 'live', testId: 'nav-live' },
   { path: '/proxy-pool', label: '代理池', icon: 'proxy', testId: 'nav-proxy-pool' },
   { path: '/audit', label: '审计日志', icon: 'audit', testId: 'nav-audit' },
 ] as const
@@ -225,6 +226,21 @@ globalThis.addEventListener('keydown', onKeydown)
               stroke-linejoin="round"
               stroke-width="1.5"
               d="M4.5 7.5h15m-12 4.5h9m-12 4.5h15M6.75 4.5h10.5A2.25 2.25 0 0119.5 6.75v10.5a2.25 2.25 0 01-2.25 2.25H6.75a2.25 2.25 0 01-2.25-2.25V6.75A2.25 2.25 0 016.75 4.5z"
+            />
+          </svg>
+          <svg
+            v-else-if="item.icon === 'live'"
+            class="h-4 w-4 shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
             />
           </svg>
           <svg

@@ -62,6 +62,8 @@ function isModel(value: unknown): value is Model {
     && (value.blocked_by_key_ids === undefined
       || (Array.isArray(value.blocked_by_key_ids) && value.blocked_by_key_ids.every(isFiniteNumber)))
     && (value.capability_verified_at === undefined || typeof value.capability_verified_at === 'string')
+    && (value.input_usd_per_mtok === undefined || typeof value.input_usd_per_mtok === 'number')
+    && (value.output_usd_per_mtok === undefined || typeof value.output_usd_per_mtok === 'number')
     && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
 }
 
@@ -163,6 +165,27 @@ async function unblockModel(keyId: number, model: Model): Promise<void> {
 function replaceModel(updated: Model): void {
   const index = models.value.findIndex((model) => model.id === updated.id)
   if (index >= 0) models.value[index] = updated
+}
+
+async function savePricing(model: Model, inputUsd: number, outputUsd: number): Promise<void> {
+  busyId.value = model.id
+  errorMessage.value = ''
+  try {
+    const updated: unknown = await modelsApi.patch(model.id, {
+      input_usd_per_mtok: inputUsd,
+      output_usd_per_mtok: outputUsd,
+    })
+    if (disposed) return
+    if (!isModel(updated)) {
+      throw new TypeError('Invalid model patch response.')
+    }
+    replaceModel(updated)
+  } catch (error) {
+    if (disposed) return
+    errorMessage.value = error instanceof ApiError ? error.message : '保存模型单价失败。'
+  } finally {
+    if (!disposed) busyId.value = null
+  }
 }
 </script>
 
@@ -313,6 +336,7 @@ function replaceModel(updated: Model): void {
             :busy-id="busyId"
             @toggle="toggleModel"
             @unblock="unblockModel"
+            @save-pricing="savePricing"
           />
           <ModelCards
             :models="models"

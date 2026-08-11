@@ -129,6 +129,8 @@ const model = object({
   supports_reasoning: scalar('boolean'),
   reasoning_wire_format: optional(scalar('string')),
   capability_verified_at: optional(scalar('string')),
+  input_usd_per_mtok: optional(scalar('number')),
+  output_usd_per_mtok: optional(scalar('number')),
   blocked_by_key_ids: optional(array(scalar('number'))),
 })
 
@@ -153,6 +155,8 @@ const accessKey = object({
   rpm_limit: scalar('number'),
   tpm_limit: scalar('number'),
   max_concurrent: scalar('number'),
+  token_budget: scalar('number'),
+  consumed_tokens: scalar('number'),
 })
 
 const nvidiaKey = object({

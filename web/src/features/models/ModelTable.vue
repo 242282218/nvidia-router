@@ -1,11 +1,53 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 import type { Model } from './types'
 
 defineProps<{ models: Model[]; busyId: number | null }>()
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
+  savePricing: [model: Model, inputUsd: number, outputUsd: number]
 }>()
+
+// editingPricing tracks the row currently in price-edit mode; raw inputs start
+// from the model's stored prices so the operator tweaks rather than retypes.
+const editingPrice = ref<number | null>(null)
+const inputDraft = ref('')
+const outputDraft = ref('')
+
+function beginPricingEdit(model: Model): void {
+  editingPrice.value = model.id
+  inputDraft.value = model.input_usd_per_mtok !== undefined ? String(model.input_usd_per_mtok) : ''
+  outputDraft.value = model.output_usd_per_mtok !== undefined ? String(model.output_usd_per_mtok) : ''
+}
+
+function cancelPricingEdit(): void {
+  editingPrice.value = null
+}
+
+function submitPricingEdit(model: Model): void {
+  const input = parsePrice(inputDraft.value)
+  const output = parsePrice(outputDraft.value)
+  if (input === null || output === null) return
+  emit('savePricing', model, input, output)
+  editingPrice.value = null
+}
+
+// parsePrice: empty means "no price" ($0 contribution), a number must be a
+// non-negative USD figure per 1M tokens.
+function parsePrice(raw: string): number | null {
+  const trimmed = raw.trim()
+  if (trimmed === '') return 0
+  const value = Number(trimmed)
+  if (Number.isNaN(value) || value < 0) return null
+  return value
+}
+
+function formatPrice(value?: number): string {
+  if (value === undefined) return '未定价'
+  return `$${value} /1M`
+}
 
 function audioNeedsVerification(model: Model): boolean {
   return (model.kind === 'asr' || model.kind === 'tts') && !model.capability_verified_at
@@ -38,6 +80,9 @@ function capBadge(supported: boolean): string {
             能力
           </th>
           <th class="data-table-th">
+            单价 (USD /1M)
+          </th>
+          <th class="data-table-th">
             状态
           </th>
           <th class="data-table-th text-right">
@@ -68,6 +113,62 @@ function capBadge(supported: boolean): string {
               <span :class="capBadge(model.supports_tools)">Tools {{ model.supports_tools ? '✓' : '—' }}</span>
               <span :class="capBadge(model.supports_reasoning)">Reasoning {{ model.supports_reasoning ? '✓' : '—' }}</span>
             </div>
+          </td>
+          <td class="data-table-td">
+            <div
+              v-if="editingPrice === model.id"
+              :data-testid="`model-pricing-edit-${model.id}`"
+            >
+              <div class="flex items-center gap-1 text-xs">
+                <span class="text-[var(--color-text-muted)]">入</span>
+                <input
+                  :value="inputDraft"
+                  class="input-field w-16 px-1.5 py-0.5 text-xs"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  data-testid="model-input-price"
+                  @input="(e: Event) => { inputDraft = (e.target as HTMLInputElement).value }"
+                >
+                <span class="text-[var(--color-text-muted)]">出</span>
+                <input
+                  :value="outputDraft"
+                  class="input-field w-16 px-1.5 py-0.5 text-xs"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  data-testid="model-output-price"
+                  @input="(e: Event) => { outputDraft = (e.target as HTMLInputElement).value }"
+                >
+              </div>
+              <div class="mt-1 flex items-center gap-2">
+                <button
+                  class="text-xs font-medium text-[var(--color-accent)] disabled:opacity-40"
+                  type="button"
+                  data-testid="model-save-price"
+                  :disabled="busyId === model.id"
+                  @click="submitPricingEdit(model)"
+                >
+                  保存
+                </button>
+                <button
+                  class="text-xs text-[var(--color-text-muted)]"
+                  type="button"
+                  @click="cancelPricingEdit"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+            <button
+              v-else
+              class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent)]"
+              type="button"
+              data-testid="model-edit-price"
+              @click="beginPricingEdit(model)"
+            >
+              <span class="font-mono">{{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}</span>
+            </button>
           </td>
           <td class="data-table-td">
             <span
@@ -124,7 +225,7 @@ function capBadge(supported: boolean): string {
         </tr>
         <tr v-if="models.length === 0">
           <td
-            colspan="5"
+            colspan="6"
             class="px-4 py-8 text-center text-[var(--color-text-muted)]"
           >
             暂无模型白名单。

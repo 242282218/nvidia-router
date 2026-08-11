@@ -64,3 +64,19 @@ type RecentError struct {
 	UpstreamRequestID *string `json:"upstream_request_id,omitempty"`
 	CreatedAt         string  `json:"created_at"`
 }
+
+// DailyModelCost is one model's estimated USD spend on one day, driven by the
+// token totals already aggregated into daily_stats and the operator-set price
+// columns on the models table. Prices are optional: a model without
+// input/output pricing contributes $0 and is still reported so the UI can call
+// out "not priced" rows rather than silently dropping them.
+type DailyModelCost struct {
+	Day              string  `json:"day"`
+	ModelID          string  `json:"model_id"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	InputCostUSD     float64 `json:"input_cost_usd"`
+	OutputCostUSD    float64 `json:"output_cost_usd"`
+	TotalCostUSD     float64 `json:"total_cost_usd"`
+	Priced           bool    `json:"priced"`
+}

@@ -76,3 +76,14 @@ export interface RequestLogsPage {
   total: number
   has_more: boolean
 }
+
+export interface DailyModelCost {
+  day: string
+  model_id: string
+  prompt_tokens: number
+  completion_tokens: number
+  input_cost_usd: number
+  output_cost_usd: number
+  total_cost_usd: number
+  priced: boolean
+}

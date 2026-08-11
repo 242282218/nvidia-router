@@ -1,5 +1,6 @@
 import { apiRequest } from '../../shared/api/client'
 import type {
+  DailyModelCost,
   MonitoringFilter,
   MonitoringRange,
   MonitoringSnapshot,
@@ -9,6 +10,7 @@ import type {
 export interface StatisticsApi {
   getSummary(range: MonitoringRange, filter?: MonitoringFilter, signal?: AbortSignal): Promise<{ data: MonitoringSnapshot }>
   getLogs(range: MonitoringRange, filter?: MonitoringFilter, page?: number, pageSize?: number, signal?: AbortSignal): Promise<{ data: RequestLogsPage }>
+  getCosts(days?: number, signal?: AbortSignal): Promise<{ data: DailyModelCost[] }>
 }
 
 export const statisticsApi: StatisticsApi = {
@@ -20,6 +22,9 @@ export const statisticsApi: StatisticsApi = {
     query.set('page', String(page))
     query.set('page_size', String(pageSize))
     return apiRequest(`/admin/api/monitoring/logs?${query.toString()}`, { signal })
+  },
+  getCosts(days = 30, signal) {
+    return apiRequest(`/admin/api/stats/cost?days=${days}`, { signal })
   },
 }
 

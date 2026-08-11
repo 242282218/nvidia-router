@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import CostPanel from './CostPanel.vue'
 import MonitoringTrendChart from './MonitoringTrendChart.vue'
 import { statisticsApi } from './api'
 import type {
@@ -458,6 +459,8 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             title="Token 趋势"
           />
         </div>
+
+        <CostPanel />
 
         <form
           data-testid="monitoring-filters"

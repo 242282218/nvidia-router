@@ -39,7 +39,12 @@ type RequestRecorder interface {
 	Record(context.Context, RequestRecord) error
 }
 
-func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.Logger, next http.Handler) http.Handler {
+// EventSink receives every assembled RequestRecord for real-time fan-out (e.g.
+// the admin live view). A nil sink is a no-op; on error the record is dropped
+// without affecting the request path.
+type EventSink func(RequestRecord) error
+
+func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.Logger, next http.Handler, sinks ...EventSink) http.Handler {
 	if source == nil {
 		source = clock.RealClock{}
 	}
@@ -103,6 +108,14 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		}
 		if err := recorder.Record(context.WithoutCancel(ctx), record); err != nil {
 			logger.Error("record request metadata failed", "request_id", requestID, "error", err)
+		}
+		for _, sink := range sinks {
+			if sink == nil {
+				continue
+			}
+			if err := sink(record); err != nil {
+				logger.Error("publish request event failed", "request_id", requestID, "error", err)
+			}
 		}
 	})
 }

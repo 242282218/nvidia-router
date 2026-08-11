@@ -315,4 +315,33 @@ describe('ModelsView', () => {
       },
     ])
   })
+
+  it('saves model pricing from the table editor and reflects the patched response', async () => {
+    vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 3, public_id: 'chat-model', display_name: 'Chat' })] })
+    vi.mocked(modelsApi.patch).mockResolvedValue({
+      id: 3,
+      public_id: 'chat-model',
+      upstream_id: 'vendor/chat',
+      display_name: 'Chat',
+      kind: 'chat',
+      enabled: true,
+      supports_vision: true,
+      supports_tools: true,
+      supports_reasoning: true,
+      input_usd_per_mtok: 0.14,
+      output_usd_per_mtok: 0.28,
+      blocked_by_key_ids: [],
+    })
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="model-edit-price"]').trigger('click')
+    await wrapper.get('[data-testid="model-input-price"]').setValue('0.14')
+    await wrapper.get('[data-testid="model-output-price"]').setValue('0.28')
+    await wrapper.get('[data-testid="model-save-price"]').trigger('click')
+    await flushPromises()
+
+    expect(modelsApi.patch).toHaveBeenCalledWith(3, { input_usd_per_mtok: 0.14, output_usd_per_mtok: 0.28 })
+    expect(wrapper.text()).toContain('$0.14')
+  })
 })

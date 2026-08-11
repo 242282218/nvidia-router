@@ -6,6 +6,7 @@ import ChangePasswordView from '../features/auth/ChangePasswordView.vue'
 import LoginView from '../features/auth/LoginView.vue'
 import AccessKeysView from '../features/access-keys/AccessKeysView.vue'
 import AuditView from '../features/audit/AuditView.vue'
+import LiveView from '../features/live/LiveView.vue'
 import ModelsView from '../features/models/ModelsView.vue'
 import NvidiaKeysView from '../features/nvidia-keys/NvidiaKeysView.vue'
 import RuntimeView from '../features/runtime/RuntimeView.vue'
@@ -36,6 +37,7 @@ export function createAppRouter(
           { component: AccessKeysView, path: 'access-keys', meta: { title: 'Access Key' } },
           { component: RuntimeView, path: 'runtime', meta: { title: '运行状态' } },
           { component: StatisticsView, path: 'statistics', meta: { title: '监控' } },
+          { component: LiveView, path: 'live', meta: { title: '实时' } },
           { component: ProxyPoolView, path: 'proxy-pool', meta: { title: '代理池' } },
           { component: AuditView, path: 'audit', meta: { title: '审计日志' } },
           { component: NotFoundView, path: ':pathMatch(.*)*', meta: { title: '页面不存在' } },
