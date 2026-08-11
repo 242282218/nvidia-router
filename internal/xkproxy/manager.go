@@ -110,11 +110,11 @@ func New(proxyURL *url.URL, authKey string, base *http.Transport, logger *slog.L
 	}, nil
 }
 
-// NewWithPool creates a manager with built-in proxy pool
+// NewWithPool creates a manager with built-in proxy pool. The authKey parameter
+// is retained for signature symmetry with New (static proxy mode) but is unused
+// by the pool mode: the collector authenticates to the upstream API through the
+// CollectorConfig URL, not through a fixed proxy credential.
 func NewWithPool(cfg CollectorConfig, authKey string, base *http.Transport, logger *slog.Logger) (*Manager, error) {
-	if strings.TrimSpace(authKey) == "" {
-		return nil, errors.New("initialize proxy manager: proxy authentication key is required")
-	}
 	if base == nil {
 		return nil, errors.New("initialize proxy manager: HTTP transport is required")
 	}

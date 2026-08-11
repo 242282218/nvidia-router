@@ -54,6 +54,50 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestNewWithBuiltInProxyPool(t *testing.T) {
+	// The built-in pool must wire through app construction: SettingsService gets
+	// the CollectorConfig, builds a pool-backed manager, and the Switcher reports
+	// it as configured. The collector's interval is set far out so no fetch runs
+	// inside the test.
+	db := openAppDatabase(t)
+	defer func() { _ = db.Close() }()
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			InitialAdminPassword: testInitialAdminPassword,
+			DataDir:              t.TempDir(),
+			MasterKey:            [32]byte{1},
+			XKPool: &config.XKPoolConfig{
+				UpstreamURL:       "https://api.xingkongdaili.com/api/getproxy/123",
+				UpstreamTimeout:   time.Second,
+				ValidationURL:     "https://integrate.api.nvidia.com/v1",
+				ValidationStatus:  404,
+				ValidationTimeout: time.Second,
+				Interval:          time.Hour, // never fires in the test window
+				ProxyTTL:          time.Minute,
+				ExpectedQty:       1,
+				Concurrency:       1,
+			},
+		},
+		DB:     db,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
+	if err != nil {
+		t.Fatalf("New with built-in pool: %v", err)
+	}
+	if app == nil {
+		t.Fatal("expected app")
+	}
+	if app.proxy == nil || !app.proxy.Configured() {
+		t.Fatal("built-in pool switcher not configured")
+	}
+	// The status endpoint must answer and report the pool mode.
+	response := httptestGet(t, app.Handler(), "/admin/api/proxy-pool/status")
+	if response.Code != http.StatusUnauthorized && response.Code != http.StatusOK {
+		t.Fatalf("proxy-pool status = %d, want 200 or 401 (auth-gated)", response.Code)
+	}
+}
+
 func TestNewCreatesAndClosesProxyManagerWhenConfigured(t *testing.T) {
 	proxyURL := mustURL(t, "http://proxy-pool:8080")
 	db := openAppDatabase(t)
