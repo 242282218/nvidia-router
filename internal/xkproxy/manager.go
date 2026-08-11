@@ -304,7 +304,7 @@ func (m *Manager) Close() {
 	m.closed = true
 
 	if m.collector != nil {
-		m.collector.Close()
+		_ = m.collector.Close()
 	}
 
 	for _, entry := range m.transports {

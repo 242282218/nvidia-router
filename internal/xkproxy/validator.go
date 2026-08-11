@@ -85,7 +85,7 @@ func (v *Validator) ValidateWithLatency(ctx context.Context, proxy Proxy) (time.
 	if err != nil {
 		return time.Since(started), classifyValidationError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxValidationBodyBytes))
 	latency := time.Since(started)
 

@@ -15,7 +15,7 @@ import (
 
 const maxUpstreamResponseBytes = 64 << 10
 
-var providerStatusPattern = regexp.MustCompile("(?i)(?:code|status|error)\\D{0,4}(201|202|203|204|205|206|207|208|211|302|303|403|406|407|430|432|436|506)\\b")
+var providerStatusPattern = regexp.MustCompile(`(?i)(?:code|status|error)\D{0,4}(201|202|203|204|205|206|207|208|211|302|303|403|406|407|430|432|436|506)\b`)
 
 var providerErrors = map[string]string{
 	"201": "request format invalid",
@@ -140,7 +140,7 @@ func (c *UpstreamClient) Fetch(ctx context.Context) ([]Proxy, time.Time, error) 
 	if err != nil {
 		return nil, time.Time{}, &TransportError{Op: "request upstream", Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamResponseBytes+1))
 	if err != nil {
