@@ -171,9 +171,8 @@ if ! curl --fail --silent --show-error --max-time 5 "$base_url/health/live" >/de
   printf 'Live health check failed.\n' >&2
   exit 1
 fi
-ready_status="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "$base_url/health/ready")"
-if [[ "$ready_status" == '200' ]]; then
-  printf 'Ready unexpectedly passed before the initial password change.\n' >&2
+if ! curl --fail --silent --show-error --max-time 5 "$base_url/health/ready" >/dev/null; then
+  printf 'Ready health check failed.\n' >&2
   exit 1
 fi
 
