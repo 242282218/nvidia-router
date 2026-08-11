@@ -58,6 +58,7 @@ type SettingsService struct {
 	db       *sql.DB
 	keys     *crypto.KeySet
 	env      EnvironmentConfig
+	poolCfg  *CollectorConfig // built-in proxy pool (collector mode), nil for static proxy
 	base     *http.Transport
 	logger   *slog.Logger
 	switcher *Switcher
@@ -65,6 +66,11 @@ type SettingsService struct {
 	mu      sync.Mutex
 	current proxyConfig
 	closed  bool
+	// runCtx is cancelled by Close so collectors started from newManager stop
+	// together with the service. It is created on construction because app wiring
+	// creates the service before the app's root context exists.
+	runCtx    context.Context
+	runCancel context.CancelFunc
 }
 
 type proxyConfig struct {
@@ -82,28 +88,32 @@ type storedProxyConfig struct {
 	keyVersion int
 }
 
-func NewSettingsService(ctx context.Context, db *sql.DB, keys *crypto.KeySet, env EnvironmentConfig, base *http.Transport, logger *slog.Logger) (*SettingsService, error) {
+func NewSettingsService(ctx context.Context, db *sql.DB, keys *crypto.KeySet, env EnvironmentConfig, poolCfg *CollectorConfig, base *http.Transport, logger *slog.Logger) (*SettingsService, error) {
 	if db == nil {
 		return nil, errors.New("initialize proxy settings: database is required")
 	}
 	if keys == nil {
 		return nil, errors.New("initialize proxy settings: crypto keys are required")
 	}
-	if err := validateEnvironmentConfig(env); err != nil {
-		return nil, err
-	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	service := &SettingsService{db: db, keys: keys, env: cloneEnvironmentConfig(env), base: base, logger: logger}
+	runCtx, runCancel := context.WithCancel(context.Background())
+	service := &SettingsService{db: db, keys: keys, env: cloneEnvironmentConfig(env), poolCfg: poolCfg, base: base, logger: logger, runCtx: runCtx, runCancel: runCancel}
+	if err := service.validateEnvironment(); err != nil {
+		runCancel()
+		return nil, err
+	}
 	config, err := service.loadCurrent(ctx)
 	if err != nil {
+		runCancel()
 		return nil, err
 	}
 	var manager *Manager
 	if config.snapshot.Enabled {
 		manager, err = service.newManager(config)
 		if err != nil {
+			runCancel()
 			return nil, err
 		}
 	}
@@ -117,6 +127,15 @@ func (s *SettingsService) Switcher() *Switcher {
 		return nil
 	}
 	return s.switcher
+}
+
+// PoolStatus returns the live built-in proxy-pool state (counts, per-proxy
+// quality) for the admin UI. Static-proxy mode returns an empty status.
+func (s *SettingsService) PoolStatus() PoolStatus {
+	if s == nil || s.switcher == nil {
+		return PoolStatus{}
+	}
+	return s.switcher.PoolStatus()
 }
 
 func (s *SettingsService) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -183,6 +202,9 @@ func (s *SettingsService) Close() {
 	}
 	s.closed = true
 	s.mu.Unlock()
+	if s.runCancel != nil {
+		s.runCancel()
+	}
 	if s.switcher != nil {
 		s.switcher.Close()
 	}
@@ -194,7 +216,7 @@ func (s *SettingsService) loadCurrent(ctx context.Context) (proxyConfig, error) 
 		return proxyConfig{}, err
 	}
 	if stored == nil {
-		return environmentProxyConfig(s.env)
+		return s.environmentProxyConfig()
 	}
 	return s.databaseProxyConfig(*stored)
 }
@@ -299,6 +321,17 @@ func (s *SettingsService) newManager(config proxyConfig) (*Manager, error) {
 	if s.base == nil {
 		return nil, errors.New("initialize proxy manager: HTTP transport is required")
 	}
+	if s.poolCfg != nil && config.proxyURL == nil {
+		// Built-in pool mode: fetch and validate proxy addresses from the
+		// upstream API. The auth key authenticates the router to the pool's
+		// provider (static-manager compatibility), not a single fixed proxy.
+		manager, err := NewWithPool(*s.poolCfg, config.authKey, s.base, s.logger)
+		if err != nil {
+			return nil, fmt.Errorf("initialize proxy pool manager: %w", err)
+		}
+		manager.StartCollector(s.runCtx)
+		return manager, nil
+	}
 	manager, err := New(config.proxyURL, config.authKey, s.base, s.logger)
 	if err != nil {
 		return nil, fmt.Errorf("initialize proxy manager: %w", err)
@@ -338,6 +371,31 @@ func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error
 	return nil
 }
 
+func (s *SettingsService) validateEnvironment() error {
+	if s.poolCfg != nil {
+		// Built-in pool mode: the auth key authenticates the router to the proxy
+		// provider (upstream API), not to a fixed proxy URL, so a key without a
+		// URL is valid. The pool configuration itself carries the URL contract.
+		return validatePoolConfig(*s.poolCfg)
+	}
+	return validateEnvironmentConfig(s.env)
+}
+
+func validatePoolConfig(cfg CollectorConfig) error {
+	if strings.TrimSpace(cfg.UpstreamURL) == "" {
+		return errors.New("proxy pool: upstream URL is required")
+	}
+	if strings.TrimSpace(cfg.ValidationURL) == "" {
+		return errors.New("proxy pool: validation URL is required")
+	}
+	if cfg.ProxyTTL <= 0 {
+		return errors.New("proxy pool: proxy TTL must be positive")
+	}
+	if cfg.Interval <= 0 {
+		return errors.New("proxy pool: collect interval must be positive")
+	}
+	return nil
+}
 func validateEnvironmentConfig(config EnvironmentConfig) error {
 	if config.URL == nil {
 		if config.AuthKey != "" {
@@ -363,11 +421,18 @@ func cloneEnvironmentConfig(config EnvironmentConfig) EnvironmentConfig {
 	return clone
 }
 
-func environmentProxyConfig(env EnvironmentConfig) (proxyConfig, error) {
-	if env.URL == nil {
+func (s *SettingsService) environmentProxyConfig() (proxyConfig, error) {
+	if s.poolCfg != nil {
+		// Built-in pool mode: the router fetches and validates proxy addresses
+		// from the upstream API configured in poolCfg. There is no fixed proxy
+		// URL, so proxyURL is nil and newManager routes to NewWithPool. The auth
+		// key (pool provider credential) comes from the static env override.
+		return makeProxyConfig(true, nil, s.env.AuthKey, SourceEnvironment), nil
+	}
+	if s.env.URL == nil {
 		return makeProxyConfig(false, nil, "", SourceNone), nil
 	}
-	return makeProxyConfig(true, env.URL, env.AuthKey, SourceEnvironment), nil
+	return makeProxyConfig(true, s.env.URL, s.env.AuthKey, SourceEnvironment), nil
 }
 
 func makeProxyConfig(enabled bool, proxyURL *url.URL, authKey string, source Source) proxyConfig {

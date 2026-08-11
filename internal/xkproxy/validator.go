@@ -17,6 +17,11 @@ var (
 	ErrTimeout      = errors.New("validation timed out")
 	ErrProxyAuth    = errors.New("upstream proxy authentication failed")
 	ErrStatus       = errors.New("unexpected validation status")
+	// ErrSlowProxy reports a proxy that reached the validation target but took
+	// longer than MaxLatency. It is still reachable, but admitting it would drag
+	// first-token latency toward the slowest exit (audit H1): a pool whose
+	// fastest member is slow has no fast baseline to demote against.
+	ErrSlowProxy = errors.New("proxy slower than maximum acceptable latency")
 )
 
 const maxValidationBodyBytes = 1 << 20
@@ -25,6 +30,7 @@ type Validator struct {
 	validationURL    string
 	validationStatus int
 	timeout          time.Duration
+	maxLatency       time.Duration
 
 	mu         sync.Mutex
 	transports map[string]*cachedValidationTransport
@@ -37,10 +43,17 @@ type cachedValidationTransport struct {
 }
 
 func NewValidator(validationURL string, validationStatus int, timeout time.Duration) *Validator {
+	return NewValidatorWithMaxLatency(validationURL, validationStatus, timeout, 0)
+}
+
+// NewValidatorWithMaxLatency additionally rejects proxies whose validation
+// round-trip exceeds maxLatency. A zero maxLatency disables the slow-proxy gate.
+func NewValidatorWithMaxLatency(validationURL string, validationStatus int, timeout time.Duration, maxLatency time.Duration) *Validator {
 	return &Validator{
 		validationURL:    validationURL,
 		validationStatus: validationStatus,
 		timeout:          timeout,
+		maxLatency:       maxLatency,
 		transports:       make(map[string]*cachedValidationTransport),
 	}
 }
@@ -95,6 +108,9 @@ func (v *Validator) ValidateWithLatency(ctx context.Context, proxy Proxy) (time.
 	if resp.StatusCode != v.validationStatus {
 		return latency, fmt.Errorf("%w: got %d, want %d", ErrStatus, resp.StatusCode, v.validationStatus)
 	}
+	if v.maxLatency > 0 && latency > v.maxLatency {
+		return latency, fmt.Errorf("%w: %v exceeds %v", ErrSlowProxy, latency, v.maxLatency)
+	}
 	return latency, nil
 }
 
@@ -132,9 +148,13 @@ func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.
 	transport := &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		TLSHandshakeTimeout: dialTimeout,
-		MaxIdleConns:        4,
-		MaxIdleConnsPerHost: 2,
-		IdleConnTimeout:     30 * time.Second,
+		// Each validated proxy is checked against the same validation host, so
+		// MaxIdleConnsPerHost would otherwise cap concurrent probes across ALL
+		// proxies to 2 and queue the rest behind them, eating the timeout budget
+		// and misclassifying healthy proxies as dead (audit H7). Validation is a
+		// one-shot connection per proxy: disable keep-alives and let every probe
+		// use its own connection.
+		DisableKeepAlives: true,
 	}
 	if err == nil {
 		transport.Proxy = http.ProxyURL(parsed)

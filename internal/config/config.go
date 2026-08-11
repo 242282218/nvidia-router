@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -39,6 +40,27 @@ type Config struct {
 	NVIDIABaseURL          *url.URL
 	XKProxyURL             *url.URL
 	XKProxyAuthKey         string
+	// XKPool enables the built-in proxy pool (collector mode). It is non-nil
+	// when NVIDIA_ROUTER_XK_UPSTREAM_URL is set; static XKProxyURL and the
+	// pool mode are mutually exclusive so the admin page's effective source
+	// stays unambiguous.
+	XKPool *XKPoolConfig
+}
+
+// XKPoolConfig configures the built-in proxy collector that fetches proxy
+// addresses from an upstream API, validates their quality against NVIDIA, and
+// serves requests through the best available exit.
+type XKPoolConfig struct {
+	UpstreamURL       string
+	UpstreamTimeout   time.Duration
+	ValidationURL     string
+	ValidationStatus  int
+	ValidationTimeout time.Duration
+	MaxLatency        time.Duration
+	Interval          time.Duration
+	ProxyTTL          time.Duration
+	ExpectedQty       int
+	Concurrency       int
 }
 
 type LoadOptions struct {
@@ -95,6 +117,13 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	xkPool, err := loadXKPoolConfig()
+	if err != nil {
+		return Config{}, err
+	}
+	if xkProxyURL != nil && xkPool != nil {
+		return Config{}, errors.New("NVIDIA_ROUTER_XK_PROXY_URL and NVIDIA_ROUTER_XK_UPSTREAM_URL are mutually exclusive: configure either the static proxy or the built-in proxy pool, not both")
+	}
 
 	return Config{
 		ListenAddress:          valueOrDefault("NVIDIA_ROUTER_LISTEN_ADDR", defaultListenAddress),
@@ -111,6 +140,7 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 		NVIDIABaseURL:          nvidiaBaseURL,
 		XKProxyURL:             xkProxyURL,
 		XKProxyAuthKey:         xkProxyAuthKey,
+		XKPool:                 xkPool,
 	}, nil
 }
 
@@ -200,6 +230,126 @@ func loadPositiveInt(name string, defaultValue int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s: must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+// xkPoolDefault* are the documented defaults for the built-in proxy collector
+// (docs/星空代理池融合说明.md). UpstreamTimeout and ValidationTimeout default to
+// 4s/5s; Interval and ProxyTTL to 5s/120s so the pool re-validates before TTL
+// expiry, mirroring the standalone pool's behaviour.
+const (
+	xkPoolDefaultUpstreamTimeout   = 4 * time.Second
+	xkPoolDefaultValidationTimeout = 5 * time.Second
+	xkPoolDefaultInterval          = 5 * time.Second
+	xkPoolDefaultProxyTTL          = 120 * time.Second
+	xkPoolDefaultExpectedQty       = 2
+	xkPoolDefaultConcurrency       = 2
+)
+
+// loadXKPoolConfig reads the built-in proxy pool (collector mode) environment
+// variables. It returns nil when NVIDIA_ROUTER_XK_UPSTREAM_URL is unset. When
+// set, the validation URL is required and defaulted by the caller only through
+// NewCollector's zero handling; here we validate the URL shapes and durations.
+func loadXKPoolConfig() (*XKPoolConfig, error) {
+	const upstreamEnv = "NVIDIA_ROUTER_XK_UPSTREAM_URL"
+	rawUpstream := strings.TrimSpace(os.Getenv(upstreamEnv))
+	if rawUpstream == "" {
+		return nil, nil
+	}
+	if _, err := url.Parse(rawUpstream); err != nil || strings.TrimSpace(rawUpstream) == "" {
+		return nil, proxyConfigError(upstreamEnv, "must be an absolute HTTP or HTTPS URL")
+	}
+
+	validationURL := strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_XK_VALIDATION_URL"))
+	if validationURL == "" {
+		// The proxy pool validates against the NVIDIA base by default; an empty
+		// validation target would pass every proxy regardless of real reachability.
+		validationURL = defaultNVIDIABaseURL
+	}
+	if _, err := url.Parse(validationURL); err != nil || validationURL == "" {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_VALIDATION_URL", "must be an absolute HTTP or HTTPS URL")
+	}
+
+	validationStatus, err := loadPositiveInt("NVIDIA_ROUTER_XK_VALIDATION_STATUS", httpStatusNotFound)
+	if err != nil {
+		return nil, err
+	}
+	if validationStatus < 100 || validationStatus > 599 {
+		return nil, errors.New("NVIDIA_ROUTER_XK_VALIDATION_STATUS: must be an HTTP status code between 100 and 599")
+	}
+
+	upstreamTimeout, err := loadDuration("NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", xkPoolDefaultUpstreamTimeout)
+	if err != nil {
+		return nil, err
+	}
+	validationTimeout, err := loadDuration("NVIDIA_ROUTER_XK_VALIDATION_TIMEOUT", xkPoolDefaultValidationTimeout)
+	if err != nil {
+		return nil, err
+	}
+	// MaxLatency is optional; only set when explicitly configured.
+	maxLatency, err := loadOptionalDuration("NVIDIA_ROUTER_XK_MAX_LATENCY")
+	if err != nil {
+		return nil, err
+	}
+	interval, err := loadDuration("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", xkPoolDefaultInterval)
+	if err != nil {
+		return nil, err
+	}
+	proxyTTL, err := loadDuration("NVIDIA_ROUTER_XK_PROXY_TTL", xkPoolDefaultProxyTTL)
+	if err != nil {
+		return nil, err
+	}
+	expectedQty, err := loadPositiveInt("NVIDIA_ROUTER_XK_EXPECTED_QTY", xkPoolDefaultExpectedQty)
+	if err != nil {
+		return nil, err
+	}
+	concurrency, err := loadPositiveInt("NVIDIA_ROUTER_XK_CONCURRENCY", xkPoolDefaultConcurrency)
+	if err != nil {
+		return nil, err
+	}
+
+	return &XKPoolConfig{
+		UpstreamURL:       rawUpstream,
+		UpstreamTimeout:   upstreamTimeout,
+		ValidationURL:     validationURL,
+		ValidationStatus:  validationStatus,
+		ValidationTimeout: validationTimeout,
+		MaxLatency:        maxLatency,
+		Interval:          interval,
+		ProxyTTL:          proxyTTL,
+		ExpectedQty:       expectedQty,
+		Concurrency:       concurrency,
+	}, nil
+}
+
+// httpStatusNotFound is the default validation status: a proxy that reaches the
+// NVIDIA base and gets a 404 for an unknown path proves the tunnel works without
+// burning an authenticated request.
+const httpStatusNotFound = 404
+
+func loadDuration(name string, defaultValue time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive duration (e.g. 5s, 120s)", name)
+	}
+	return parsed, nil
+}
+
+// loadOptionalDuration reads an optional duration; an empty value returns zero
+// (the feature is disabled), a malformed value is an error.
+func loadOptionalDuration(name string) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive duration (e.g. 2s)", name)
 	}
 	return parsed, nil
 }

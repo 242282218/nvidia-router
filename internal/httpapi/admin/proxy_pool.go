@@ -11,6 +11,7 @@ import (
 type proxyPoolService interface {
 	Snapshot(context.Context) (xkproxy.Snapshot, error)
 	Update(context.Context, xkproxy.Patch) (xkproxy.Snapshot, error)
+	PoolStatus() xkproxy.PoolStatus
 }
 
 type ProxyPool struct {
@@ -22,18 +23,27 @@ func NewProxyPool(service proxyPoolService) *ProxyPool {
 }
 
 func (h *ProxyPool) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != "/admin/api/proxy-pool" {
-		http.NotFound(writer, request)
-		return
-	}
-	switch request.Method {
-	case http.MethodGet:
+	switch {
+	case request.URL.Path == "/admin/api/proxy-pool" && request.Method == http.MethodGet:
 		h.get(writer, request)
-	case http.MethodPatch:
+	case request.URL.Path == "/admin/api/proxy-pool" && request.Method == http.MethodPatch:
 		h.patch(writer, request)
+	case request.URL.Path == "/admin/api/proxy-pool/status" && request.Method == http.MethodGet:
+		h.status(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+// status reports the live built-in proxy-pool state (healthy/total counts and
+// per-proxy quality) for the admin UI. Static-proxy mode returns zero counts.
+func (h *ProxyPool) status(writer http.ResponseWriter, request *http.Request) {
+	status := h.service.PoolStatus()
+	writeJSON(writer, http.StatusOK, map[string]any{"data": map[string]any{
+		"total_size":   status.TotalSize,
+		"healthy_size": status.HealthySize,
+		"proxies":      status.View(),
+	}})
 }
 
 func (h *ProxyPool) get(writer http.ResponseWriter, request *http.Request) {

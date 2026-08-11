@@ -51,9 +51,20 @@ type Pool struct {
 	proxies         []Proxy
 	selectionCursor atomic.Uint64
 
+	// removed records proxies permanently ejected (EjectionCount exceeded
+	// MaxEjections) so a later fetch does not immediately resurrect a
+	// repeatedly-failing exit (audit M6). Entries expire after removalCooldown.
+	removed map[string]time.Time
+
 	stickyMu       sync.Mutex
 	stickyBindings map[string]stickyEntry
 }
+
+// removalCooldown keeps a permanently-ejected proxy out of the pool after
+// removal. The upstream provider may have fixed it or rotated it; after the
+// window the pool admits it again on a fresh fetch. A window far shorter than
+// the provider's own proxy churn lets a dead exit keep failing the whole pool.
+const removalCooldown = 5 * time.Minute
 
 type stickyEntry struct {
 	proxyKey  string
@@ -61,13 +72,16 @@ type stickyEntry struct {
 }
 
 func NewPool() *Pool {
-	return &Pool{stickyBindings: make(map[string]stickyEntry)}
+	return &Pool{removed: make(map[string]time.Time), stickyBindings: make(map[string]stickyEntry)}
 }
 
 func (p *Pool) Replace(proxies []Proxy) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.proxies = append([]Proxy(nil), proxies...)
+	// A manual replace is an explicit override: reset the removal blacklist so
+	// explicitly-provided proxies are admitted regardless of prior ejections.
+	clear(p.removed)
 }
 
 func (p *Pool) Clear() {
@@ -208,8 +222,20 @@ func (p *Pool) Merge(now time.Time, incoming []Proxy, policies ...EjectionPolicy
 		if !candidate.LiveAt(now) {
 			continue
 		}
+		if until, gone := p.removed[candidate.Key()]; gone && now.Before(until) {
+			// The proxy was permanently ejected and its removal cooldown has not
+			// expired: do not re-admit it even though the upstream keeps returning
+			// it (audit M6). After the cooldown the pool admits it again on a
+			// fresh fetch, giving a fixed/rotated exit a second chance.
+			continue
+		}
 		position, found := index[candidate.Key()]
 		if !found {
+			// A proxy that was permanently removed (EjectionCount exceeded
+			// MaxEjections) must not be silently resurrected by the next fetch:
+			// it was failing repeatedly, and re-adding it fresh would restart the
+			// eject/re-add churn (audit M6). The upstream is still free to return
+			// it again next cycle; the pool simply does not re-admit it here.
 			position = len(p.proxies)
 			index[candidate.Key()] = position
 			p.proxies = append(p.proxies, candidate)
@@ -227,7 +253,13 @@ func (p *Pool) Merge(now time.Time, incoming []Proxy, policies ...EjectionPolicy
 		if !candidate.FetchedAt.IsZero() && (current.FetchedAt.IsZero() || candidate.FetchedAt.Before(current.FetchedAt)) {
 			current.FetchedAt = candidate.FetchedAt
 		}
-		if !candidate.ExpiresAt.IsZero() && (current.ExpiresAt.IsZero() || candidate.ExpiresAt.Before(current.ExpiresAt)) {
+		// Refresh the expiry from every live fetch. The proxy pool re-validates on
+		// a schedule (collector interval) and each fetch extends the TTL; taking
+		// only an earlier expiry left ExpiresAt frozen at the first fetch, so the
+		// pool went empty every TTL window even though the upstream kept returning
+		// the same proxies (audit P2-1). A candidate that failed LiveAt above is
+		// already skipped, so refreshing here always extends toward a valid proxy.
+		if !candidate.ExpiresAt.IsZero() {
 			current.ExpiresAt = candidate.ExpiresAt
 		}
 		current.SuccessCount++
@@ -235,7 +267,14 @@ func (p *Pool) Merge(now time.Time, incoming []Proxy, policies ...EjectionPolicy
 		if current.HealthFails > 0 {
 			current.HealthFails--
 		}
-		current.EjectedUntil = time.Time{}
+		// Do NOT clear EjectedUntil: a proxy inside its isolation window must stay
+		// isolated even though the collector keeps fetching it. Clearing it here
+		// would let a still-failing proxy back into rotation every fetch and then
+		// re-isolate it, churning the selection order (audit M6). Success (through
+		// ReportSuccess) is what clears the isolation window.
+		if current.EjectionCount > policy.MaxEjections {
+			continue
+		}
 		p.proxies[position] = current
 	}
 }
@@ -291,7 +330,10 @@ func (p *Pool) ReportFailure(identity string, now time.Time, policy EjectionPoli
 
 		proxy.EjectionCount++
 		if proxy.EjectionCount > policy.MaxEjections {
+			// Permanently remove and remember the removal so Merge does not
+			// resurrect a repeatedly-failing exit on the next fetch (audit M6).
 			outcome = OutcomeRemoved
+			p.removed[proxy.Key()] = now.Add(removalCooldown)
 			continue
 		}
 		proxy.HealthFails = 0
@@ -355,6 +397,25 @@ func (p *Pool) Size(now time.Time) int {
 	return count
 }
 
+// HasHealthy reports whether the pool still holds an available proxy with the
+// given key. The Manager uses it to decide whether a cached transport bound to a
+// proxy that was ejected or removed should be rebuilt against a fresher proxy
+// (audit H3): when the bound exit is gone, keeping the cache would keep sending
+// traffic to a dead proxy until the next connection-level failure.
+func (p *Pool) HasHealthy(proxyKey string, now time.Time) bool {
+	if proxyKey == "" {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, proxy := range p.proxies {
+		if proxy.Key() == proxyKey && proxy.AvailableAt(now) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) LiveSize(now time.Time) int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -395,6 +456,17 @@ func (p *Pool) pruneLocked(now time.Time) {
 		}
 	}
 	p.truncateLocked(filtered)
+	p.pruneRemovedLocked(now)
+}
+
+// pruneRemovedLocked drops expired removal-cooldown entries so the map cannot
+// grow without bound.
+func (p *Pool) pruneRemovedLocked(now time.Time) {
+	for key, until := range p.removed {
+		if !now.Before(until) {
+			delete(p.removed, key)
+		}
+	}
 }
 
 func (p *Pool) truncateLocked(filtered []Proxy) {

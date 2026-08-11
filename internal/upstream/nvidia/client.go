@@ -378,8 +378,10 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
 	httpClient := *c.httpClient
 	httpClient.Transport = handle.Transport()
+	started := time.Now()
 	response, err := httpClient.Do(request)
 	firstByteTimer.Stop()
+	elapsed := time.Since(started)
 	if response != nil {
 		if response.Body == nil {
 			handle.Release()
@@ -393,6 +395,12 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			_ = response.Body.Close()
 			return nil, wrote.Load(), false, err
 		}
+		// The upstream answered through this exit; feed the observed latency back
+		// into the pool's EWMA so selection prefers exits that actually serve
+		// fast (audit H4). Latency is recorded on any response, success or not:
+		// a round-trip that completed proves the proxy itself is healthy, and a
+		// non-2xx from the target is an upstream condition, not a proxy fault.
+		handle.ReportLatency(elapsed)
 		return response, wrote.Load(), false, nil
 	}
 	if err == nil {

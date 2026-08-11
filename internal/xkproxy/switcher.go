@@ -62,6 +62,21 @@ func (s *Switcher) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot,
 
 // Apply atomically publishes a manager. The old manager only closes idle
 // connections, so handles already handed to requests keep their transport.
+// PoolStatus returns the live proxy-pool state for monitoring. It returns an
+// empty status when the switcher has no pool-backed manager (static proxy mode
+// or disabled).
+func (s *Switcher) PoolStatus() PoolStatus {
+	if s == nil {
+		return PoolStatus{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.manager == nil || !s.enabled || s.closed {
+		return PoolStatus{}
+	}
+	return s.manager.PoolStatus()
+}
+
 func (s *Switcher) Apply(manager *Manager, enabled bool) error {
 	if s == nil {
 		if manager != nil {

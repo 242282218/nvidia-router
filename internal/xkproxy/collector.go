@@ -27,11 +27,15 @@ type Collector struct {
 }
 
 type CollectorConfig struct {
-	UpstreamURL      string
-	UpstreamTimeout  time.Duration
-	ValidationURL    string
-	ValidationStatus int
+	UpstreamURL       string
+	UpstreamTimeout   time.Duration
+	ValidationURL     string
+	ValidationStatus  int
 	ValidationTimeout time.Duration
+	// MaxLatency rejects a fetched proxy whose validation round-trip exceeds
+	// this window, keeping slow exits out of the pool even when every candidate
+	// is slow (audit H1). Zero disables the gate.
+	MaxLatency       time.Duration
 	Interval         time.Duration
 	ProxyTTL         time.Duration
 	ExpectedQty      int
@@ -45,7 +49,7 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 	}
 	return &Collector{
 		upstream:       NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamTimeout),
-		validator:      NewValidator(cfg.ValidationURL, cfg.ValidationStatus, cfg.ValidationTimeout),
+		validator:      NewValidatorWithMaxLatency(cfg.ValidationURL, cfg.ValidationStatus, cfg.ValidationTimeout, cfg.MaxLatency),
 		pool:           pool,
 		logger:         logger,
 		interval:       cfg.Interval,

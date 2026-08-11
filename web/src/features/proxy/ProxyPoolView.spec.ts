@@ -8,6 +8,7 @@ vi.mock('./api', () => ({
   proxyPoolApi: {
     get: vi.fn(),
     update: vi.fn(),
+    status: vi.fn(),
   },
 }))
 
@@ -18,10 +19,17 @@ const settings = {
   source: 'environment' as const,
 }
 
+const emptyStatus = {
+  total_size: 0,
+  healthy_size: 0,
+  proxies: [],
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(proxyPoolApi.get).mockResolvedValue({ data: settings })
   vi.mocked(proxyPoolApi.update).mockResolvedValue({ data: { ...settings, source: 'database' } })
+  vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: emptyStatus })
 })
 
 describe('ProxyPoolView', () => {
@@ -58,5 +66,23 @@ describe('ProxyPoolView', () => {
       auth_key: '',
       clear_auth_key: true,
     }, expect.any(AbortSignal))
+  })
+
+  it('shows live pool status: healthy counts and per-proxy quality', async () => {
+    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
+      total_size: 2,
+      healthy_size: 1,
+      proxies: [
+        { address: '10.0.0.1:8080', latency_ewma_ms: 150, remaining_seconds: 95, healthy: true, ejected: false, success_count: 8, failure_count: 0 },
+        { address: '10.0.0.2:8080', latency_ewma_ms: 900, remaining_seconds: 30, healthy: false, ejected: true, success_count: 1, failure_count: 4 },
+      ],
+    } })
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('健康 1 / 2')
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.1:8080')
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.2:8080')
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('150 ms')
   })
 })

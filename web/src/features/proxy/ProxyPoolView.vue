@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiError, isAbortError } from '../../shared/api/client'
+import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { proxyPoolApi } from './api'
-import type { ProxyPoolPatch, ProxyPoolSettings } from './types'
+import type { PoolProxyStatus, PoolStatusData, ProxyPoolPatch, ProxyPoolSettings } from './types'
 
 const settings = ref<ProxyPoolSettings | null>(null)
 const enabled = ref(false)
@@ -14,16 +14,25 @@ const saving = ref(false)
 const errorMessage = ref('')
 const formError = ref('')
 const savedMessage = ref('')
+const statusData = ref<PoolStatusData | null>(null)
+const statusLoading = ref(false)
+const statusError = ref('')
 let disposed = false
 let controller: globalThis.AbortController | null = null
+let statusController: globalThis.AbortController | null = null
+let statusTimer: ReturnType<typeof globalThis.setInterval> | undefined
 
 onMounted(() => {
   void loadSettings()
+  void refreshStatus()
+  statusTimer = globalThis.setInterval(() => void refreshStatus(), 10_000)
 })
 
 onBeforeUnmount(() => {
   disposed = true
   controller?.abort()
+  statusController?.abort()
+  if (statusTimer !== undefined) globalThis.clearInterval(statusTimer)
 })
 
 async function loadSettings(): Promise<void> {
@@ -41,6 +50,62 @@ async function loadSettings(): Promise<void> {
   } finally {
     if (!disposed && controller === nextController) loading.value = false
   }
+}
+
+async function refreshStatus(): Promise<void> {
+  if (disposed) return
+  statusController?.abort()
+  const nextController = new globalThis.AbortController()
+  statusController = nextController
+  if (statusData.value === null) statusLoading.value = true
+  try {
+    const response: unknown = await proxyPoolApi.status(nextController.signal)
+    if (disposed || statusController !== nextController) return
+    if (!isPoolStatusData(response)) throw new TypeError('Invalid proxy pool status response.')
+    statusData.value = response.data
+    statusError.value = ''
+  } catch (error) {
+    if (disposed || statusController !== nextController || isAbortError(error)) return
+    statusError.value = error instanceof ApiError ? error.message : '代理池状态加载失败。'
+  } finally {
+    if (!disposed && statusController === nextController) statusLoading.value = false
+  }
+}
+
+function isPoolStatusData(value: unknown): value is { data: PoolStatusData } {
+  if (!isRecord(value) || !isRecord(value.data)) return false
+  const data = value.data
+  return isFiniteNumber(data.total_size)
+    && isFiniteNumber(data.healthy_size)
+    && Array.isArray(data.proxies)
+    && data.proxies.every(isPoolProxyStatus)
+}
+
+function isPoolProxyStatus(value: unknown): value is PoolProxyStatus {
+  if (!isRecord(value) || typeof value.address !== 'string') return false
+  return typeof value.healthy === 'boolean'
+    && typeof value.ejected === 'boolean'
+    && isFiniteNumber(value.latency_ewma_ms)
+    && isFiniteNumber(value.remaining_seconds)
+    && isFiniteNumber(value.success_count)
+    && isFiniteNumber(value.failure_count)
+}
+
+function formatLatency(ms: number): string {
+  return `${ms} ms`
+}
+
+function formatRemaining(seconds: number): string {
+  if (seconds < 0) return '—'
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
+function sourceLabel(source?: ProxyPoolSettings['source']): string {
+  if (source === 'database') return '数据库配置'
+  if (source === 'environment') return '环境变量兜底'
+  return '未配置'
 }
 
 function applySettings(next: ProxyPoolSettings): void {
@@ -100,12 +165,6 @@ function isValidProxyURL(raw: string): boolean {
   } catch {
     return false
   }
-}
-
-function sourceLabel(source?: ProxyPoolSettings['source']): string {
-  if (source === 'database') return '数据库配置'
-  if (source === 'environment') return '环境变量兜底'
-  return '未配置'
 }
 </script>
 
@@ -248,6 +307,94 @@ function sourceLabel(source?: ProxyPoolSettings['source']): string {
           </button>
         </div>
       </form>
+
+      <section
+        data-testid="proxy-status-panel"
+        class="card mt-4 animate-slide-up"
+        aria-labelledby="proxy-status-heading"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
+          <div>
+            <h2
+              id="proxy-status-heading"
+              class="text-sm font-medium text-[var(--color-text)]"
+            >
+              代理池状态
+            </h2>
+            <p class="mt-1 text-xs text-[var(--color-text-muted)]">
+              内置池实时质量：健康代理数、延迟与剩余寿命。静态代理模式不采集。
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span
+              v-if="statusData"
+              class="text-xs text-[var(--color-text-muted)]"
+            >
+              健康 <span class="font-mono font-semibold text-[var(--color-success)]">{{ statusData.healthy_size }}</span> / {{ statusData.total_size }}
+            </span>
+            <button
+              class="btn-ghost"
+              type="button"
+              :disabled="statusLoading"
+              aria-label="刷新代理池状态"
+              @click="refreshStatus"
+            >
+              {{ statusLoading && statusData === null ? '加载中…' : '刷新' }}
+            </button>
+          </div>
+        </div>
+
+        <p
+          v-if="statusError"
+          class="m-4 rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
+          role="alert"
+        >
+          {{ statusError }}
+        </p>
+        <p
+          v-else-if="statusLoading && statusData === null"
+          class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        >
+          <span class="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
+          加载代理池状态…
+        </p>
+        <template v-else-if="statusData">
+          <div
+            v-if="statusData.proxies.length === 0"
+            class="p-6 text-center text-sm text-[var(--color-text-muted)]"
+          >
+            {{ statusData.total_size === 0 ? '当前无动态代理（静态代理模式或未启用内置池）。' : '暂无可用代理，等待下一次采集。' }}
+          </div>
+          <ul
+            v-else
+            class="divide-y divide-[var(--color-border)]"
+          >
+            <li
+              v-for="proxy in statusData.proxies"
+              :key="proxy.address"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
+            >
+              <span class="min-w-0 flex-1 font-mono text-sm text-[var(--color-text)]">
+                {{ proxy.address }}
+              </span>
+              <span
+                :class="proxy.healthy ? 'badge-success' : (proxy.ejected ? 'badge-danger' : 'badge-warning')"
+              >
+                {{ proxy.healthy ? '健康' : (proxy.ejected ? '隔离' : '待检') }}
+              </span>
+              <span class="text-xs text-[var(--color-text-muted)]">
+                延迟 <span class="font-mono text-[var(--color-text-secondary)]">{{ formatLatency(proxy.latency_ewma_ms) }}</span>
+              </span>
+              <span class="text-xs text-[var(--color-text-muted)]">
+                剩余 <span class="font-mono text-[var(--color-text-secondary)]">{{ formatRemaining(proxy.remaining_seconds) }}</span>
+              </span>
+              <span class="text-xs text-[var(--color-text-muted)]">
+                成功 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.success_count }}</span> · 失败 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.failure_count }}</span>
+              </span>
+            </li>
+          </ul>
+        </template>
+      </section>
     </div>
   </div>
 </template>

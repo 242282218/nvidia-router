@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/runtimeconfig"
 )
@@ -234,4 +235,104 @@ func hijackProxyConn(writer http.ResponseWriter) (net.Conn, *bufio.ReadWriter, e
 		return nil, nil, errors.New("proxy writer does not support hijacking")
 	}
 	return hijacker.Hijack()
+}
+
+func TestManagerCachedTransportKeepsProxyIdentityAndSurvivesEmptyPool(t *testing.T) {
+	// Audit P1-2 / P2-2: a cache hit must reuse the transport AND report the
+	// proxy that transport was actually built against, and it must keep working
+	// even when the pool momentarily has no healthy proxy (TTL expiry between
+	// fetches). Regression: proxyKey used to be the rotation cursor's current
+	// value, so a reused transport reported a different proxy than it dialed,
+	// and an empty pool rejected even a healthy cached connection.
+	base := http.DefaultTransport.(*http.Transport)
+	manager, err := NewWithPool(CollectorConfig{UpstreamTimeout: time.Second}, "proxy-secret", base, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewWithPool: %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	first := Proxy{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	second := Proxy{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	manager.pool.Replace([]Proxy{first, second})
+
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	acquired, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	firstKey := acquired.proxyKey
+
+	// Force the rotation cursor past the first proxy so a naive Get would return
+	// the second one; a cache hit must still report the transport's bound proxy.
+	manager.pool.selectionCursor.Add(1)
+
+	cached, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("cached Acquire: %v", err)
+	}
+	if cached.Transport() != acquired.Transport() {
+		t.Fatal("same snapshot did not reuse cached transport")
+	}
+	if cached.proxyKey != firstKey {
+		t.Fatalf("cached proxyKey = %q, want %q (transport is bound to the first proxy)", cached.proxyKey, firstKey)
+	}
+
+	// Empty the pool: a healthy cached transport must still be acquirable.
+	manager.pool.Clear()
+	reused, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("Acquire with empty pool and cached transport: %v", err)
+	}
+	if reused.Transport() != acquired.Transport() {
+		t.Fatal("empty-pool Acquire did not reuse the cached transport")
+	}
+	if reused.proxyKey != firstKey {
+		t.Fatalf("empty-pool proxyKey = %q, want %q", reused.proxyKey, firstKey)
+	}
+
+	acquired.Release()
+	cached.Release()
+	reused.Release()
+}
+
+func TestManagerRebuildsTransportWhenCachedProxyEjected(t *testing.T) {
+	// Audit H3: a cached transport bound to a proxy that gets ejected must be
+	// rebuilt against a fresh pool proxy on the next Acquire, instead of keeping
+	// traffic pinned to a dead exit until a connection-level failure.
+	base := http.DefaultTransport.(*http.Transport)
+	manager, err := NewWithPool(CollectorConfig{UpstreamTimeout: time.Second}, "proxy-secret", base, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewWithPool: %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	now := time.Now()
+	first := Proxy{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(10 * time.Minute)}
+	manager.pool.Replace([]Proxy{first})
+
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	acquired, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	firstKey := acquired.proxyKey
+	acquired.Release()
+
+	// Eject the first proxy and replace the pool with a second one.
+	policy := EjectionPolicy{FailureLimit: 1, BaseDuration: time.Second, MaxDuration: time.Second, MaxEjections: 1}
+	manager.pool.ReportFailure(firstKey, time.Now(), policy)
+	manager.pool.ReportFailure(firstKey, time.Now(), policy)
+	manager.pool.Replace([]Proxy{{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: time.Now().Add(10 * time.Minute)}})
+
+	rebuilt, err := manager.Acquire(context.Background(), snapshot, "")
+	if err != nil {
+		t.Fatalf("Acquire after ejection: %v", err)
+	}
+	t.Cleanup(rebuilt.Release)
+	if rebuilt.proxyKey == firstKey {
+		t.Fatalf("rebuilt proxyKey = %q, want a different proxy (cached dead proxy not rebuilt)", rebuilt.proxyKey)
+	}
+	if rebuilt.Transport() == acquired.Transport() {
+		t.Fatal("Acquire reused the transport bound to the ejected proxy")
+	}
 }

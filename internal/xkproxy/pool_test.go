@@ -1,6 +1,12 @@
 package xkproxy
 
 import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -265,5 +271,136 @@ func TestProviderErrorDetection(t *testing.T) {
 				t.Errorf("ErrorCode() = %v, want %v", code, tt.wantCode)
 			}
 		})
+	}
+}
+
+func TestMergeRefreshesProxyExpiryOnRepeatedFetches(t *testing.T) {
+	// Audit P2-1: Merge used to keep only the earliest ExpiresAt, so a proxy that
+	// the collector refetches every interval froze its TTL at the first fetch and
+	// the pool went empty every TTL window. A re-fetched live proxy must extend
+	// its expiry.
+	pool := NewPool()
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+
+	first := Proxy{Scheme: "http", Address: "10.0.0.1:8080", FetchedAt: now, ExpiresAt: now.Add(2 * time.Minute)}
+	pool.Merge(now, []Proxy{first})
+	if _, ok := pool.Peek(now); !ok {
+		t.Fatal("first fetch did not make a proxy available")
+	}
+
+	later := now.Add(1 * time.Minute)
+	// Second fetch returns the same proxy with a refreshed TTL.
+	pool.Merge(later, []Proxy{Proxy{
+		Scheme: "http", Address: "10.0.0.1:8080", FetchedAt: later, ExpiresAt: later.Add(2 * time.Minute),
+	}})
+
+	// After the original TTL would have expired, the refreshed proxy must still
+	// be live — proving Merge extended the expiry instead of freezing it.
+	afterOriginalExpiry := now.Add(2 * time.Minute).Add(30 * time.Second)
+	if proxy, ok := pool.Peek(afterOriginalExpiry); !ok {
+		t.Fatal("refreshed proxy is not live after the original expiry; ExpiresAt was not extended")
+	} else if !proxy.ExpiresAt.After(afterOriginalExpiry) {
+		t.Fatalf("refreshed proxy ExpiresAt = %s, want after %s", proxy.ExpiresAt, afterOriginalExpiry)
+	}
+}
+
+// TestValidatorRejectsSlowProxy verifies the MaxLatency gate (audit H1): a proxy
+// that reaches the validation target but takes longer than the configured window
+// is rejected as ErrSlowProxy instead of being admitted as healthy.
+func TestValidatorRejectsSlowProxy(t *testing.T) {
+	delay := 80 * time.Millisecond
+	validation := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(validation.Close)
+
+	// A forwarding HTTP proxy: it sleeps before relaying the absolute-form
+	// request to the validation target, so the round-trip is slow enough to trip
+	// a 20ms MaxLatency gate but still returns the expected 404.
+	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(delay)
+		// Proxy-style absolute-form URI (the validator sends GET <full URL>).
+		target := request.RequestURI
+		if parsed, err := url.Parse(target); err != nil || !parsed.IsAbs() {
+			target = validation.URL + request.RequestURI
+		}
+		relayed, err := http.NewRequest(request.Method, target, request.Body)
+		if err != nil {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		relayed.Header = request.Header.Clone()
+		resp, err := http.DefaultClient.Do(relayed)
+		if err != nil {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		writer.WriteHeader(resp.StatusCode)
+	}))
+	t.Cleanup(proxy.Close)
+
+	host, portText, err := net.SplitHostPort(proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+	slow := Proxy{Scheme: "http", Address: net.JoinHostPort(host, portText)}
+
+	// Without the gate the proxy is considered valid (it returns the expected
+	// status); with a 20ms cap it must be rejected as too slow.
+	permissive := NewValidator(validation.URL, http.StatusNotFound, 2*time.Second)
+	if _, err := permissive.ValidateWithLatency(context.Background(), slow); err != nil {
+		t.Fatalf("permissive ValidateWithLatency: %v (want success, slow gate disabled)", err)
+	}
+
+	strict := NewValidatorWithMaxLatency(validation.URL, http.StatusNotFound, 2*time.Second, 20*time.Millisecond)
+	_, err = strict.ValidateWithLatency(context.Background(), slow)
+	if !errors.Is(err, ErrSlowProxy) {
+		t.Fatalf("strict ValidateWithLatency error = %v, want ErrSlowProxy", err)
+	}
+}
+
+// TestPoolDoesNotResurrectPermanentlyEjectedProxy verifies the M6 fix: a proxy
+// permanently removed by exceeding MaxEjections must not be re-admitted by the
+// next collector fetch while its removal cooldown is active.
+func TestPoolDoesNotResurrectPermanentlyEjectedProxy(t *testing.T) {
+	pool := NewPool()
+	now := time.Now()
+	proxy := Proxy{Scheme: "http", Address: "192.168.1.1:8080", FetchedAt: now, ExpiresAt: now.Add(2 * time.Minute)}
+	pool.Merge(now, []Proxy{proxy})
+
+	policy := EjectionPolicy{FailureLimit: 2, BaseDuration: 10 * time.Second, MaxDuration: 60 * time.Second, MaxEjections: 2}
+
+	// Exceed MaxEjections: 2 ejections plus a final failure removes the proxy.
+	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
+	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → ejected (EjectionCount=1)
+	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
+	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → ejected (EjectionCount=2)
+	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
+	outcome := pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → EjectionCount=3 > 2 → removed
+	if outcome != OutcomeRemoved {
+		t.Fatalf("final ReportFailure outcome = %v, want OutcomeRemoved", outcome)
+	}
+	if size := pool.LiveSize(now); size != 0 {
+		t.Fatalf("pool size after removal = %d, want 0", size)
+	}
+
+	// The next fetch returns the same proxy; it must not be re-admitted while the
+	// removal cooldown is active.
+	refetch := now.Add(time.Minute)
+	pool.Merge(refetch, []Proxy{Proxy{
+		Scheme: "http", Address: "192.168.1.1:8080", FetchedAt: refetch, ExpiresAt: refetch.Add(2 * time.Minute),
+	}})
+	if _, ok := pool.Peek(refetch); ok {
+		t.Fatal("permanently ejected proxy was resurrected by a fetch during the removal cooldown")
+	}
+
+	// After the cooldown expires the proxy is admitted again on a fresh fetch.
+	later := now.Add(removalCooldown + time.Minute)
+	pool.Merge(later, []Proxy{Proxy{
+		Scheme: "http", Address: "192.168.1.1:8080", FetchedAt: later, ExpiresAt: later.Add(2 * time.Minute),
+	}})
+	if _, ok := pool.Peek(later); !ok {
+		t.Fatal("proxy was not re-admitted after the removal cooldown expired")
 	}
 }

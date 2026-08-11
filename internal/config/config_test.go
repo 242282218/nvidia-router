@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testInitialAdminPassword = "test-initial-admin-password"
@@ -190,6 +191,94 @@ func TestLoadFromEnvRejectsProxyPoolWithoutAuthKey(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvLoadsBuiltInProxyPool(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_URL", "https://integrate.api.nvidia.com/v1")
+	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_STATUS", "404")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "6s")
+	t.Setenv("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", "10s")
+	t.Setenv("NVIDIA_ROUTER_XK_PROXY_TTL", "180s")
+	t.Setenv("NVIDIA_ROUTER_XK_CONCURRENCY", "4")
+	t.Setenv("NVIDIA_ROUTER_XK_MAX_LATENCY", "3s")
+
+	cfg, err := LoadFromEnv(LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	if cfg.XKPool == nil {
+		t.Fatal("XKPool = nil, want built-in pool config")
+	}
+	if cfg.XKPool.UpstreamURL != "https://api.xingkongdaili.com/api/getproxy/123" {
+		t.Fatalf("XKPool.UpstreamURL = %q", cfg.XKPool.UpstreamURL)
+	}
+	if cfg.XKPool.ValidationURL != "https://integrate.api.nvidia.com/v1" {
+		t.Fatalf("XKPool.ValidationURL = %q", cfg.XKPool.ValidationURL)
+	}
+	if cfg.XKPool.ValidationStatus != 404 {
+		t.Fatalf("XKPool.ValidationStatus = %d, want 404", cfg.XKPool.ValidationStatus)
+	}
+	if cfg.XKPool.UpstreamTimeout != 6*time.Second {
+		t.Fatalf("XKPool.UpstreamTimeout = %v, want 6s", cfg.XKPool.UpstreamTimeout)
+	}
+	if cfg.XKPool.Interval != 10*time.Second {
+		t.Fatalf("XKPool.Interval = %v, want 10s", cfg.XKPool.Interval)
+	}
+	if cfg.XKPool.ProxyTTL != 180*time.Second {
+		t.Fatalf("XKPool.ProxyTTL = %v, want 180s", cfg.XKPool.ProxyTTL)
+	}
+	if cfg.XKPool.Concurrency != 4 {
+		t.Fatalf("XKPool.Concurrency = %d, want 4", cfg.XKPool.Concurrency)
+	}
+	if cfg.XKPool.MaxLatency != 3*time.Second {
+		t.Fatalf("XKPool.MaxLatency = %v, want 3s", cfg.XKPool.MaxLatency)
+	}
+	if cfg.XKPool.ExpectedQty != 2 {
+		t.Fatalf("XKPool.ExpectedQty = %d, want default 2", cfg.XKPool.ExpectedQty)
+	}
+	if cfg.XKPool.ValidationTimeout != 5*time.Second {
+		t.Fatalf("XKPool.ValidationTimeout = %v, want default 5s", cfg.XKPool.ValidationTimeout)
+	}
+}
+
+func TestLoadFromEnvRejectsStaticAndPoolProxyTogether(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_PROXY_URL", "http://proxy-pool:8080")
+	t.Setenv("NVIDIA_ROUTER_XK_PROXY_AUTH_KEY", "proxy-secret")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+
+	_, err := LoadFromEnv(LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("LoadFromEnv error = %v, want mutual-exclusion error", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidPoolValidationStatus(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_STATUS", "999")
+
+	_, err := LoadFromEnv(LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "NVIDIA_ROUTER_XK_VALIDATION_STATUS") {
+		t.Fatalf("LoadFromEnv error = %v, want validation status error", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidPoolDuration(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", "bogus")
+
+	_, err := LoadFromEnv(LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "NVIDIA_ROUTER_XK_COLLECT_INTERVAL") {
+		t.Fatalf("LoadFromEnv error = %v, want interval duration error", err)
+	}
+}
+
 func setBaseConfigEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("NVIDIA_ROUTER_MASTER_KEY", validMasterKey())
@@ -235,6 +324,10 @@ func clearConfigEnv(t *testing.T) {
 		"NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD", "NVIDIA_ROUTER_ADMIN_SECURE_COOKIE", "NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN",
 		"NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS", "NVIDIA_ROUTER_NVIDIA_BASE_URL",
 		"NVIDIA_ROUTER_XK_PROXY_URL", "NVIDIA_ROUTER_XK_PROXY_AUTH_KEY",
+		"NVIDIA_ROUTER_XK_UPSTREAM_URL", "NVIDIA_ROUTER_XK_VALIDATION_URL", "NVIDIA_ROUTER_XK_VALIDATION_STATUS",
+		"NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "NVIDIA_ROUTER_XK_VALIDATION_TIMEOUT", "NVIDIA_ROUTER_XK_COLLECT_INTERVAL",
+		"NVIDIA_ROUTER_XK_PROXY_TTL", "NVIDIA_ROUTER_XK_EXPECTED_QTY", "NVIDIA_ROUTER_XK_CONCURRENCY",
+		"NVIDIA_ROUTER_XK_MAX_LATENCY",
 	} {
 		t.Setenv(name, "")
 	}

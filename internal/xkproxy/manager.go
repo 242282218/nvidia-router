@@ -50,8 +50,8 @@ type Provider interface {
 type Manager struct {
 	mu         sync.Mutex
 	proxyURL   *url.URL
-	pool       *Pool       // Built-in proxy pool (optional)
-	collector  *Collector  // Proxy collector (optional)
+	pool       *Pool      // Built-in proxy pool (optional)
+	collector  *Collector // Proxy collector (optional)
 	base       *http.Transport
 	logger     *slog.Logger
 	transports map[transportKey]*cachedTransport
@@ -63,7 +63,12 @@ const maxCachedTransports = 64
 
 type cachedTransport struct {
 	transport *http.Transport
-	lastUsed  uint64
+	// proxyKey is the pool identity the transport was built against. It is fixed
+	// when the entry is created and reused on cache hits so failure reporting
+	// always names the proxy the transport actually dials, never whatever the
+	// rotation cursor happens to point at on a later Acquire.
+	proxyKey string
+	lastUsed uint64
 }
 
 type Handle struct {
@@ -172,16 +177,12 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 		return nil, &Error{reason: ReasonManagerClosed}
 	}
 
-	// If we have a pool, use it to get a proxy
-	var selectedProxy Proxy
-	var hasProxy bool
-	if m.pool != nil {
-		selectedProxy, hasProxy = m.pool.Get(time.Now())
-		if !hasProxy {
-			return nil, errors.New("no healthy proxy available")
-		}
-	}
-
+	// Resolve the transport. A cache hit reuses the existing transport and its
+	// bound proxy; only a cache miss needs a proxy from the pool. This keeps a
+	// healthy cached connection usable even when the pool momentarily reports no
+	// healthy proxy (e.g. all TTLs expired between fetches), and makes failure
+	// reporting name the proxy the transport was actually built against rather
+	// than whatever the rotation cursor returns on this Acquire.
 	key := transportKey{
 		connectTimeoutMS:   snapshot.ConnectTimeoutMS,
 		firstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
@@ -189,15 +190,35 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	}
 	entry := m.transports[key]
 	if entry == nil {
-		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy)}
+		var selectedProxy Proxy
+		var hasProxy bool
+		if m.pool != nil {
+			selectedProxy, hasProxy = m.pool.Get(time.Now())
+			if !hasProxy {
+				return nil, errors.New("no healthy proxy available")
+			}
+		}
+		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key()}
 		m.transports[key] = entry
+	} else if m.pool != nil && entry.proxyKey != "" && !m.pool.HasHealthy(entry.proxyKey, time.Now()) {
+		// The cached transport is bound to a proxy that has since been ejected or
+		// removed. Rebuild it against a fresh pool proxy instead of continuing to
+		// dial a dead exit (audit H3). Only replace when the pool has an
+		// alternative: when the pool is momentarily empty, the healthy cached
+		// connection stays usable (the transport itself still works even if its
+		// proxy row is gone from the pool).
+		if selectedProxy, hasProxy := m.pool.Get(time.Now()); hasProxy {
+			entry.transport.CloseIdleConnections()
+			entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key()}
+			m.transports[key] = entry
+		}
 	}
 	m.clock++
 	entry.lastUsed = m.clock
 	if len(m.transports) > maxCachedTransports {
 		m.evictLeastRecentlyUsed()
 	}
-	return &Handle{manager: m, key: key, transport: entry.transport, proxyKey: selectedProxy.Key()}, nil
+	return &Handle{manager: m, key: key, transport: entry.transport, proxyKey: entry.proxyKey}, nil
 }
 
 func (m *Manager) evictLeastRecentlyUsed() {
@@ -333,6 +354,36 @@ type PoolStatus struct {
 	Proxies     []Proxy
 }
 
+// JSON-safe projection of a pooled proxy for the admin UI. Only non-sensitive,
+// operator-visible quality fields are exposed: the exit address, its measured
+// latency, remaining TTL, and isolation state.
+type ProxyStatus struct {
+	Address         string `json:"address"`
+	LatencyEWMAMS   int64  `json:"latency_ewma_ms"`
+	RemainingSeconds int   `json:"remaining_seconds"`
+	Healthy         bool   `json:"healthy"`
+	Ejected         bool   `json:"ejected"`
+	SuccessCount    uint64 `json:"success_count"`
+	FailureCount    uint64 `json:"failure_count"`
+}
+
+func (s PoolStatus) View() []ProxyStatus {
+	now := time.Now()
+	view := make([]ProxyStatus, 0, len(s.Proxies))
+	for _, proxy := range s.Proxies {
+		view = append(view, ProxyStatus{
+			Address:          proxy.Address,
+			LatencyEWMAMS:    proxy.LatencyEWMA.Milliseconds(),
+			RemainingSeconds: int(proxy.RemainingLife(now) / time.Second),
+			Healthy:          proxy.AvailableAt(now),
+			Ejected:          proxy.EjectedAt(now),
+			SuccessCount:     proxy.SuccessCount,
+			FailureCount:     proxy.FailureCount,
+		})
+	}
+	return view
+}
+
 func (h *Handle) Transport() http.RoundTripper {
 	if h == nil {
 		return nil
@@ -345,6 +396,24 @@ func (h *Handle) Retire(reason RetireReason) {
 		return
 	}
 	h.manager.retire(h, reason)
+}
+
+// ReportLatency feeds the observed request latency of a successful response back
+// into the pool's EWMA so selection preference reflects live quality, not just
+// the collector's last probe (audit H4). A proxy that has quietly slowed down
+// gets demoted by demoteSlow on subsequent Acquires. Best-effort: a nil pool or
+// empty proxyKey (static proxy mode) is a no-op.
+func (h *Handle) ReportLatency(latency time.Duration) {
+	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" || latency <= 0 {
+		return
+	}
+	h.manager.pool.ReportSuccess(h.proxyKey, time.Now(), latency, EjectionPolicy{
+		FailureLimit: 3,
+		BaseDuration: 10 * time.Second,
+		MaxDuration:  60 * time.Second,
+		MaxEjections: 3,
+		LatencyAlpha: 0.3,
+	})
 }
 
 func (h *Handle) Release() {}

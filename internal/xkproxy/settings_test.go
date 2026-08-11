@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
@@ -25,7 +26,7 @@ func TestSettingsServiceUsesEnvironmentUntilDatabaseOverrideAndEncryptsAuthKey(t
 	if err != nil {
 		t.Fatalf("url.Parse: %v", err)
 	}
-	service, err := NewSettingsService(context.Background(), db, keys, EnvironmentConfig{URL: proxyURL, AuthKey: "proxy-secret"}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	service, err := NewSettingsService(context.Background(), db, keys, EnvironmentConfig{URL: proxyURL, AuthKey: "proxy-secret"}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
 	if err != nil {
 		t.Fatalf("NewSettingsService: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestSettingsServiceUsesEnvironmentUntilDatabaseOverrideAndEncryptsAuthKey(t
 		t.Fatal("proxy auth key was stored in plaintext")
 	}
 
-	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 2), EnvironmentConfig{}, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil {
+	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 2), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil {
 		t.Fatal("wrong master key loaded proxy settings")
 	}
 	cleared, err := service.Update(context.Background(), Patch{ClearAuthKey: true})
@@ -73,7 +74,7 @@ func TestSettingsServiceRejectsEnableWithoutProxyCredentials(t *testing.T) {
 		t.Fatalf("database.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
 	if err != nil {
 		t.Fatalf("NewSettingsService: %v", err)
 	}
@@ -95,6 +96,50 @@ func testProxyKeySet(t *testing.T, firstByte byte) *crypto.KeySet {
 		t.Fatalf("crypto.New: %v", err)
 	}
 	return keys
+}
+
+func TestSettingsServicePoolModeBuildsCollectorManager(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	poolCfg := &CollectorConfig{
+		UpstreamURL:      "https://api.xingkongdaili.com/api/getproxy/123",
+		UpstreamTimeout:  time.Second,
+		ValidationURL:    "https://integrate.api.nvidia.com/v1",
+		ValidationStatus: 404,
+		Interval:         time.Hour, // never actually fires in the test window
+		ProxyTTL:         time.Minute,
+		Concurrency:      2,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{AuthKey: "pool-secret"}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	initial, err := service.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if !initial.Enabled {
+		t.Fatal("pool mode should be enabled by default")
+	}
+	if initial.Source != SourceEnvironment {
+		t.Fatalf("Source = %q, want environment", initial.Source)
+	}
+	if !initial.AuthConfigured {
+		t.Fatal("pool auth key should be configured")
+	}
+	switcher := service.Switcher()
+	if switcher == nil {
+		t.Fatal("Switcher() = nil")
+	}
+	if !switcher.Configured() {
+		t.Fatal("pool mode switcher should be configured")
+	}
 }
 
 func discardProxyLogger() *slog.Logger {

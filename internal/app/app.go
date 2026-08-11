@@ -120,7 +120,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	}
 	proxySettings, err := xkproxy.NewSettingsService(ctx, db, keys, xkproxy.EnvironmentConfig{
 		URL: resolved.Config.XKProxyURL, AuthKey: resolved.Config.XKProxyAuthKey,
-	}, baseTransport, resolved.Logger)
+	}, toCollectorConfig(resolved.Config.XKPool), baseTransport, resolved.Logger)
 	if err != nil {
 		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize proxy settings: %w", err))
 	}
@@ -292,8 +292,28 @@ func nvidiaDescriptor(cfg config.Config) (nvidia.Descriptor, error) {
 	return rewritten, nil
 }
 
+// toCollectorConfig bridges the config-layer built-in pool settings to the
+// xkproxy collector contract. It returns nil when the pool is not configured.
+func toCollectorConfig(pool *config.XKPoolConfig) *xkproxy.CollectorConfig {
+	if pool == nil {
+		return nil
+	}
+	return &xkproxy.CollectorConfig{
+		UpstreamURL:       pool.UpstreamURL,
+		UpstreamTimeout:   pool.UpstreamTimeout,
+		ValidationURL:     pool.ValidationURL,
+		ValidationStatus:  pool.ValidationStatus,
+		ValidationTimeout: pool.ValidationTimeout,
+		MaxLatency:        pool.MaxLatency,
+		Interval:          pool.Interval,
+		ProxyTTL:          pool.ProxyTTL,
+		ExpectedQty:       pool.ExpectedQty,
+		Concurrency:       pool.Concurrency,
+	}
+}
+
 func resolveDependencies(dependencies Dependencies) (Dependencies, error) {
-	if dependencies.Config.ListenAddress == "" && dependencies.Config.DataDir == "" && dependencies.Config.TempDir == "" && dependencies.Config.MasterKey == ([32]byte{}) && dependencies.Config.InitialAdminPassword == "" && !dependencies.Config.AdminSecureCookie && dependencies.Config.AdminExternalOrigin == nil && len(dependencies.Config.TrustedProxyCIDRs) == 0 && dependencies.Config.NVIDIABaseURL == nil && dependencies.Config.XKProxyURL == nil && dependencies.Config.XKProxyAuthKey == "" {
+	if dependencies.Config.ListenAddress == "" && dependencies.Config.DataDir == "" && dependencies.Config.TempDir == "" && dependencies.Config.MasterKey == ([32]byte{}) && dependencies.Config.InitialAdminPassword == "" && !dependencies.Config.AdminSecureCookie && dependencies.Config.AdminExternalOrigin == nil && len(dependencies.Config.TrustedProxyCIDRs) == 0 && dependencies.Config.NVIDIABaseURL == nil && dependencies.Config.XKProxyURL == nil && dependencies.Config.XKProxyAuthKey == "" && dependencies.Config.XKPool == nil {
 		loaded, err := config.LoadFromEnv(config.LoadOptions{})
 		if err != nil {
 			return Dependencies{}, fmt.Errorf("load configuration: %w", err)
