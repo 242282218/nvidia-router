@@ -89,7 +89,9 @@ func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 	}{
 		{name: "429", response: func() *http.Response {
 			response := attemptResponse(429, "")
-			response.Header.Set("Retry-After", "30")
+			// Use 1s cooldown to avoid timeout under race detector (30s would
+			// make the test take too long when slowed by race instrumentation).
+			response.Header.Set("Retry-After", "1")
 			return response
 		}},
 		{name: "model 403", response: func() *http.Response { return attemptResponse(403, `{"error":{"message":"forbidden"}}`) }},
