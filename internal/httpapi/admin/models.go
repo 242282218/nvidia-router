@@ -57,6 +57,7 @@ type modelDTO struct {
 	UpstreamID           string            `json:"upstream_id"`
 	DisplayName          string            `json:"display_name"`
 	Kind                 modelcatalog.Kind `json:"kind"`
+	Provider             string            `json:"provider"`
 	Enabled              bool              `json:"enabled"`
 	SupportsVision       bool              `json:"supports_vision"`
 	SupportsTools        bool              `json:"supports_tools"`
@@ -260,12 +261,17 @@ func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
 	return candidateDTO{v.UpstreamID, v.DisplayName, v.Kind, v.SupportsVision, v.SupportsTools, v.SupportsReasoning, v.ReasoningWireFormat}
 }
 func toModelDTO(v modelcatalog.Model) modelDTO {
+	provider := v.Provider
+	if provider == "" {
+		provider = "nvidia"
+	}
 	return modelDTO{
 		ID:                   v.ID,
 		PublicID:             v.PublicID,
 		UpstreamID:           v.UpstreamID,
 		DisplayName:          v.DisplayName,
 		Kind:                 v.Kind,
+		Provider:             provider,
 		Enabled:              v.Enabled,
 		SupportsVision:       v.SupportsVision,
 		SupportsTools:        v.SupportsTools,

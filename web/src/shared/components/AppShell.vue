@@ -13,6 +13,7 @@ const sidebarOpen = ref(false)
 
 const navItems = [
   { path: '/nvidia-keys', label: 'NVIDIA Key', icon: 'key', testId: 'nav-nvidia-keys' },
+  { path: '/providers', label: '提供商', icon: 'provider', testId: 'nav-providers' },
   { path: '/models', label: '模型白名单', icon: 'model', testId: 'nav-models' },
   { path: '/access-keys', label: 'Access Key', icon: 'access', testId: 'nav-access-keys' },
   { path: '/runtime', label: '运行状态', icon: 'runtime', testId: 'nav-runtime' },

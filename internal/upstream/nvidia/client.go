@@ -91,6 +91,10 @@ type Client struct {
 	settings   runtimeconfig.Provider
 	proxy      xkproxy.Provider
 	directPool *directTransportPool
+	// providerID is the stable provider identifier reported by ID(). The default
+	// is "nvidia"; the multi-provider wiring overrides it when constructing a
+	// client for an OpenAI-compatible upstream like SiliconFlow.
+	providerID string
 	// stickySessionKey derives the per-process sticky label so the proxy pool never
 	// sees the internal database key id. It is only used in proxy mode.
 	stickySessionKey []byte
@@ -116,7 +120,7 @@ type ValidationResult struct {
 	Fault     *fault.Fault
 }
 
-func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimeconfig.Provider, proxy xkproxy.Provider) (*Client, error) {
+func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimeconfig.Provider, proxy xkproxy.Provider, providerIDs ...string) (*Client, error) {
 	if httpClient == nil {
 		return nil, errors.New("new NVIDIA client: HTTP client is required")
 	}
@@ -144,14 +148,27 @@ func NewClient(httpClient *http.Client, descriptor Descriptor, settings runtimec
 		return nil, err
 	}
 
+	providerID := "nvidia"
+	if len(providerIDs) > 0 && providerIDs[0] != "" {
+		providerID = providerIDs[0]
+	}
 	return &Client{
 		httpClient:       httpClient,
 		descriptor:       descriptor,
 		settings:         settings,
 		proxy:            proxy,
+		providerID:       providerID,
 		directPool:       newDirectTransportPool(httpClient.Transport),
 		stickySessionKey: stickyKey,
 	}, nil
+}
+
+// ProviderID exposes the client's stable provider identifier (see ID).
+func (c *Client) ProviderID() string {
+	if c.providerID != "" {
+		return c.providerID
+	}
+	return "nvidia"
 }
 
 func (c *Client) Close() {

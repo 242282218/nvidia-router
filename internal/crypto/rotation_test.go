@@ -23,11 +23,19 @@ func TestRotateDatabaseReencryptsSecretsAndIsIdempotent(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO nvidia_keys (ciphertext, nonce, fingerprint, display_prefix, display_suffix, key_version, created_at, updated_at) VALUES (?, ?, X'01', 'nvapi-', 'secret', 1, '2026-08-05T00:00:00Z', '2026-08-05T00:00:00Z')`, ciphertext, nonce); err != nil {
 		t.Fatalf("insert NVIDIA secret: %v", err)
 	}
+	providerSecret := []byte("sk-test-provider-token")
+	providerCiphertext, providerNonce, err := oldKeys.Encrypt(providerSecret, providerCredentialRotationAAD)
+	if err != nil {
+		t.Fatalf("encrypt provider secret: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_credentials (name, base_url, ciphertext, nonce, fingerprint, display_prefix, display_suffix, key_version, created_at, updated_at) VALUES ('siliconflow', 'https://api.siliconflow.cn/v1', ?, ?, X'02', 'sk-a', 'xyz1', 1, '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')`, providerCiphertext, providerNonce); err != nil {
+		t.Fatalf("insert provider secret: %v", err)
+	}
 	result, err := RotateDatabase(context.Background(), db, oldKeys, newKeys)
 	if err != nil {
 		t.Fatalf("RotateDatabase: %v", err)
 	}
-	if result.NVIDIAKeys != 1 || !result.Sentinel {
+	if result.NVIDIAKeys != 1 || result.ProviderCredentials != 1 || !result.Sentinel {
 		t.Fatalf("rotation result = %+v", result)
 	}
 	if err := newKeys.ValidateSentinel(context.Background(), db); err != nil {
@@ -45,12 +53,30 @@ func TestRotateDatabaseReencryptsSecretsAndIsIdempotent(t *testing.T) {
 	if err != nil || string(plaintext) != string(secret) {
 		t.Fatalf("rotated plaintext = %q/%v", plaintext, err)
 	}
+	var providerVersion int
+	if err := db.QueryRow("SELECT key_version FROM provider_credentials WHERE id = 1").Scan(&providerVersion); err != nil {
+		t.Fatalf("read rotated provider version: %v", err)
+	}
+	if providerVersion != 2 {
+		t.Fatalf("rotated provider version = %d", providerVersion)
+	}
+	var providerCC, providerNC []byte
+	if err := db.QueryRow("SELECT ciphertext, nonce FROM provider_credentials WHERE id = 1").Scan(&providerCC, &providerNC); err != nil {
+		t.Fatalf("read rotated provider ciphertext: %v", err)
+	}
+	providerPlaintext, err := newKeys.Decrypt(providerCC, providerNC, providerCredentialRotationAAD)
+	if err != nil {
+		t.Fatalf("decrypt rotated provider: %v", err)
+	}
+	if string(providerPlaintext) != string(providerSecret) {
+		t.Fatalf("rotated provider plaintext = %q", providerPlaintext)
+	}
 	second, err := RotateDatabase(context.Background(), db, oldKeys, newKeys)
 	if err != nil {
 		t.Fatalf("second RotateDatabase: %v", err)
 	}
-	if second.NVIDIAKeys != 0 {
-		t.Fatalf("second rotation changed %d NVIDIA keys", second.NVIDIAKeys)
+	if second.NVIDIAKeys != 0 || second.ProviderCredentials != 0 {
+		t.Fatalf("second rotation changed NVIDIA=%d provider=%d", second.NVIDIAKeys, second.ProviderCredentials)
 	}
 }
 

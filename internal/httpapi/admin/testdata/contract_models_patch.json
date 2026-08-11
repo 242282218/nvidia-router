@@ -6,6 +6,7 @@
   "enabled": true,
   "id": 2,
   "kind": "embedding",
+  "provider": "nvidia",
   "public_id": "embed-qa",
   "reasoning_wire_format": "",
   "supports_reasoning": false,

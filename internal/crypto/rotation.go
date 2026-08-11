@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	nvidiaKeyRotationAAD = "nvidia-key:v1"
-	proxyKeyRotationAAD  = "proxy-pool-auth-key:v1"
+	nvidiaKeyRotationAAD          = "nvidia-key:v1"
+	proxyKeyRotationAAD           = "proxy-pool-auth-key:v1"
+	providerCredentialRotationAAD = "provider-credential:v1"
 )
 
 // RotateDatabase re-encrypts all reversible secrets in one transaction. It is
@@ -38,6 +39,9 @@ func RotateDatabase(ctx context.Context, db *sql.DB, oldKeys, newKeys *KeySet) (
 	if err := rotateNVIDIAKeys(ctx, tx, oldKeys, newKeys, &result); err != nil {
 		return RotationResult{}, err
 	}
+	if err := rotateProviderCredentials(ctx, tx, oldKeys, newKeys, &result); err != nil {
+		return RotationResult{}, err
+	}
 	if err := rotateProxyKey(ctx, tx, oldKeys, newKeys, &result); err != nil {
 		return RotationResult{}, err
 	}
@@ -56,10 +60,11 @@ func RotateDatabase(ctx context.Context, db *sql.DB, oldKeys, newKeys *KeySet) (
 }
 
 type RotationResult struct {
-	NVIDIAKeys    int
-	ProxyKey      bool
-	Sentinel      bool
-	LegacyDigests int
+	NVIDIAKeys         int
+	ProxyKey           bool
+	ProviderCredentials int
+	Sentinel           bool
+	LegacyDigests      int
 }
 
 func countLegacyDigests(ctx context.Context, tx *sql.Tx, activeVersion int, result *RotationResult) error {
@@ -114,8 +119,53 @@ func rotateNVIDIAKeys(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet,
 	return nil
 }
 
-func rotateProxyKey(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet, result *RotationResult) error {
-	var ciphertext, nonce []byte
+// rotateProviderCredentials re-encrypts OpenAI-compatible provider tokens under
+// the new key set. The table mirrors nvidia_keys' versioned-ciphertext shape so
+// the same decrypt-under-old / encrypt-under-new dance applies.
+func rotateProviderCredentials(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet, result *RotationResult) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id, ciphertext, nonce, key_version FROM provider_credentials WHERE key_version <> ?", newKeys.ActiveVersion())
+	if err != nil {
+		return fmt.Errorf("rotate provider credentials: query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, version int
+		var ciphertext, nonce []byte
+		if err := rows.Scan(&id, &ciphertext, &nonce, &version); err != nil {
+			return fmt.Errorf("rotate provider credentials: scan: %w", err)
+		}
+		if version <= 0 {
+			version = 1
+		}
+		plaintext, err := oldKeys.DecryptVersion(version, ciphertext, nonce, providerCredentialRotationAAD)
+		if err != nil {
+			return fmt.Errorf("rotate provider credential %d: decrypt: %w", id, err)
+		}
+		newCiphertext, newNonce, err := newKeys.Encrypt(plaintext, providerCredentialRotationAAD)
+		if err != nil {
+			Zero(plaintext)
+			return fmt.Errorf("rotate provider credential %d: encrypt: %w", id, err)
+		}
+		fingerprint := newKeys.Fingerprint(plaintext)
+		Zero(plaintext)
+		if _, err := tx.ExecContext(ctx, "UPDATE provider_credentials SET ciphertext = ?, nonce = ?, fingerprint = ?, key_version = ?, updated_at = ? WHERE id = ?", newCiphertext, newNonce, fingerprint, newKeys.ActiveVersion(), time.Now().UTC().Format(time.RFC3339), id); err != nil {
+			Zero(fingerprint)
+			Zero(newCiphertext)
+			Zero(newNonce)
+			return fmt.Errorf("rotate provider credential %d: update: %w", id, err)
+		}
+		Zero(fingerprint)
+		Zero(newCiphertext)
+		Zero(newNonce)
+		result.ProviderCredentials++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rotate provider credentials: iterate: %w", err)
+	}
+	return nil
+}
+
+func rotateProxyKey(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet, result *RotationResult) error {	var ciphertext, nonce []byte
 	var version int
 	err := tx.QueryRowContext(ctx, "SELECT auth_key_ciphertext, auth_key_nonce, key_version FROM proxy_pool_settings WHERE id = 1 AND auth_key_ciphertext IS NOT NULL").Scan(&ciphertext, &nonce, &version)
 	if errors.Is(err, sql.ErrNoRows) {

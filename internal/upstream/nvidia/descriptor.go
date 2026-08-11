@@ -82,6 +82,40 @@ func (d Descriptor) WithBaseURL(base *url.URL) (Descriptor, error) {
 	return d, nil
 }
 
+// OpenAICompatibleDescriptor builds a descriptor for an arbitrary
+// OpenAI-compatible base URL (e.g. SiliconFlow's https://api.siliconflow.cn/v1).
+// It deliberately carries no vendor-specific capability hints: those are
+// verified through the model catalog, and guessing them for an unknown upstream
+// would be worse than the neutral default. Only the chat/embeddings/models
+// surface is offered — ASR/TTS are NVIDIA-specific transports and stay absent.
+func OpenAICompatibleDescriptor(baseURL string) (Descriptor, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return Descriptor{}, fmt.Errorf("parse OpenAI-compatible base URL: %w", err)
+	}
+	if parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return Descriptor{}, errors.New("OpenAI-compatible base URL must use HTTP(S) and include a host")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return Descriptor{}, errors.New("OpenAI-compatible base URL must not contain credentials, query, or fragment")
+	}
+	endpointURL := func(path string) string {
+		value := *parsed
+		value.Path = strings.TrimRight(value.Path, "/") + path
+		value.RawPath = ""
+		return value.String()
+	}
+	return Descriptor{
+		AuthScheme: "Bearer",
+		Models:     Endpoint{Method: http.MethodGet, URL: endpointURL("/models")},
+		Chat:       Endpoint{Method: http.MethodPost, URL: endpointURL("/chat/completions"), ContentType: "application/json"},
+		Embedding:  Endpoint{Method: http.MethodPost, URL: endpointURL("/embeddings"), ContentType: "application/json"},
+		// The OpenAI-compatible family does not expose NVIDIA's audio endpoints;
+		// leaving them empty makes Validate reject the descriptor, so construction
+		// only succeeds for providers that truly speak the common subset.
+	}, nil
+}
+
 func reasoningHints() map[string]CapabilityHint {
 	models := []string{
 		"minimaxai/minimax-m2.7",

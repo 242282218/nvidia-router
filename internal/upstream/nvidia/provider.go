@@ -10,8 +10,10 @@ import (
 // ever depends on provider.Provider.
 var _ provider.Provider = (*Client)(nil)
 
-// ID identifies the NVIDIA provider for logs and future multi-provider routing.
-func (c *Client) ID() string { return "nvidia" }
+// ID identifies the provider for logs and multi-provider routing. The default
+// is "nvidia"; OpenAI-compatible clients constructed for another upstream (e.g.
+// SiliconFlow) report their configured ID instead.
+func (c *Client) ID() string { return c.ProviderID() }
 
 // CapabilityHint converts the descriptor's provider-specific hint into the
 // provider-agnostic mirror consumed across the abstraction boundary.

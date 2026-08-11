@@ -126,6 +126,7 @@ const model = object({
   upstream_id: scalar('string'),
   display_name: scalar('string'),
   kind: scalar('string'),
+  provider: scalar('string'),
   enabled: scalar('boolean'),
   supports_vision: scalar('boolean'),
   supports_tools: scalar('boolean'),

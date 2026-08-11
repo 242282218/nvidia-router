@@ -26,6 +26,7 @@ type Model struct {
 	UpstreamID           string
 	DisplayName          string
 	Kind                 Kind
+	Provider             string
 	Enabled              bool
 	SupportsVision       bool
 	SupportsTools        bool
@@ -91,6 +92,7 @@ type Requirements struct {
 type Patch struct {
 	DisplayName         *string `json:"display_name,omitempty"`
 	Kind                *Kind   `json:"kind,omitempty"`
+	Provider            *string `json:"provider,omitempty"`
 	Enabled             *bool   `json:"enabled,omitempty"`
 	SupportsVision      *bool   `json:"supports_vision,omitempty"`
 	SupportsTools       *bool   `json:"supports_tools,omitempty"`

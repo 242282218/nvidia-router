@@ -31,6 +31,7 @@ import (
 	"nvidia-router/internal/nvidiakey"
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
+	"nvidia-router/internal/providercredential"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
@@ -148,12 +149,14 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
 	auditRepository := adminaudit.NewRepository(db).WithReader(reader)
 	auditRecorder := adminaudit.NewRecorder(auditRepository, resolved.Logger)
+	providerCredentialRepository := providercredential.NewRepository(db, resolved.Clock, keys)
 	adminManagement := adminapi.NewManagement(
 		adminapi.NewNVIDIAKeys(nvidiaKeys, keyPool),
 		adminapi.NewAccessKeys(accessKeys),
 		adminapi.NewModels(models, nvidiaKeys, keyPool),
 		adminapi.NewProxyPool(proxySettings),
 		adminapi.NewAuditLogs(auditRepository),
+		adminapi.NewProviderCredentials(providerCredentialRepository),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock, keyPool)
 	observabilityRepository := observability.NewRepository(db).WithReader(reader)

@@ -8,6 +8,7 @@ import AccessKeysView from '../features/access-keys/AccessKeysView.vue'
 import AuditView from '../features/audit/AuditView.vue'
 import LiveView from '../features/live/LiveView.vue'
 import ModelsView from '../features/models/ModelsView.vue'
+import ProvidersView from '../features/providers/ProvidersView.vue'
 import NvidiaKeysView from '../features/nvidia-keys/NvidiaKeysView.vue'
 import RuntimeView from '../features/runtime/RuntimeView.vue'
 import StatisticsView from '../features/statistics/StatisticsView.vue'
@@ -33,6 +34,7 @@ export function createAppRouter(
         children: [
           { component: NvidiaKeysView, path: '', meta: { title: 'NVIDIA Key' } },
           { component: NvidiaKeysView, path: 'nvidia-keys', meta: { title: 'NVIDIA Key' } },
+          { component: ProvidersView, path: 'providers', meta: { title: '提供商' } },
           { component: ModelsView, path: 'models', meta: { title: '模型白名单' } },
           { component: AccessKeysView, path: 'access-keys', meta: { title: 'Access Key' } },
           { component: RuntimeView, path: 'runtime', meta: { title: '运行状态' } },
