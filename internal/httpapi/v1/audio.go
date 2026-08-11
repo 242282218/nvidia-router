@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/apierror"
@@ -68,10 +69,24 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	// a slow upload must be aborted by closing the body when the deadline fires.
 	// http.Server has no ReadTimeout because SSE streams stay open, leaving this
 	// close as the only backstop against a reader that holds the slot forever.
-	stop := context.AfterFunc(readCtx, func() { _ = request.Body.Close() })
+	// bodyToClose holds the current body; ParseMultipart replaces request.Body
+	// with a MaxBytesReader wrapper, so the AfterFunc must close the live body.
+	var bodyMu sync.Mutex
+	bodyToClose := request.Body
+	stop := context.AfterFunc(readCtx, func() {
+		bodyMu.Lock()
+		defer bodyMu.Unlock()
+		_ = bodyToClose.Close()
+	})
 	defer stop()
 	request = request.WithContext(readCtx)
+	// Capture the wrapped body after ParseMultipart assigns it so AfterFunc
+	// closes the correct closer. The mutex ensures the AfterFunc sees the final
+	// value even if the deadline fires during the assignment race window.
 	parsed, parseErr := audiocollections.ParseMultipart(request, h.tempDir)
+	bodyMu.Lock()
+	bodyToClose = request.Body
+	bodyMu.Unlock()
 	// The upload is fully read once parsing returns; release the read slot so a
 	// long-lived upstream call cannot monopolize the body-read budget, and drop
 	// the upload deadline so it cannot eat into the attempt's first-byte budget.
