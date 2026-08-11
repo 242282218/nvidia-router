@@ -1,0 +1,47 @@
+# docker-compose.litestream.yml — optional Litestream continuous replication
+# sidecar. Enable with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.litestream.yml \
+#     --profile litestream up -d
+#
+# It shares the app's named data volume so it replicates /data/router.db (and
+# its WAL) to the object-store URL in LITESTREAM_REPLICA_URL. The app service
+# itself is untouched (stays read_only, single writer) — SQLite's write path is
+# unaffected; only the sidecar reads the volume.
+#
+# Before enabling, take a baseline snapshot with:
+#   docker compose exec app nvidia-router db backup /data-backups
+#   (or `docker compose run --rm -v nvidia-router-data:/data ...`)
+# A fresh object store with no baseline cannot bootstrap replication.
+
+services:
+  litestream:
+    image: litestream/litestream:0.3
+    profiles: ["litestream"]
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/litestream", "replicate", "-config", "/etc/litestream.yml"]
+    volumes:
+      - nvidia-router-data:/data:ro
+      - ./litestream.yml:/etc/litestream.yml:ro
+    environment:
+      LITESTREAM_REPLICA_URL: "${LITESTREAM_REPLICA_URL:?LITESTREAM_REPLICA_URL is required (e.g. s3://bucket/path)}"
+      # Litestream reads standard S3/object-store credential env vars. For AWS
+      # S3 use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN;
+      # for other S3-compatible providers the same vars are mapped by provider
+      # convention. Keep them out of git — inject at runtime from the host env.
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN:-}"
+      AWS_REGION: "${AWS_REGION:-}"
+      LITESTREAM_ACCESS_KEY_ID: "${LITESTREAM_ACCESS_KEY_ID:-}"
+      LITESTREAM_SECRET_ACCESS_KEY: "${LITESTREAM_SECRET_ACCESS_KEY:-}"
+      LITESTREAM_S3_ENDPOINT: "${LITESTREAM_S3_ENDPOINT:-}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # Litestream buffers downloads/uploads in /tmp; read-only root allows
+      # nothing else to be written.
+      - /tmp:size=64m,mode=1777

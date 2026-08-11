@@ -1,0 +1,24 @@
+# litestream.yml — Litestream continuous SQLite replication configuration.
+#
+# Copy to /etc/litestream.yml (or the location the sidecar mounts it at) and set
+# the environment variables from .env. It streams WAL changes for the router's
+# SQLite database to a S3-compatible object store, shrinking the recovery window
+# from "daily backup" to "last checkpoint".
+#
+# Security notes:
+#   * The replicated snapshots contain encrypted NVIDIA keys and access-key
+#     digests — the same data as the local DB. Prefer a private bucket and
+#     rely on object-store server-side encryption + TLS in transit.
+#   * The master key is NEVER replicated here; a restore still needs the master
+#     key that encrypted the data (see docs/备份与恢复说明.md).
+#   * Only ONE Litestream instance may replicate this database.
+
+dbs:
+  - path: /data/router.db
+    replicas:
+      - url: "${LITESTREAM_REPLICA_URL}"
+        snapshot-interval: 1h
+        retention: 24h
+        # SyncInterval is how often WAL changes are uploaded. 2s is a sane
+        # default for a personal router (compare against daily backups).
+        sync-interval: 2s
