@@ -49,7 +49,7 @@ function validateNewPassword(password: string): string {
     <!-- Ambient decoration -->
     <div class="fixed inset-0 overflow-hidden pointer-events-none">
       <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[#F59E0B]/5 blur-3xl" />
-      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[#818CF8]/5 blur-3xl" />
+      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[var(--color-info)]/5 blur-3xl" />
     </div>
 
     <section class="relative w-full max-w-sm animate-fade-in">

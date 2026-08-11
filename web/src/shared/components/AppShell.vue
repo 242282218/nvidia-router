@@ -10,6 +10,7 @@ const router = useRouter()
 const route = useRoute()
 const session = useSession()
 const sidebarOpen = ref(false)
+const loggingOut = ref(false)
 
 const navItems = [
   { path: '/nvidia-keys', label: 'NVIDIA Key', icon: 'key', testId: 'nav-nvidia-keys' },
@@ -34,10 +35,16 @@ function isActive(path: string): boolean {
 }
 
 async function logout(): Promise<void> {
-  // useSession.logout always clears local state, even if the remote call
-  // fails: the user must leave the authenticated shell for a stale cookie
-  // to stop authorising privileged chrome.
-  await session.logout()
+  if (loggingOut.value) return
+  loggingOut.value = true
+  try {
+    // useSession.logout always clears local state, even if the remote call
+    // fails: the user must leave the authenticated shell for a stale cookie
+    // to stop authorising privileged chrome.
+    await session.logout()
+  } finally {
+    loggingOut.value = false
+  }
   await router.push('/login')
 }
 
@@ -283,6 +290,7 @@ globalThis.addEventListener('keydown', onKeydown)
           data-testid="logout"
           class="nav-link w-full"
           type="button"
+          :disabled="loggingOut"
           @click="logout"
         >
           <svg
@@ -299,7 +307,7 @@ globalThis.addEventListener('keydown', onKeydown)
               d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"
             />
           </svg>
-          退出登录
+          {{ loggingOut ? '退出中…' : '退出登录' }}
         </button>
       </div>
     </aside>
@@ -323,9 +331,11 @@ globalThis.addEventListener('keydown', onKeydown)
 </template>
 
 <style scoped>
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {

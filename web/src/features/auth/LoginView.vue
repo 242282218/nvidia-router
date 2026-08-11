@@ -37,7 +37,7 @@ async function submit(): Promise<void> {
     <!-- Ambient decoration -->
     <div class="fixed inset-0 overflow-hidden pointer-events-none">
       <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[var(--color-accent)]/5 blur-3xl" />
-      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[#818CF8]/5 blur-3xl" />
+      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[var(--color-info)]/5 blur-3xl" />
     </div>
 
     <section class="relative w-full max-w-sm animate-fade-in">
@@ -167,9 +167,11 @@ async function submit(): Promise<void> {
 </template>
 
 <style scoped>
-.slide-enter-active,
+.slide-enter-active {
+  transition: all 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: all 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

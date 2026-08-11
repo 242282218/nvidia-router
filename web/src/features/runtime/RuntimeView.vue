@@ -133,7 +133,7 @@ function formatDate(value?: string): string {
     <div class="content-wrapper">
       <header class="section-header">
         <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[#818CF8]">
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-info)]">
             运维摘要
           </p>
           <h1 class="page-title mt-1">

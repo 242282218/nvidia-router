@@ -156,7 +156,7 @@ function testStatusClass(status: string): string {
             class="space-y-4"
             @submit.prevent="submit"
           >
-            <p class="rounded-lg border border-[#818CF8]/20 bg-[#818CF8]/5 px-3 py-2 text-xs text-[var(--color-info)]">
+            <p class="rounded-lg border border-[var(--color-info)]/20 bg-[var(--color-info)]/5 px-3 py-2 text-xs text-[var(--color-info)]">
               导入完成后，如需验证上游可用性，请返回页面点击“顺序测活全部”。
             </p>
             <textarea

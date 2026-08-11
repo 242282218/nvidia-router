@@ -7,19 +7,24 @@
   --color-hover: #1d2328;
   --color-active: #142019;
   --color-border: rgba(226, 232, 240, 0.1);
-  --color-border-strong: rgba(226, 232, 240, 0.16);
+  --color-border-strong: rgba(226, 232, 240, 0.4);
   --color-text: #edf1f2;
   --color-text-secondary: #a7b0b8;
   --color-text-muted: #7f8a94;
-  --color-text-subtle: #5f6b75;
+  --color-text-subtle: #75818d;
   --color-accent: #76b900;
   --color-accent-bright: #8bd31f;
   --color-accent-foreground: #081000;
   --color-success: #4ade80;
   --color-warning: #fbbf24;
   --color-danger: #f87171;
-  --color-info: #a5b4fc;
-  --color-focus: #93c5fd;
+  /* info/focus use a desaturated indigo, NOT Tailwind's default indigo-400
+     (#a5b4fc) / blue-300 (#93c5fd): default hues read as an unmodified
+     framework theme (design-aesthetics P0#1). #7c9cff / #8ea6ff keep the
+     machine-readable "identifier/data" semantics of the indigo family while
+     lowering saturation toward the neutral engineering-dark accent. */
+  --color-info: #7c9cff;
+  --color-focus: #8ea6ff;
   --radius-control: 0.5rem;
   --radius-panel: 0.75rem;
   --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.45);
