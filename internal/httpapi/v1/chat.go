@@ -138,11 +138,17 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		// TTFT is the first SSE data event reaching the client, distinct from
 		// the first-byte metric which also fires for error bodies before commit.
 		OnFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
+		// Bound how long a flush may block on a client that stopped reading; the
+		// request context only fires on disconnect, not on a connected-but-stalled
+		// consumer, so without this a stuck client pins the credential slot until
+		// the upstream closes (audit H6).
+		WriteIdleTimeout: streamWriteIdleTimeout(ctx),
 	})
-	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) {
-		// Clean completion, or an interrupted stream whose first byte already
-		// reached the client: the client observes truncation and nothing more
-		// can be written.
+	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
+		// Clean completion, an interrupted stream whose first byte already reached
+		// the client, or a write stall after commit (the client stopped reading and
+		// the stream was torn down to release the lease): the client observes
+		// truncation and nothing more can be written.
 		return
 	}
 	// Context cancelled or other error after commit - nothing we can do.
@@ -175,6 +181,19 @@ func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {
 		FirstByteTimeoutMS: int(budget.FirstByteTimeout() / time.Millisecond),
 		FirstByteDeadline:  budget.FirstByteDeadline(),
 	}
+}
+
+// streamWriteIdleTimeout returns the write-side stall window from the request
+// budget. It mirrors the read-side idle timeout so a client that stops reading
+// is torn down on the same cadence as an upstream that stops sending. The read
+// and write windows are deliberately coupled: a long-running generation needs
+// both sides to tolerate the same inter-token gaps.
+func streamWriteIdleTimeout(ctx context.Context) time.Duration {
+	budget, ok := router.BudgetFromContext(ctx)
+	if !ok {
+		return 0
+	}
+	return budget.StreamIdleTimeout()
 }
 
 // applyModelTimeouts returns a context with per-model streaming timeout hints

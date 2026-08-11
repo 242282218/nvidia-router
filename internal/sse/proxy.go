@@ -8,11 +8,19 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"nvidia-router/internal/router"
 )
 
 var ErrStreamInterrupted = errors.New("upstream stream interrupted before [DONE]")
+
+// ErrStreamWriteStalled reports that the client stopped reading for the whole
+// write-idle window, so TCP backpressure has pinned the flush. The handler
+// treats it like any post-commit truncation: the client is not consuming, so
+// nothing more can be delivered, and the lease must be released (audit H6).
+var ErrStreamWriteStalled = errors.New("upstream stream write stalled for too long")
 
 type ProxyOptions struct {
 	CommitState *router.CommitState
@@ -20,6 +28,12 @@ type ProxyOptions struct {
 	// written and flushed to the client. It lets the streaming handler record
 	// time-to-first-token without coupling the proxy to observability.
 	OnFirstData func()
+	// WriteIdleTimeout bounds how long a flush may stay blocked on the client's
+	// TCP receive buffer before the stream is torn down and the lease released.
+	// A slow/stalled consumer would otherwise pin the credential slot until the
+	// client disconnects (the request context only fires on disconnect, not on a
+	// connected-but-not-reading client). Zero disables the write watchdog.
+	WriteIdleTimeout time.Duration
 }
 
 func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, opts ProxyOptions) error {
@@ -40,6 +54,16 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		case <-cancelDone:
 		}
 	}()
+
+	// A write watchdog closes the upstream body if a flush blocks on a stalled
+	// client beyond the window; closing the body unblocks the decode loop and
+	// ends the handler, releasing the lease. The watchdog is armed around each
+	// flush and disarmed after, so slow-but-progressing streams are not cut.
+	var watchdog *WriteWatchdog
+	if opts.WriteIdleTimeout > 0 {
+		watchdog = NewWriteWatchdog(opts.WriteIdleTimeout, func() { _ = upstream.Body.Close() })
+		defer watchdog.Stop()
+	}
 
 	decoder := NewDecoder(upstream.Body)
 	encoder := NewEncoder(writer)
@@ -121,7 +145,19 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			return fmt.Errorf("encode SSE event: %w", err)
 		}
 
+		if watchdog != nil {
+			watchdog.Arm()
+		}
 		flusher.Flush()
+		if watchdog != nil {
+			watchdog.Disarm()
+			if watchdog.Fired() {
+				// The flush was blocked on a client that stopped reading beyond
+				// the write-idle window; the watchdog closed the upstream body,
+				// which will surface as a decode error on the next iteration.
+				return ErrStreamWriteStalled
+			}
+		}
 
 		// The first token has reached the client once the first data event is
 		// flushed; notify exactly once so TTFT sampling ignores trailing events.
@@ -136,4 +172,64 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			return nil
 		}
 	}
+}
+
+// WriteWatchdog detects a flush that stays blocked beyond the idle window. It
+// fires once and runs the onStall callback (which closes the upstream body so
+// the decode loop unblocks), then stays fired so the caller can distinguish a
+// stalled write from a healthy one.
+type WriteWatchdog struct {
+	timeout time.Duration
+	onStall func()
+
+	mu     sync.Mutex
+	timer  *time.Timer
+	fired  bool
+}
+
+func NewWriteWatchdog(timeout time.Duration, onStall func()) *WriteWatchdog {
+	return &WriteWatchdog{timeout: timeout, onStall: onStall}
+}
+
+// Arm arms the watchdog for one flush. It is a no-op after a prior stall: the
+// stream is already being torn down.
+func (w *WriteWatchdog) Arm() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.fired {
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.timer = time.AfterFunc(w.timeout, func() {
+		w.mu.Lock()
+		if w.fired {
+			w.mu.Unlock()
+			return
+		}
+		w.fired = true
+		w.mu.Unlock()
+		w.onStall()
+	})
+}
+
+// Disarm cancels a pending stall. It is safe to call after the watchdog fired.
+func (w *WriteWatchdog) Disarm() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+}
+
+func (w *WriteWatchdog) Fired() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.fired
+}
+
+func (w *WriteWatchdog) Stop() {
+	w.Disarm()
 }

@@ -145,6 +145,10 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		// event reaching the client (response.created or the first delta).
 		onFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
 	}
+	if idle := streamWriteIdleTimeout(ctx); idle > 0 {
+		emitter.writeWatchdog = sse.NewWriteWatchdog(idle, func() { _ = upstream.Body.Close() })
+		defer emitter.writeWatchdog.Stop()
+	}
 	source := &chatDeltaSource{decoder: sse.NewDecoder(upstream.Body)}
 	cancelDone := make(chan struct{})
 	defer close(cancelDone)
@@ -219,6 +223,10 @@ type responsesSSEEmitter struct {
 	header      bool
 	notified    bool
 	onFirstData func()
+	// writeWatchdog guards the flush against a client that stops reading (audit
+	// H6); when it fires, onStall closes the upstream body so the state machine
+	// loop ends and the lease is released.
+	writeWatchdog *sse.WriteWatchdog
 }
 
 func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
@@ -241,13 +249,22 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 		}
 	}
 	if flusher, ok := e.flusher.(http.Flusher); ok {
+		if e.writeWatchdog != nil {
+			e.writeWatchdog.Arm()
+		}
 		flusher.Flush()
+		if e.writeWatchdog != nil {
+			e.writeWatchdog.Disarm()
+		}
 	}
 	if !e.notified {
 		e.notified = true
 		if e.onFirstData != nil {
 			e.onFirstData()
 		}
+	}
+	if e.writeWatchdog != nil && e.writeWatchdog.Fired() {
+		return sse.ErrStreamWriteStalled
 	}
 	return nil
 }

@@ -226,6 +226,44 @@ func TestProxyTruncatesDataAfterDONEWithinSameEvent(t *testing.T) {
 	}
 }
 
+func TestWriteWatchdogFiresOnStalledWriteAndRunsCallback(t *testing.T) {
+	// Audit H6: a flush blocked on a client that stopped reading must trip the
+	// watchdog, run its onStall callback (close upstream body), and report Fired.
+	var stallRan atomic.Bool
+	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { stallRan.Store(true) })
+	defer watchdog.Stop()
+
+	watchdog.Arm()
+	// Without a Disarm the timer fires on its own; give it time to run.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for !stallRan.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !stallRan.Load() {
+		t.Fatal("onStall did not run after the idle window elapsed")
+	}
+	if !watchdog.Fired() {
+		t.Fatal("watchdog not marked fired after stall")
+	}
+}
+
+func TestWriteWatchdogDisarmPreventsStall(t *testing.T) {
+	// A flush that completes before the window must not trip the watchdog.
+	var stallRan atomic.Bool
+	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { stallRan.Store(true) })
+	defer watchdog.Stop()
+
+	watchdog.Arm()
+	watchdog.Disarm()
+	time.Sleep(60 * time.Millisecond)
+	if stallRan.Load() {
+		t.Fatal("onStall ran after a prompt Disarm")
+	}
+	if watchdog.Fired() {
+		t.Fatal("watchdog marked fired despite prompt Disarm")
+	}
+}
+
 func TestPrimeRejectsCommentPreambleOverCaptureCap(t *testing.T) {
 	// A stream of comment/keep-alive events before any data event must not grow
 	// the Prime capture buffer without bound (checklist #13).
