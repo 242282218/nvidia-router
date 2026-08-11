@@ -20,6 +20,7 @@ import (
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/embedcache"
 	"nvidia-router/internal/eventhub"
 	"nvidia-router/internal/httpapi"
 	adminapi "nvidia-router/internal/httpapi/admin"
@@ -137,6 +138,9 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	// Mirror DB recovery into pool state so a key the checker revives is
 	// immediately acquirable without waiting for the next restart.
 	healthChecker.WireSync(keyPool.ApplySuccess)
+	// Probe half-open keys right after their cooldown expires instead of
+	// waiting out the full sweep interval (half-open circuit recovery).
+	healthChecker.WireCooldownExpiry(keyRepository.EarliestCooldownExpiry)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db).WithReader(reader), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
@@ -151,7 +155,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		adminapi.NewProxyPool(proxySettings),
 		adminapi.NewAuditLogs(auditRepository),
 	)
-	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock)
+	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock, keyPool)
 	observabilityRepository := observability.NewRepository(db).WithReader(reader)
 	// Wrap the repository with a buffering recorder so request_logs writes
 	// move off the hot path: per-request Record only enqueues, a background
@@ -174,10 +178,13 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	observe := func(next http.Handler) http.Handler {
 		guarded := httpapi.DataMiddleware(accessKeys, next)
 		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded, requestEventSink)
-	}
+	}	// The embedding cache exact-matches repeat (model, input) requests so
+	// identical vectors skip the upstream. It is in-memory and bounded; the max
+	// entry count is read once at startup from runtime settings.
+	embeddingCache := embedcache.New(settings.Snapshot().EmbeddingCacheMaxEntries)
 	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
 	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
-	embeddings := observe(v1.NewEmbeddings(models, attempts, nvidiaClient))
+	embeddings := observe(v1.NewEmbeddings(models, attempts, nvidiaClient, settings, embeddingCache))
 	audio := observe(v1.NewAudio(models, attempts, nvidiaClient, resolved.Config.TempDir))
 	speech := observe(v1.NewSpeech(models, attempts, nvidiaClient))
 	modelList := observe(v1.NewModels(models))

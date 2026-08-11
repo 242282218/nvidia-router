@@ -1,6 +1,7 @@
 package pool
 
 import (
+	mathrand "math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -56,6 +57,9 @@ type Pool struct {
 	cursor   int
 	waiters  waitQueue
 	closed   bool
+	// latencyRNG returns a float in [0,1) for the weighted latency selection.
+	// It is injectable so tests can force a deterministic winner.
+	latencyRNG func() float64
 }
 
 func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
@@ -231,6 +235,17 @@ func (p *Pool) ApplySuccess(keyID int64) {
 	state.snapshot.ConsecutiveFailures = 0
 }
 
+// RecordLatency feeds a successful attempt duration (in milliseconds) into the
+// key's EWMA so the latency-aware scheduler can prefer faster keys. It is
+// called by the router on success and is a no-op for unknown keys.
+func (p *Pool) RecordLatency(keyID int64, durationMS int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if state, ok := p.keys[keyID]; ok {
+		state.recordLatency(float64(durationMS))
+	}
+}
+
 func (p *Pool) ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keystate.KeySnapshot) {
 	p.mu.Lock()
 	defer p.unlockAndDispatch()
@@ -280,11 +295,11 @@ func (p *Pool) tryAcquireMode(modelID int64, attempted map[int64]struct{}, strea
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	maxStreaming := resolveQueueSettings(p.currentSnapshot()).maxStreamingPerKey
-	lease, _ := p.tryAcquireLocked(modelID, attempted, stream, maxStreaming)
+	lease, _ := p.tryAcquireLocked(modelID, attempted, stream, maxStreaming, false)
 	return lease, lease != nil
 }
 
-func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int) (Lease, unavailableState) {
+func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int, latencyEnabled bool) (Lease, unavailableState) {
 	now := p.clock.Now()
 	if enabled, known := p.models[modelID]; known && !enabled {
 		return nil, unavailableState{reason: UnavailableModelBlocked}
@@ -293,6 +308,14 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	hasUnblocked := false
 	hasReady := false
 	var earliestCooldown time.Time
+
+	// When latency scheduling is off, the round-robin path below stays exactly
+	// as before. When on, gather every eligible ready key and run a weighted
+	// random draw favouring faster keys (with an exploration weight for keys
+	// still accumulating samples so they are not starved).
+	var latencyCandidates []*keyState
+	measuredLatency := 0
+
 	for offset := range p.order {
 		index := (p.cursor + offset) % len(p.order)
 		state := p.keys[p.order[index]]
@@ -322,19 +345,30 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 			if state.streamingBusy >= maxStreamingPerKey {
 				continue
 			}
-			state.streamingBusy++
 		} else {
 			if state.busy {
 				continue
 			}
-			state.busy = true
 		}
-		p.cursor = (index + 1) % len(p.order)
-		return &lease{
-			keyID:   state.snapshot.ID,
-			release: func() { p.release(state, stream) },
-		}, unavailableState{}
+		if !latencyEnabled {
+			if stream {
+				state.streamingBusy++
+			} else {
+				state.busy = true
+			}
+			p.cursor = (index + 1) % len(p.order)
+			return &lease{
+				keyID:   state.snapshot.ID,
+				release: func() { p.release(state, stream) },
+			}, unavailableState{}
+		}
+		if _, measured := state.latencyScore(); measured {
+			measuredLatency++
+		}
+		latencyCandidates = append(latencyCandidates, state)
 	}
+
+	// No eligible key at all: report the precise reason.
 	if !hasEnabled {
 		return nil, unavailableState{reason: UnavailableDisabled}
 	}
@@ -344,7 +378,63 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	if !hasReady {
 		return nil, unavailableState{reason: UnavailableCooling, retryAfter: earliestCooldown.Sub(now)}
 	}
-	return nil, unavailableState{reason: UnavailableBusy}
+
+	// Every ready key was busy/streaming-saturated; all were skipped above, so
+	// there is nothing to hand out.
+	if len(latencyCandidates) == 0 {
+		return nil, unavailableState{reason: UnavailableBusy}
+	}
+	selected := p.weightedSelect(latencyCandidates, measuredLatency)
+	// Advance the cursor past the chosen key so the next non-latency request
+	// continues the rotation from here rather than re-scanning from zero.
+	for index, id := range p.order {
+		if id == selected.snapshot.ID {
+			p.cursor = (index + 1) % len(p.order)
+			break
+		}
+	}
+	if stream {
+		selected.streamingBusy++
+	} else {
+		selected.busy = true
+	}
+	return &lease{
+		keyID:   selected.snapshot.ID,
+		release: func() { p.release(selected, stream) },
+	}, unavailableState{}
+}
+
+// weightedSelect draws one candidate with probability proportional to
+// 1/(1+EWMA) for measured keys. When fewer than two keys have usable latency
+// scores, it falls back to a uniform pick so a warmup pool still spreads load.
+func (p *Pool) weightedSelect(candidates []*keyState, measured int) *keyState {
+	if measured < 2 {
+		// Uniform fallback: index = floor(rng * len).
+		index := int(p.rng() * float64(len(candidates)))
+		return candidates[index]
+	}
+	total := 0.0
+	weights := make([]float64, len(candidates))
+	for index, candidate := range candidates {
+		weight := candidate.latencyWeight(unmeasuredLatencyWeight)
+		weights[index] = weight
+		total += weight
+	}
+	draw := p.rng() * total
+	for index, weight := range weights {
+		draw -= weight
+		if draw < 0 {
+			return candidates[index]
+		}
+	}
+	return candidates[len(candidates)-1]
+}
+
+func (p *Pool) rng() float64 {
+	if p.latencyRNG != nil {
+		return p.latencyRNG()
+	}
+	return mathrand.Float64()
 }
 
 func (p *Pool) release(state *keyState, stream bool) {

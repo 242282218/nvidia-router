@@ -341,3 +341,105 @@ type summarySettings struct {
 }
 
 func (s summarySettings) Snapshot() runtimeconfig.Snapshot { return s.snapshot }
+
+// TestLatencySchedulingPrefersFasterKey uses an injected RNG so the weighted
+// draw is deterministic: rng returning ~0 lands at the start of the weighted
+// interval, which is the fastest key.
+func TestLatencySchedulingPrefersFasterKey(t *testing.T) {
+	p := New(summarySettings{snapshot: runtimeconfig.Snapshot{LatencyRoutingEnabled: true}}, fakeClock{now: time.Unix(0, 0).UTC()})
+	// Deterministic rng cycling 0.000..0.999 so every weighted interval is hit
+	// in proportion: faster keys should dominate without starving unwarmed keys.
+	drawIndex := 0
+	p.latencyRNG = func() float64 {
+		value := float64(drawIndex%1000) / 1000
+		drawIndex++
+		return value
+	}
+	p.LoadSnapshot(testKeys(1, 2, 3), nil)
+	// Give key 2 a much larger (slower) EWMA than key 1; key 3 stays unwarmed.
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(2, 3000)
+	p.RecordLatency(2, 3000)
+	p.RecordLatency(2, 3000)
+
+	counts := map[int64]int{}
+	for range 1000 {
+		lease, err := p.AcquireWithSnapshot(context.Background(), 100, map[int64]struct{}{}, runtimeconfig.Snapshot{LatencyRoutingEnabled: true}, false)
+		if err != nil {
+			t.Fatalf("latency acquire: %v", err)
+		}
+		counts[lease.KeyID()]++
+		lease.Release()
+	}
+	if counts[1] <= counts[2] {
+		t.Fatalf("fastest key 1 not dominant: %v", counts)
+	}
+	if counts[3] == 0 {
+		t.Fatalf("unwarmed key 3 starved entirely despite exploration weight: %v", counts)
+	}
+}
+
+// TestLatencySchedulingOffKeepsRoundRobin confirms the feature gate restores
+// the legacy behaviour exactly.
+func TestLatencySchedulingOffKeepsRoundRobin(t *testing.T) {
+	p := New(summarySettings{snapshot: runtimeconfig.Snapshot{LatencyRoutingEnabled: false}}, fakeClock{now: time.Unix(0, 0).UTC()})
+	p.LoadSnapshot(testKeys(1, 2, 3), nil)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(2, 3000)
+	p.RecordLatency(2, 3000)
+	p.RecordLatency(2, 3000)
+
+	order := []int64{}
+	for range 3 {
+		lease, ok := p.tryAcquire(100, map[int64]struct{}{})
+		if !ok {
+			t.Fatal("round-robin acquire failed")
+		}
+		order = append(order, lease.KeyID())
+		lease.Release()
+	}
+	if order[0] != 1 || order[1] != 2 || order[2] != 3 {
+		t.Fatalf("round-robin order = %v, want [1 2 3]", order)
+	}
+}
+
+func TestLatencySchedulingWarmupFallsBackToUniform(t *testing.T) {
+	p := New(summarySettings{snapshot: runtimeconfig.Snapshot{LatencyRoutingEnabled: true}}, fakeClock{now: time.Unix(0, 0).UTC()})
+	p.latencyRNG = func() float64 { return 0.9 }
+	p.LoadSnapshot(testKeys(1, 2), nil)
+	// Only key 1 is measured; weightedSelect with measured < 2 must fall back to
+	// a uniform pick (rng 0.9 → last index = key 2).
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+
+	lease, err := p.AcquireWithSnapshot(context.Background(), 100, map[int64]struct{}{}, runtimeconfig.Snapshot{LatencyRoutingEnabled: true}, false)
+	if err != nil {
+		t.Fatalf("warmup acquire: %v", err)
+	}
+	if lease.KeyID() != 2 {
+		t.Fatalf("warmup fallback selected key %d, want 2 (uniform draw with rng 0.9)", lease.KeyID())
+	}
+	lease.Release()
+}
+
+func TestRecordLatencyIgnoresNonPositiveDurations(t *testing.T) {
+	p := New(summarySettings{snapshot: runtimeconfig.Snapshot{LatencyRoutingEnabled: true}}, fakeClock{now: time.Unix(0, 0).UTC()})
+	p.LoadSnapshot(testKeys(1, 2), nil)
+	// Zero/negative durations must not pollute the EWMA: key 1 stays unwarmed.
+	p.RecordLatency(1, 0)
+	p.RecordLatency(1, -5)
+	p.RecordLatency(1, 100)
+	p.RecordLatency(1, 100)
+	if state := p.keys[1]; state.latencySamples != 2 {
+		t.Fatalf("key 1 latencySamples = %d, want 2 (non-positive durations ignored)", state.latencySamples)
+	}
+	state := p.keys[1]
+	if got, measured := state.latencyScore(); measured && got <= 0 {
+		t.Fatalf("key 1 latencyScore = %f, want positive EWMA", got)
+	}
+}

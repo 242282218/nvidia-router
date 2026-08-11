@@ -103,6 +103,12 @@ func (r Request) Requirements() modelcatalog.Requirements {
 	return r.requirements
 }
 
+// Inputs returns the parsed input texts. They are exposed to drive the
+// exact-match cache's cache key; callers must hash them, never log them.
+func (r Request) Inputs() []string {
+	return r.inputs
+}
+
 // MarshalFor rebuilds the upstream body after model mapping. Unknown fields are
 // preserved; only the model field is rewritten to the upstream ID. Input text is
 // forwarded inline and never stored on the Request.

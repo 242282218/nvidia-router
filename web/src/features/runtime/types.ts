@@ -32,6 +32,9 @@ export interface RuntimeSettings {
   max_streaming_per_key: number
   stream_first_token_timeout_ms: number
   stream_idle_timeout_ms: number
+  latency_routing_enabled: boolean
+  embedding_cache_enabled: boolean
+  embedding_cache_max_entries: number
 }
 
 export interface RuntimeSummaryResponse {

@@ -290,6 +290,52 @@ func TestHealthCheckerSweepDoesNotSyncUnrecoveredKeys(t *testing.T) {
 	}
 }
 
+func TestHealthCheckerNextDelayShortensToCooldownExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	checker := NewHealthChecker(&stubHealthRepository{}, &fakeHealthClock{now: now}, HealthCheckerOptions{
+		Interval: 10 * time.Minute,
+		Logger:   discardHealthLogger(),
+	})
+	expiry := now.Add(2 * time.Minute)
+	checker.WireCooldownExpiry(func(context.Context) (*time.Time, error) { return &expiry, nil })
+
+	if delay := checker.nextDelay(context.Background()); delay != 2*time.Minute+500*time.Millisecond {
+		t.Fatalf("nextDelay = %s, want 2m0.5s", delay)
+	}
+}
+
+func TestHealthCheckerNextDelaySweepsImmediatelyWhenExpired(t *testing.T) {
+	now := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	checker := NewHealthChecker(&stubHealthRepository{}, &fakeHealthClock{now: now}, HealthCheckerOptions{
+		Interval: 10 * time.Minute,
+		Logger:   discardHealthLogger(),
+	})
+	past := now.Add(-time.Minute)
+	checker.WireCooldownExpiry(func(context.Context) (*time.Time, error) { return &past, nil })
+
+	if delay := checker.nextDelay(context.Background()); delay != 0 {
+		t.Fatalf("nextDelay = %s, want 0 (already expired)", delay)
+	}
+}
+
+func TestHealthCheckerNextDelayFallsBackToIntervalWithoutHook(t *testing.T) {
+	checker := NewHealthChecker(&stubHealthRepository{}, nil, HealthCheckerOptions{
+		Interval: 10 * time.Minute,
+		Logger:   discardHealthLogger(),
+	})
+	if delay := checker.nextDelay(context.Background()); delay != 10*time.Minute {
+		t.Fatalf("nextDelay = %s, want 10m without cooldown hook", delay)
+	}
+}
+
+type fakeHealthClock struct{ now time.Time }
+
+func (c fakeHealthClock) Now() time.Time                   { return c.now }
+func (c fakeHealthClock) NewTimer(time.Duration) *time.Timer { return time.NewTimer(time.Hour) }
+func (c fakeHealthClock) AfterFunc(time.Duration, func()) *time.Timer {
+	return time.NewTimer(time.Hour)
+}
+
 func TestRepositoryListKeysForHealthCheckFiltersUnhealthy(t *testing.T) {
 	service, db, _ := newNVIDIAKeyTestService(t, newFakeValidator())
 	repo := service.repository

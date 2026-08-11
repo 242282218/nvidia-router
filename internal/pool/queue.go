@@ -42,6 +42,7 @@ type waiter struct {
 	attempted          map[int64]struct{}
 	stream             bool
 	maxStreamingPerKey int
+	latencyEnabled     bool
 	result             chan acquireResult
 	element            *list.Element
 }
@@ -107,7 +108,7 @@ func (p *Pool) acquire(
 	}
 	p.dispatchWaitersLocked()
 	if p.waiters.Len() == 0 {
-		lease, unavailable := p.tryAcquireLocked(modelID, attempted, stream, settings.maxStreamingPerKey)
+		lease, unavailable := p.tryAcquireLocked(modelID, attempted, stream, settings.maxStreamingPerKey, settings.latencyEnabled)
 		if lease != nil {
 			p.mu.Unlock()
 			return lease, nil
@@ -128,6 +129,7 @@ func (p *Pool) acquire(
 		attempted:          cloneAttempted(attempted),
 		stream:             stream,
 		maxStreamingPerKey: settings.maxStreamingPerKey,
+		latencyEnabled:     settings.latencyEnabled,
 		result:             make(chan acquireResult, 1),
 	}
 	p.waiters.push(waiter)
@@ -154,6 +156,7 @@ type resolvedQueueSettings struct {
 	capacity            int
 	wait                time.Duration
 	maxStreamingPerKey  int
+	latencyEnabled      bool
 }
 
 func (p *Pool) queueSettings() resolvedQueueSettings {
@@ -177,7 +180,7 @@ func resolveQueueSettings(snapshot runtimeconfig.Snapshot) resolvedQueueSettings
 	if maxStreaming <= 0 {
 		maxStreaming = defaultMaxStreamingPerKey
 	}
-	return resolvedQueueSettings{capacity: capacity, wait: wait, maxStreamingPerKey: maxStreaming}
+	return resolvedQueueSettings{capacity: capacity, wait: wait, maxStreamingPerKey: maxStreaming, latencyEnabled: snapshot.LatencyRoutingEnabled}
 }
 
 func (p *Pool) waitForResult(ctx context.Context, waiter *waiter, wait time.Duration) (Lease, error) {
@@ -222,7 +225,7 @@ func (p *Pool) dispatchWaitersLocked() {
 			remaining--
 			continue
 		}
-		lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey)
+		lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey, waiter.latencyEnabled)
 		if lease == nil && unavailable.reason == UnavailableBusy {
 			// A busy head waiter must not stall the queue: rotate it to the
 			// tail and keep scanning. remaining bounds the pass so a queue of

@@ -50,6 +50,13 @@ type StateSync interface {
 	ApplyFailure(keyID, modelID int64, f fault.Fault, persisted keystate.KeySnapshot)
 }
 
+// LatencyObserver receives per-attempt success durations from the router so
+// the scheduler can prefer faster keys. The pool implements it; it is optional
+// so tests can construct an Attempt without one.
+type LatencyObserver interface {
+	RecordLatency(keyID int64, durationMS int64)
+}
+
 type AttemptResult struct {
 	Response *http.Response
 	Lease    pool.Lease
@@ -79,6 +86,7 @@ type Attempt struct {
 	states    KeyStateWriter
 	stateSync StateSync
 	clock     clock.Clock
+	latency   LatencyObserver
 }
 
 func NewAttempt(
@@ -88,11 +96,12 @@ func NewAttempt(
 	states KeyStateWriter,
 	stateSync StateSync,
 	source clock.Clock,
+	latencyObservers ...LatencyObserver,
 ) *Attempt {
 	if source == nil {
 		source = clock.RealClock{}
 	}
-	return &Attempt{
+	attempt := &Attempt{
 		settings:  settings,
 		keyPool:   keyPool,
 		secrets:   secrets,
@@ -100,6 +109,10 @@ func NewAttempt(
 		stateSync: stateSync,
 		clock:     source,
 	}
+	if len(latencyObservers) > 0 {
+		attempt.latency = latencyObservers[0]
+	}
+	return attempt
 }
 
 func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute ExecuteFunc) (AttemptResult, error) {
@@ -144,12 +157,20 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 
 		// The first-byte budget starts once a lease is acquired; queue time is
 		// bounded separately by the pool's queue-wait setting (queue_timeout).
+		attemptStarted := a.clock.Now()
 		executeCtx := withBudget(requestCtx, budget.forAttempt(a.clock.Now()))
 		response, commit, currentFault, err := a.executeLease(executeCtx, requestCtx, modelID, lease, execute)
 		if err != nil {
 			return AttemptResult{}, err
 		}
 		if currentFault == nil {
+			// Feed the success latency back so the pool's latency-aware
+			// scheduler can prefer keys that answer faster (and downgrade keys
+			// that have quietly become slow). Best-effort: a nil observer is a
+			// no-op and a busy pool never blocks the request path for it.
+			if a.latency != nil {
+				a.latency.RecordLatency(lease.KeyID(), a.clock.Now().Sub(attemptStarted).Milliseconds())
+			}
 			observability.SetUpstreamRequestID(ctx, response.Header.Get("X-Request-ID"))
 			return AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: len(attempted)}, nil
 

@@ -27,6 +27,9 @@ const settings = {
   max_streaming_per_key: 2,
   stream_first_token_timeout_ms: 60_000,
   stream_idle_timeout_ms: 180_000,
+  latency_routing_enabled: true,
+  embedding_cache_enabled: false,
+  embedding_cache_max_entries: 256,
 }
 
 beforeEach(() => {

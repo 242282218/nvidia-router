@@ -1,4 +1,4 @@
-package v1
+﻿package v1
 
 import (
 	"context"
@@ -8,16 +8,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"nvidia-router/internal/config"
+	"nvidia-router/internal/embedcache"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
+// settableSettings lets tests flip the runtime embedding-cache toggle.
+type settableSettings struct {
+	enabled bool
+	size    int
+}
+
+func (s *settableSettings) Snapshot() runtimeconfig.Snapshot {
+	return runtimeconfig.Snapshot{EmbeddingCacheEnabled: s.enabled, EmbeddingCacheMaxEntries: s.size}
+}
+
 func TestEmbeddingsRejectsOversizedBody(t *testing.T) {
-	handler := NewEmbeddings(nil, nil, nil)
+	handler := NewEmbeddings(nil, nil, nil, nil, nil)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/embeddings",
@@ -29,7 +42,7 @@ func TestEmbeddingsRejectsOversizedBody(t *testing.T) {
 }
 
 func TestEmbeddingsRejectsMissingInput(t *testing.T) {
-	handler := NewEmbeddings(nil, nil, nil)
+	handler := NewEmbeddings(nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"public-embed"}`))
 	handler.ServeHTTP(response, request)
@@ -40,7 +53,7 @@ func TestEmbeddingsRejectsNonEmbeddingModelKind(t *testing.T) {
 	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
 		return modelcatalog.Model{}, modelcatalog.ErrModelKindMismatch
 	})
-	handler := NewEmbeddings(resolver, nil, nil)
+	handler := NewEmbeddings(resolver, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"public-embed","input":"hi"}`))
 	handler.ServeHTTP(response, request)
@@ -81,7 +94,7 @@ func TestEmbeddingsMapsModelAndPreservesValidatedResponse(t *testing.T) {
 			ID: 21, PublicID: publicID, UpstreamID: "vendor/embed", Kind: modelcatalog.KindEmbedding, Enabled: true,
 		}, nil
 	})
-	handler := NewEmbeddings(resolver, runner, client)
+	handler := NewEmbeddings(resolver, runner, client, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"public-embed","input":"hi","encoding_format":"float"}`))
 	handler.ServeHTTP(response, request)
@@ -120,7 +133,7 @@ func TestEmbeddingsExecutionSurfacesProtocolErrorForFailover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	response, err := NewEmbeddings(nil, nil, client).execute([]byte(`{"model":"m","input":"hi"}`))(
+	response, err := NewEmbeddings(nil, nil, client, nil, nil).execute([]byte(`{"model":"m","input":"hi"}`))(
 		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
 	)
 	if response != nil {
@@ -142,4 +155,84 @@ func jsonEqual(a, b []byte) bool {
 	normalizedA, _ := json.Marshal(left)
 	normalizedB, _ := json.Marshal(right)
 	return string(normalizedA) == string(normalizedB)
+}
+
+// TestEmbeddingsCacheServersWithCacheOn returns the full response from cache
+// after the first upstream call, and every repeat bypasses the upstream.
+func TestEmbeddingsCacheHitsSecondRequest(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	responseBody := []byte(`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":2}}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(responseBody)
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	cache := embedcache.New(10)
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 21, PublicID: publicID, UpstreamID: "vendor/embed", Kind: modelcatalog.KindEmbedding, Enabled: true}, nil
+	})
+	settings := &settableSettings{enabled: true, size: 10}
+	handler := NewEmbeddings(resolver, attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("upstream-secret"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	}), client, settings, cache)
+
+	body := `{"model":"public-embed","input":"same text"}`
+	for range 2 {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("cached request status = %d", response.Code)
+		}
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (second request served from cache)", upstreamCalls.Load())
+	}
+}
+
+// TestEmbeddingsCacheDisabledStillCallsUpstream confirms the runtime toggle
+// keeps the cache off even when one is constructed.
+func TestEmbeddingsCacheDisabledSkipsCache(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"embedding":[0.1]}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 21, PublicID: publicID, UpstreamID: "vendor/embed", Kind: modelcatalog.KindEmbedding, Enabled: true}, nil
+	})
+	settings := &settableSettings{enabled: false, size: 10}
+	handler := NewEmbeddings(resolver, attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("upstream-secret"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	}), client, settings, embedcache.New(10))
+
+	body := `{"model":"public-embed","input":"same text"}`
+	for range 2 {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("request status = %d", response.Code)
+		}
+	}
+	if upstreamCalls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (cache disabled)", upstreamCalls.Load())
+	}
 }

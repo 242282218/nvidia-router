@@ -64,6 +64,10 @@ type HealthChecker struct {
 	// drive deterministic sweep scheduling; production leaves it nil and Run
 	// falls back to c.wait (clock.NewTimer based).
 	waitFn func(context.Context, time.Duration) bool
+	// cooldownExpiry, when wired, lets Run shorten the wait so a sweep fires
+	// right after the earliest cooldown expires (half-open recovery). The
+	// default sweep interval still bounds it.
+	cooldownExpiry func(ctx context.Context) (*time.Time, error)
 }
 
 type healthRepository interface {
@@ -135,6 +139,39 @@ func (c *HealthChecker) WireSync(sync func(keyID int64)) {
 	c.sync = sync
 }
 
+// WireCooldownExpiry injects a hook returning the earliest pending cooldown
+// expiry. When wired (and no test waitFn is set), the checker shortens its
+// next wait to fire shortly after that expiry so half-open keys are probed
+// promptly instead of waiting out the full sweep interval.
+func (c *HealthChecker) WireCooldownExpiry(fn func(ctx context.Context) (*time.Time, error)) {
+	c.cooldownExpiry = fn
+}
+
+// nextDelay computes the wait before the next sweep. Without the cooldown hook
+// it is the fixed interval; with it, an expiry within the interval shortens the
+// wait to arrive just after that expiry, and any past expiry triggers an
+// immediate sweep (so a recovery that happened during a long generation is
+// picked up at once).
+func (c *HealthChecker) nextDelay(ctx context.Context) time.Duration {
+	if c.cooldownExpiry == nil || c.waitFn != nil {
+		return c.interval
+	}
+	expiry, err := c.cooldownExpiry(ctx)
+	if err != nil || expiry == nil {
+		return c.interval
+	}
+	remaining := expiry.Sub(c.clock.Now())
+	if remaining <= 0 {
+		// Already expired: sweep now to close the half-open gap.
+		return 0
+	}
+	if remaining < c.interval {
+		// Reuse a short margin so we sweep right after the cooldown lifts.
+		return remaining + 500*time.Millisecond
+	}
+	return c.interval
+}
+
 // Run sweeps unhealthy keys on the configured interval until ctx is cancelled.
 // Wait is honoured for test instrumentation; production uses clock.NewTimer.
 func (c *HealthChecker) Run(ctx context.Context) {
@@ -143,7 +180,7 @@ func (c *HealthChecker) Run(ctx context.Context) {
 		wait = c.waitFn
 	}
 	for {
-		if !wait(ctx, c.interval) {
+		if !wait(ctx, c.nextDelay(ctx)) {
 			return
 		}
 		_ = c.Sweep(ctx)

@@ -74,6 +74,19 @@ type Snapshot struct {
 	// in-stream idle guard, so a slow-but-live generation is not truncated by a
 	// window sized for the first token.
 	StreamIdleTimeoutMS int
+	// LatencyRoutingEnabled toggles latency-aware key scheduling. When on, the
+	// pool prefers keys whose historical response time (EWMA) is faster, with an
+	// exploration weight for keys still accumulating samples. Off restores pure
+	// round-robin.
+	LatencyRoutingEnabled bool
+	// EmbeddingCacheEnabled gates the in-memory exact-match cache for
+	// /v1/embeddings. The cache is optional because it changes observable
+	// behaviour (identical inputs may get a cached vector without an upstream
+	// call), so operators can disable it explicitly.
+	EmbeddingCacheEnabled bool
+	// EmbeddingCacheMaxEntries bounds the in-memory embedding cache. A bounded
+	// LRU keeps memory flat regardless of how many distinct inputs flow through.
+	EmbeddingCacheMaxEntries int
 	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
 	FirstByteDeadline time.Time
 }
@@ -156,6 +169,14 @@ func Validate(snapshot Snapshot) error {
 			min   int
 			max   int
 		}{"stream_idle_timeout_ms", snapshot.StreamIdleTimeoutMS, 1000, 1800000})
+	}
+	if snapshot.EmbeddingCacheMaxEntries != 0 {
+		checks = append(checks, struct {
+			field string
+			value int
+			min   int
+			max   int
+		}{"embedding_cache_max_entries", snapshot.EmbeddingCacheMaxEntries, 1, 10000})
 	}
 	for _, check := range checks {
 		if check.value < check.min || check.value > check.max {

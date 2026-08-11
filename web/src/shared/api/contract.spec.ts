@@ -115,6 +115,9 @@ const runtimeSettings = object({
   max_streaming_per_key: scalar('number'),
   stream_first_token_timeout_ms: scalar('number'),
   stream_idle_timeout_ms: scalar('number'),
+  latency_routing_enabled: scalar('boolean'),
+  embedding_cache_enabled: scalar('boolean'),
+  embedding_cache_max_entries: scalar('number'),
 })
 
 const model = object({

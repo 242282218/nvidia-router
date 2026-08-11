@@ -8,11 +8,13 @@ import (
 	"net/http"
 
 	"nvidia-router/internal/apierror"
+	"nvidia-router/internal/embedcache"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/observability"
 	embeddingsprotocol "nvidia-router/internal/protocol/embeddings"
 	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -23,11 +25,25 @@ type Embeddings struct {
 	models   ModelResolver
 	attempts AttemptRunner
 	client   provider.Provider
+	// cache is an optional exact-match embedding cache. When non-nil and the
+	// runtime setting is enabled, identical (model, input) requests bypass the
+	// upstream entirely.
+	cache     *embedcache.Cache
+	settings  runtimeconfig.Provider
 }
 
-func NewEmbeddings(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Embeddings {
-	return &Embeddings{models: models, attempts: attempts, client: client}
+func NewEmbeddings(models ModelResolver, attempts AttemptRunner, client provider.Provider, settings runtimeconfig.Provider, cache *embedcache.Cache) *Embeddings {
+	if settings == nil {
+		settings = &noSettings{}
+	}
+	return &Embeddings{models: models, attempts: attempts, client: client, settings: settings, cache: cache}
 }
+
+// noSettings is a zero-value settings provider so tests that construct an
+// Embeddings without one keep the cache feature off (safe default).
+type noSettings struct{}
+
+func (*noSettings) Snapshot() runtimeconfig.Snapshot { return runtimeconfig.Snapshot{} }
 
 func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
@@ -61,6 +77,18 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		writeChatError(writer, err)
 		return
 	}
+	// Exact-match cache: identical (model, input) requests short-circuit the
+	// upstream. The cache is off by default and bounded; a hit here is only
+	// valid for the exact resolved model so the key includes the upstream ID.
+	if h.cache != nil && h.settings.Snapshot().EmbeddingCacheEnabled {
+		if cached, ok := h.cache.Get(embedcache.Fingerprint(model.UpstreamID, parsed.Inputs())); ok {
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Header().Set("X-Embedding-Cache", "HIT")
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write(cached)
+			return
+		}
+	}
 	result, err := h.attempts.Run(request.Context(), model.ID, false, h.execute(upstreamBody))
 	if err != nil {
 		writeChatError(writer, err)
@@ -76,9 +104,19 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		})
 		return
 	}
+	body, err := io.ReadAll(result.Response.Body)
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	// Only cache 2xx responses: a cached error would wrongfully hide an upstream
+	// outage. The validated body (already parsed by execute) is safe to cache.
+	if h.cache != nil && h.settings.Snapshot().EmbeddingCacheEnabled {
+		h.cache.Put(embedcache.Fingerprint(model.UpstreamID, parsed.Inputs()), body)
+	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
-	_, _ = io.Copy(writer, result.Response.Body)
+	_, _ = writer.Write(body)
 }
 
 func (h *Embeddings) execute(body []byte) router.ExecuteFunc {

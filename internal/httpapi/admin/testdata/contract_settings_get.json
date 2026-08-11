@@ -1,8 +1,11 @@
 {
   "data": {
     "connect_timeout_ms": 10000,
+    "embedding_cache_enabled": false,
+    "embedding_cache_max_entries": 0,
     "failover_status_codes": "429,500,502,503,504",
     "first_byte_timeout_ms": 60000,
+    "latency_routing_enabled": false,
     "max_attempts_per_request": 5,
     "max_streaming_per_key": 2,
     "nonstream_total_timeout_ms": 300000,

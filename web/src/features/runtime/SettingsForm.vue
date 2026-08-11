@@ -17,13 +17,16 @@ interface SettingsFields {
   stream_first_token_timeout_seconds: number | string
   stream_idle_timeout_seconds: number | string
   failover_status_codes: string
+  latency_routing_enabled: boolean
+  embedding_cache_enabled: boolean
+  embedding_cache_max_entries: number | string
 }
 
 type SettingParam = keyof RuntimeSettings
-type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes'>
+type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes' | 'latency_routing_enabled' | 'embedding_cache_enabled'>
 
 interface SettingRule {
-  field: keyof SettingsFields
+  field: Exclude<keyof SettingsFields, 'latency_routing_enabled' | 'embedding_cache_enabled' | 'failover_status_codes'>
   hint?: string
   integerInput: boolean
   max: number
@@ -58,6 +61,9 @@ const fields = reactive<SettingsFields>({
   stream_first_token_timeout_seconds: 60,
   stream_idle_timeout_seconds: 180,
   failover_status_codes: '429,500,502,503,504',
+  latency_routing_enabled: false,
+  embedding_cache_enabled: false,
+  embedding_cache_max_entries: 256,
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
 
@@ -79,6 +85,7 @@ const settingRules: SettingRule[] = [
   { field: 'max_streaming_per_key', hint: '单个 NVIDIA Key 同时处理的流式请求数，允许范围 1-10。', integerInput: true, min: 1, max: 10, multiplier: 1, param: 'max_streaming_per_key', testId: 'max-streaming-per-key' },
   { field: 'stream_first_token_timeout_seconds', hint: '流式请求等待首个 token 的时间上限，允许范围 1-1800 秒。', integerInput: true, min: 1_000, max: 1_800_000, multiplier: 1_000, param: 'stream_first_token_timeout_ms', testId: 'stream-first-token-timeout-seconds' },
   { field: 'stream_idle_timeout_seconds', hint: '流式响应中相邻两次输出的空闲上限，允许范围 1-1800 秒。', integerInput: true, min: 1_000, max: 1_800_000, multiplier: 1_000, param: 'stream_idle_timeout_ms', testId: 'stream-idle-timeout-seconds' },
+  { field: 'embedding_cache_max_entries', hint: '嵌入缓存最多缓存的响应条数，超过后淘汰最久未命中项（LRU）。', integerInput: true, min: 1, max: 10_000, multiplier: 1, param: 'embedding_cache_max_entries', testId: 'embedding-cache-max-entries' },
 ]
 
 watch(() => props.settings, (settings) => {
@@ -97,6 +104,9 @@ watch(() => props.settings, (settings) => {
   fields.stream_first_token_timeout_seconds = settings.stream_first_token_timeout_ms / 1000
   fields.stream_idle_timeout_seconds = settings.stream_idle_timeout_ms / 1000
   fields.failover_status_codes = settings.failover_status_codes
+  fields.latency_routing_enabled = settings.latency_routing_enabled
+  fields.embedding_cache_enabled = settings.embedding_cache_enabled
+  fields.embedding_cache_max_entries = settings.embedding_cache_max_entries
 }, { immediate: true })
 
 function submit(): void {
@@ -108,6 +118,8 @@ function validateFields(): RuntimeSettings | null {
   const errors: Partial<Record<SettingParam, string>> = {}
   const settings = {} as RuntimeSettings
   settings.failover_status_codes = fields.failover_status_codes.trim()
+  settings.latency_routing_enabled = fields.latency_routing_enabled
+  settings.embedding_cache_enabled = fields.embedding_cache_enabled
   for (const rule of settingRules) {
     const raw = fields[rule.field]
     const value = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)
@@ -168,6 +180,7 @@ function fieldError(param: SettingParam): string {
           rule.param === 'retry_budget_ms' ? '重试预算（毫秒）' :
           rule.param === 'stream_first_token_timeout_ms' ? '首 token 超时（秒）' :
           rule.param === 'stream_idle_timeout_ms' ? '流式空闲超时（秒）' :
+          rule.param === 'embedding_cache_max_entries' ? '嵌入缓存上限（条）' :
           '单 Key 流式并发上限'
         }}</span>
         <input
@@ -216,6 +229,32 @@ function fieldError(param: SettingParam): string {
             role="alert"
           >{{ fieldError('failover_status_codes') }}</span>
         </Transition>
+      </label>
+
+      <label class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm">
+        <input
+          v-model="fields.latency_routing_enabled"
+          data-testid="latency-routing-enabled"
+          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)]"
+          type="checkbox"
+        >
+        <span>
+          <span class="font-medium text-[var(--color-text)]">延迟感知调度</span>
+          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">按每个 Key 的历史响应时间加权选择（快者优先，未测 Key 保持探索），关闭则恢复纯轮转。</span>
+        </span>
+      </label>
+
+      <label class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm">
+        <input
+          v-model="fields.embedding_cache_enabled"
+          data-testid="embedding-cache-enabled"
+          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)]"
+          type="checkbox"
+        >
+        <span>
+          <span class="font-medium text-[var(--color-text)]">嵌入精确匹配缓存</span>
+          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">对完全相同的嵌入输入直接返回缓存向量，跳过上游调用；命中不计入上游用量。</span>
+        </span>
       </label>
     </div>
 

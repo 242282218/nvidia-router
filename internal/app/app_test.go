@@ -213,6 +213,13 @@ func openAppDatabase(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
+	// Integration tests assert deterministic key-selection order (round-robin +
+	// failover). Latency-aware scheduling is a newer default that introduces
+	// weighted randomness, so the shared fixture turns it off; the scheduler
+	// itself is covered by dedicated pool unit tests.
+	if _, err := db.Exec(`UPDATE runtime_settings SET latency_routing_enabled = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("disable latency routing in test fixture: %v", err)
+	}
 	return db
 }
 

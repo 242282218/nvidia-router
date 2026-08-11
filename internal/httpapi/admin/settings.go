@@ -32,6 +32,9 @@ type settingsDTO struct {
 	MaxStreamingPerKey        int    `json:"max_streaming_per_key"`
 	StreamFirstTokenTimeoutMS int    `json:"stream_first_token_timeout_ms"`
 	StreamIdleTimeoutMS       int    `json:"stream_idle_timeout_ms"`
+	LatencyRoutingEnabled     bool   `json:"latency_routing_enabled"`
+	EmbeddingCacheEnabled     bool   `json:"embedding_cache_enabled"`
+	EmbeddingCacheMaxEntries  int    `json:"embedding_cache_max_entries"`
 }
 
 type settingsPatch struct {
@@ -52,6 +55,9 @@ type settingsPatch struct {
 	MaxStreamingPerKey        *int    `json:"max_streaming_per_key"`
 	StreamFirstTokenTimeoutMS *int    `json:"stream_first_token_timeout_ms"`
 	StreamIdleTimeoutMS       *int    `json:"stream_idle_timeout_ms"`
+	LatencyRoutingEnabled     *bool   `json:"latency_routing_enabled"`
+	EmbeddingCacheEnabled     *bool   `json:"embedding_cache_enabled"`
+	EmbeddingCacheMaxEntries  *int    `json:"embedding_cache_max_entries"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -135,14 +141,26 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.StreamIdleTimeoutMS != nil {
 		current.StreamIdleTimeoutMS = *patch.StreamIdleTimeoutMS
 	}
+	if patch.LatencyRoutingEnabled != nil {
+		current.LatencyRoutingEnabled = *patch.LatencyRoutingEnabled
+	}
+	if patch.EmbeddingCacheEnabled != nil {
+		current.EmbeddingCacheEnabled = *patch.EmbeddingCacheEnabled
+	}
+	if patch.EmbeddingCacheMaxEntries != nil {
+		current.EmbeddingCacheMaxEntries = *patch.EmbeddingCacheMaxEntries
+	}
 	return current
 }
 
 func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 	return settingsDTO{
-		QueueCapacity: snapshot.QueueCapacity, QueueWaitTimeoutMS: snapshot.QueueWaitTimeoutMS,
-		ConnectTimeoutMS: snapshot.ConnectTimeoutMS, FirstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
-		NonstreamTotalTimeoutMS: snapshot.NonstreamTotalTimeoutMS, ShutdownGraceMS: snapshot.ShutdownGraceMS,
+		QueueCapacity:             snapshot.QueueCapacity,
+		QueueWaitTimeoutMS:        snapshot.QueueWaitTimeoutMS,
+		ConnectTimeoutMS:          snapshot.ConnectTimeoutMS,
+		FirstByteTimeoutMS:        snapshot.FirstByteTimeoutMS,
+		NonstreamTotalTimeoutMS:   snapshot.NonstreamTotalTimeoutMS,
+		ShutdownGraceMS:           snapshot.ShutdownGraceMS,
 		FailoverStatusCodes:       snapshot.FailoverStatusCodes,
 		RequestLogRetentionDays:   snapshot.RequestLogRetentionDays,
 		MaxAttemptsPerRequest:     snapshot.MaxAttemptsPerRequest,
@@ -150,6 +168,9 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		MaxStreamingPerKey:        snapshot.MaxStreamingPerKey,
 		StreamFirstTokenTimeoutMS: snapshot.StreamFirstTokenTimeoutMS,
 		StreamIdleTimeoutMS:       snapshot.StreamIdleTimeoutMS,
+		LatencyRoutingEnabled:     snapshot.LatencyRoutingEnabled,
+		EmbeddingCacheEnabled:     snapshot.EmbeddingCacheEnabled,
+		EmbeddingCacheMaxEntries:  snapshot.EmbeddingCacheMaxEntries,
 	}
 }
 

@@ -269,6 +269,31 @@ func (r *Repository) ListKeysForHealthCheck(ctx context.Context) ([]keystate.Key
 	return snapshots, nil
 }
 
+// EarliestCooldownExpiry returns the soonest cooldown_until among enabled,
+// non-auth-invalid keys still cooling down, or nil when none is cooling. The
+// health checker uses it to schedule its next sweep just after a cooldown
+// expires, so a recovered key is probed promptly instead of waiting out the
+// fixed sweep interval (the half-open gap: cooldown expired ⇒ key is eligible
+// again, but nothing probes it until the next full sweep).
+func (r *Repository) EarliestCooldownExpiry(ctx context.Context) (*time.Time, error) {
+	var raw sql.NullString
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT MIN(cooldown_until)
+		FROM nvidia_keys
+		WHERE enabled = 1 AND auth_invalid = 0 AND cooldown_until IS NOT NULL
+	`).Scan(&raw); err != nil {
+		return nil, fmt.Errorf("query earliest NVIDIA key cooldown expiry: %w", err)
+	}
+	if !raw.Valid || raw.String == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw.String)
+	if err != nil {
+		return nil, fmt.Errorf("parse earliest NVIDIA key cooldown expiry: %w", err)
+	}
+	return &parsed, nil
+}
+
 func (r *Repository) markSuccess(ctx context.Context, keyID int64, now time.Time) (keystate.KeySnapshot, error) {
 	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
 		result, err := tx.ExecContext(ctx, `

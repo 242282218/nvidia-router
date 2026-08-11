@@ -18,6 +18,9 @@ const settings: RuntimeSettings = {
   max_streaming_per_key: 2,
   stream_first_token_timeout_ms: 60_000,
   stream_idle_timeout_ms: 180_000,
+  latency_routing_enabled: true,
+  embedding_cache_enabled: false,
+  embedding_cache_max_entries: 256,
 }
 
 const inputTestIds = {
@@ -143,6 +146,9 @@ describe('SettingsForm', () => {
         max_streaming_per_key: 2,
         stream_first_token_timeout_ms: 1_000,
         stream_idle_timeout_ms: 1_000,
+        latency_routing_enabled: true,
+        embedding_cache_enabled: false,
+        embedding_cache_max_entries: 256,
       },
     ],
     [
@@ -173,6 +179,9 @@ describe('SettingsForm', () => {
         max_streaming_per_key: 10,
         stream_first_token_timeout_ms: 1_800_000,
         stream_idle_timeout_ms: 1_800_000,
+        latency_routing_enabled: true,
+        embedding_cache_enabled: false,
+        embedding_cache_max_entries: 256,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {
