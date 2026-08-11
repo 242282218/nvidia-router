@@ -255,10 +255,6 @@ func newRuntimeBudgetTransport(t *testing.T) *runtimeBudgetTransport {
 	return capture
 }
 
-func captureRuntimeBudget(request *http.Request) runtimeBudgetCapture {
-	return captureRuntimeBudgetContext(request.Context())
-}
-
 func captureRuntimeBudgetContext(ctx context.Context) runtimeBudgetCapture {
 	budget, _ := router.BudgetFromContext(ctx)
 	totalDeadline := budget.TotalDeadline()

@@ -92,7 +92,7 @@ func (r *Repository) List(ctx context.Context, query ListQuery) (Page, error) {
 	if err != nil {
 		return Page{}, fmt.Errorf("list admin audit entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]Entry, 0, query.Limit)
 	for rows.Next() {

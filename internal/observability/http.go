@@ -66,7 +66,7 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 		// upstream error echo somehow leaked an Authorization-like body here,
 		// the JSON parse would no-op usage (already the failure-shaped branch)
 		// without persisting the token.
-		prompt, completion := parseUsage([]byte(RedactBearerToken(string(tracked.body.Bytes()))), tracked.captureComplete, tracked.captureEnabled, tracked.status, tracked.Header().Get("Content-Type"))
+		prompt, completion := parseUsage([]byte(RedactBearerToken(tracked.body.String())), tracked.captureComplete, tracked.captureEnabled, tracked.status, tracked.Header().Get("Content-Type"))
 		if metadata.PromptTokens == nil {
 			metadata.PromptTokens = prompt
 		}

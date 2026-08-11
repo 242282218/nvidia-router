@@ -120,9 +120,7 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 		return AccessKeyIdentity{}, ErrInvalidAccessKey
 	}
 	if matchedVersion != activeVersion && activeDigest != nil {
-		if err := s.repository.UpdateDigest(ctx, identity.ID, activeDigest, activeVersion); err == nil {
-			matchedVersion = activeVersion
-		} else {
+		if err := s.repository.UpdateDigest(ctx, identity.ID, activeDigest, activeVersion); err != nil {
 			slog.Warn("migrate access key digest", "error_type", fmt.Sprintf("%T", err))
 		}
 	}

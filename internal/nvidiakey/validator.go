@@ -29,21 +29,6 @@ func validToken(token string) bool {
 	return true
 }
 
-func validationStatus(state nvidia.ValidationState) (ImportStatus, string) {
-	switch state {
-	case nvidia.ValidationInvalidCredential:
-		return ImportStatusInvalid, "invalid_credential"
-	case nvidia.ValidationTemporarilyUnavailable:
-		return ImportStatusTemporarilyUnavailable, "validation_temporarily_unavailable"
-	case nvidia.ValidationProxyUnavailable:
-		return ImportStatusTemporarilyUnavailable, "proxy_temporarily_unavailable"
-	case nvidia.ValidationIndeterminate:
-		return ImportStatusIndeterminate, "validation_indeterminate"
-	default:
-		return ImportStatusIndeterminate, "validation_indeterminate"
-	}
-}
-
 func maskToken(token string) (string, string, string) {
 	characters := []rune(token)
 	// Two-phase reveal budget: never expose more than a quarter of the token,

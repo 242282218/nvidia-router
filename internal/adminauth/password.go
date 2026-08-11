@@ -119,15 +119,6 @@ func VerifyPasswordWithRehash(password, encodedHash string) (matched bool, needs
 	return true, params != currentArgon2Params(), nil
 }
 
-func encodePHC(salt, hash []byte) string {
-	return fmt.Sprintf(
-		"$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
-		argon2Memory, argon2Iterations, argon2Parallelism,
-		base64.RawStdEncoding.EncodeToString(salt),
-		base64.RawStdEncoding.EncodeToString(hash),
-	)
-}
-
 // parsePasswordHash splits a PHC string into its cost parameters, salt and
 // digest. It accepts the canonical Argon2id v=19 layout only and requires the
 // parameter segment to carry exactly one each of m=, t= and p= in canonical

@@ -69,12 +69,12 @@ func TestMigration005AddsFailoverAndRetentionColumns(t *testing.T) {
 		var dfltValue any
 		var pk int
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			t.Fatalf("scan table_info pre-005: %v", err)
 		}
 		names[name] = struct{}{}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if _, ok := names["failover_status_codes"]; ok {
 		t.Fatal("pre-005 schema already had failover_status_codes")
 	}
