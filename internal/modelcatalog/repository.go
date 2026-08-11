@@ -458,7 +458,8 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 
 const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, enabled,
 	supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
-	capability_verified_at, created_at, updated_at FROM models`
+	capability_verified_at, created_at, updated_at,
+	stream_first_token_timeout_ms, stream_idle_timeout_ms FROM models`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -494,8 +495,10 @@ func scanModel(row rowScanner) (Model, error) {
 	var model Model
 	var enabled, vision, tools, reasoning int
 	var verifiedAt, createdAt, updatedAt sql.NullString
+	var streamFirstToken, streamIdle sql.NullInt64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
-		&enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &verifiedAt, &createdAt, &updatedAt); err != nil {
+		&enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &verifiedAt, &createdAt, &updatedAt,
+		&streamFirstToken, &streamIdle); err != nil {
 		return Model{}, err
 	}
 	model.Enabled = enabled == 1
@@ -522,6 +525,14 @@ func scanModel(row rowScanner) (Model, error) {
 			return Model{}, fmt.Errorf("parse model update time: %w", err)
 		}
 		model.updatedAt = parsed
+	}
+	if streamFirstToken.Valid {
+		v := int(streamFirstToken.Int64)
+		model.StreamFirstTokenTimeoutMS = &v
+	}
+	if streamIdle.Valid {
+		v := int(streamIdle.Int64)
+		model.StreamIdleTimeoutMS = &v
 	}
 	return model, nil
 }

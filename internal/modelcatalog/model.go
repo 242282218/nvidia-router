@@ -35,9 +35,16 @@ type Model struct {
 	// CreatedAt backs the OpenAI /v1/models "created" field. The column
 	// already existed but was never read, so the handler substituted
 	// time.Now() and the value changed on every request.
-	CreatedAt            time.Time
-	BlockedByKeyIDs      []int64
-	updatedAt            time.Time
+	CreatedAt time.Time
+	// StreamFirstTokenTimeoutMS overrides the global stream_first_token_timeout_ms
+	// for this model when non-nil. Used for models like deepseek-v4-flash whose
+	// TTFT is much slower than the fleet-wide default.
+	StreamFirstTokenTimeoutMS *int
+	// StreamIdleTimeoutMS overrides the global stream_idle_timeout_ms for this
+	// model when non-nil.
+	StreamIdleTimeoutMS *int
+	BlockedByKeyIDs     []int64
+	updatedAt           time.Time
 }
 
 type MutationResult struct {

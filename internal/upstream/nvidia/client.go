@@ -295,7 +295,11 @@ func replayableProxyError(err error) bool {
 	}
 	var networkError net.Error
 	return errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) ||
+		// ETIMEDOUT: dial succeeded but connection timed out before any byte was
+		// exchanged — the proxy may be overloaded rather than truly absent, so one
+		// replay on a fresh transport is worth attempting (audit R5).
+		errors.Is(err, syscall.ETIMEDOUT)
 }
 
 func (c *Client) effectiveSnapshot(snapshot runtimeconfig.Snapshot) runtimeconfig.Snapshot {

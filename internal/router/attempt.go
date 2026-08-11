@@ -105,6 +105,18 @@ func NewAttempt(
 func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute ExecuteFunc) (AttemptResult, error) {
 	now := a.clock.Now()
 	settings := a.settings.Snapshot()
+	// Apply per-model timeout overrides when the handler layer injected them.
+	// The handler resolves the model before calling Run and knows which overrides
+	// are configured; merging here keeps the Budget builder and all downstream
+	// paths (primeSSE, WithIdleTimeout) consistent with each other.
+	if hints, ok := runtimeconfig.ModelTimeoutsFromContext(ctx); ok {
+		if hints.StreamFirstTokenTimeoutMS > 0 {
+			settings.StreamFirstTokenTimeoutMS = hints.StreamFirstTokenTimeoutMS
+		}
+		if hints.StreamIdleTimeoutMS > 0 {
+			settings.StreamIdleTimeoutMS = hints.StreamIdleTimeoutMS
+		}
+	}
 	budget := newBudget(settings, now, stream)
 	requestCtx, cancel := a.requestContext(ctx, budget)
 	defer cancel()

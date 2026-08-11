@@ -72,7 +72,12 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	stream := parsed.Stream()
-	result, err := h.attempts.Run(request.Context(), model.ID, stream, h.execute(upstreamBody, stream))
+	// Propagate per-model streaming timeout overrides so the budget builder
+	// inside Attempt.Run uses the model's configured windows instead of the
+	// global defaults. Matters most for deepseek-v4-flash, whose TTFT on
+	// NVIDIA infrastructure routinely exceeds the fleet-wide default.
+	runCtx := applyModelTimeouts(request.Context(), model)
+	result, err := h.attempts.Run(runCtx, model.ID, stream, h.execute(upstreamBody, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -170,6 +175,24 @@ func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {
 		FirstByteTimeoutMS: int(budget.FirstByteTimeout() / time.Millisecond),
 		FirstByteDeadline:  budget.FirstByteDeadline(),
 	}
+}
+
+// applyModelTimeouts returns a context with per-model streaming timeout hints
+// when the model has non-nil override columns. The router's Attempt.Run merges
+// these into the budget so the model's configured windows take precedence over
+// the global runtime_settings defaults.
+func applyModelTimeouts(ctx context.Context, model modelcatalog.Model) context.Context {
+	if model.StreamFirstTokenTimeoutMS == nil && model.StreamIdleTimeoutMS == nil {
+		return ctx
+	}
+	hints := runtimeconfig.ModelTimeouts{}
+	if model.StreamFirstTokenTimeoutMS != nil {
+		hints.StreamFirstTokenTimeoutMS = *model.StreamFirstTokenTimeoutMS
+	}
+	if model.StreamIdleTimeoutMS != nil {
+		hints.StreamIdleTimeoutMS = *model.StreamIdleTimeoutMS
+	}
+	return runtimeconfig.WithModelTimeouts(ctx, hints)
 }
 
 func modelError(err error) error {

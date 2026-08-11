@@ -184,8 +184,15 @@ func (m *Manager) newTransport(key transportKey) *http.Transport {
 	}
 	connectTimeout := time.Duration(key.connectTimeoutMS) * time.Millisecond
 	baseDialContext := transport.DialContext
+	// KeepAlive probes prevent NAT/firewall tables from silently dropping idle
+	// CONNECT tunnels, which would appear as phantom transport errors on the next
+	// request that tries to reuse the cached connection.
+	keepAliveDialer := &net.Dialer{
+		Timeout:   connectTimeout,
+		KeepAlive: 30 * time.Second,
+	}
 	if baseDialContext == nil {
-		transport.DialContext = (&net.Dialer{Timeout: connectTimeout}).DialContext
+		transport.DialContext = keepAliveDialer.DialContext
 	} else if connectTimeout > 0 {
 		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 			limited, cancel := context.WithTimeout(ctx, connectTimeout)
@@ -194,10 +201,16 @@ func (m *Manager) newTransport(key transportKey) *http.Transport {
 		}
 	}
 	transport.ResponseHeaderTimeout = time.Duration(key.firstByteTimeoutMS) * time.Millisecond
-	transport.MaxIdleConns = 64
-	transport.MaxIdleConnsPerHost = 32
-	transport.IdleConnTimeout = 60 * time.Second
-	transport.ForceAttemptHTTP2 = true
+	// Larger idle pools reduce connection churn when many sticky sessions are
+	// active simultaneously; 90s keeps CONNECT tunnels alive past most
+	// NAT/load-balancer idle timeouts without holding sockets indefinitely.
+	transport.MaxIdleConns = 128
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 90 * time.Second
+	// CONNECT tunnels carry a plain HTTP/1.1 pipe to the target; forcing HTTP/2
+	// on the outer leg rarely helps and can confuse proxy implementations that
+	// do not negotiate h2 on the CONNECT path.
+	transport.ForceAttemptHTTP2 = false
 	return transport
 }
 

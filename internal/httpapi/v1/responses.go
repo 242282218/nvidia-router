@@ -72,7 +72,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	result, err := h.attempts.Run(request.Context(), model.ID, stream, h.execute(upstreamBody, id, model, stream))
+	result, err := h.attempts.Run(applyModelTimeouts(request.Context(), model), model.ID, stream, h.execute(upstreamBody, id, model, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return

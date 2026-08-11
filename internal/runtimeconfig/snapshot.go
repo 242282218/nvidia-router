@@ -1,12 +1,38 @@
 package runtimeconfig
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"nvidia-router/internal/fault"
 )
+
+// ModelTimeouts carries per-model streaming timeout overrides that the handler
+// layer injects into the request context after resolving the model. A zero
+// value for either field means "use the global setting from the Snapshot".
+type ModelTimeouts struct {
+	StreamFirstTokenTimeoutMS int
+	StreamIdleTimeoutMS       int
+}
+
+type modelTimeoutKey struct{}
+
+// WithModelTimeouts stores per-model timeout hints in the context so the
+// router's budget builder can apply them without changing the Attempt.Run
+// signature. Callers set this after resolving the model; the router reads it
+// before constructing the Budget.
+func WithModelTimeouts(ctx context.Context, hints ModelTimeouts) context.Context {
+	return context.WithValue(ctx, modelTimeoutKey{}, hints)
+}
+
+// ModelTimeoutsFromContext retrieves per-model timeout hints from the context,
+// returning the zero value and false when none were set.
+func ModelTimeoutsFromContext(ctx context.Context) (ModelTimeouts, bool) {
+	hints, ok := ctx.Value(modelTimeoutKey{}).(ModelTimeouts)
+	return hints, ok
+}
 
 // Snapshot is the runtime configuration read once at the beginning of a request.
 type Snapshot struct {
