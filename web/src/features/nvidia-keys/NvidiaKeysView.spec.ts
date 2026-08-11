@@ -225,16 +225,17 @@ describe('NvidiaKeysView', () => {
   it('requires confirmation before deleting a key', async () => {
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
     vi.mocked(nvidiaKeysApi.remove).mockResolvedValue(undefined)
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
+    // First click arms the inline two-step confirm; removal is not yet issued.
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
+    expect(wrapper.get('[data-testid="key-card-delete"]').text()).toContain('确认删除')
     expect(nvidiaKeysApi.remove).not.toHaveBeenCalled()
+
+    // Second click performs the removal.
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
     await flushPromises()
-
-    expect(confirm).toHaveBeenCalledWith('确认删除 NVIDIA Key nvapi…1234 吗？删除后无法恢复。')
     expect(nvidiaKeysApi.remove).toHaveBeenCalledWith(7)
   })
 
@@ -244,7 +245,6 @@ describe('NvidiaKeysView', () => {
     vi.mocked(nvidiaKeysApi.setEnabled).mockResolvedValue({ id: 8, enabled: false })
     vi.mocked(nvidiaKeysApi.test).mockResolvedValue({ id: 8, status: 'ok' })
     vi.mocked(nvidiaKeysApi.remove).mockResolvedValue(undefined)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
@@ -253,6 +253,7 @@ describe('NvidiaKeysView', () => {
     await flushPromises()
     await wrapper.get('[data-testid="key-card-test"]').trigger('click')
     await flushPromises()
+    await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
     await flushPromises()
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { NVIDIAKey } from './types'
 
-defineProps<{ keys: NVIDIAKey[]; busyId: number | null }>()
+defineProps<{ keys: NVIDIAKey[]; busyId: number | null; confirmingId: number | null }>()
 
 const emit = defineEmits<{
   toggle: [key: NVIDIAKey]
@@ -117,7 +117,7 @@ function formatDate(value?: string): string {
                   :disabled="busyId === key.id"
                   @click="emit('remove', key)"
                 >
-                  删除
+                  {{ confirmingId === key.id ? '确认删除？' : '删除' }}
                 </button>
               </div>
             </td>

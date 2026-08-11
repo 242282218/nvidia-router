@@ -44,6 +44,11 @@ let loadController: globalThis.AbortController | null = null
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
+const rangeLabel = computed(() => {
+  const found = ranges.find((option) => option.value === range.value)
+  return found?.label ?? ''
+})
+
 onMounted(() => {
   void loadDashboard()
 })
@@ -442,21 +447,25 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             :series="snapshot?.series ?? []"
             metric="requests"
             title="请求趋势"
+            :range-label="rangeLabel"
           />
           <MonitoringTrendChart
             :series="snapshot?.series ?? []"
             metric="failures"
             title="失败趋势"
+            :range-label="rangeLabel"
           />
           <MonitoringTrendChart
             :series="snapshot?.series ?? []"
             metric="latency"
             title="延迟趋势"
+            :range-label="rangeLabel"
           />
           <MonitoringTrendChart
             :series="snapshot?.series ?? []"
             metric="tokens"
             title="Token 趋势"
+            :range-label="rangeLabel"
           />
         </div>
 

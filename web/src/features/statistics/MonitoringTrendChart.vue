@@ -9,6 +9,10 @@ const props = defineProps<{
   series: MonitoringSeriesPoint[]
   metric: TrendMetric
   title: string
+  /** Human-readable time window, e.g. "24 小时". Shown so the chart is
+   * self-explanatory without the page-level range control (design-aesthetics
+   * P0#5: source, window and unit must be visible with the data). */
+  rangeLabel?: string
 }>()
 
 const metricLabel = computed(() => {
@@ -28,10 +32,24 @@ const values = computed(() => props.series.map((point) => {
 const maxValue = computed(() => Math.max(1, ...values.value))
 
 const points = computed(() => values.value.map((value, index) => {
-  const x = values.value.length <= 1 ? 360 : (index / (values.value.length - 1)) * 720
+  const x = values.value.length <= 1 ? plotLeft + plotWidth / 2 : plotLeft + (index / (values.value.length - 1)) * plotWidth
   const y = 188 - (value / maxValue.value) * 160
   return `${x.toFixed(1)},${y.toFixed(1)}`
 }).join(' '))
+
+// Plot geometry: a 48px left gutter carries the Y-axis labels so the line chart
+// stays readable without shifting the SVG viewBox.
+const plotLeft = 48
+const plotWidth = 720 - plotLeft
+
+// Y-axis labels at the three gridline rows (0, midpoint, max), using "good
+// numbers" per design-aesthetics P0#126 so absolute values are readable on the
+// chart itself, not only in the collapsed data table.
+const yAxisLabels = computed(() => [
+  { y: 188, value: 0 },
+  { y: 108, value: Math.round(maxValue.value / 2) },
+  { y: 28, value: maxValue.value },
+])
 
 function formatValue(value: number): string {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(value)
@@ -49,7 +67,7 @@ function formatValue(value: number): string {
           {{ title }}
         </h3>
         <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
-          {{ metricLabel }}
+          {{ metricLabel }}{{ rangeLabel ? ` · ${rangeLabel}` : '' }} · 来源：请求元数据
         </p>
       </div>
       <span class="badge-info">
@@ -73,31 +91,43 @@ function formatValue(value: number): string {
           :aria-label="`${title}，${metricLabel}`"
         >
           <line
-            x1="0"
+            :x1="plotLeft"
             y1="188"
-            x2="720"
+            :x2="720"
             y2="188"
             stroke="var(--color-border-strong)"
             stroke-width="1"
           />
           <line
-            x1="0"
+            :x1="plotLeft"
             y1="108"
-            x2="720"
+            :x2="720"
             y2="108"
             stroke="var(--color-border)"
             stroke-width="1"
             stroke-dasharray="4 6"
           />
           <line
-            x1="0"
+            :x1="plotLeft"
             y1="28"
-            x2="720"
+            :x2="720"
             y2="28"
             stroke="var(--color-border)"
             stroke-width="1"
             stroke-dasharray="4 6"
           />
+          <text
+            v-for="label in yAxisLabels"
+            :key="label.y"
+            :x="plotLeft - 8"
+            :y="label.y + 4"
+            class="fill-[var(--color-text-muted)]"
+            font-size="11"
+            text-anchor="end"
+            font-family="ui-monospace, monospace"
+          >
+            {{ formatValue(label.value) }}
+          </text>
           <polyline
             :points="points"
             fill="none"

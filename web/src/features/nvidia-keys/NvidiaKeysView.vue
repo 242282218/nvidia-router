@@ -21,6 +21,7 @@ const testingAll = ref(false)
 const batchOpen = ref(false)
 const testDialogOpen = ref(false)
 const busyId = ref<number | null>(null)
+const confirmingId = ref<number | null>(null)
 let loadSequence = 0
 let disposed = false
 
@@ -160,19 +161,29 @@ async function testAll(): Promise<void> {
 }
 
 async function removeKey(key: NVIDIAKey): Promise<void> {
-  if (!globalThis.window.confirm(`确认删除 NVIDIA Key ${key.masked} 吗？删除后无法恢复。`)) return
-  busyId.value = key.id
-  errorMessage.value = ''
-  try {
-    await nvidiaKeysApi.remove(key.id)
-    if (disposed) return
-    await loadKeys()
-  } catch (error) {
-    if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : '删除 NVIDIA Key 失败。'
-  } finally {
-    if (!disposed) busyId.value = null
+  if (busyId.value === key.id) return
+  // Two-step destructive confirmation (design-system consistent; the native
+  // window.confirm dialog is visually detached from the app chrome).
+  if (confirmingId.value === key.id) {
+    confirmingId.value = null
+    busyId.value = key.id
+    errorMessage.value = ''
+    try {
+      await nvidiaKeysApi.remove(key.id)
+      if (disposed) return
+      await loadKeys()
+    } catch (error) {
+      if (disposed) return
+      errorMessage.value = error instanceof ApiError ? error.message : '删除 NVIDIA Key 失败。'
+    } finally {
+      if (!disposed) busyId.value = null
+    }
+    return
   }
+  confirmingId.value = key.id
+  globalThis.setTimeout(() => {
+    if (confirmingId.value === key.id) confirmingId.value = null
+  }, 3000)
 }
 </script>
 
@@ -349,6 +360,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           <KeyTable
             :keys="keys"
             :busy-id="busyId"
+            :confirming-id="confirmingId"
             @toggle="toggleKey"
             @test="testKey"
             @remove="removeKey"
@@ -356,6 +368,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           <KeyCards
             :keys="keys"
             :busy-id="busyId"
+            :confirming-id="confirmingId"
             @toggle="toggleKey"
             @test="testKey"
             @remove="removeKey"
