@@ -12,6 +12,7 @@ func NewManagement(nvidiaKeys, accessKeys, models, proxyPool, auditLogs, provide
 	mux.Handle("/admin/api/models/", models)
 	mux.Handle("/admin/api/key-model-blocks/", models)
 	mux.Handle("/admin/api/proxy-pool", proxyPool)
+	mux.Handle("/admin/api/proxy-pool/", proxyPool)
 	mux.Handle("/admin/api/audit-logs", auditLogs)
 	mux.Handle("/admin/api/providers", providers)
 	mux.Handle("/admin/api/providers/", providers)
