@@ -143,6 +143,16 @@ func (c *Collector) fetch(ctx context.Context) bool {
 			"provider_code", code,
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
+		// Keep serving last-known-good exits while the provider is unreachable:
+		// without this the whole pool drains after one TTL window (~2min) and the
+		// provider's own outage becomes a request outage (audit H6). Dead exits
+		// still fall off via their normal TTL, and the cap bounds staleness.
+		if extended := c.pool.Grace(time.Now(), c.proxyTTL/2, c.proxyTTL*2); extended > 0 {
+			c.logger.Info("proxy_ttl_grace",
+				"extended", extended,
+				"grace_ms", (c.proxyTTL / 2).Milliseconds(),
+			)
+		}
 		return false
 	}
 

@@ -536,6 +536,38 @@ func (p *Pool) Prune(now time.Time) int {
 	return before - len(p.proxies)
 }
 
+// Grace extends the expiry of live proxies after an upstream fetch failure so a
+// short provider outage does not drain the pool while the collector is backed
+// off (audit H6). Only live proxies are extended (a dead exit still falls off on
+// its normal TTL path), and maxLifetime caps how long a stale-but-usable exit
+// can be kept after the provider stopped refreshing it: past that cap the pool
+// drains and requests degrade to retryable 503 instead of serving increasingly
+// stale exits.
+func (p *Pool) Grace(now time.Time, grace time.Duration, maxLifetime time.Duration) int {
+	if grace <= 0 || maxLifetime <= 0 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cap := now.Add(maxLifetime)
+	extended := 0
+	for i := range p.proxies {
+		proxy := &p.proxies[i]
+		if !proxy.LiveAt(now) {
+			continue
+		}
+		candidate := proxy.ExpiresAt.Add(grace)
+		if candidate.After(cap) {
+			candidate = cap
+		}
+		if candidate.After(proxy.ExpiresAt) {
+			proxy.ExpiresAt = candidate
+			extended++
+		}
+	}
+	return extended
+}
+
 func (p *Pool) pruneLocked(now time.Time) {
 	filtered := p.proxies[:0]
 	for _, proxy := range p.proxies {

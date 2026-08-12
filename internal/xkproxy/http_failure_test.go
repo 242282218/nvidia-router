@@ -155,3 +155,57 @@ func TestHTTPFailureDoesNotFeedLatencyEWMA(t *testing.T) {
 		t.Fatalf("LatencyEWMA changed on HTTP failure: %v, want unchanged 500ms", list[0].LatencyEWMA)
 	}
 }
+
+// TestPoolGraceExtendsLiveProxiesDuringUpstreamOutage proves last-known-good
+// exits survive a short provider outage (audit H6): a live proxy's expiry is
+// pushed out by the grace window on fetch failure, while the extension is
+// capped so a stale exit is not served forever.
+func TestPoolGraceExtendsLiveProxiesDuringUpstreamOutage(t *testing.T) {
+	pool := NewPool()
+	now := time.Now()
+	live := Proxy{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(2 * time.Minute)}
+	// A second proxy whose TTL already lapsed must NOT be resurrected by grace.
+	expired := Proxy{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: now.Add(-time.Second)}
+	pool.Replace([]Proxy{live, expired})
+
+	extended := pool.Grace(now, time.Minute, 3*time.Minute)
+	if extended != 1 {
+		t.Fatalf("Grace extended = %d, want 1 (only the live proxy)", extended)
+	}
+	if size := pool.LiveSize(now); size != 1 {
+		t.Fatalf("LiveSize = %d, want 1 (expired proxy not resurrected)", size)
+	}
+	list := pool.List(now)
+	if len(list) != 1 || list[0].Address != "10.0.0.1:8080" {
+		t.Fatalf("live proxies after Grace = %+v", list)
+	}
+	if !list[0].ExpiresAt.After(now.Add(2*time.Minute)) {
+		t.Fatalf("ExpiresAt not extended: %v, want past the original TTL", list[0].ExpiresAt)
+	}
+
+	// The cap bounds staleness: many grace calls cannot push expiry past now+max.
+	for range 10 {
+		pool.Grace(now, time.Minute, 3*time.Minute)
+	}
+	for _, proxy := range pool.List(now) {
+		if proxy.ExpiresAt.After(now.Add(3*time.Minute)) {
+			t.Fatalf("ExpiresAt %v exceeds the max lifetime cap", proxy.ExpiresAt)
+		}
+	}
+}
+
+// TestPoolGraceNoopOnInvalidWindows proves Grace with zero windows is a no-op
+// rather than corrupting the pool.
+func TestPoolGraceNoopOnInvalidWindows(t *testing.T) {
+	pool := NewPool()
+	now := time.Now()
+	proxy := Proxy{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(2 * time.Minute)}
+	pool.Replace([]Proxy{proxy})
+
+	if extended := pool.Grace(now, 0, time.Minute); extended != 0 {
+		t.Fatalf("Grace with zero grace extended = %d, want 0", extended)
+	}
+	if extended := pool.Grace(now, time.Minute, 0); extended != 0 {
+		t.Fatalf("Grace with zero maxLifetime extended = %d, want 0", extended)
+	}
+}
