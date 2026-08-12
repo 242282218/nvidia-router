@@ -85,6 +85,32 @@ func TestManagerStickyRebindReSelectsProxy(t *testing.T) {
 	first.Release()
 }
 
+// TestManagerProxyTransportEnablesHTTP2 guards the h2 setting on the proxy
+// transport: the NVIDIA target inside the CONNECT tunnel serves HTTP/2, and
+// disabling h2 made every proxied request fail with a malformed-response error
+// (found in real 联调 2026-08-12). Direct mode already enables h2; the proxy
+// path must match.
+func TestManagerProxyTransportEnablesHTTP2(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{{
+		Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(10 * time.Minute),
+	}})
+
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	handle, err := manager.Acquire(context.Background(), snapshot, "session-h2")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(handle.Release)
+	transport, ok := handle.Transport().(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", handle.Transport())
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("proxy transport must enable HTTP/2 for the tunnel target")
+	}
+}
+
 // TestManagerStickyRebindSkipsSameProxy proves a stale session is NOT rebuilt
 // when the pool's best exit is the one it already uses: rebinding would only
 // re-CONNECT for nothing (audit H9).

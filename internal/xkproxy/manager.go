@@ -314,10 +314,14 @@ func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
 	transport.MaxIdleConns = 128
 	transport.MaxIdleConnsPerHost = 64
 	transport.IdleConnTimeout = 90 * time.Second
-	// CONNECT tunnels carry a plain HTTP/1.1 pipe to the target; forcing HTTP/2
-	// on the outer leg rarely helps and can confuse proxy implementations that
-	// do not negotiate h2 on the CONNECT path.
-	transport.ForceAttemptHTTP2 = false
+	// The outer leg to the proxy is a plain HTTP CONNECT (http:// proxy URL), so
+	// ForceAttemptHTTP2 only affects the TLS connection to the TARGET inside the
+	// tunnel. The NVIDIA API sits behind a CDN that speaks HTTP/2; disabling h2
+	// here made the inner request HTTP/1.1 while the target replied with HTTP/2
+	// frames, breaking every proxied request with a malformed-response error
+	// (found in real 联调 2026-08-12). Direct mode already enables h2 (chat.go);
+	// the proxy path must match so ALPN negotiates h2 with the target.
+	transport.ForceAttemptHTTP2 = true
 	return transport
 }
 
