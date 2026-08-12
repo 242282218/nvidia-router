@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"nvidia-router/internal/xkproxy"
 )
@@ -37,13 +38,26 @@ func (h *ProxyPool) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 
 // status reports the live built-in proxy-pool state (healthy/total counts and
 // per-proxy quality) for the admin UI. Static-proxy mode returns zero counts.
+// Collector diagnostics are exposed as safe projections only: the raw fetch
+// error embeds the upstream URL (which carries credentials), so operators get
+// the provider error code or a generic "transport" marker instead.
 func (h *ProxyPool) status(writer http.ResponseWriter, request *http.Request) {
 	status := h.service.PoolStatus()
 	writeJSON(writer, http.StatusOK, map[string]any{"data": map[string]any{
-		"total_size":   status.TotalSize,
-		"healthy_size": status.HealthySize,
-		"proxies":      status.View(),
+		"total_size":        status.TotalSize,
+		"healthy_size":      status.HealthySize,
+		"proxies":           status.View(),
+		"last_fetch_at":     rfc3339OrEmpty(status.LastFetchAt),
+		"last_success_at":   rfc3339OrEmpty(status.LastSuccessAt),
+		"last_error_code":   status.LastErrorCode,
 	}})
+}
+
+func rfc3339OrEmpty(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (h *ProxyPool) get(writer http.ResponseWriter, request *http.Request) {

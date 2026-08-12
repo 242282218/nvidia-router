@@ -373,17 +373,28 @@ func (m *Manager) PoolStatus() PoolStatus {
 		return PoolStatus{}
 	}
 	now := time.Now()
-	return PoolStatus{
+	status := PoolStatus{
 		TotalSize:   m.pool.LiveSize(now),
 		HealthySize: m.pool.Size(now),
 		Proxies:     m.pool.List(now),
 	}
+	// Collector health tells the operator why the pool might be empty: the
+	// upstream is unreachable (LastErrorCode set) or simply returned nothing.
+	if m.collector != nil {
+		status.LastFetchAt, status.LastSuccessAt, status.LastErrorCode = m.collector.LastFetchResult()
+	}
+	return status
 }
 
 type PoolStatus struct {
 	TotalSize   int
 	HealthySize int
 	Proxies     []Proxy
+
+	// Collector diagnostics (zero/empty when not in pool mode).
+	LastFetchAt   time.Time
+	LastSuccessAt time.Time
+	LastErrorCode string
 }
 
 // JSON-safe projection of a pooled proxy for the admin UI. Only non-sensitive,

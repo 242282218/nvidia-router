@@ -23,6 +23,9 @@ const emptyStatus = {
   total_size: 0,
   healthy_size: 0,
   proxies: [],
+  last_fetch_at: '',
+  last_success_at: '',
+  last_error_code: '',
 }
 
 beforeEach(() => {
@@ -76,6 +79,9 @@ describe('ProxyPoolView', () => {
         { address: '10.0.0.1:8080', latency_ewma_ms: 150, remaining_seconds: 95, healthy: true, ejected: false, success_count: 8, failure_count: 0, http_fail_count: 0 },
         { address: '10.0.0.2:8080', latency_ewma_ms: 900, remaining_seconds: 30, healthy: false, ejected: true, success_count: 1, failure_count: 4, http_fail_count: 2 },
       ],
+      last_fetch_at: '2026-08-12T04:00:00Z',
+      last_success_at: '2026-08-12T04:00:00Z',
+      last_error_code: '',
     } })
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
@@ -86,5 +92,40 @@ describe('ProxyPoolView', () => {
     expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('150 ms')
     // The throttled exit shows its consecutive HTTP-failure pattern.
     expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('限流信号 ×2')
+  })
+
+  it('surfaces collector health: last fetch time and a provider error hint', async () => {
+    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
+      total_size: 1,
+      healthy_size: 1,
+      proxies: [],
+      last_fetch_at: '2026-08-12T04:00:00Z',
+      last_success_at: '2026-08-12T03:58:00Z',
+      last_error_code: '403',
+    } })
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+
+    const panel = wrapper.get('[data-testid="proxy-status-panel"]')
+    expect(panel.text()).toContain('上次采集')
+    expect(panel.text()).toContain('上游异常（403）')
+    // The raw upstream error (which embeds credentials) is never rendered.
+    expect(panel.text()).not.toContain('http')
+    expect(panel.text()).not.toContain('?')
+  })
+
+  it('shows a healthy collector badge when the last fetch succeeded', async () => {
+    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
+      total_size: 0,
+      healthy_size: 0,
+      proxies: [],
+      last_fetch_at: '2026-08-12T04:00:00Z',
+      last_success_at: '2026-08-12T04:00:00Z',
+      last_error_code: '',
+    } })
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('采集正常')
   })
 })

@@ -35,6 +35,11 @@ export interface PoolStatusData {
   total_size: number
   healthy_size: number
   proxies: PoolProxyStatus[]
+  /** Collector diagnostics; empty strings when not in pool mode. */
+  last_fetch_at: string
+  last_success_at: string
+  /** Provider error code ("403"/"208") or "transport"; empty when healthy. */
+  last_error_code: string
 }
 
 export interface PoolStatusResponse {

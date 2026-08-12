@@ -83,6 +83,9 @@ function isPoolStatusData(value: unknown): value is { data: PoolStatusData } {
     && isFiniteNumber(data.healthy_size)
     && Array.isArray(data.proxies)
     && data.proxies.every(isPoolProxyStatus)
+    && (data.last_fetch_at === undefined || typeof data.last_fetch_at === 'string')
+    && (data.last_success_at === undefined || typeof data.last_success_at === 'string')
+    && (data.last_error_code === undefined || typeof data.last_error_code === 'string')
 }
 
 function isPoolProxyStatus(value: unknown): value is PoolProxyStatus {
@@ -110,6 +113,34 @@ function formatRemaining(seconds: number): string {
 function formatClock(value: Date): string {
   const pad = (part: number) => String(part).padStart(2, '0')
   return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
+}
+
+function formatDateTime(value: string): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+// providerErrorText maps a collector error code to an operator-facing hint.
+// Raw fetch errors are never shown: they embed the upstream URL credentials.
+function providerErrorText(code: string): string {
+  switch (code) {
+    case '403':
+      return '上游限流（请求频率过高），采集已退避'
+    case '406':
+      return '上游限流（提取频率过高），采集已退避'
+    case '208':
+    case '205':
+      return '上游配额已耗尽，请检查星空代理池订单'
+    case '204':
+      return '上游套餐已过期，请检查星空代理池订单'
+    case 'transport':
+      return '上游不可达，保留 last-known-good 出口中'
+    default:
+      return `上游返回异常（${code}），采集已退避`
+  }
 }
 
 function sourceLabel(source?: ProxyPoolSettings['source']): string {
@@ -376,6 +407,32 @@ function isValidProxyURL(raw: string): boolean {
           加载代理池状态…
         </p>
         <template v-else-if="statusData">
+          <div
+            v-if="statusData.last_fetch_at"
+            class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border)] px-5 py-2.5 text-xs text-[var(--color-text-muted)]"
+          >
+            <span>
+              上次采集 {{ formatDateTime(statusData.last_fetch_at) }}
+            </span>
+            <span
+              v-if="statusData.last_success_at"
+            >
+              上次成功 {{ formatDateTime(statusData.last_success_at) }}
+            </span>
+            <span
+              v-if="statusData.last_error_code"
+              class="badge-warning"
+              :title="providerErrorText(statusData.last_error_code)"
+            >
+              上游异常（{{ statusData.last_error_code }}）
+            </span>
+            <span
+              v-else
+              class="badge-success"
+            >
+              采集正常
+            </span>
+          </div>
           <div
             v-if="statusData.proxies.length === 0"
             class="p-6 text-center text-sm text-[var(--color-text-muted)]"
