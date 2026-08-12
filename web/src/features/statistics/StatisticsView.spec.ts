@@ -161,6 +161,31 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(vi.mocked(statisticsApi.getSummary).mock.calls.length).toBe(summaryCallsBefore)
   })
 
+  it('paginates via page numbers, page-size select, and a jump input', async () => {
+    vi.mocked(statisticsApi.getLogs).mockResolvedValue({
+      data: { ...logs, has_more: true, total: 220 },
+    })
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    // Page-size change resets to page 1 and reloads with the new size.
+    await wrapper.get('[data-testid="monitoring-page-size"]').setValue('100')
+    await wrapper.get('[data-testid="monitoring-page-size"]').trigger('change')
+    await flushPromises()
+    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 1, 100, expect.any(AbortSignal))
+
+    // Direct page-number navigation.
+    await wrapper.get('[data-testid="monitoring-page-2"]').trigger('click')
+    await flushPromises()
+    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 2, 100, expect.any(AbortSignal))
+
+    // Jump input navigates to a specific page.
+    await wrapper.get('[data-testid="monitoring-jump-page"]').setValue('3')
+    await wrapper.get('[data-testid="monitoring-jump-page"]').trigger('submit')
+    await flushPromises()
+    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 3, 100, expect.any(AbortSignal))
+  })
+
   it('shows summary and log errors independently', async () => {
     vi.mocked(statisticsApi.getSummary).mockRejectedValueOnce(new Error('summary failed'))
     vi.mocked(statisticsApi.getLogs).mockResolvedValueOnce({ data: { ...logs, items: [] } })

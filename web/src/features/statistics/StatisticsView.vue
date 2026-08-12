@@ -40,7 +40,10 @@ const logsError = ref('')
 // instead of silently dropping it on the floor.
 const filterError = ref('')
 const page = ref(1)
-const pageSize = 50
+const pageSize = ref(50)
+const pageSizes = [50, 100, 200] as const
+// jumpTarget is the user-entered page number for direct navigation.
+const jumpTarget = ref('')
 // summaryUpdatedAt marks the last successful summary poll so a long-open page
 // shows how fresh the trend data is.
 const summaryUpdatedAt = ref<Date | null>(null)
@@ -55,6 +58,49 @@ const rangeLabel = computed(() => {
   const found = ranges.find((option) => option.value === range.value)
   return found?.label ?? ''
 })
+
+// totalPages and pageNumbers drive the numbered pagination control; ellipsis
+// ("…") marks gaps when the range is wide, keeping the control compact.
+const totalPages = computed(() => {
+  const total = logs.value?.total ?? 0
+  return Math.max(1, Math.ceil(total / pageSize.value))
+})
+
+const pageNumbers = computed<Array<number | 'ellipsis'>>(() => {
+  const current = page.value
+  const last = totalPages.value
+  const visible = new Set<number>([1, last])
+  for (let offset = -1; offset <= 1; offset++) {
+    const candidate = current + offset
+    if (candidate >= 1 && candidate <= last) visible.add(candidate)
+  }
+  const ordered = [...visible].sort((a, b) => a - b)
+  const result: Array<number | 'ellipsis'> = []
+  let previous = 0
+  for (const item of ordered) {
+    if (previous > 0 && item - previous > 1) result.push('ellipsis')
+    result.push(item)
+    previous = item
+  }
+  return result
+})
+
+function changePageSize(): void {
+  page.value = 1
+  void loadDashboard()
+}
+
+function jumpToPage(): void {
+  const target = Number(jumpTarget.value)
+  if (!Number.isInteger(target) || target < 1 || target > totalPages.value) return
+  if (target === page.value) {
+    jumpTarget.value = ''
+    return
+  }
+  page.value = target
+  jumpTarget.value = ''
+  void loadDashboard()
+}
 
 onMounted(() => {
   void loadDashboard()
@@ -122,7 +168,7 @@ async function loadSummary(signal: globalThis.AbortSignal, sequence: number): Pr
 
 async function loadLogs(signal: globalThis.AbortSignal, sequence: number): Promise<void> {
   try {
-    const response: unknown = await statisticsApi.getLogs(range.value, appliedFilters.value, page.value, pageSize, signal)
+    const response: unknown = await statisticsApi.getLogs(range.value, appliedFilters.value, page.value, pageSize.value, signal)
     if (disposed || sequence !== loadSequence) return
     if (!isRequestLogsPage(response)) throw new TypeError('Invalid monitoring logs response.')
     logs.value = response.data
@@ -840,9 +886,28 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
               </table>
             </div>
 
-            <div class="flex items-center justify-between gap-3 border-t border-[var(--color-border)] px-4 py-3">
-              <span class="text-xs text-[var(--color-text-muted)]">第 {{ logs.page }} 页</span>
-              <div class="flex gap-2">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] px-4 py-3">
+              <span class="text-xs text-[var(--color-text-muted)]">
+                共 {{ formatInteger(logs.total) }} 条 · 第 {{ logs.page }} / {{ totalPages }} 页
+              </span>
+              <div class="flex flex-wrap items-center gap-2">
+                <label class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+                  每页
+                  <select
+                    v-model="pageSize"
+                    class="input-field rounded-md px-2 py-1 text-xs"
+                    data-testid="monitoring-page-size"
+                    @change="changePageSize"
+                  >
+                    <option
+                      v-for="size in pageSizes"
+                      :key="size"
+                      :value="size"
+                    >
+                      {{ size }}
+                    </option>
+                  </select>
+                </label>
                 <button
                   class="btn-secondary"
                   type="button"
@@ -852,6 +917,29 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                 >
                   上一页
                 </button>
+                <template v-for="(item, index) in pageNumbers">
+                  <button
+                    v-if="item !== 'ellipsis'"
+                    :key="item"
+                    :data-testid="`monitoring-page-${item}`"
+                    class="btn-secondary min-w-8 rounded-md px-2 py-1 text-xs"
+                    :class="item === page ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
+                    type="button"
+                    :disabled="loading || item === page"
+                    :aria-current="item === page ? 'page' : undefined"
+                    @click="page = item; loadDashboard()"
+                  >
+                    {{ item }}
+                  </button>
+                  <span
+                    v-else
+                    :key="`ellipsis-${index}`"
+                    class="px-0.5 text-xs text-[var(--color-text-subtle)]"
+                    aria-hidden="true"
+                  >
+                    …
+                  </span>
+                </template>
                 <button
                   v-if="logs.has_more"
                   data-testid="monitoring-next-page"
@@ -863,6 +951,32 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                 >
                   下一页
                 </button>
+                <form
+                  class="flex items-center gap-1.5"
+                  @submit.prevent="jumpToPage"
+                >
+                  <label
+                    class="sr-only"
+                    for="monitoring-jump-page"
+                  >跳转到页码</label>
+                  <input
+                    id="monitoring-jump-page"
+                    v-model="jumpTarget"
+                    data-testid="monitoring-jump-page"
+                    class="input-field w-14 rounded-md px-2 py-1 text-xs"
+                    type="number"
+                    min="1"
+                    :max="totalPages"
+                    placeholder="页码"
+                  >
+                  <button
+                    class="btn-ghost rounded-md px-2 py-1 text-xs"
+                    type="submit"
+                    :disabled="loading"
+                  >
+                    跳转
+                  </button>
+                </form>
               </div>
             </div>
           </template>
