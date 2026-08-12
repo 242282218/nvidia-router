@@ -14,13 +14,21 @@ const errorMessage = ref('')
 const formError = ref('')
 const fieldErrors = ref<Partial<Record<keyof RuntimeSettings, string>>>({})
 const savedMessage = ref('')
+// summaryUpdatedAt tracks the last successful summary poll so the operator can
+// judge how fresh the transient numbers (active/queue/cooldown) are.
+const summaryUpdatedAt = ref<Date | null>(null)
 let loadSequence = 0
 let disposed = false
 let loadController: globalThis.AbortController | null = null
 let saveController: globalThis.AbortController | null = null
+let summaryTimer: ReturnType<typeof globalThis.setInterval> | undefined
 
 onMounted(() => {
   void loadRuntime()
+  // The summary is transient (active requests, queue depth, cooldowns); refresh
+  // it on a light poll so a page left open does not go stale. Settings are only
+  // loaded on mount and after a save.
+  summaryTimer = globalThis.setInterval(() => void pollSummary(), 5_000)
 })
 
 onBeforeUnmount(() => {
@@ -28,7 +36,27 @@ onBeforeUnmount(() => {
   loadSequence += 1
   loadController?.abort()
   saveController?.abort()
+  if (summaryTimer !== undefined) globalThis.clearInterval(summaryTimer)
 })
+
+// Background summary refresh: transient poll failures keep the last good
+// summary instead of flashing an error every cycle.
+async function pollSummary(): Promise<void> {
+  if (disposed || loading.value || saving.value) return
+  try {
+    const next = await runtimeApi.getSummary()
+    if (disposed) return
+    summary.value = next.data
+    summaryUpdatedAt.value = new Date()
+  } catch {
+    // Keep the previous summary; the next poll retries.
+  }
+}
+
+function formatClock(value: Date): string {
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
+}
 
 async function loadRuntime(): Promise<void> {
   if (disposed) return
@@ -45,6 +73,7 @@ async function loadRuntime(): Promise<void> {
   const errors: string[] = []
   if (summaryResult.status === 'fulfilled') {
     summary.value = summaryResult.value.data
+    summaryUpdatedAt.value = new Date()
   } else if (!isAbortError(summaryResult.reason)) {
     errors.push(summaryResult.reason instanceof ApiError ? summaryResult.reason.message : '运行状态加载失败。')
   }
@@ -182,6 +211,12 @@ function formatDate(value?: string): string {
       </div>
 
       <template v-else>
+        <p
+          v-if="summaryUpdatedAt"
+          class="mb-3 text-xs text-[var(--color-text-subtle)]"
+        >
+          每 5 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
+        </p>
         <!-- Summary cards -->
         <div
           v-if="summary"

@@ -36,11 +36,18 @@ const logs = ref<RequestLogsPage | null>(null)
 const loading = ref(false)
 const summaryError = ref('')
 const logsError = ref('')
+// filterError surfaces invalid numeric filter input (e.g. a non-positive ID)
+// instead of silently dropping it on the floor.
+const filterError = ref('')
 const page = ref(1)
 const pageSize = 50
+// summaryUpdatedAt marks the last successful summary poll so a long-open page
+// shows how fresh the trend data is.
+const summaryUpdatedAt = ref<Date | null>(null)
 let disposed = false
 let loadSequence = 0
 let loadController: globalThis.AbortController | null = null
+let summaryTimer: ReturnType<typeof globalThis.setInterval> | undefined
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
@@ -51,13 +58,36 @@ const rangeLabel = computed(() => {
 
 onMounted(() => {
   void loadDashboard()
+  // Trends change as requests land; a light poll keeps a long-open page fresh
+  // without disturbing the log pagination (which the full reload would reset).
+  summaryTimer = globalThis.setInterval(() => void pollSummary(), 30_000)
 })
 
 onBeforeUnmount(() => {
   disposed = true
   loadSequence += 1
   loadController?.abort()
+  if (summaryTimer !== undefined) globalThis.clearInterval(summaryTimer)
 })
+
+// Background summary-only refresh: transient failures keep the last good data.
+async function pollSummary(): Promise<void> {
+  if (disposed || loading.value) return
+  try {
+    const response: unknown = await statisticsApi.getSummary(range.value, appliedFilters.value)
+    if (disposed) return
+    if (!isMonitoringSnapshot(response)) return
+    snapshot.value = response.data
+    summaryUpdatedAt.value = new Date()
+  } catch {
+    // Keep the previous snapshot; the next poll retries.
+  }
+}
+
+function formatClock(value: Date): string {
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
+}
 
 async function loadDashboard(): Promise<void> {
   if (disposed) return
@@ -83,6 +113,7 @@ async function loadSummary(signal: globalThis.AbortSignal, sequence: number): Pr
     if (disposed || sequence !== loadSequence) return
     if (!isMonitoringSnapshot(response)) throw new TypeError('Invalid monitoring summary response.')
     snapshot.value = response.data
+    summaryUpdatedAt.value = new Date()
   } catch (error) {
     if (disposed || sequence !== loadSequence || isAbortError(error)) return
     summaryError.value = error instanceof ApiError ? error.message : '监控汇总加载失败。'
@@ -109,12 +140,18 @@ function selectRange(next: MonitoringRange): void {
 }
 
 function submitFilters(): void {
-  appliedFilters.value = collectFilters()
+  const { filters, error } = collectFilters()
+  if (error) {
+    filterError.value = error
+    return
+  }
+  filterError.value = ''
+  appliedFilters.value = filters
   page.value = 1
   void loadDashboard()
 }
 
-function collectFilters(): MonitoringFilter {
+function collectFilters(): { filters: MonitoringFilter; error?: string } {
   const filters: MonitoringFilter = {}
   addTextFilter(filters, 'search', filterFields.search)
   addTextFilter(filters, 'model_id', filterFields.model_id)
@@ -123,10 +160,21 @@ function collectFilters(): MonitoringFilter {
   const status = parsePositiveInteger(filterFields.status)
   const accessKeyID = parsePositiveInteger(filterFields.access_key_id)
   const nvidiaKeyID = parsePositiveInteger(filterFields.nvidia_key_id)
+  // Vue coerces type=number inputs to numbers at runtime; normalize before the
+  // emptiness checks below (audit: the old .trim() call crashed on numbers).
+  if (isNonEmptyNumeric(filterFields.status) && status === undefined) {
+    return { filters, error: 'HTTP 状态码必须是正整数（100-599）。' }
+  }
+  if (isNonEmptyNumeric(filterFields.access_key_id) && accessKeyID === undefined) {
+    return { filters, error: 'Access Key ID 必须是正整数。' }
+  }
+  if (isNonEmptyNumeric(filterFields.nvidia_key_id) && nvidiaKeyID === undefined) {
+    return { filters, error: 'NVIDIA Key ID 必须是正整数。' }
+  }
   if (status !== undefined) filters.status = status
   if (accessKeyID !== undefined) filters.access_key_id = accessKeyID
   if (nvidiaKeyID !== undefined) filters.nvidia_key_id = nvidiaKeyID
-  return filters
+  return { filters }
 }
 
 function addTextFilter(filters: MonitoringFilter, key: 'search' | 'model_id' | 'endpoint', value: string): void {
@@ -134,10 +182,15 @@ function addTextFilter(filters: MonitoringFilter, key: 'search' | 'model_id' | '
   if (trimmed) filters[key] = trimmed
 }
 
-function parsePositiveInteger(value: string): number | undefined {
-  if (!value.trim()) return undefined
-  const parsed = Number(value)
+function parsePositiveInteger(value: string | number): number | undefined {
+  const text = String(value).trim()
+  if (!text) return undefined
+  const parsed = Number(text)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function isNonEmptyNumeric(value: string | number): boolean {
+  return String(value).trim() !== ''
 }
 
 function previousPage(): void {
@@ -302,6 +355,12 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           </h1>
           <p class="page-subtitle">
             保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。
+          </p>
+          <p
+            v-if="summaryUpdatedAt"
+            class="mt-1 text-xs text-[var(--color-text-subtle)]"
+          >
+            趋势每 30 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
           </p>
         </div>
         <div
@@ -523,6 +582,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             <span class="text-xs font-medium text-[var(--color-text-secondary)]">HTTP 状态码</span>
             <input
               v-model="filterFields.status"
+              data-testid="monitoring-status-code"
               class="input-field mt-1"
               type="number"
               min="100"
@@ -558,6 +618,14 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
               应用筛选
             </button>
           </div>
+          <p
+            v-if="filterError"
+            data-testid="monitoring-filter-error"
+            class="text-sm text-[var(--color-danger)] sm:col-span-2 lg:col-span-4"
+            role="alert"
+          >
+            {{ filterError }}
+          </p>
         </form>
 
         <section

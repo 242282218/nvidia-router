@@ -146,6 +146,21 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', { outcome: 'failure' }, 2, 50, expect.any(AbortSignal))
   })
 
+  it('rejects invalid numeric filters inline instead of silently dropping them', async () => {
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+    const summaryCallsBefore = vi.mocked(statisticsApi.getSummary).mock.calls.length
+
+    await wrapper.get('[data-testid="monitoring-status"]').setValue('failure')
+    await wrapper.get('[data-testid="monitoring-status-code"]').setValue('-5')
+    await wrapper.get('[data-testid="monitoring-filters"]').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="monitoring-filter-error"]').text()).toContain('状态码必须是正整数')
+    // The invalid filter must not trigger a reload.
+    expect(vi.mocked(statisticsApi.getSummary).mock.calls.length).toBe(summaryCallsBefore)
+  })
+
   it('shows summary and log errors independently', async () => {
     vi.mocked(statisticsApi.getSummary).mockRejectedValueOnce(new Error('summary failed'))
     vi.mocked(statisticsApi.getLogs).mockResolvedValueOnce({ data: { ...logs, items: [] } })
