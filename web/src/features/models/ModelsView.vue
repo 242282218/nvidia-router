@@ -121,6 +121,11 @@ async function saveCandidates(): Promise<void> {
     if (disposed) return
     await loadModels()
     if (disposed) return
+    // Re-sync the candidate checkboxes: models that were just saved are now
+    // configured, so re-submitting would filter them out anyway; reflect that
+    // state instead of leaving stale "new" selections that invite a no-op save.
+    const nextConfigured = new Set(models.value.map((model) => model.upstream_id))
+    selectedCandidates.value = Object.fromEntries(candidates.value.map((candidate) => [candidate.upstream_id, nextConfigured.has(candidate.upstream_id)]))
     candidateMessage.value = `已保存 ${selected.length} 个模型。`
   } catch (error) {
     if (disposed) return

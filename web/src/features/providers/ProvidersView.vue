@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { toastError, toastSuccess } from '../../shared/toast'
 import { providersApi } from './api'
 import type { ProviderCredential } from './types'
 
@@ -57,12 +58,25 @@ function resetCreateForm(): void {
   createError.value = ''
 }
 
+function isValidBaseURL(raw: string): boolean {
+  try {
+    const parsed = new globalThis.URL(raw)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname !== ''
+  } catch {
+    return false
+  }
+}
+
 async function create(): Promise<void> {
   const name = createForm.value.name.trim()
   const baseUrl = createForm.value.base_url.trim()
   const key = createForm.value.key.trim()
   if (!name || !baseUrl || !key) {
     createError.value = '名称、Base URL 与 Key 均不能为空。'
+    return
+  }
+  if (!isValidBaseURL(baseUrl)) {
+    createError.value = 'Base URL 必须是有效的 HTTP 或 HTTPS 地址。'
     return
   }
   saving.value = true
@@ -72,6 +86,7 @@ async function create(): Promise<void> {
     dialogOpen.value = false
     resetCreateForm()
     await load()
+    toastSuccess(`提供商「${name}」已创建。`)
   } catch (error) {
     createError.value = error instanceof ApiError ? error.message : '提供商创建失败。'
   } finally {
@@ -86,9 +101,11 @@ async function toggle(provider: ProviderCredential): Promise<void> {
     await providersApi.setEnabled(provider.id, !provider.enabled)
     if (disposed) return
     await load()
+    toastSuccess(`提供商「${provider.name}」已${provider.enabled ? '停用' : '启用'}。`)
   } catch (error) {
     if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '提供商状态更新失败。'
+    toastError(errorMessage.value)
   } finally {
     if (!disposed) busyId.value = null
   }
@@ -120,6 +137,14 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
         >
           新增提供商
         </button>
+        <button
+          class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
+          type="button"
+          :disabled="loading"
+          @click="load"
+        >
+          {{ loading ? '刷新中…' : '刷新' }}
+        </button>
       </header>
 
       <Transition name="slide">
@@ -135,8 +160,27 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
       <div class="card mt-5 overflow-hidden">
         <div
           v-if="loading"
-          class="p-6 text-sm text-[var(--color-text-muted)]"
+          class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
         >
+          <svg
+            class="h-4 w-4 animate-spin"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
           加载中…
         </div>
         <div
