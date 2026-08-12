@@ -395,12 +395,22 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			_ = response.Body.Close()
 			return nil, wrote.Load(), false, err
 		}
-		// The upstream answered through this exit; feed the observed latency back
-		// into the pool's EWMA so selection prefers exits that actually serve
-		// fast (audit H4). Latency is recorded on any response, success or not:
-		// a round-trip that completed proves the proxy itself is healthy, and a
-		// non-2xx from the target is an upstream condition, not a proxy fault.
-		handle.ReportLatency(elapsed)
+		// Feed the observed result back into the pool so selection reflects live
+		// exit quality (audit H4/H8):
+		//   - 2xx proves the exit serves traffic: report latency (which also
+		//     clears any isolation window and resets the HTTP-failure pattern);
+		//   - 429/5xx through this exit are load/throttle signals that may be
+		//     exit-specific: report an HTTP failure so a rate-limited or blocked
+		//     IP is isolated instead of staying "healthy and fastest" forever;
+		//   - other 4xx are request-level faults that recur on any exit: neutral.
+		// Latency is deliberately not fed on HTTP failures: a fast rejection must
+		// not make a failing exit look fast.
+		switch {
+		case response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices:
+			handle.ReportLatency(elapsed)
+		case isProxyHTTPFault(response.StatusCode):
+			handle.ReportHTTPFailure()
+		}
 		return response, wrote.Load(), false, nil
 	}
 	if err == nil {
@@ -469,6 +479,26 @@ func (b *releaseBody) Close() error {
 	b.once.Do(b.release)
 	return err
 }
+
+// isProxyHTTPFault reports whether an upstream status may indicate a bad exit IP
+// rather than a request-level or credential condition. 429/5xx mean the target
+// throttled or failed while the request went through this exit; an exit that
+// keeps producing them while others succeed is likely throttled or blocked
+// itself (audit H8). 403 is deliberately excluded: it is as often a credential
+// fault (a bad key fails with 403 on every exit) as an IP block, and blaming the
+// pool for a key problem would eject every exit.
+func isProxyHTTPFault(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout, statusOverloaded:
+		return true
+	}
+	return false
+}
+
+// statusOverloaded is NVIDIA's "overloaded" status, outside the standard 5xx
+// range; the router already treats it as a retryable server fault.
+const statusOverloaded = 529
 
 func isProxyError(err error) bool {
 	var proxyErr *xkproxy.Error

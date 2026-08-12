@@ -282,6 +282,43 @@ func TestAttemptDoesNotPersistProxyFailureOrSwitchKey(t *testing.T) {
 	lease.Release()
 }
 
+// TestAttemptRetriesNoHealthyProxyWithoutCooldown proves the pool-empty error is
+// retryable across keys (audit D3): each attempt surfaces a retryable 503 fault,
+// no key is marked failed or cooled down (the request never reached the
+// upstream), and the request ends with the 503 fault once candidates run out.
+func TestAttemptRetriesNoHealthyProxyWithoutCooldown(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	settings.snapshot.RetryBudgetMS = 300
+	keyPool := newAttemptPool(settings, 1, 2)
+	states := &countingStateWriter{}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
+
+	attempted := 0
+	_, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, keyID int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		attempted++
+		if keyID < 1 || keyID > 2 {
+			t.Fatalf("unexpected key %d", keyID)
+		}
+		return nil, xkproxy.NewNoHealthyProxyError()
+	})
+	var lastFault fault.Fault
+	if !errors.As(err, &lastFault) {
+		t.Fatalf("Run error = %T %v, want a fault", err, err)
+	}
+	if lastFault.HTTPStatus != http.StatusServiceUnavailable || !lastFault.Retryable {
+		t.Fatalf("fault = %+v, want retryable 503", lastFault)
+	}
+	if lastFault.PublicCode != "upstream_proxy_unavailable" {
+		t.Fatalf("public code = %q, want upstream_proxy_unavailable", lastFault.PublicCode)
+	}
+	if attempted < 2 {
+		t.Fatalf("attempted keys = %d, want at least 2 (failover across keys)", attempted)
+	}
+	if states.failures != 0 || states.successes != 0 {
+		t.Fatalf("state writes = success:%d failure:%d, want zero (no key cooldown)", states.successes, states.failures)
+	}
+}
+
 func TestAttemptProxyFailureSkipsStateSyncAndModelBlockPropagation(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
 	keyPool := newAttemptPool(settings, 1, 2)

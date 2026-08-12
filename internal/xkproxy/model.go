@@ -29,6 +29,19 @@ type Proxy struct {
 	SuccessCount  uint64
 	FailureCount  uint64
 	LastSuccessAt time.Time
+
+	// HTTPFailCount is the consecutive application-level failures (429/5xx
+	// through this exit) since the last real 2xx. Unlike transport failures it is
+	// not itself proof the exit is dead, so isolation needs a longer pattern; a
+	// genuine 2xx resets it (audit H8).
+	HTTPFailCount int
+
+	// LastRequestSuccessAt is when this exit last served a real 2xx through the
+	// request path (ReportSuccess), NOT a collector validation. The pool uses it
+	// to decide whether an HTTP failure is exit-specific or systemic: when no
+	// exit has served a 2xx recently, repeated 429/5xx are a key-level or global
+	// upstream condition and no exit gets blamed (audit H8).
+	LastRequestSuccessAt time.Time
 }
 
 func (p Proxy) Key() string {

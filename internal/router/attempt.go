@@ -301,6 +301,19 @@ func (a *Attempt) executeLease(
 		var proxyErr *xkproxy.Error
 		if errors.As(executeErr, &proxyErr) {
 			closeResponse(response)
+			// A momentarily empty proxy pool is not a key fault: the request never
+			// reached the upstream, so cooldowning the key would take every key
+			// offline while the collector refills. Surface a retryable 503 instead
+			// and let the retry loop switch keys with backoff, giving the collector
+			// time to land the next fetch (audit D3).
+			if proxyErr.Reason() == xkproxy.ReasonNoHealthyProxy {
+				classified := &fault.Fault{
+					HTTPStatus: http.StatusServiceUnavailable, Scope: fault.ScopeUpstreamGlobal, Retryable: true,
+					PublicType: "server_error", PublicCode: "upstream_proxy_unavailable",
+					PublicMessage: "The upstream proxy pool is temporarily unavailable.", Cause: proxyErr,
+				}
+				return nil, commit, classified, nil
+			}
 			return nil, commit, nil, executeErr
 		}
 	}

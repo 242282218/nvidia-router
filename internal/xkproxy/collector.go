@@ -24,7 +24,17 @@ type Collector struct {
 	done    chan struct{}
 	wg      sync.WaitGroup
 	lastErr error
+
+	// backoffLevel grows on consecutive upstream fetch failures and shrinks the
+	// fetch rate so a rate-limited or down upstream is not hammered on a fixed
+	// interval. Only touched by the run goroutine.
+	backoffLevel int
 }
+
+// collectorMaxBackoffLevel caps the fetch-interval stretch to 2^level times the
+// base interval (8x at the cap). A dead upstream must not stop collection
+// forever: the pool drains via TTL and the first successful fetch resets it.
+const collectorMaxBackoffLevel = 3
 
 type CollectorConfig struct {
 	UpstreamURL       string
@@ -46,6 +56,12 @@ type CollectorConfig struct {
 func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collector {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	// A zero interval would make nextInterval produce a zero timer and busy-loop
+	// the fetch loop; the config layer always provides a positive value, but
+	// guard here so a zero CollectorConfig cannot spin a goroutine.
+	if cfg.Interval <= 0 {
+		cfg.Interval = 5 * time.Second
 	}
 	return &Collector{
 		upstream:       NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamTimeout),
@@ -76,11 +92,12 @@ func (c *Collector) Start(ctx context.Context) {
 func (c *Collector) run(ctx context.Context) {
 	defer c.wg.Done()
 
-	// Immediate first fetch
-	c.fetch(ctx)
+	// Immediate first fetch; its outcome seeds the backoff state so a startup
+	// against a not-yet-ready upstream does not hammer it on the base interval.
+	success := c.fetch(ctx)
 
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(c.nextInterval(success))
+	defer timer.Stop()
 
 	for {
 		select {
@@ -88,13 +105,29 @@ func (c *Collector) run(ctx context.Context) {
 			return
 		case <-c.done:
 			return
-		case <-ticker.C:
-			c.fetch(ctx)
+		case <-timer.C:
+			success := c.fetch(ctx)
+			timer.Reset(c.nextInterval(success))
 		}
 	}
 }
 
-func (c *Collector) fetch(ctx context.Context) {
+// nextInterval returns the delay before the next fetch, stretching the base
+// interval after consecutive upstream failures and resetting on any success.
+// A rate-limited or down upstream must be polled less aggressively, but a
+// success proves it recovered, so the schedule snaps back to the base interval.
+func (c *Collector) nextInterval(success bool) time.Duration {
+	if success {
+		c.backoffLevel = 0
+		return c.interval
+	}
+	if c.backoffLevel < collectorMaxBackoffLevel {
+		c.backoffLevel++
+	}
+	return c.interval << c.backoffLevel
+}
+
+func (c *Collector) fetch(ctx context.Context) bool {
 	started := time.Now()
 	c.logger.Info("upstream_fetch_start")
 
@@ -110,14 +143,14 @@ func (c *Collector) fetch(ctx context.Context) {
 			"provider_code", code,
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
-		return
+		return false
 	}
 
 	if len(proxies) == 0 {
 		c.logger.Warn("upstream_fetch_empty",
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
-		return
+		return false
 	}
 
 	c.logger.Info("upstream_fetch_success",
@@ -141,6 +174,7 @@ func (c *Collector) fetch(ctx context.Context) {
 	c.mu.Lock()
 	c.lastErr = nil
 	c.mu.Unlock()
+	return true
 }
 
 func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedAt time.Time) []Proxy {

@@ -23,9 +23,20 @@ type EjectionPolicy struct {
 	MaxDuration  time.Duration
 	MaxEjections int
 	LatencyAlpha float64
+	// HTTPFailureLimit is how many application-level failures (429/5xx through
+	// this exit) isolate the proxy. Deliberately higher than FailureLimit: an
+	// HTTP status is not by itself proof the exit is bad (it may be a shared
+	// quota), so isolation requires a longer pattern (audit H8).
+	HTTPFailureLimit int
 }
 
 const slowLatencyFactor = 3
+
+// httpEjectSuccessWindow is how recently some exit must have served a real 2xx
+// for HTTP failures on another exit to count toward isolation. It is the
+// "pool is working" evidence: without it a key-level 429/5xx storm would blame
+// and eject every exit, emptying the pool (audit H8).
+const httpEjectSuccessWindow = 60 * time.Second
 
 func (e EjectionPolicy) normalized() EjectionPolicy {
 	if e.FailureLimit <= 0 {
@@ -42,6 +53,9 @@ func (e EjectionPolicy) normalized() EjectionPolicy {
 	}
 	if e.LatencyAlpha <= 0 || e.LatencyAlpha > 1 {
 		e.LatencyAlpha = 0.3
+	}
+	if e.HTTPFailureLimit <= 0 {
+		e.HTTPFailureLimit = 6
 	}
 	return e
 }
@@ -355,6 +369,76 @@ func ejectionWindow(policy EjectionPolicy, ejections int) time.Duration {
 	return window
 }
 
+// ReportHTTPFailure records an application-level failure (429/5xx) observed
+// through this exit. Unlike ReportFailure (transport-level), an HTTP status is
+// not by itself proof the exit is dead: NVIDIA throttles and overloads are often
+// key-level or global, hitting every exit at once. So the exit is only isolated
+// when the pool as a whole has served a real 2xx recently — the "some exit
+// works, this one consistently doesn't" condition that identifies a
+// rate-limited or blocked IP (audit H8). During a key-wide 429 storm no exit
+// counts, protecting the pool from being blamed and emptied by a condition that
+// is not about the proxies at all.
+func (p *Pool) ReportHTTPFailure(identity string, now time.Time, policy EjectionPolicy) Outcome {
+	policy = policy.normalized()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.pruneLocked(now)
+	outcome := OutcomeCounted
+	canEject := p.hasRecentRequestSuccessLocked(now)
+
+	survivors := p.proxies[:0]
+	for _, proxy := range p.proxies {
+		if !matches(proxy, identity) {
+			survivors = append(survivors, proxy)
+			continue
+		}
+
+		proxy.FailureCount++
+		// Observe the pattern regardless of attribution (the UI shows it), but
+		// saturate at the limit so a key-wide storm cannot inflate the counter
+		// without bound. Only the isolation decision is gated below.
+		if proxy.HTTPFailCount < policy.HTTPFailureLimit {
+			proxy.HTTPFailCount++
+		}
+		if !canEject || proxy.HTTPFailCount < policy.HTTPFailureLimit {
+			survivors = append(survivors, proxy)
+			continue
+		}
+
+		proxy.EjectionCount++
+		if proxy.EjectionCount > policy.MaxEjections {
+			// Repeatedly isolated and repeatedly failing: permanently remove and
+			// remember the removal so Merge does not resurrect it (audit M6).
+			outcome = OutcomeRemoved
+			p.removed[proxy.Key()] = now.Add(removalCooldown)
+			continue
+		}
+		proxy.HTTPFailCount = 0
+		proxy.EjectedUntil = now.Add(ejectionWindow(policy, proxy.EjectionCount))
+		if outcome != OutcomeRemoved {
+			outcome = OutcomeEjected
+		}
+		survivors = append(survivors, proxy)
+	}
+	p.truncateLocked(survivors)
+	return outcome
+}
+
+// hasRecentRequestSuccessLocked reports whether any exit served a real 2xx
+// recently. Collector validations deliberately do not count: they prove
+// reachability, not that the upstream accepts traffic through the exit, so they
+// would open the isolation gate during a key-wide throttle (audit H8).
+func (p *Pool) hasRecentRequestSuccessLocked(now time.Time) bool {
+	for _, proxy := range p.proxies {
+		if !proxy.LastRequestSuccessAt.IsZero() && now.Sub(proxy.LastRequestSuccessAt) <= httpEjectSuccessWindow {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) ReportSuccess(identity string, now time.Time, latency time.Duration, policy EjectionPolicy) {
 	policy = policy.normalized()
 
@@ -368,6 +452,10 @@ func (p *Pool) ReportSuccess(identity string, now time.Time, latency time.Durati
 		}
 		p.proxies[i].SuccessCount++
 		p.proxies[i].LastSuccessAt = now
+		// A real 2xx through this exit proves it currently works: reset the
+		// HTTP-failure pattern and clear any isolation (audit H8).
+		p.proxies[i].HTTPFailCount = 0
+		p.proxies[i].LastRequestSuccessAt = now
 		if p.proxies[i].HealthFails > 0 {
 			p.proxies[i].HealthFails--
 		}

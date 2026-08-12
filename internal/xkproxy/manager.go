@@ -26,6 +26,11 @@ type ErrorReason string
 const (
 	ReasonTransportFailed ErrorReason = "transport_failed"
 	ReasonManagerClosed   ErrorReason = "manager_closed"
+	// ReasonNoHealthyProxy marks a pool that is momentarily empty (e.g. every
+	// TTL expired between two collector fetches). The request never reached the
+	// upstream through any exit, so the router treats it as retryable instead of
+	// cooldowning the key (audit D3).
+	ReasonNoHealthyProxy ErrorReason = "no_healthy_proxy"
 )
 
 type Error struct {
@@ -39,6 +44,13 @@ func (e *Error) Reason() ErrorReason { return e.reason }
 
 func NewTransportError(cause error) *Error {
 	return &Error{reason: ReasonTransportFailed, cause: cause}
+}
+
+// NewNoHealthyProxyError marks a momentarily empty pool (see
+// ReasonNoHealthyProxy). The router maps it to a retryable 503 and does not
+// cooldown the key, since the request never reached the upstream.
+func NewNoHealthyProxyError() *Error {
+	return &Error{reason: ReasonNoHealthyProxy, cause: errors.New("no healthy proxy available")}
 }
 
 type Provider interface {
@@ -61,6 +73,14 @@ type Manager struct {
 
 const maxCachedTransports = 64
 
+// stickyRebindInterval bounds how long a session stays pinned to one exit.
+// Session affinity prevents keys from racing each other through different
+// exits, but a pin that never expires leaves a session on an exit that has
+// quietly become slow or throttled without producing transport errors. The
+// rebind closes idle connections and re-selects from the pool, which prefers
+// the fastest live exit (audit H9).
+const stickyRebindInterval = 60 * time.Second
+
 type cachedTransport struct {
 	transport *http.Transport
 	// proxyKey is the pool identity the transport was built against. It is fixed
@@ -69,6 +89,10 @@ type cachedTransport struct {
 	// rotation cursor happens to point at on a later Acquire.
 	proxyKey string
 	lastUsed uint64
+	// createdAt anchors the sticky-rebind window: once the entry is older than
+	// stickyRebindInterval it is eligible for re-selection against a fresh pool
+	// proxy.
+	createdAt time.Time
 }
 
 type Handle struct {
@@ -195,22 +219,30 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 		if m.pool != nil {
 			selectedProxy, hasProxy = m.pool.Get(time.Now())
 			if !hasProxy {
-				return nil, errors.New("no healthy proxy available")
+				// The pool is momentarily empty: the request never reached the
+				// upstream, so this is not a key fault. ReasonNoHealthyProxy lets
+				// the router surface a retryable 503 instead of cooldowning the
+				// key (audit D3).
+				return nil, NewNoHealthyProxyError()
 			}
 		}
-		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key()}
+		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key(), createdAt: time.Now()}
 		m.transports[key] = entry
-	} else if m.pool != nil && entry.proxyKey != "" && !m.pool.HasHealthy(entry.proxyKey, time.Now()) {
-		// The cached transport is bound to a proxy that has since been ejected or
-		// removed. Rebuild it against a fresh pool proxy instead of continuing to
-		// dial a dead exit (audit H3). Only replace when the pool has an
-		// alternative: when the pool is momentarily empty, the healthy cached
-		// connection stays usable (the transport itself still works even if its
-		// proxy row is gone from the pool).
-		if selectedProxy, hasProxy := m.pool.Get(time.Now()); hasProxy {
-			entry.transport.CloseIdleConnections()
-			entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key()}
-			m.transports[key] = entry
+	} else if m.pool != nil && entry.proxyKey != "" {
+		now := time.Now()
+		stale := now.Sub(entry.createdAt) >= stickyRebindInterval
+		if stale || !m.pool.HasHealthy(entry.proxyKey, now) {
+			// Rebuild when the bound proxy was ejected or removed (audit H3), or
+			// when the session has been pinned long enough to re-select (audit
+			// H9). Only replace when the pool has an alternative: when the pool is
+			// momentarily empty, the healthy cached connection stays usable, and
+			// when the pool's best proxy is the current one, rebinding would just
+			// re-CONNECT for nothing.
+			if selectedProxy, hasProxy := m.pool.Get(now); hasProxy && (!stale || selectedProxy.Key() != entry.proxyKey) {
+				entry.transport.CloseIdleConnections()
+				entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key(), createdAt: now}
+				m.transports[key] = entry
+			}
 		}
 	}
 	m.clock++
@@ -358,13 +390,16 @@ type PoolStatus struct {
 // operator-visible quality fields are exposed: the exit address, its measured
 // latency, remaining TTL, and isolation state.
 type ProxyStatus struct {
-	Address         string `json:"address"`
-	LatencyEWMAMS   int64  `json:"latency_ewma_ms"`
-	RemainingSeconds int   `json:"remaining_seconds"`
-	Healthy         bool   `json:"healthy"`
-	Ejected         bool   `json:"ejected"`
-	SuccessCount    uint64 `json:"success_count"`
-	FailureCount    uint64 `json:"failure_count"`
+	Address          string `json:"address"`
+	LatencyEWMAMS    int64  `json:"latency_ewma_ms"`
+	RemainingSeconds int    `json:"remaining_seconds"`
+	Healthy          bool   `json:"healthy"`
+	Ejected          bool   `json:"ejected"`
+	SuccessCount     uint64 `json:"success_count"`
+	FailureCount     uint64 `json:"failure_count"`
+	// HTTPFailCount exposes the consecutive 429/5xx pattern so the UI can flag
+	// exits that are throttled but not yet isolated.
+	HTTPFailCount int `json:"http_fail_count"`
 }
 
 func (s PoolStatus) View() []ProxyStatus {
@@ -379,6 +414,7 @@ func (s PoolStatus) View() []ProxyStatus {
 			Ejected:          proxy.EjectedAt(now),
 			SuccessCount:     proxy.SuccessCount,
 			FailureCount:     proxy.FailureCount,
+			HTTPFailCount:    proxy.HTTPFailCount,
 		})
 	}
 	return view
@@ -408,6 +444,25 @@ func (h *Handle) ReportLatency(latency time.Duration) {
 		return
 	}
 	h.manager.pool.ReportSuccess(h.proxyKey, time.Now(), latency, EjectionPolicy{
+		FailureLimit: 3,
+		BaseDuration: 10 * time.Second,
+		MaxDuration:  60 * time.Second,
+		MaxEjections: 3,
+		LatencyAlpha: 0.3,
+	})
+}
+
+// ReportHTTPFailure feeds an application-level failure (429/5xx observed
+// through this exit) into the pool so a rate-limited or blocked IP is isolated
+// instead of being treated as healthy (audit H8). Unlike ReportLatency it does
+// not clear an existing isolation window and does not update the latency EWMA:
+// a fast rejection must not make a failing exit look fast. Best-effort like
+// ReportLatency.
+func (h *Handle) ReportHTTPFailure() {
+	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" {
+		return
+	}
+	h.manager.pool.ReportHTTPFailure(h.proxyKey, time.Now(), EjectionPolicy{
 		FailureLimit: 3,
 		BaseDuration: 10 * time.Second,
 		MaxDuration:  60 * time.Second,
