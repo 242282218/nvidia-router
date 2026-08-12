@@ -93,8 +93,10 @@ test.describe('management resources', () => {
     await expect(page.getByTestId('access-key-cards')).toBeHidden()
     const desktopAccessKeyRow = page.getByTestId('access-key-table').getByRole('row').filter({ hasText: 'e2e-client' })
     await expect(desktopAccessKeyRow).toBeVisible()
-    page.once('dialog', (dialog) => void dialog.accept())
-    await desktopAccessKeyRow.getByRole('button', { name: '撤销' }).click()
+    // Two-step destructive confirmation: first click arms it, second performs it.
+    const revoke = desktopAccessKeyRow.getByRole('button', { name: '撤销' })
+    await revoke.click()
+    await revoke.click()
     await expect(desktopAccessKeyRow).toContainText('已撤销')
   })
 

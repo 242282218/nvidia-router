@@ -79,9 +79,11 @@ test.describe('runtime and responsive management UI', () => {
     await expect(page.locator('body')).not.toContainText(mobilePlaintext ?? '')
     await expect(page.getByTestId('access-key-cards')).toBeVisible()
     await expect(page.getByTestId('access-key-table')).toBeHidden()
-    page.once('dialog', (dialog) => void dialog.accept())
     const mobileAccessKeyCard = page.getByTestId('access-key-cards').locator('article').filter({ hasText: 'mobile-e2e-client' })
-    await mobileAccessKeyCard.getByRole('button', { name: '撤销' }).click()
+    // Two-step destructive confirmation: first click arms it, second performs it.
+    const revoke = mobileAccessKeyCard.getByRole('button', { name: '撤销' })
+    await revoke.click()
+    await revoke.click()
     await expect(mobileAccessKeyCard).toContainText('已撤销')
   })
 })

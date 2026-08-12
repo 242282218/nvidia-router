@@ -268,7 +268,7 @@ func parseUsage(payload []byte, complete, enabled bool, status int, contentType 
 		// A large non-stream response is captured only as a tail window that may
 		// start mid-JSON; a direct unmarshal then fails. Fall back to extracting
 		// the trailing "usage" object so the retained tail still meters tokens.
-		if json.Valid(body) == false {
+		if !json.Valid(body) {
 			if extracted := extractUsageFromJSON(body); extracted != nil {
 				body = extracted
 			}
