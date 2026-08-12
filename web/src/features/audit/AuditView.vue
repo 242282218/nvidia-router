@@ -128,7 +128,7 @@ function parseDetail(raw: string | undefined): string {
           <select
             id="audit-action-filter"
             v-model="selectedAction"
-            class="input rounded-lg px-3 py-2 text-sm"
+            class="input-field rounded-lg px-3 py-2 text-sm"
             data-testid="audit-action-filter"
             @change="applyFilter"
           >
@@ -161,81 +161,95 @@ function parseDetail(raw: string | undefined): string {
       </p>
 
       <div class="card mt-4 overflow-hidden">
-        <table class="w-full text-left text-sm">
-          <thead class="border-b border-[var(--color-border)] bg-[var(--color-surface)]/60 text-xs uppercase tracking-wider text-[var(--color-text-subtle)]">
-            <tr>
-              <th class="px-4 py-3">
-                时间
-              </th>
-              <th class="px-4 py-3">
-                操作
-              </th>
-              <th class="px-4 py-3">
-                目标
-              </th>
-              <th class="px-4 py-3">
-                来源 IP
-              </th>
-              <th class="px-4 py-3">
-                详情
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="loading && items.length === 0">
-              <td
-                class="px-4 py-8 text-center text-[var(--color-text-muted)]"
-                colspan="5"
+        <!-- min-w keeps the table from squeezing on narrow screens; the wrapper
+             scrolls horizontally instead (mobile-friendly overflow pattern). -->
+        <div class="overflow-x-auto">
+          <table class="w-full min-w-[640px] text-left text-sm">
+            <thead class="border-b border-[var(--color-border)] bg-[var(--color-surface)]/60 text-xs uppercase tracking-wider text-[var(--color-text-subtle)]">
+              <tr>
+                <th class="px-4 py-3">
+                  时间
+                </th>
+                <th class="px-4 py-3">
+                  操作
+                </th>
+                <th class="px-4 py-3">
+                  目标
+                </th>
+                <th class="px-4 py-3">
+                  来源 IP
+                </th>
+                <th class="px-4 py-3">
+                  详情
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="loading && items.length === 0">
+                <td
+                  class="px-4 py-8 text-center text-[var(--color-text-muted)]"
+                  colspan="5"
+                >
+                  加载中…
+                </td>
+              </tr>
+              <tr v-else-if="!loading && items.length === 0">
+                <td
+                  class="px-4 py-8 text-center text-[var(--color-text-muted)]"
+                  colspan="5"
+                >
+                  暂无审计记录{{ hasLoaded ? '' : '。' }}
+                </td>
+              </tr>
+              <tr
+                v-for="entry in items"
+                v-else
+                :key="entry.id"
+                class="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-surface)]/50"
               >
-                加载中…
-              </td>
-            </tr>
-            <tr v-else-if="!loading && items.length === 0">
-              <td
-                class="px-4 py-8 text-center text-[var(--color-text-muted)]"
-                colspan="5"
-              >
-                暂无审计记录{{ hasLoaded ? '' : '。' }}
-              </td>
-            </tr>
-            <tr
-              v-for="entry in items"
-              v-else
-              :key="entry.id"
-              class="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-surface)]/50"
-            >
-              <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
-                {{ formatDate(entry.created_at) }}
-              </td>
-              <td class="px-4 py-3">
-                <span class="rounded bg-[var(--color-accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
-                  {{ entry.action }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-xs text-[var(--color-text-secondary)]">
-                <template v-if="entry.target_id">
-                  {{ entry.target_type }} #{{ entry.target_id }}
-                </template>
-                <template v-else>
-                  {{ entry.target_type || '—' }}
-                </template>
-              </td>
-              <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
-                {{ entry.client_ip || '—' }}
-              </td>
-              <td class="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-[var(--color-text-subtle)]">
-                {{ parseDetail(entry.detail) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
+                  {{ formatDate(entry.created_at) }}
+                </td>
+                <td class="px-4 py-3">
+                  <span class="rounded bg-[var(--color-accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
+                    {{ entry.action }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 text-xs text-[var(--color-text-secondary)]">
+                  <template v-if="entry.target_id">
+                    {{ entry.target_type }} #{{ entry.target_id }}
+                  </template>
+                  <template v-else>
+                    {{ entry.target_type || '—' }}
+                  </template>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
+                  {{ entry.client_ip || '—' }}
+                </td>
+                <td class="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-[var(--color-text-subtle)]">
+                  <span
+                    :title="parseDetail(entry.detail) || undefined"
+                    class="block truncate"
+                  >{{ parseDetail(entry.detail) }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div class="mt-4 flex items-center justify-between text-sm text-[var(--color-text-secondary)]">
+      <div class="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-[var(--color-text-secondary)]">
         <span>
           共 {{ total }} 条记录
         </span>
         <div class="flex items-center gap-2">
+          <span
+            v-if="loading && items.length > 0"
+            class="mr-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
+          >
+            <span class="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
+            加载中…
+          </span>
           <button
             class="btn-ghost rounded-lg px-3 py-1.5 disabled:opacity-40"
             type="button"

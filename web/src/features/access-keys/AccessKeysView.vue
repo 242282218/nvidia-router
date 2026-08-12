@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { toastError, toastSuccess } from '../../shared/toast'
 import { accessKeysApi } from './api'
 import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
 import EditAccessKeyPolicyDialog from './EditAccessKeyPolicyDialog.vue'
@@ -13,7 +14,7 @@ const dialogOpen = ref(false)
 const editDialogOpen = ref(false)
 const editingKey = ref<AccessKey | null>(null)
 const busyId = ref<number | null>(null)
-const errorMessage = ref('')
+const confirmingId = ref<number | null>(null)
 let loadSequence = 0
 let disposed = false
 
@@ -26,6 +27,10 @@ onBeforeUnmount(() => {
   loadSequence += 1
 })
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback
+}
+
 async function loadKeys(): Promise<void> {
   if (disposed) return
   const sequence = ++loadSequence
@@ -37,10 +42,9 @@ async function loadKeys(): Promise<void> {
       throw new TypeError('Invalid Access Key list response.')
     }
     keys.value = response.data
-    errorMessage.value = ''
   } catch (error) {
     if (disposed || sequence !== loadSequence) return
-    errorMessage.value = error instanceof ApiError ? error.message : 'Access Key 列表加载失败。'
+    toastError(errorMessage(error, 'Access Key 列表加载失败。'))
   } finally {
     if (!disposed && sequence === loadSequence) loading.value = false
   }
@@ -70,19 +74,29 @@ function openEditPolicy(key: AccessKey): void {
 }
 
 async function revokeKey(key: AccessKey): Promise<void> {
-  if (!globalThis.window.confirm(`确认撤销 Access Key"${key.name}"吗？撤销后无法恢复。`)) return
-  busyId.value = key.id
-  errorMessage.value = ''
-  try {
-    await accessKeysApi.revoke(key.id)
-    if (disposed) return
-    await loadKeys()
-  } catch (error) {
-    if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : 'Access Key 撤销失败。'
-  } finally {
-    if (!disposed) busyId.value = null
+  if (busyId.value === key.id) return
+  // Two-step destructive confirmation, matching the NVIDIA Key page instead of
+  // the native window.confirm (which is visually detached from the app chrome).
+  if (confirmingId.value === key.id) {
+    confirmingId.value = null
+    busyId.value = key.id
+    try {
+      await accessKeysApi.revoke(key.id)
+      if (disposed) return
+      await loadKeys()
+      toastSuccess(`Access Key「${key.name}」已撤销。`)
+    } catch (error) {
+      if (disposed) return
+      toastError(errorMessage(error, 'Access Key 撤销失败。'))
+    } finally {
+      if (!disposed) busyId.value = null
+    }
+    return
   }
+  confirmingId.value = key.id
+  globalThis.setTimeout(() => {
+    if (confirmingId.value === key.id) confirmingId.value = null
+  }, 3000)
 }
 
 function formatDate(value?: string): string {
@@ -146,16 +160,6 @@ function budgetUsagePercent(key: AccessKey): number {
           </span>
         </button>
       </header>
-
-      <Transition name="slide">
-        <p
-          v-if="errorMessage"
-          class="mb-4 text-sm text-[#F87171]"
-          role="alert"
-        >
-          {{ errorMessage }}
-        </p>
-      </Transition>
 
       <div class="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
         <template v-if="loading">
@@ -241,7 +245,7 @@ function budgetUsagePercent(key: AccessKey): number {
                   :disabled="Boolean(key.revoked_at) || busyId === key.id"
                   @click="revokeKey(key)"
                 >
-                  撤销
+                  {{ confirmingId === key.id ? '确认撤销？' : '撤销' }}
                 </button>
               </div>
             </article>
@@ -347,7 +351,7 @@ function budgetUsagePercent(key: AccessKey): number {
                     :disabled="Boolean(key.revoked_at) || busyId === key.id"
                     @click="revokeKey(key)"
                   >
-                    撤销
+                    {{ confirmingId === key.id ? '确认撤销？' : '撤销' }}
                   </button>
                 </td>
               </tr>
@@ -370,15 +374,3 @@ function budgetUsagePercent(key: AccessKey): number {
     />
   </div>
 </template>
-
-<style scoped>
-.slide-enter-active,
-.slide-leave-active {
-  transition: all 0.2s ease;
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>

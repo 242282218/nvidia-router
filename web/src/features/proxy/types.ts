@@ -27,6 +27,8 @@ export interface PoolProxyStatus {
   ejected: boolean
   success_count: number
   failure_count: number
+  /** Consecutive 429/5xx through this exit since the last real 2xx (0 when clean). */
+  http_fail_count: number
 }
 
 export interface PoolStatusData {

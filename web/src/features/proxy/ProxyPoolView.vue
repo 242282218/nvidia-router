@@ -17,6 +17,9 @@ const savedMessage = ref('')
 const statusData = ref<PoolStatusData | null>(null)
 const statusLoading = ref(false)
 const statusError = ref('')
+// statusUpdatedAt records when the last status poll landed, so the operator can
+// judge how stale the displayed quality numbers are between the 10s polls.
+const statusUpdatedAt = ref<Date | null>(null)
 let disposed = false
 let controller: globalThis.AbortController | null = null
 let statusController: globalThis.AbortController | null = null
@@ -63,6 +66,7 @@ async function refreshStatus(): Promise<void> {
     if (disposed || statusController !== nextController) return
     if (!isPoolStatusData(response)) throw new TypeError('Invalid proxy pool status response.')
     statusData.value = response.data
+    statusUpdatedAt.value = new Date()
     statusError.value = ''
   } catch (error) {
     if (disposed || statusController !== nextController || isAbortError(error)) return
@@ -89,6 +93,7 @@ function isPoolProxyStatus(value: unknown): value is PoolProxyStatus {
     && isFiniteNumber(value.remaining_seconds)
     && isFiniteNumber(value.success_count)
     && isFiniteNumber(value.failure_count)
+    && isFiniteNumber(value.http_fail_count)
 }
 
 function formatLatency(ms: number): string {
@@ -100,6 +105,11 @@ function formatRemaining(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.floor(seconds / 60)
   return `${minutes}m ${seconds % 60}s`
+}
+
+function formatClock(value: Date): string {
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
 }
 
 function sourceLabel(source?: ProxyPoolSettings['source']): string {
@@ -332,6 +342,13 @@ function isValidProxyURL(raw: string): boolean {
             >
               健康 <span class="font-mono font-semibold text-[var(--color-success)]">{{ statusData.healthy_size }}</span> / {{ statusData.total_size }}
             </span>
+            <span
+              v-if="statusUpdatedAt"
+              class="hidden text-xs text-[var(--color-text-subtle)] sm:inline"
+              :title="`最后刷新于 ${statusUpdatedAt.toLocaleString()}`"
+            >
+              更新于 {{ formatClock(statusUpdatedAt) }}
+            </span>
             <button
               class="btn-ghost"
               type="button"
@@ -363,7 +380,10 @@ function isValidProxyURL(raw: string): boolean {
             v-if="statusData.proxies.length === 0"
             class="p-6 text-center text-sm text-[var(--color-text-muted)]"
           >
-            {{ statusData.total_size === 0 ? '当前无动态代理（静态代理模式或未启用内置池）。' : '暂无可用代理，等待下一次采集。' }}
+            <p>{{ statusData.total_size === 0 ? '当前无动态代理：静态代理模式不采集，或上游采集尚未返回有效代理。' : '所有代理均在隔离或冷却中，等待下一次采集恢复。' }}</p>
+            <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
+              内置池每 5 秒向上游采集并校验一次；若长时间为空，请检查上游地址与配额。
+            </p>
           </div>
           <ul
             v-else
@@ -390,6 +410,13 @@ function isValidProxyURL(raw: string): boolean {
               </span>
               <span class="text-xs text-[var(--color-text-muted)]">
                 成功 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.success_count }}</span> · 失败 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.failure_count }}</span>
+              </span>
+              <span
+                v-if="proxy.http_fail_count > 0"
+                class="badge-warning"
+                :title="`连续 ${proxy.http_fail_count} 次 HTTP 失败（429/5xx），可能被上游限流`"
+              >
+                限流信号 ×{{ proxy.http_fail_count }}
               </span>
             </li>
           </ul>

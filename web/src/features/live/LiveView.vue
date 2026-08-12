@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { isFiniteNumber, isRecord } from '../../shared/api/client'
 import type { LiveRequestEvent } from './types'
@@ -10,6 +10,33 @@ const errorMessage = ref('')
 const maxEvents = 500
 
 let source: globalThis.EventSource | null = null
+
+// The feed renders newest-first at the top. Auto-scroll keeps the newest event
+// visible only while the operator stays pinned near the top; scrolling down to
+// read history suspends it so a new event does not yank the viewport.
+const listEl = ref<globalThis.HTMLElement | null>(null)
+const pinnedToTop = ref(true)
+
+watch(() => events.value.length, () => {
+  if (pinnedToTop.value) {
+    void nextTick(() => listEl.value?.scrollTo({ top: 0 }))
+  }
+})
+
+function onListScroll(): void {
+  const element = listEl.value
+  if (!element) return
+  pinnedToTop.value = element.scrollTop <= 8
+}
+
+function scrollToTop(): void {
+  pinnedToTop.value = true
+  listEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function clearEvents(): void {
+  events.value = []
+}
 
 onMounted(() => {
   connect()
@@ -125,7 +152,7 @@ function latencyColor(duration: number): string {
             实时请求流
           </h1>
           <p class="page-subtitle">
-            通过 SSE 推送实时展示路由请求的元数据；仅保留最近 {{ maxEvents }} 条，自动滚动。
+            通过 SSE 推送实时展示路由请求的元数据；仅保留最近 {{ maxEvents }} 条，最新在上、自动滚动。
           </p>
         </div>
         <div class="flex items-center gap-3">
@@ -139,6 +166,14 @@ function latencyColor(duration: number): string {
             />
             {{ connected ? '已连接' : '连接中…' }}
           </span>
+          <button
+            class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
+            type="button"
+            :disabled="events.length === 0"
+            @click="clearEvents"
+          >
+            清空
+          </button>
           <button
             class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
             type="button"
@@ -165,40 +200,64 @@ function latencyColor(duration: number): string {
           等待请求到达…
         </div>
 
-        <ul
-          v-else
-          class="max-h-[calc(100vh-16rem)] divide-y divide-[var(--color-border)] overflow-y-auto"
-        >
-          <li
-            v-for="event in [...events].reverse()"
-            :key="event.request_id"
-            class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm hover:bg-[var(--color-hover)]"
+        <div class="relative">
+          <ul
+            ref="listEl"
+            class="max-h-[calc(100vh-16rem)] divide-y divide-[var(--color-border)] overflow-y-auto"
+            @scroll="onListScroll"
           >
-            <span class="font-mono text-xs text-[var(--color-text-muted)]">
-              {{ formatTime(event.created_at) }}
-            </span>
-            <code class="truncate font-mono text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
-            <code class="truncate font-mono text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
-            <span
-              class="rounded px-2 py-0.5 text-xs font-medium"
-              :class="statusBadge(event.http_status)"
-            >{{ event.http_status }}</span>
-            <span
-              v-if="event.error_code"
-              class="truncate text-xs text-[var(--color-warning)]"
+            <li
+              v-for="event in [...events].reverse()"
+              :key="event.request_id"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm hover:bg-[var(--color-hover)]"
             >
-              {{ event.error_code }}
-            </span>
-            <span
-              class="ml-auto font-mono text-xs"
-              :class="latencyColor(event.duration_ms)"
+              <span class="font-mono text-xs text-[var(--color-text-muted)]">
+                {{ formatTime(event.created_at) }}
+              </span>
+              <code class="truncate font-mono text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
+              <code class="truncate font-mono text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
+              <span
+                class="rounded px-2 py-0.5 text-xs font-medium"
+                :class="statusBadge(event.http_status)"
+              >{{ event.http_status }}</span>
+              <span
+                v-if="event.error_code"
+                class="truncate text-xs text-[var(--color-warning)]"
+              >
+                {{ event.error_code }}
+              </span>
+              <span
+                class="ml-auto font-mono text-xs"
+                :class="latencyColor(event.duration_ms)"
+              >
+                {{ formatLatency(event.duration_ms) }}
+                <template v-if="event.first_token_ms !== undefined">· TTFT {{ formatLatency(event.first_token_ms) }}</template>
+              </span>
+            </li>
+          </ul>
+          <Transition name="fade">
+            <button
+              v-if="!pinnedToTop && events.length > 0"
+              class="absolute right-4 bottom-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)]"
+              type="button"
+              @click="scrollToTop"
             >
-              {{ formatLatency(event.duration_ms) }}
-              <template v-if="event.first_token_ms !== undefined">· TTFT {{ formatLatency(event.first_token_ms) }}</template>
-            </span>
-          </li>
-        </ul>
+              回到最新
+            </button>
+          </Transition>
+        </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

@@ -1,6 +1,7 @@
 ﻿import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { clearToasts, toastState } from '../../shared/toast'
 import { accessKeysApi } from './api'
 import AccessKeysView from './AccessKeysView.vue'
 import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
@@ -38,6 +39,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  clearToasts()
   vi.mocked(accessKeysApi.list).mockResolvedValue({ data: [listedKey] })
   vi.mocked(accessKeysApi.revoke).mockResolvedValue(undefined)
 })
@@ -46,12 +48,12 @@ describe('AccessKeysView', () => {
   it.each([
     ['a non-array data field', { data: null }],
     ['a non-numeric key id', { data: [{ ...listedKey, id: null }] }],
-  ])('shows a visible error for %s in a successful response', async (_name, response) => {
+  ])('shows a visible error toast for %s in a successful response', async (_name, response) => {
     vi.mocked(accessKeysApi.list).mockResolvedValue(response as never)
     const wrapper = mount(AccessKeysView)
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('Access Key 列表加载失败')
+    expect(toastState.toasts.some((toast) => toast.type === 'error' && toast.message.includes('列表加载失败'))).toBe(true)
     expect(wrapper.text()).not.toContain(listedKey.name)
   })
 
@@ -252,8 +254,7 @@ describe('AccessKeysView', () => {
     expect(wrapper.text()).toContain('复制失败，请手动复制。')
   })
 
-  it('shows safe metadata and requires confirmation before revoking', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  it('shows safe metadata and requires two-step confirmation before revoking', async () => {
     const wrapper = mount(AccessKeysView)
     await flushPromises()
 
@@ -263,12 +264,14 @@ describe('AccessKeysView', () => {
     expect(wrapper.text()).toContain('09:30')
 
     const revoke = wrapper.get('[data-testid="revoke-access-key-4"]')
+    // First click arms the confirmation; nothing is revoked yet.
     await revoke.trigger('click')
     expect(accessKeysApi.revoke).not.toHaveBeenCalled()
+    expect(revoke.text()).toContain('确认撤销')
+
+    // Second click within the window performs the revoke.
     await revoke.trigger('click')
     await flushPromises()
-
-    expect(confirm).toHaveBeenCalledTimes(2)
     expect(accessKeysApi.revoke).toHaveBeenCalledWith(4)
   })
 

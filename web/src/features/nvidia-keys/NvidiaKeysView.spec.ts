@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { clearToasts, toastState } from '../../shared/toast'
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
 import NvidiaKeysView from './NvidiaKeysView.vue'
@@ -42,19 +43,24 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  clearToasts()
   vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [] })
 })
+
+function hasErrorToast(needle: string): boolean {
+  return toastState.toasts.some((toast) => toast.type === 'error' && toast.message.includes(needle))
+}
 
 describe('NvidiaKeysView', () => {
   it.each([
     ['a non-array data field', { data: null }],
     ['a non-numeric key id', { data: [makeKey({ id: null as never })] }],
-  ])('shows a visible error for %s in a successful response', async (_name, response) => {
+  ])('shows a visible error toast for %s in a successful response', async (_name, response) => {
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue(response as never)
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('NVIDIA Key 列表加载失败')
+    expect(hasErrorToast('NVIDIA Key 列表加载失败')).toBe(true)
     expect(wrapper.text()).not.toContain('nvapi…1234')
   })
 
@@ -111,7 +117,7 @@ describe('NvidiaKeysView', () => {
   it.each([
     ['a null response', null],
     ['an invalid result item', { id: null, status: 'ok' }],
-  ])('shows an error and keeps the dialog closed for %s from a single-key test', async (_name, response) => {
+  ])('shows an error toast and keeps the dialog closed for %s from a single-key test', async (_name, response) => {
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
     vi.mocked(nvidiaKeysApi.test).mockResolvedValue(response as never)
     const wrapper = mount(NvidiaKeysView)
@@ -120,7 +126,7 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="key-card-test"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('NVIDIA Key 测试失败')
+    expect(hasErrorToast('NVIDIA Key 测试失败')).toBe(true)
     expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })
@@ -146,7 +152,7 @@ describe('NvidiaKeysView', () => {
   it.each([
     ['a null data field', { data: null }],
     ['an invalid result item', { data: [{ id: null, status: 'ok' }] }],
-  ])('shows an error and keeps the dialog closed for %s from test-all', async (_name, response) => {
+  ])('shows an error toast and keeps the dialog closed for %s from test-all', async (_name, response) => {
     vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [makeKey()] })
     vi.mocked(nvidiaKeysApi.testAll).mockResolvedValue(response as never)
     const wrapper = mount(NvidiaKeysView)
@@ -155,7 +161,7 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="test-all-keys"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('批量测活失败')
+    expect(hasErrorToast('批量测活失败')).toBe(true)
     expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })

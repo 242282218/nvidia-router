@@ -73,8 +73,8 @@ describe('ProxyPoolView', () => {
       total_size: 2,
       healthy_size: 1,
       proxies: [
-        { address: '10.0.0.1:8080', latency_ewma_ms: 150, remaining_seconds: 95, healthy: true, ejected: false, success_count: 8, failure_count: 0 },
-        { address: '10.0.0.2:8080', latency_ewma_ms: 900, remaining_seconds: 30, healthy: false, ejected: true, success_count: 1, failure_count: 4 },
+        { address: '10.0.0.1:8080', latency_ewma_ms: 150, remaining_seconds: 95, healthy: true, ejected: false, success_count: 8, failure_count: 0, http_fail_count: 0 },
+        { address: '10.0.0.2:8080', latency_ewma_ms: 900, remaining_seconds: 30, healthy: false, ejected: true, success_count: 1, failure_count: 4, http_fail_count: 2 },
       ],
     } })
     const wrapper = mount(ProxyPoolView)
@@ -84,5 +84,7 @@ describe('ProxyPoolView', () => {
     expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.1:8080')
     expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.2:8080')
     expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('150 ms')
+    // The throttled exit shows its consecutive HTTP-failure pattern.
+    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('限流信号 ×2')
   })
 })

@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { toastError, toastInfo, toastSuccess } from '../../shared/toast'
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
 import KeyCards from './KeyCards.vue'
@@ -14,7 +15,10 @@ const keys = ref<NVIDIAKey[]>([])
 const singleKey = ref('')
 const singleResult = ref<ImportResult | null>(null)
 const testResults = ref<KeyTestResult[]>([])
-const errorMessage = ref('')
+// importError belongs to the single-import form only; every other operation
+// reports through the global toast host so an error never renders next to an
+// unrelated form.
+const importError = ref('')
 const submitting = ref(false)
 const loading = ref(false)
 const testingAll = ref(false)
@@ -34,6 +38,10 @@ onBeforeUnmount(() => {
   loadSequence += 1
 })
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback
+}
+
 async function loadKeys(): Promise<void> {
   if (disposed) return
   const sequence = ++loadSequence
@@ -45,10 +53,9 @@ async function loadKeys(): Promise<void> {
       throw new TypeError('Invalid NVIDIA Key list response.')
     }
     keys.value = response.data
-    errorMessage.value = ''
   } catch (error) {
     if (disposed || sequence !== loadSequence) return
-    errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 列表加载失败。'
+    toastError(errorMessage(error, 'NVIDIA Key 列表加载失败。'))
   } finally {
     if (!disposed && sequence === loadSequence) loading.value = false
   }
@@ -82,9 +89,9 @@ async function importOne(): Promise<void> {
   const value = singleKey.value
   singleKey.value = ''
   singleResult.value = null
-  errorMessage.value = ''
+  importError.value = ''
   if (!value.trim()) {
-    errorMessage.value = '请输入 NVIDIA Key。'
+    importError.value = '请输入 NVIDIA Key。'
     return
   }
   submitting.value = true
@@ -98,7 +105,7 @@ async function importOne(): Promise<void> {
     await loadKeys()
   } catch (error) {
     if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 导入失败。'
+    importError.value = errorMessage(error, 'NVIDIA Key 导入失败。')
   } finally {
     if (!disposed) submitting.value = false
   }
@@ -106,14 +113,14 @@ async function importOne(): Promise<void> {
 
 async function toggleKey(key: NVIDIAKey): Promise<void> {
   busyId.value = key.id
-  errorMessage.value = ''
   try {
     await nvidiaKeysApi.setEnabled(key.id, !key.enabled)
     if (disposed) return
     await loadKeys()
+    toastSuccess(`NVIDIA Key ${key.enabled ? '已停用' : '已启用'}。`)
   } catch (error) {
     if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : '更新 NVIDIA Key 状态失败。'
+    toastError(errorMessage(error, '更新 NVIDIA Key 状态失败。'))
   } finally {
     if (!disposed) busyId.value = null
   }
@@ -121,7 +128,6 @@ async function toggleKey(key: NVIDIAKey): Promise<void> {
 
 async function testKey(key: NVIDIAKey): Promise<void> {
   busyId.value = key.id
-  errorMessage.value = ''
   try {
     const result: unknown = await nvidiaKeysApi.test(key.id)
     if (disposed) return
@@ -133,7 +139,7 @@ async function testKey(key: NVIDIAKey): Promise<void> {
     await loadKeys()
   } catch (error) {
     if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : 'NVIDIA Key 测试失败。'
+    toastError(errorMessage(error, 'NVIDIA Key 测试失败。'))
   } finally {
     if (!disposed) busyId.value = null
   }
@@ -141,7 +147,6 @@ async function testKey(key: NVIDIAKey): Promise<void> {
 
 async function testAll(): Promise<void> {
   if (testingAll.value) return
-  errorMessage.value = ''
   testingAll.value = true
   try {
     const response: unknown = await nvidiaKeysApi.testAll()
@@ -150,11 +155,15 @@ async function testAll(): Promise<void> {
       throw new TypeError('Invalid NVIDIA Key test-all response.')
     }
     testResults.value = response.data
-    testDialogOpen.value = response.data.length > 0
+    if (response.data.length === 0) {
+      toastInfo('测活完成，没有异常 Key。')
+    } else {
+      testDialogOpen.value = true
+    }
     await loadKeys()
   } catch (error) {
     if (disposed) return
-    errorMessage.value = error instanceof ApiError ? error.message : '批量测活失败。'
+    toastError(errorMessage(error, '批量测活失败。'))
   } finally {
     if (!disposed) testingAll.value = false
   }
@@ -167,14 +176,14 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
   if (confirmingId.value === key.id) {
     confirmingId.value = null
     busyId.value = key.id
-    errorMessage.value = ''
     try {
       await nvidiaKeysApi.remove(key.id)
       if (disposed) return
       await loadKeys()
+      toastSuccess(`NVIDIA Key ${key.masked} 已删除。`)
     } catch (error) {
       if (disposed) return
-      errorMessage.value = error instanceof ApiError ? error.message : '删除 NVIDIA Key 失败。'
+      toastError(errorMessage(error, '删除 NVIDIA Key 失败。'))
     } finally {
       if (!disposed) busyId.value = null
     }
@@ -312,11 +321,11 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
         </Transition>
         <Transition name="fade">
           <p
-            v-if="errorMessage"
+            v-if="importError"
             class="mt-3 text-sm text-[#F87171]"
             role="alert"
           >
-            {{ errorMessage }}
+            {{ importError }}
           </p>
         </Transition>
       </div>

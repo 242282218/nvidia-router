@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { toastError, toastSuccess } from '../../shared/toast'
 import { modelsApi } from './api'
 import ModelCards from './ModelCards.vue'
 import ModelTable from './ModelTable.vue'
@@ -139,9 +140,11 @@ async function toggleModel(model: Model): Promise<void> {
       throw new TypeError('Invalid model patch response.')
     }
     replaceModel(updated)
+    toastSuccess(`模型「${updated.display_name}」已${updated.enabled ? '启用' : '停用'}。`)
   } catch (error) {
     if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '更新模型状态失败。'
+    toastError(errorMessage.value)
   } finally {
     if (!disposed) busyId.value = null
   }
@@ -154,9 +157,11 @@ async function unblockModel(keyId: number, model: Model): Promise<void> {
     await modelsApi.unblock(keyId, model.id)
     if (disposed) return
     await loadModels()
+    toastSuccess(`模型「${model.display_name}」已解除阻断。`)
   } catch (error) {
     if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '模型 block 恢复失败。'
+    toastError(errorMessage.value)
   } finally {
     if (!disposed) busyId.value = null
   }
@@ -180,9 +185,11 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
       throw new TypeError('Invalid model patch response.')
     }
     replaceModel(updated)
+    toastSuccess(`模型「${updated.display_name}」单价已更新。`)
   } catch (error) {
     if (disposed) return
     errorMessage.value = error instanceof ApiError ? error.message : '保存模型单价失败。'
+    toastError(errorMessage.value)
   } finally {
     if (!disposed) busyId.value = null
   }
