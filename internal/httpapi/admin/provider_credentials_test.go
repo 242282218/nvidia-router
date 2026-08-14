@@ -101,6 +101,20 @@ func TestProviderCreateRejectsUnsafeBaseURL(t *testing.T) {
 	}
 }
 
+func TestProviderCreateRejectsInvalidPort(t *testing.T) {
+	handler := NewProviderCredentials(&fakeProviderStore{})
+	for _, baseURL := range []string{
+		"https://api.example.test:0/v1",
+		"https://api.example.test:65536/v1",
+		"https://api.example.test:999999999999999999999999/v1",
+	} {
+		response := performAdminRequest(handler, http.MethodPost, "/admin/api/providers", `{"name":"fixture","base_url":"`+baseURL+`","key":"fixture-provider-key"}`)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid port URL %q status=%d body=%s", baseURL, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestProviderEnableRejectsUnsupportedRuntime(t *testing.T) {
 	store := &fakeProviderStore{}
 	handler := NewProviderCredentials(store)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"nvidia-router/internal/providercredential"
@@ -152,5 +153,14 @@ func validProviderBaseURL(value string) bool {
 		return false
 	}
 	scheme := strings.ToLower(parsed.Scheme)
-	return scheme == "http" || scheme == "https"
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if port := parsed.Port(); port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return false
+		}
+	}
+	return true
 }
