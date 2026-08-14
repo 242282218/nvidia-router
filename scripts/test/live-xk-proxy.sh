@@ -15,7 +15,7 @@ if [[ -z "$live_key" ]]; then
     printf 'key file is missing or unreadable\n' >&2
     exit 1
   fi
-  while IFS= read -r candidate; do
+  while IFS= read -r candidate || [[ -n "$candidate" ]]; do
     candidate="${candidate%$'\r'}"
     if [[ -n "$candidate" ]]; then
       live_key="$candidate"
