@@ -166,6 +166,12 @@ func (c *Collector) Refresh(ctx context.Context) error {
 		return errors.New("proxy collector is closed")
 	}
 	if !c.fetchSingleFlight(ctx) {
+		c.mu.Lock()
+		closed = c.closed
+		c.mu.Unlock()
+		if closed {
+			return errors.New("proxy collector is closed")
+		}
 		if err := c.LastError(); err != nil {
 			return err
 		}
@@ -175,6 +181,15 @@ func (c *Collector) Refresh(ctx context.Context) error {
 }
 
 func (c *Collector) fetchSingleFlight(ctx context.Context) bool {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return false
+	}
+	c.wg.Add(1)
+	c.mu.Unlock()
+	defer c.wg.Done()
+
 	c.fetchMu.Lock()
 	defer c.fetchMu.Unlock()
 	return c.fetch(ctx)

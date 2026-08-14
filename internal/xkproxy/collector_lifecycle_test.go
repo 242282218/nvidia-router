@@ -44,6 +44,57 @@ func TestCollectorStartIdempotentAndCloseSafe(t *testing.T) {
 	cancel()
 }
 
+func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	release := func() {
+		select {
+		case <-releaseUpstream:
+		default:
+			close(releaseUpstream)
+		}
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseUpstream
+	}))
+	defer upstream.Close()
+	defer release()
+
+	collector := NewCollector(CollectorConfig{
+		UpstreamURL:     upstream.URL,
+		UpstreamTimeout: time.Second,
+		Interval:        time.Hour,
+		ProxyTTL:        time.Minute,
+		Concurrency:     1,
+	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	refreshDone := make(chan error, 1)
+	go func() { refreshDone <- collector.Refresh(context.Background()) }()
+	<-requestStarted
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- collector.Close() }()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the manual refresh exited: %v", err)
+	case <-time.After(time.Second):
+	}
+
+	release()
+	if err := <-refreshDone; err == nil {
+		t.Fatal("Refresh unexpectedly succeeded with an empty upstream response")
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close after refresh: %v", err)
+	}
+
+	if err := collector.Refresh(context.Background()); err == nil || err.Error() != "proxy collector is closed" {
+		t.Fatalf("Refresh after Close error = %v, want proxy collector is closed", err)
+	}
+}
+
 // TestCollectorNormalizesZeroConcurrency proves a zero/negative Concurrency
 // config cannot hang every validation goroutine on an empty semaphore.
 func TestCollectorNormalizesZeroConcurrency(t *testing.T) {
