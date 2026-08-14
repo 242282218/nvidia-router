@@ -304,8 +304,25 @@ func TestDeploymentScriptsUseRuntimeImageAndSafeBaseline(t *testing.T) {
 	if strings.Contains(rollback, "|| true") || strings.Contains(rollback, "18081") {
 		t.Fatal("rollback script still swallows errors or probes the removed pool port")
 	}
+	if !strings.Contains(deploy, "db backup --output") || !strings.Contains(deploy, "if [[ -n \"$data_volume\" ]]") {
+		t.Fatal("deploy script does not use the locked CLI backup or skip an absent data volume")
+	}
+	if strings.Contains(deploy, "tar czf") {
+		t.Fatal("deploy script copies a live SQLite volume instead of using the CLI backup")
+	}
+	if !strings.Contains(rollback, "router.db") || strings.Contains(rollback, "data.tar.gz") {
+		t.Fatal("rollback script does not restore the CLI database backup")
+	}
+	stopIndex := strings.Index(rollback, "stop app")
+	restoreIndex := strings.Index(rollback, "rm -f /data/router.db")
+	if stopIndex < 0 || restoreIndex < 0 || stopIndex > restoreIndex {
+		t.Fatal("rollback script restores the data volume before stopping app")
+	}
 	if strings.Contains(litestream, "restore") {
 		t.Fatal("Litestream baseline must not call restore")
+	}
+	if !strings.Contains(litestream, "docker inspect") || !strings.Contains(litestream, "State.Running") {
+		t.Fatal("Litestream baseline does not verify that replicate is running")
 	}
 }
 

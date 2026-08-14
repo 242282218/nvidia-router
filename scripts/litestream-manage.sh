@@ -47,7 +47,18 @@ baseline)
 	: "${LITESTREAM_REPLICA_URL:?LITESTREAM_REPLICA_URL must be set}"
 	echo "Starting Litestream replication baseline..."
 	switch up -d litestream
-	switch ps litestream
+	container_id="$(switch ps -q litestream)"
+	if [[ -z "$container_id" ]]; then
+		echo "error: Litestream container was not created" >&2
+		exit 1
+	fi
+	running="$(docker inspect --format '{{.State.Running}}' "$container_id")"
+	if [[ "$running" != "true" ]]; then
+		status="$(docker inspect --format '{{.State.Status}}' "$container_id")"
+		echo "error: Litestream container is not running (status=$status)" >&2
+		exit 1
+	fi
+	echo "Litestream replicate is running."
 	;;
 *)
 	echo "usage: $0 {up|down|status|log|baseline}" >&2
