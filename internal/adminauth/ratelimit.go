@@ -14,6 +14,7 @@ const (
 	loginWindow        = time.Minute
 	loginAttemptLimit  = 5
 	loginStateLifetime = 24 * time.Hour
+	maxLoginStates     = 10_000
 )
 
 var ErrLoginRateLimited = errors.New("login rate limited")
@@ -44,18 +45,22 @@ func NewLoginLimiter(source clock.Clock) *LoginLimiter {
 	}
 }
 
-func (l *LoginLimiter) StartAttempt(ip string) error {
+func (l *LoginLimiter) StartAttempt(ip string, accountKeys ...string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock.Now()
 	l.cleanInactive(now)
-	state := l.state(ip, now)
-	state.attempts = keepWindowAttempts(state.attempts, now)
-	l.touch(state, now)
-	if len(state.attempts) >= loginAttemptLimit {
-		return ErrLoginRateLimited
+	if err := l.startAttempt(ip, now); err != nil {
+		return err
 	}
-	state.attempts = append(state.attempts, now)
+	for _, accountKey := range accountKeys {
+		if accountKey == "" || accountKey == ip {
+			continue
+		}
+		if err := l.startAttempt(accountKey, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -92,11 +97,25 @@ func (l *LoginLimiter) RecordSuccess(ip string) {
 func (l *LoginLimiter) state(ip string, now time.Time) *loginState {
 	state := l.states[ip]
 	if state == nil {
+		if len(l.states) >= maxLoginStates {
+			l.remove(l.expirationOrder.Front().Value.(*loginState))
+		}
 		state = &loginState{ip: ip, lastUsed: now}
 		state.expirationEntry = l.expirationOrder.PushBack(state)
 		l.states[ip] = state
 	}
 	return state
+}
+
+func (l *LoginLimiter) startAttempt(ip string, now time.Time) error {
+	state := l.state(ip, now)
+	state.attempts = keepWindowAttempts(state.attempts, now)
+	l.touch(state, now)
+	if len(state.attempts) >= loginAttemptLimit {
+		return ErrLoginRateLimited
+	}
+	state.attempts = append(state.attempts, now)
+	return nil
 }
 
 func (l *LoginLimiter) cleanInactive(now time.Time) {

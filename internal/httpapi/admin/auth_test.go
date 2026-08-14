@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,11 +67,22 @@ func TestAuthLoginRateLimitIsScopedPerUserAndAddress(t *testing.T) {
 	rateLimited := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin","password":"wrong"}`, nil, sameOrigin)
 	assertAPIError(t, rateLimited, http.StatusTooManyRequests, "rate_limit_exceeded")
 
-	// A different username from the same address must not share the exhausted
-	// bucket; otherwise one user's failures would lock out everyone behind a
-	// shared proxy.
+	// The IP bucket protects the expensive verifier even when usernames rotate.
 	otherUser := fixture.request(http.MethodPost, "/admin/api/auth/login", `{"username":"admin2","password":"wrong"}`, nil, sameOrigin)
-	assertAPIError(t, otherUser, http.StatusUnauthorized, "invalid_credentials")
+	assertAPIError(t, otherUser, http.StatusTooManyRequests, "rate_limit_exceeded")
+}
+
+func TestLoginLimiterIPBucketRejectsRotatedUsernames(t *testing.T) {
+	fixture := newAuthFixture(t)
+	for attempt := 0; attempt < 5; attempt++ {
+		body := `{"username":"rotated-` + strconv.Itoa(attempt) + `","password":"wrong"}`
+		response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
+		assertAPIError(t, response, http.StatusUnauthorized, "invalid_credentials")
+	}
+
+	body := `{"username":"rotated-final","password":"wrong"}`
+	response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
+	assertAPIError(t, response, http.StatusTooManyRequests, "rate_limit_exceeded")
 }
 
 func TestAuthLoginRateLimitScopesByForwardedClientIP(t *testing.T) {
@@ -128,6 +140,19 @@ func TestAuthLoginRateLimitScopesByForwardedClientIP(t *testing.T) {
 	// The same spoofed header from a different untrusted peer still hits its
 	// own bucket (keyed on the socket address, not the spoofed header).
 	assertAPIError(t, login("admin", "192.0.2.100:1234", "203.0.113.200"), http.StatusUnauthorized, "invalid_credentials")
+}
+
+func TestAuthMalformedLoginConsumesIPAttempt(t *testing.T) {
+	fixture := newAuthFixture(t)
+	for attempt := 0; attempt < 5; attempt++ {
+		body := `{"username":"rotated-` + strconv.Itoa(attempt) + `","password":`
+		response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
+		assertAPIError(t, response, http.StatusBadRequest, "invalid_request")
+	}
+
+	body := `{"username":"rotated-final","password":`
+	response := fixture.request(http.MethodPost, "/admin/api/auth/login", body, nil, sameOrigin)
+	assertAPIError(t, response, http.StatusTooManyRequests, "rate_limit_exceeded")
 }
 
 func TestAuthChangePasswordRotatesSessionAndLogoutRevokeAll(t *testing.T) {

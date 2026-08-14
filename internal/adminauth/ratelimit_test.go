@@ -157,6 +157,19 @@ func TestLoginRateLimiterCleansInactiveState(t *testing.T) {
 	}
 }
 
+func TestLoginLimiterStateHasBoundedCardinality(t *testing.T) {
+	limiter := NewLoginLimiter(newLimiterClock(time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)))
+	const maxStates = 10_000
+	for attempt := range maxStates + 100 {
+		if err := limiter.StartAttempt("192.0.2." + strconv.Itoa(attempt)); err != nil {
+			t.Fatalf("StartAttempt %d: %v", attempt, err)
+		}
+	}
+	if got := limiter.stateCount(); got > maxStates {
+		t.Fatalf("limiter state count = %d, want <= %d", got, maxStates)
+	}
+}
+
 func TestLoginRateLimiterExpirationOrderFollowsLastUse(t *testing.T) {
 	start := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
 	testClock := newLimiterClock(start)

@@ -3,6 +3,7 @@ package adminaudit
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"nvidia-router/internal/adminauth"
 )
@@ -11,11 +12,15 @@ import (
 // interface. Missing principal (unauthenticated requests) is recorded with a
 // nil session ID so auth-failure attempts still leave a trail.
 type Recorder struct {
-	repository *Repository
-	logger     *slog.Logger
+	repository interface {
+		Insert(context.Context, Entry) (int64, error)
+	}
+	logger *slog.Logger
 }
 
-func NewRecorder(repository *Repository, logger *slog.Logger) *Recorder {
+func NewRecorder(repository interface {
+	Insert(context.Context, Entry) (int64, error)
+}, logger *slog.Logger) *Recorder {
 	return &Recorder{repository: repository, logger: logger}
 }
 
@@ -23,6 +28,8 @@ func NewRecorder(repository *Repository, logger *slog.Logger) *Recorder {
 // Insert failures are logged and swallowed — the admin action has already
 // happened and must not be rolled back because its audit write failed.
 func (r *Recorder) Record(ctx context.Context, action, targetType, targetID string, detail map[string]any) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	entry := Entry{
 		Action:     action,
 		TargetType: targetType,
@@ -33,7 +40,7 @@ func (r *Recorder) Record(ctx context.Context, action, targetType, targetID stri
 		entry.SessionID = &principal.SessionID
 		entry.ClientIP = principal.ClientIP
 	}
-	if _, err := r.repository.Insert(ctx, entry); err != nil {
+	if _, err := r.repository.Insert(writeCtx, entry); err != nil {
 		r.logger.Error("admin audit insert failed", "action", action, "target_type", targetType, "error", err)
 	}
 }

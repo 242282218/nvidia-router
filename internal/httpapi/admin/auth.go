@@ -162,12 +162,16 @@ func (a *Auth) login(writer http.ResponseWriter, request *http.Request) {
 
 	var input loginRequest
 	if err := decodeJSON(writer, request, &input); err != nil {
-		a.recordLoginFailure(request.Context(), loginLimiterKey(input.Username, ip))
+		if limitErr := a.limiter.StartAttempt(ip); limitErr != nil {
+			writeRateLimit(writer)
+			return
+		}
+		a.recordLoginFailure(request.Context(), ip)
 		writeInvalidRequest(writer, "The login request is invalid.", err)
 		return
 	}
 	key := loginLimiterKey(input.Username, ip)
-	if err := a.limiter.StartAttempt(key); err != nil {
+	if err := a.limiter.StartAttempt(ip, key); err != nil {
 		writeRateLimit(writer)
 		return
 	}
@@ -194,6 +198,7 @@ func (a *Auth) login(writer http.ResponseWriter, request *http.Request) {
 		writeInternalError(writer, err)
 		return
 	}
+	a.limiter.RecordSuccess(ip)
 	a.limiter.RecordSuccess(key)
 	http.SetCookie(writer, a.sessions.MakeSessionCookie(created.Token))
 	writeSession(writer, mustChange)

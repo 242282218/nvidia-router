@@ -1,13 +1,50 @@
 package admin
 
-import "testing"
+import (
+	"context"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"nvidia-router/internal/adminaudit"
+	"nvidia-router/internal/adminauth"
+)
+
+func TestAuditRecordSurvivesRequestCancellation(t *testing.T) {
+	repository := &canceledAuditRepository{}
+	recorder := adminaudit.NewRecorder(repository, slog.Default())
+	handler := AuditMiddleware(recorder, []*net.IPNet{}, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/settings", nil)
+	request = request.WithContext(adminauth.ContextWithPrincipal(request.Context(), adminauth.Principal{SessionID: "session", ClientIP: "192.0.2.1"}))
+	ctx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(ctx)
+	cancel()
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if repository.ctxErr != nil {
+		t.Fatal(repository.ctxErr)
+	}
+}
+
+type canceledAuditRepository struct {
+	ctxErr error
+}
+
+func (r *canceledAuditRepository) Insert(ctx context.Context, _ adminaudit.Entry) (int64, error) {
+	r.ctxErr = ctx.Err()
+	return 1, nil
+}
 
 func TestClassifyAdminAction(t *testing.T) {
 	tests := []struct {
-		name string
-		path string
+		name   string
+		path   string
 		method string
-		want string
+		want   string
 	}{
 		{"nvidia key import", "/admin/api/nvidia-keys", "POST", "nvidia_keys.import"},
 		{"nvidia key list", "/admin/api/nvidia-keys", "GET", "nvidia_keys.get"},
@@ -40,9 +77,9 @@ func TestClassifyAdminAction(t *testing.T) {
 
 func TestAuditResourceAndTargetID(t *testing.T) {
 	tests := []struct {
-		path       string
-		resource   string
-		targetID   string
+		path     string
+		resource string
+		targetID string
 	}{
 		{"/admin/api/nvidia-keys", "nvidia-keys", ""},
 		{"/admin/api/nvidia-keys/12", "nvidia-keys", "12"},
