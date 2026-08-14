@@ -125,8 +125,10 @@ func TestChunkedBodyReadSucceedsWhenBudgetAllows(t *testing.T) {
 }
 
 func TestChunkedBodyReadRejectsByteAfterLimitAndReleasesLease(t *testing.T) {
-	limit := int64(8)
-	chunked := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("123456789"))
+	limit := bodyReadLimitForJSON()
+	chunked := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", io.MultiReader(
+		strings.NewReader(chunkedLimitFixture()), strings.NewReader("x"),
+	))
 	chunked.ContentLength = -1
 	before := inFlightBodyBytes.Load()
 
@@ -141,6 +143,39 @@ func TestChunkedBodyReadRejectsByteAfterLimitAndReleasesLease(t *testing.T) {
 	if got := inFlightBodyBytes.Load(); got != before {
 		t.Fatalf("in-flight bytes after oversized chunked body = %d, want %d", got, before)
 	}
+}
+
+func TestChunkedBodyReadAcceptsBodyExactlyAtLimit(t *testing.T) {
+	limit := bodyReadLimitForJSON()
+	payload := chunkedLimitFixture()
+	if int64(len(payload)) != limit {
+		t.Fatalf("fixture length = %d, want limit %d", len(payload), limit)
+	}
+	chunked := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	chunked.ContentLength = -1
+	before := inFlightBodyBytes.Load()
+
+	read, lease, err := readBodyWithLease(chunked, limit, time.Second)
+	if err != nil {
+		t.Fatalf("readBodyWithLease: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("exact-limit chunked body returned no lease")
+	}
+	if string(read) != payload {
+		t.Fatalf("read body length = %d, want %d", len(read), len(payload))
+	}
+	if got := inFlightBodyBytes.Load(); got != before+limit {
+		t.Fatalf("in-flight bytes before Release = %d, want %d", got, before+limit)
+	}
+	lease.Release()
+	if got := inFlightBodyBytes.Load(); got != before {
+		t.Fatalf("in-flight bytes after Release = %d, want %d", got, before)
+	}
+}
+
+func chunkedLimitFixture() string {
+	return strings.Repeat("x", int(bodyReadLimitForJSON()))
 }
 
 // panicReadCloser panics on the first read, simulating a body reader blowing

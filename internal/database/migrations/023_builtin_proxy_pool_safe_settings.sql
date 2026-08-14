@@ -6,7 +6,7 @@ CREATE TABLE proxy_pool_settings_safe (
   auth_key_ciphertext BLOB,
   pool_config TEXT NOT NULL DEFAULT '',
   version INTEGER NOT NULL DEFAULT 1,
-  key_version INTEGER NOT NULL DEFAULT 1,
+  key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version > 0),
   updated_at TEXT NOT NULL,
   CHECK ((auth_key_nonce IS NULL AND auth_key_ciphertext IS NULL)
       OR (auth_key_nonce IS NOT NULL AND auth_key_ciphertext IS NOT NULL)),

@@ -53,6 +53,9 @@ func TestMigration023PreservesLegacyProxySettings(t *testing.T) {
 	if string(nonce) != string([]byte{1}) || string(ciphertext) != string([]byte{2}) {
 		t.Fatalf("encrypted fields were not preserved")
 	}
+	if _, err := db.Exec("UPDATE proxy_pool_settings SET key_version = 0 WHERE id = 1"); err == nil {
+		t.Fatal("migrated proxy settings accepted invalid key_version")
+	}
 	if err := migrateFS(db, with023); err != nil {
 		t.Fatalf("idempotent migration: %v", err)
 	}
