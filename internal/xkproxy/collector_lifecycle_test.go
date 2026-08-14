@@ -97,8 +97,9 @@ func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
 
 	refreshResult := make(chan error, 1)
 	go func() {
-		defer close(upstream.refreshDone)
-		refreshResult <- collector.Refresh(context.Background())
+		err := collector.Refresh(context.Background())
+		close(upstream.refreshDone)
+		refreshResult <- err
 	}()
 	<-requestStarted
 
@@ -140,8 +141,9 @@ func TestCollectorConcurrentCloseWaitsForResources(t *testing.T) {
 
 	refreshResult := make(chan error, 1)
 	go func() {
-		defer close(upstream.refreshDone)
-		refreshResult <- collector.Refresh(context.Background())
+		err := collector.Refresh(context.Background())
+		close(upstream.refreshDone)
+		refreshResult <- err
 	}()
 	<-requestStarted
 
