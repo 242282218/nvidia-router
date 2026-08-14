@@ -318,6 +318,12 @@ func TestDeploymentScriptsUseRuntimeImageAndSafeBaseline(t *testing.T) {
 	if stopIndex < 0 || restoreIndex < 0 || stopIndex > restoreIndex {
 		t.Fatal("rollback script restores the data volume before stopping app")
 	}
+	if !strings.Contains(rollback, "com.docker.compose.service=litestream") || !strings.Contains(rollback, "docker stop") {
+		t.Fatal("rollback script does not stop a Litestream sidecar before restoring the data volume")
+	}
+	if !strings.Contains(rollback, "while IFS= read -r candidate") || !strings.Contains(rollback, "candidate/router.db") {
+		t.Fatal("rollback script does not search for the newest complete database backup")
+	}
 	if strings.Contains(litestream, "restore") {
 		t.Fatal("Litestream baseline must not call restore")
 	}
