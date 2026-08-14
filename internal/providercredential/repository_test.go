@@ -37,6 +37,9 @@ func TestCreateResolveRoundTrip(t *testing.T) {
 	if created.Name != "siliconflow" {
 		t.Fatalf("created name = %q", created.Name)
 	}
+	if created.Enabled {
+		t.Fatal("new provider credential is enabled; want disabled by default")
+	}
 	// Plaintext never persists.
 	var ciphertext string
 	if err := db.QueryRow("SELECT hex(ciphertext) FROM provider_credentials WHERE id = ?", created.ID).Scan(&ciphertext); err != nil {
@@ -46,6 +49,9 @@ func TestCreateResolveRoundTrip(t *testing.T) {
 		t.Fatal("database contains provider token plaintext")
 	}
 
+	if err := repo.SetEnabled(ctx, created.ID, true); err != nil {
+		t.Fatalf("SetEnabled(true): %v", err)
+	}
 	resolved, gotToken, err := repo.Resolve(ctx, "siliconflow")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -83,6 +89,25 @@ func TestCreateUpsertsByNameAndPreservesEnabled(t *testing.T) {
 	}
 	if list[0].BaseURL != "https://api.siliconflow.cn/v2" {
 		t.Fatalf("upsert base URL = %q, want v2", list[0].BaseURL)
+	}
+}
+
+func TestProviderUpsertReturnsConflictedRowID(t *testing.T) {
+	repo, _ := openCredentialRepo(t)
+	ctx := context.Background()
+	first, err := repo.Create(ctx, "fixture-provider", "https://api.example.test/v1", "fixture-provider-key-1")
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if _, err := repo.Create(ctx, "other-provider", "https://other.example.test/v1", "fixture-provider-key-2"); err != nil {
+		t.Fatalf("other Create: %v", err)
+	}
+	updated, err := repo.Create(ctx, "fixture-provider", "https://api.example.test/v2", "fixture-provider-key-3")
+	if err != nil {
+		t.Fatalf("conflicting Create: %v", err)
+	}
+	if updated.ID != first.ID {
+		t.Fatalf("upsert returned row ID %d, want conflicted row ID %d", updated.ID, first.ID)
 	}
 }
 

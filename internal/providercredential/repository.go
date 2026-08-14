@@ -60,11 +60,12 @@ func (r *Repository) Create(ctx context.Context, name, baseURL, token string) (P
 		return Provider{}, fmt.Errorf("encrypt provider credential: %w", err)
 	}
 	prefix, suffix := mask(token)
-	result, err := r.db.ExecContext(ctx, `
+	var id int64
+	err = r.db.QueryRowContext(ctx, `
 		INSERT INTO provider_credentials (
 			name, base_url, ciphertext, nonce, fingerprint,
-			display_prefix, display_suffix, key_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			display_prefix, display_suffix, enabled, key_version, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			base_url = excluded.base_url,
 			ciphertext = excluded.ciphertext,
@@ -73,19 +74,15 @@ func (r *Repository) Create(ctx context.Context, name, baseURL, token string) (P
 			display_prefix = excluded.display_prefix,
 			display_suffix = excluded.display_suffix,
 			key_version = excluded.key_version,
-			enabled = 1,
 			cooldown_until = NULL,
 			cooldown_level = 0,
 			consecutive_failures = 0,
 			updated_at = excluded.updated_at
-	`, name, baseURL, ciphertext, nonce, fingerprint, prefix, suffix, r.keys.ActiveVersion(), timestamp(now), timestamp(now))
+		RETURNING id
+	`, name, baseURL, ciphertext, nonce, fingerprint, prefix, suffix, r.keys.ActiveVersion(), timestamp(now), timestamp(now)).Scan(&id)
 	crypto.Zero(fingerprint)
 	if err != nil {
 		return Provider{}, fmt.Errorf("insert provider credential: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return Provider{}, fmt.Errorf("read provider credential id: %w", err)
 	}
 	row, err := r.Get(ctx, id)
 	if err != nil {

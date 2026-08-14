@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -86,6 +87,10 @@ func (h *ProviderCredentials) create(writer http.ResponseWriter, request *http.R
 		writeInvalidRequest(writer, "The provider base URL and key are required.", nil)
 		return
 	}
+	if !validProviderBaseURL(baseURL) {
+		writeInvalidRequest(writer, "The provider base URL must be an HTTP or HTTPS URL without credentials, query, or fragment.", nil)
+		return
+	}
 	created, err := h.store.Create(request.Context(), name, baseURL, key)
 	if err != nil {
 		writeInternalError(writer, err)
@@ -107,6 +112,10 @@ func (h *ProviderCredentials) setEnabled(writer http.ResponseWriter, request *ht
 		writeInvalidRequest(writer, "The provider update is invalid.", err)
 		return
 	}
+	if input.Enabled {
+		writeAdminError(writer, http.StatusBadRequest, "provider_runtime_unsupported", "This provider is not connected to the running provider runtime.", nil)
+		return
+	}
 	if err := h.store.SetEnabled(request.Context(), id, input.Enabled); err != nil {
 		if err == providercredential.ErrNotFound {
 			writeAdminError(writer, http.StatusNotFound, "provider_not_found", "The provider credential was not found.", err)
@@ -122,7 +131,7 @@ func toProviderDTO(item providercredential.Provider) providerDTO {
 	return providerDTO{
 		ID: item.ID, Name: item.Name, BaseURL: item.BaseURL,
 		DisplayPrefix: item.DisplayPrefix, DisplaySuffix: item.DisplaySuffix,
-		Enabled: item.Enabled,
+		Enabled:   item.Enabled,
 		CreatedAt: item.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt: item.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 	}
@@ -132,4 +141,16 @@ var providerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 func validProviderName(name string) bool {
 	return providerNamePattern.MatchString(name)
+}
+
+func validProviderBaseURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.Hostname() == "" {
+		return false
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }

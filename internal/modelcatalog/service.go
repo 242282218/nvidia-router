@@ -114,6 +114,9 @@ func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (Model, erro
 }
 
 func (s *Service) PatchResult(ctx context.Context, id int64, patch Patch) (Model, Kind, error) {
+	if patch.Provider != nil && *patch.Provider != "nvidia" {
+		return Model{}, "", fmt.Errorf("%w: provider must be nvidia", ErrInvalidModelSelection)
+	}
 	model, previousKind, err := s.repository.Patch(ctx, id, patch, s.clock.Now())
 	if err != nil {
 		return Model{}, "", fmt.Errorf("save model patch: %w", err)

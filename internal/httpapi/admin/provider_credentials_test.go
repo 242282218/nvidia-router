@@ -19,7 +19,7 @@ func (f *fakeProviderStore) List(context.Context) ([]providercredential.Provider
 	return append([]providercredential.Provider(nil), f.items...), nil
 }
 func (f *fakeProviderStore) Create(_ context.Context, name, baseURL, key string) (providercredential.Provider, error) {
-	f.created = providercredential.Provider{ID: 3, Name: name, BaseURL: baseURL, DisplayPrefix: key[:4], Enabled: true}
+	f.created = providercredential.Provider{ID: 3, Name: name, BaseURL: baseURL, DisplayPrefix: key[:4], Enabled: false}
 	return f.created, nil
 }
 func (f *fakeProviderStore) SetEnabled(_ context.Context, id int64, enabled bool) error {
@@ -82,5 +82,33 @@ func TestProviderCredentialsRejectsBadInput(t *testing.T) {
 		if validProviderName(name) {
 			t.Fatalf("invalid name %q accepted", name)
 		}
+	}
+}
+
+func TestProviderCreateRejectsUnsafeBaseURL(t *testing.T) {
+	handler := NewProviderCredentials(&fakeProviderStore{})
+	for _, baseURL := range []string{
+		"ftp://api.example.test/v1",
+		"https://user:password@api.example.test/v1",
+		"https://api.example.test/v1?token=fixture",
+		"https://api.example.test/v1#fragment",
+		"https:///v1",
+	} {
+		response := performAdminRequest(handler, http.MethodPost, "/admin/api/providers", `{"name":"fixture","base_url":"`+baseURL+`","key":"fixture-provider-key"}`)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("unsafe base URL %q status=%d body=%s", baseURL, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestProviderEnableRejectsUnsupportedRuntime(t *testing.T) {
+	store := &fakeProviderStore{}
+	handler := NewProviderCredentials(store)
+	response := performAdminRequest(handler, http.MethodPatch, "/admin/api/providers/7", `{"enabled":true}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported provider enable status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, called := store.enabled[7]; called {
+		t.Fatal("unsupported provider was passed to the store")
 	}
 }

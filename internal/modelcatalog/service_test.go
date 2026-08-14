@@ -33,6 +33,20 @@ func TestSaveSelectionRejectsInvalidModelFields(t *testing.T) {
 	}
 }
 
+func TestModelPatchRejectsOpenAICompatibleProvider(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "provider-gate", UpstreamID: "vendor/provider-gate", DisplayName: "Provider gate", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	provider := "openai_compatible"
+	if _, err := service.Patch(context.Background(), result.Models[0].ID, Patch{Provider: &provider}); !errors.Is(err, ErrInvalidModelSelection) {
+		t.Fatalf("Patch provider error = %v, want ErrInvalidModelSelection", err)
+	}
+}
+
 func TestPatchRejectsInvalidModelSelectionSentinel(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
