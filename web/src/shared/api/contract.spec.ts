@@ -184,6 +184,7 @@ const proxyPoolSettings = object({
   proxy_url: scalar('string'),
   auth_configured: scalar('boolean'),
   source: scalar('string'),
+  max_latency: scalar('string'),
 })
 
 const runtimeSummary = object({

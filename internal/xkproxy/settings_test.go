@@ -3,6 +3,7 @@ package xkproxy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -142,6 +143,45 @@ func TestSettingsServicePoolModeBuildsCollectorManager(t *testing.T) {
 	}
 	if !switcher.Configured() {
 		t.Fatal("pool mode switcher should be configured")
+	}
+}
+
+func TestSettingsServiceSnapshotIncludesEmptyMaxLatency(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, &CollectorConfig{
+		UpstreamURL: "https://api.example.test/XApi?apikey=fixture", ValidationURL: "https://validate.example.test",
+		ValidationStatus: 200, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: 10 * time.Second, ProxyTTL: 20 * time.Second, ExpectedQty: 2, Concurrency: 2,
+	}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	snapshot, err := service.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"max_latency":""`) {
+		t.Fatalf("snapshot JSON = %s, want empty max_latency field", data)
+	}
+}
+
+func TestUpstreamURLWithQuantityOverridesExistingQuantity(t *testing.T) {
+	got := upstreamURLWithQuantity("https://api.example.test/XApi?apikey=fixture&qty=1", 7)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if parsed.Query().Get("qty") != "7" {
+		t.Fatalf("upstream qty = %q, want 7", parsed.Query().Get("qty"))
 	}
 }
 

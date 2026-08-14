@@ -89,6 +89,19 @@ describe('ProxyPoolView', () => {
     expect(wrapper.text()).toContain('配置已保存')
   })
 
+  it('saves successfully when max latency is absent from the snapshot', async () => {
+    const settingsWithoutMaxLatency = { ...settings } as Omit<typeof settings, 'max_latency'> & { max_latency?: string }
+    delete settingsWithoutMaxLatency.max_latency
+    vi.mocked(proxyPoolApi.get).mockResolvedValueOnce({ data: settingsWithoutMaxLatency })
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(proxyPoolApi.update).toHaveBeenCalledWith(expect.objectContaining({ max_latency: '' }), expect.any(AbortSignal))
+  })
+
   it('runs one immediate collection and refreshes status', async () => {
     const wrapper = mount(ProxyPoolView)
     await flushPromises()

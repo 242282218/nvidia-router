@@ -62,7 +62,7 @@ function applySettings(next: ProxyPoolSettings): void {
   proxyTTL.value = next.proxy_ttl
   expectedQty.value = next.expected_qty
   concurrency.value = next.concurrency
-  maxLatency.value = next.max_latency
+	maxLatency.value = next.max_latency ?? ''
 }
 function sourceLabel(source?: ProxyPoolSettings['source']): string { return source === 'database' ? '数据库配置' : source === 'environment' ? '环境变量' : '未配置' }
 function poolLabel(): string { const status = statusData.value; if (!status?.configured) return '未配置'; if (status.healthy_size === 0) return '暂无可用出口'; return status.last_error_code ? `采集异常（${status.last_error_code}）` : '运行正常' }
@@ -70,7 +70,7 @@ function poolClass(): string { const status = statusData.value; return !status?.
 function formatTime(raw?: string): string { if (!raw) return '—'; const date = new Date(raw); return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString() }
 
 async function save(): Promise<void> {
-  const patch: ProxyPoolPatch = { enabled: enabled.value, validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: maxLatency.value.trim() }
+	const patch: ProxyPoolPatch = { enabled: enabled.value, validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: (maxLatency.value ?? '').trim() }
   const upstream = upstreamUrl.value.trim()
   if (upstream) patch.upstream_url = upstream
   await savePatch(patch)

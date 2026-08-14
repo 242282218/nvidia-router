@@ -107,10 +107,8 @@ func upstreamURLWithQuantity(rawURL string, quantity int) string {
 		return rawURL
 	}
 	query := parsed.Query()
-	if query.Get("qty") == "" {
-		query.Set("qty", fmt.Sprintf("%d", quantity))
-		parsed.RawQuery = query.Encode()
-	}
+	query.Set("qty", fmt.Sprintf("%d", quantity))
+	parsed.RawQuery = query.Encode()
 	return parsed.String()
 }
 

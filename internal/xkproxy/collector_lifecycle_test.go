@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -13,13 +14,33 @@ import (
 )
 
 type blockingCollectorUpstream struct {
-	t              *testing.T
-	requestStarted chan struct{}
-	release        chan struct{}
-	refreshDone    chan struct{}
-	resourceClosed chan struct{}
-	closeOnce      sync.Once
+	t               *testing.T
+	requestStarted  chan struct{}
+	release         chan struct{}
+	refreshDone     chan struct{}
+	resourceClosed  chan struct{}
+	closeOnce       sync.Once
 	refreshDoneOnce sync.Once
+}
+
+func TestNewCollectorUsesExpectedQtyInUpstreamURL(t *testing.T) {
+	collector := NewCollector(CollectorConfig{
+		UpstreamURL:     "https://api.example.test/XApi?apikey=fixture&qty=1",
+		UpstreamTimeout: time.Second,
+		ExpectedQty:     7,
+	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client, ok := collector.upstream.(*UpstreamClient)
+	if !ok {
+		t.Fatalf("collector upstream type = %T, want *UpstreamClient", collector.upstream)
+	}
+	parsed, err := url.Parse(client.URL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if parsed.Query().Get("qty") != "7" {
+		t.Fatalf("collector upstream qty = %q, want 7", parsed.Query().Get("qty"))
+	}
+	_ = collector.Close()
 }
 
 func (u *blockingCollectorUpstream) Fetch(ctx context.Context) ([]Proxy, time.Time, error) {

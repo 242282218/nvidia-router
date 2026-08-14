@@ -42,7 +42,7 @@ type Snapshot struct {
 	ValidationStatus   int    `json:"validation_status,omitempty"`
 	ExpectedQty        int    `json:"expected_qty,omitempty"`
 	Concurrency        int    `json:"concurrency,omitempty"`
-	MaxLatency         string `json:"max_latency,omitempty"`
+	MaxLatency         string `json:"max_latency"`
 }
 
 type ValidationError struct {

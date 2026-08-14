@@ -2,6 +2,7 @@
   "data": {
     "auth_configured": true,
     "enabled": true,
+    "max_latency": "",
     "proxy_url": "http://proxy-pool:8080",
     "source": "database"
   }

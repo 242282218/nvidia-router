@@ -15,7 +15,7 @@ export interface ProxyPoolSettings {
   validation_status: number
   expected_qty: number
   concurrency: number
-  max_latency: string
+  max_latency?: string
 }
 
 export interface ProxyPoolResponse {

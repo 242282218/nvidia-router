@@ -39,8 +39,8 @@ type Collector struct {
 	// lastFetchAt/lastSuccessAt track collector health for the admin status view:
 	// when the pool is empty the operator needs to see whether the upstream is
 	// unreachable or simply returned nothing (audit H10).
-	lastFetchAt    time.Time
-	lastSuccessAt  time.Time
+	lastFetchAt   time.Time
+	lastSuccessAt time.Time
 
 	// backoffLevel grows on consecutive upstream fetch failures and shrinks the
 	// fetch rate so a rate-limited or down upstream is not hammered on a fixed
@@ -62,12 +62,12 @@ type CollectorConfig struct {
 	// MaxLatency rejects a fetched proxy whose validation round-trip exceeds
 	// this window, keeping slow exits out of the pool even when every candidate
 	// is slow (audit H1). Zero disables the gate.
-	MaxLatency       time.Duration
-	Interval         time.Duration
-	ProxyTTL         time.Duration
-	ExpectedQty      int
-	Concurrency      int
-	EjectionPolicy   EjectionPolicy
+	MaxLatency     time.Duration
+	Interval       time.Duration
+	ProxyTTL       time.Duration
+	ExpectedQty    int
+	Concurrency    int
+	EjectionPolicy EjectionPolicy
 }
 
 func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collector {
@@ -86,7 +86,7 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 		cfg.Concurrency = 1
 	}
 	return &Collector{
-		upstream:       NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamTimeout),
+		upstream:       NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamTimeout, cfg.ExpectedQty),
 		validator:      NewValidatorWithMaxLatency(cfg.ValidationURL, cfg.ValidationStatus, cfg.ValidationTimeout, cfg.MaxLatency),
 		pool:           pool,
 		logger:         logger,
