@@ -468,9 +468,7 @@ func TestProxyWriteWatchdogInterruptsBlockedFlush(t *testing.T) {
 		done <- Proxy(context.Background(), writer, upstream, ProxyOptions{WriteIdleTimeout: 20 * time.Millisecond})
 	}()
 
-	select {
-	case <-writer.flushStarted:
-	}
+	<-writer.flushStarted
 	<-writer.flushReturned
 	err := <-done
 	if !errors.Is(err, ErrStreamWriteStalled) {

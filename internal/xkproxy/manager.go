@@ -473,7 +473,7 @@ func (m *Manager) PoolStatus() PoolStatus {
 		started := time.Now()
 		response, err := client.Get(healthURL.String())
 		if err == nil {
-			response.Body.Close()
+			_ = response.Body.Close()
 			status.Reachable = response.StatusCode == http.StatusOK
 			status.HealthLatencyMS = time.Since(started).Milliseconds()
 		}

@@ -180,34 +180,6 @@ func loadOriginConfig() (*url.URL, []*net.IPNet, error) {
 	return externalOrigin, trusted, nil
 }
 
-func loadXKProxyConfig() (*url.URL, string, error) {
-	const (
-		urlEnv  = "NVIDIA_ROUTER_XK_PROXY_URL"
-		authEnv = "NVIDIA_ROUTER_XK_PROXY_AUTH_KEY"
-	)
-	rawURL := strings.TrimSpace(os.Getenv(urlEnv))
-	authKey := os.Getenv(authEnv)
-	if rawURL == "" {
-		if authKey != "" {
-			return nil, "", proxyConfigError(authEnv, "requires NVIDIA_ROUTER_XK_PROXY_URL")
-		}
-		return nil, "", nil
-	}
-
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.ForceQuery || parsedURL.Fragment != "" || (parsedURL.Path != "" && parsedURL.Path != "/") {
-		return nil, "", proxyConfigError(urlEnv, "must be an absolute HTTP or HTTPS proxy URL without credentials, query, or fragment")
-	}
-	scheme := strings.ToLower(parsedURL.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return nil, "", proxyConfigError(urlEnv, "scheme must be http or https")
-	}
-	if strings.TrimSpace(authKey) == "" {
-		return nil, "", proxyConfigError(authEnv, "is required when NVIDIA_ROUTER_XK_PROXY_URL is set")
-	}
-	return parsedURL, authKey, nil
-}
-
 func proxyConfigError(name, reason string) error {
 	return fmt.Errorf("%s: %s", name, reason)
 }

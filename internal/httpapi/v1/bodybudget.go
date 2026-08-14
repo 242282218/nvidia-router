@@ -292,17 +292,14 @@ func (r *budgetReservingReadCloser) Read(p []byte) (int, error) {
 	// ceiling, and at one byte the charge either succeeds or the budget is
 	// genuinely exhausted.
 	maxLen := len(p)
-	for {
-		if r.lease.tryReserve(int64(maxLen)) {
-			break
-		}
+	for !r.lease.tryReserve(int64(maxLen)) {
 		maxLen /= 2
 		if maxLen == 0 {
 			return 0, errBodyBudgetExhausted
 		}
 	}
-		n, err := r.ReadCloser.Read(p[:maxLen])
-		r.lease.releaseReserved(int64(maxLen - n))
+	n, err := r.ReadCloser.Read(p[:maxLen])
+	r.lease.releaseReserved(int64(maxLen - n))
 	return n, err
 }
 
