@@ -12,13 +12,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/fault"
+	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
+	"nvidia-router/internal/pool"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
 )
@@ -35,6 +39,48 @@ func TestChatRejectsOversizedBody(t *testing.T) {
 	handler.ServeHTTP(response, request)
 
 	assertChatError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
+}
+
+func TestStreamWriteDeadlineUsesEarlierContextDeadline(t *testing.T) {
+	settings := &deadlineBudgetSettings{snapshot: runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, StreamFirstTokenTimeoutMS: 100,
+		StreamIdleTimeoutMS: 1000, RetryBudgetMS: 1000,
+	}}
+	keys := pool.New(settings, clock.RealClock{})
+	keys.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true}}, nil)
+	keys.SetModelEnabled(10, true)
+	attempt := router.NewAttempt(settings, keys, deadlineBudgetSecrets{}, deadlineBudgetStates{}, keys, clock.RealClock{})
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(50*time.Millisecond))
+	defer cancel()
+	result, err := attempt.Run(ctx, 10, true, func(context.Context, int64, []byte, *router.CommitState) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n"))}, nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer result.Release()
+	if got := streamWriteDeadline(result.Context); got >= 200*time.Millisecond {
+		t.Fatalf("write deadline = %s, want earlier context deadline", got)
+	}
+}
+
+type deadlineBudgetSettings struct{ snapshot runtimeconfig.Snapshot }
+
+func (s *deadlineBudgetSettings) Snapshot() runtimeconfig.Snapshot { return s.snapshot }
+
+type deadlineBudgetSecrets struct{}
+
+func (deadlineBudgetSecrets) WithSecret(_ context.Context, _ int64, callback func([]byte) error) error {
+	return callback(nil)
+}
+
+type deadlineBudgetStates struct{}
+
+func (deadlineBudgetStates) MarkSuccess(context.Context, int64) (keystate.KeySnapshot, error) {
+	return keystate.KeySnapshot{}, nil
+}
+func (deadlineBudgetStates) MarkFailure(context.Context, int64, int64, fault.Fault) (keystate.KeySnapshot, error) {
+	return keystate.KeySnapshot{}, nil
 }
 
 func TestChatRejectsBodyWhenReadSlotSaturated(t *testing.T) {

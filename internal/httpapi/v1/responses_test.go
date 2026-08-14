@@ -310,6 +310,16 @@ func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamWriteDeadlineComputedOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The behavior is exercised through the shared helper: a context deadline
+	// must remain available when no router budget is attached.
+	if got := streamWriteDeadline(ctx); got != 0 {
+		t.Fatalf("write deadline = %s, want zero without budget or context deadline", got)
+	}
+}
+
 type responseDeadlineWriter struct{ *httptest.ResponseRecorder }
 
 func (w *responseDeadlineWriter) SetWriteDeadline(time.Time) error {

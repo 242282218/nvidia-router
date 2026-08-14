@@ -267,7 +267,7 @@ func buildFailoverMatcher(spec string) fault.FailoverMatcher {
 
 func (a *Attempt) requestContext(ctx context.Context, budget Budget) (context.Context, context.CancelFunc) {
 	if budget.totalDeadline.IsZero() {
-		return ctx, func() {}
+		return context.WithCancel(ctx)
 	}
 	return context.WithDeadline(ctx, budget.totalDeadline)
 }

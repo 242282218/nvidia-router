@@ -154,9 +154,10 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		// event reaching the client (response.created or the first delta).
 		onFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
 	}
-	emitter.writeTimeout = streamWriteDeadline(ctx)
-	if idle := streamWriteDeadline(ctx); idle > 0 {
-		emitter.writeWatchdog = sse.NewWriteWatchdog(idle, func() { _ = upstream.Body.Close() })
+	writeTimeout := streamWriteDeadline(ctx)
+	emitter.writeTimeout = writeTimeout
+	if writeTimeout > 0 {
+		emitter.writeWatchdog = sse.NewWriteWatchdog(writeTimeout, func() { _ = upstream.Body.Close() })
 		defer emitter.writeWatchdog.Stop()
 	}
 	source := &chatDeltaSource{decoder: sse.NewDecoder(upstream.Body)}

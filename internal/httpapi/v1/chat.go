@@ -217,15 +217,19 @@ func streamWriteIdleTimeout(ctx context.Context) time.Duration {
 }
 
 func streamWriteDeadline(ctx context.Context) time.Duration {
-	if idle := streamWriteIdleTimeout(ctx); idle > 0 {
-		return idle
-	}
+	deadlineRemaining := time.Duration(0)
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
-			return remaining
+			deadlineRemaining = remaining
 		}
 	}
-	return 0
+	if idle := streamWriteIdleTimeout(ctx); idle > 0 {
+		if deadlineRemaining > 0 && deadlineRemaining < idle {
+			return deadlineRemaining
+		}
+		return idle
+	}
+	return deadlineRemaining
 }
 
 // applyModelTimeouts returns a context with per-model streaming timeout hints

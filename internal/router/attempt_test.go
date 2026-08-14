@@ -95,7 +95,7 @@ func TestAttemptResultCarriesStreamingBudgetContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer result.Release()
+	resultContext := result.Context
 	if result.Context == nil {
 		t.Fatal("AttemptResult.Context is nil")
 	}
@@ -104,6 +104,30 @@ func TestAttemptResultCarriesStreamingBudgetContext(t *testing.T) {
 	}
 	if _, ok := BudgetFromContext(result.Context); !ok {
 		t.Fatal("result context does not carry budget")
+	}
+	result.Release()
+	if resultContext.Err() != context.Canceled {
+		t.Fatalf("result context after Release = %v, want context.Canceled", resultContext.Err())
+	}
+}
+
+func TestAttemptFailureCancelsExecuteContext(t *testing.T) {
+	settings := &countingProvider{snapshot: runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, NonstreamTotalTimeoutMS: 500,
+	}}
+	keyPool := newAttemptPool(settings, 1)
+	states := newAttemptStateWriter(time.Now())
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
+	var executeContext context.Context
+	_, err := attempt.Run(context.Background(), 10, false, func(ctx context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		executeContext = ctx
+		return attemptResponse(http.StatusInternalServerError, ""), nil
+	})
+	if err == nil {
+		t.Fatal("Run returned nil for failed upstream")
+	}
+	if executeContext == nil || executeContext.Err() == nil {
+		t.Fatal("failed Attempt did not cancel execute context")
 	}
 }
 

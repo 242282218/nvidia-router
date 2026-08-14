@@ -130,6 +130,13 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			}
 			seenDone = true
 		}
+		// Set the deadline before any response body write, including the first
+		// WriteHeader and replayed comment/pending bytes. A ResponseController
+		// deadline is the only cancellable boundary available to synchronous
+		// ResponseWriter operations.
+		if err := SetWriteDeadline(writer, opts.WriteIdleTimeout); err != nil {
+			return err
+		}
 
 		if !firstDataWritten {
 			commitWriter := writer
@@ -144,9 +151,6 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			pending.Reset()
 		}
 
-		if err := SetWriteDeadline(writer, opts.WriteIdleTimeout); err != nil {
-			return err
-		}
 		if err := encoder.Encode(event); err != nil {
 			return fmt.Errorf("encode SSE event: %w", err)
 		}
@@ -203,6 +207,9 @@ func FlushWithDeadline(writer http.ResponseWriter, flusher http.Flusher, timeout
 	if err := SetWriteDeadline(writer, timeout); err != nil {
 		return err
 	}
+	// ResponseController documents that compliant writers make body writes
+	// return after the deadline. Keep Flush synchronous so there is no
+	// unbounded goroutine when a custom writer violates that contract.
 	started := time.Now()
 	flusher.Flush()
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Time{})

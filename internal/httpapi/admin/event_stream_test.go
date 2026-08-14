@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -43,13 +42,10 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	request := httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx)
-	response := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	response := &readyDeadlineRecorder{deadlineRecorder: deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}, ready: make(chan struct{})}
 
 	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		NewEventStream(hub).ServeHTTP(response, request)
 		close(done)
 	}()
@@ -60,14 +56,9 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 	// startup window, then cancel. The test verifies correct shutdown behavior
 	// and SSE headers; validating the exact replay content would require a
 	// thread-safe recorder or heavier instrumentation.
-	time.Sleep(100 * time.Millisecond)
+	<-response.ready
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stream handler did not return after client disconnect")
-	}
-	wg.Wait()
+	<-done
 
 	// Safe to read after handler exits.
 	if contentType := response.Header().Get("Content-Type"); contentType != "text/event-stream" {
@@ -99,32 +90,61 @@ func TestEventStreamRejectsConnectionWhenSubscriberLimitReached(t *testing.T) {
 	first := NewEventStream(hub, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	firstReady := make(chan struct{})
 	firstDone := make(chan struct{})
 	go func() {
-		first.ServeHTTP(&deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx))
+		first.ServeHTTP(&readyDeadlineRecorder{deadlineRecorder: deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}, ready: firstReady}, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx))
 		close(firstDone)
 	}()
-	select {
-	case <-firstDone:
-		t.Fatal("first subscriber ended before second connection")
-	case <-time.After(time.Second):
-	}
 	response := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	<-firstReady
 	first.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", response.Code)
 	}
 	cancel()
-	select {
-	case <-firstDone:
-	case <-time.After(time.Second):
-		t.Fatal("first subscriber did not clean up")
+	<-firstDone
+}
+
+func TestEventStreamUsesEarlierRequestDeadline(t *testing.T) {
+	hub := eventhub.New(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	writer := &recordingDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	NewEventStream(hub, 1).ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx))
+	if writer.firstDeadline.IsZero() || time.Until(writer.firstDeadline) > 200*time.Millisecond {
+		t.Fatalf("first write deadline = %v, want request deadline", writer.firstDeadline)
 	}
 }
 
 type deadlineRecorder struct{ *httptest.ResponseRecorder }
 
 func (*deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
+
+type recordingDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	firstDeadline time.Time
+}
+
+func (w *recordingDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && w.firstDeadline.IsZero() {
+		w.firstDeadline = deadline
+	}
+	return nil
+}
+
+type readyDeadlineRecorder struct {
+	deadlineRecorder
+	ready chan struct{}
+}
+
+func (w *readyDeadlineRecorder) Write(payload []byte) (int, error) {
+	select {
+	case w.ready <- struct{}{}:
+	default:
+	}
+	return w.ResponseRecorder.Write(payload)
+}
 
 func contains(haystack, needle string) bool {
 	for index := 0; index+len(needle) <= len(haystack); index++ {

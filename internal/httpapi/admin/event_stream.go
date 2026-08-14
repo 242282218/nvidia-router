@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -91,6 +92,11 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		http.Error(writer, "event stream subscriber limit reached", http.StatusServiceUnavailable)
 		return
 	}
+	ctx := request.Context()
+	if ctx.Err() != nil {
+		return
+	}
+	writeTimeout := eventStreamWriteTimeoutFor(ctx)
 
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
@@ -98,20 +104,19 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	writer.Header().Set("X-Accel-Buffering", "no")
 	// Heartbeat comment keeps intermediaries from idle-closing the stream while
 	// no request events are flowing.
-	if err := sse.SetWriteDeadline(writer, eventStreamWriteTimeout); err != nil {
+	if err := sse.SetWriteDeadline(writer, writeTimeout); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := writer.Write([]byte(": connected\n\n")); err != nil {
 		return
 	}
-	if err := sse.FlushWithDeadline(writer, flusher, eventStreamWriteTimeout); err != nil {
+	if err := sse.FlushWithDeadline(writer, flusher, writeTimeout); err != nil {
 		return
 	}
 
 	events, unsubscribe := h.hub.Subscribe()
 	defer unsubscribe()
-	ctx := request.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,17 +125,30 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 			if !ok {
 				return
 			}
-			if err := sse.SetWriteDeadline(writer, eventStreamWriteTimeout); err != nil {
+			if err := sse.SetWriteDeadline(writer, writeTimeout); err != nil {
 				return
 			}
 			if _, err := writer.Write([]byte(event.Serialized)); err != nil {
 				return
 			}
-			if err := sse.FlushWithDeadline(writer, flusher, eventStreamWriteTimeout); err != nil {
+			if err := sse.FlushWithDeadline(writer, flusher, writeTimeout); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func eventStreamWriteTimeoutFor(ctx context.Context) time.Duration {
+	const configured = eventStreamWriteTimeout
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return configured
+	}
+	remaining := time.Until(deadline)
+	if remaining > 0 && remaining < configured {
+		return remaining
+	}
+	return configured
 }
 
 // eventLine builds a single serialized SSE event: `data: <payload>\n\n`.

@@ -499,6 +499,74 @@ func TestFlushWithUnsupportedDeadlineDoesNotSpawnUnboundedFlush(t *testing.T) {
 	}
 }
 
+func TestFlushWithDeadlineHonorsResponseWriterContract(t *testing.T) {
+	writer := &deadlineAwareFlushWriter{}
+	err := FlushWithDeadline(writer, writer, 20*time.Millisecond)
+	if !errors.Is(err, ErrStreamWriteStalled) {
+		t.Fatalf("FlushWithDeadline error = %v, want ErrStreamWriteStalled", err)
+	}
+	if !writer.returnedAfterDeadline {
+		t.Fatal("Flush returned before the configured deadline")
+	}
+}
+
+func TestProxySetsDeadlineBeforeHeaderAndPendingWrite(t *testing.T) {
+	writer := &orderedDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+	upstream := &http.Response{Body: io.NopCloser(strings.NewReader(": comment\n\ndata: payload\n\ndata: [DONE]\n\n"))}
+	if err := Proxy(context.Background(), writer, upstream, ProxyOptions{WriteIdleTimeout: time.Second}); err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if writer.headerWithoutDeadline || writer.writeWithoutDeadline {
+		t.Fatalf("writer observed write before deadline: header=%v write=%v", writer.headerWithoutDeadline, writer.writeWithoutDeadline)
+	}
+}
+
+type orderedDeadlineWriter struct {
+	*httptest.ResponseRecorder
+	deadlineSet          bool
+	headerWithoutDeadline bool
+	writeWithoutDeadline bool
+}
+
+func (w *orderedDeadlineWriter) SetWriteDeadline(time.Time) error {
+	w.deadlineSet = true
+	return nil
+}
+
+func (w *orderedDeadlineWriter) WriteHeader(status int) {
+	if !w.deadlineSet {
+		w.headerWithoutDeadline = true
+	}
+	w.ResponseRecorder.WriteHeader(status)
+}
+
+func (w *orderedDeadlineWriter) Write(payload []byte) (int, error) {
+	if !w.deadlineSet {
+		w.writeWithoutDeadline = true
+		return 0, errors.New("write before deadline")
+	}
+	return w.ResponseRecorder.Write(payload)
+}
+
+type deadlineAwareFlushWriter struct {
+	*httptest.ResponseRecorder
+	deadline              time.Time
+	returnedAfterDeadline bool
+}
+
+func (w *deadlineAwareFlushWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}
+
+func (w *deadlineAwareFlushWriter) Flush() {
+	if !w.deadline.IsZero() {
+		timer := time.NewTimer(time.Until(w.deadline))
+		<-timer.C
+		w.returnedAfterDeadline = true
+	}
+}
+
 type unsupportedDeadlineWriter struct {
 	http.ResponseWriter
 	flushes int
