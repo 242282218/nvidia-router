@@ -50,12 +50,8 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for the handler to start and write the initial replay. Since
-	// httptest.ResponseRecorder is not thread-safe for concurrent access,
-	// we cannot poll the buffer. Instead, give the handler a reasonable
-	// startup window, then cancel. The test verifies correct shutdown behavior
-	// and SSE headers; validating the exact replay content would require a
-	// thread-safe recorder or heavier instrumentation.
+	// The writer signals after the heartbeat write, so cancellation only occurs
+	// after the handler has acquired its slot and entered the live stream.
 	<-response.ready
 	cancel()
 	<-done

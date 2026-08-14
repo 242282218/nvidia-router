@@ -288,21 +288,46 @@ func TestWriteWatchdogFiresOnStalledWriteAndRunsCallback(t *testing.T) {
 }
 
 func TestWriteWatchdogDisarmPreventsStall(t *testing.T) {
-	// A flush that completes before the window must not trip the watchdog.
 	stallRan := make(chan struct{})
-	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { close(stallRan) })
-	defer watchdog.Stop()
+	var timer *manualWatchdogTimer
+	watchdog := newWriteWatchdogWithTimer(30*time.Millisecond, func() { close(stallRan) }, func(_ time.Duration, callback func()) watchdogTimer {
+		timer = &manualWatchdogTimer{callback: callback}
+		return timer
+	})
 
 	watchdog.Arm()
 	watchdog.Disarm()
+	timer.fire()
 	select {
 	case <-stallRan:
-		t.Fatal("onStall ran after a prompt Disarm")
+		t.Fatal("onStall ran after controlled timer was stopped")
 	default:
 	}
-	if watchdog.Fired() {
-		t.Fatal("watchdog marked fired despite prompt Disarm")
+	if !timer.stopped || watchdog.Fired() {
+		t.Fatal("Disarm did not stop the controlled timer")
 	}
+}
+
+type manualWatchdogTimer struct {
+	callback func()
+	stopped  bool
+	fired    bool
+}
+
+func (t *manualWatchdogTimer) Stop() bool {
+	if t.stopped || t.fired {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+func (t *manualWatchdogTimer) fire() {
+	if t.stopped || t.fired {
+		return
+	}
+	t.fired = true
+	t.callback()
 }
 
 func TestPrimeRejectsCommentPreambleOverCaptureCap(t *testing.T) {

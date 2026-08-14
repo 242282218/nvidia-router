@@ -224,16 +224,29 @@ func FlushWithDeadline(writer http.ResponseWriter, flusher http.Flusher, timeout
 // the decode loop unblocks), then stays fired so the caller can distinguish a
 // stalled write from a healthy one.
 type WriteWatchdog struct {
-	timeout time.Duration
-	onStall func()
+	timeout  time.Duration
+	onStall  func()
+	newTimer watchdogTimerFactory
 
 	mu    sync.Mutex
-	timer *time.Timer
+	timer watchdogTimer
 	fired bool
 }
 
+type watchdogTimer interface {
+	Stop() bool
+}
+
+type watchdogTimerFactory func(time.Duration, func()) watchdogTimer
+
 func NewWriteWatchdog(timeout time.Duration, onStall func()) *WriteWatchdog {
-	return &WriteWatchdog{timeout: timeout, onStall: onStall}
+	return newWriteWatchdogWithTimer(timeout, onStall, func(delay time.Duration, callback func()) watchdogTimer {
+		return time.AfterFunc(delay, callback)
+	})
+}
+
+func newWriteWatchdogWithTimer(timeout time.Duration, onStall func(), newTimer watchdogTimerFactory) *WriteWatchdog {
+	return &WriteWatchdog{timeout: timeout, onStall: onStall, newTimer: newTimer}
 }
 
 // Arm arms the watchdog for one flush. It is a no-op after a prior stall: the
@@ -247,7 +260,7 @@ func (w *WriteWatchdog) Arm() {
 	if w.timer != nil {
 		w.timer.Stop()
 	}
-	w.timer = time.AfterFunc(w.timeout, func() {
+	w.timer = w.newTimer(w.timeout, func() {
 		w.mu.Lock()
 		if w.fired {
 			w.mu.Unlock()
