@@ -24,9 +24,40 @@ log_*.txt
 
 # One-off remote diagnostics may contain runtime-only connection details.
 # Reusable product checks stay as tracked shell/Go/TypeScript tests.
-/scripts/test/*.py
+/scripts/test/collector_chat.py
+/scripts/test/deploy_round5.py
+/scripts/test/diag_port.py
+/scripts/test/diff_compose.py
+/scripts/test/fix_app_restart.py
+/scripts/test/fix_compose_restart.py
+/scripts/test/probe_proxies_local.py
+/scripts/test/redeploy_collector_grace.py
+/scripts/test/remote_apply_timeout.py
+/scripts/test/remote_chat_detail.py
+/scripts/test/remote_check.py
+/scripts/test/remote_db_find.py
+/scripts/test/remote_db_query.py
+/scripts/test/remote_deepseek_stream.py
+/scripts/test/remote_embedding_candidates_safe.py
+/scripts/test/remote_isolate_deepseek.py
+/scripts/test/remote_latency_probe.py
+/scripts/test/remote_latency_test.py
+/scripts/test/remote_list_models.py
+/scripts/test/remote_model_test.py
+/scripts/test/remote_pool_inspect.py
+/scripts/test/remote_proxy_quality.py
+/scripts/test/remote_release_inspect.py
+/scripts/test/remote_stream_verify.py
+/scripts/test/remote_timeout_query.py
+/scripts/test/restart_collector.py
+/scripts/test/retry2_deepseek_collector.py
+/scripts/test/retry_deepseek.py
+/scripts/test/round5_baseline.py
+/scripts/test/round5_concurrency.py
+/scripts/test/round5_probe.py
+/scripts/test/verify_collector.py
+/scripts/test/verify_round4.py
 /scripts/test/__pycache__/
-/scripts/test/live-xk-proxy.sh
 
 /internal/web/dist/*
 !/internal/web/dist/
