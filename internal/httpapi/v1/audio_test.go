@@ -411,3 +411,34 @@ func TestSpeechDoesNotRetryAfterFirstAudioByte(t *testing.T) {
 		t.Fatal("TTS first-byte output did not commit Attempt state")
 	}
 }
+
+func TestSpeechUsesAttemptContextForDownstreamWrite(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	attemptContext, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	runner := attemptRunnerFunc(func(_ context.Context, _ int64, _ bool, _ router.ExecuteFunc) (router.AttemptResult, error) {
+		return router.AttemptResult{
+			Response: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("audio"))},
+			Context:  attemptContext,
+		}, nil
+	})
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 1, Kind: modelcatalog.KindTTS, Enabled: true}, nil
+	})
+	writer := &speechDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	request := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"model":"tts","input":"hello"}`))
+	NewSpeech(resolver, runner, nil).ServeHTTP(writer, request)
+	if writer.deadline.IsZero() {
+		t.Fatal("speech downstream write did not use AttemptResult.Context deadline")
+	}
+}
+
+type speechDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (w *speechDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}

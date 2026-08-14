@@ -62,6 +62,8 @@ type AttemptResult struct {
 	Lease    pool.Lease
 	Commit   *CommitState
 	Attempts int
+	Context  context.Context
+	cancel   context.CancelFunc
 }
 
 // Commit records that the upstream has produced a client-visible response.
@@ -74,6 +76,9 @@ func (s *CommitState) Commit() {
 }
 
 func (r AttemptResult) Release() {
+	if r.cancel != nil {
+		r.cancel()
+	}
 	if r.Lease != nil {
 		r.Lease.Release()
 	}
@@ -132,7 +137,12 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	}
 	budget := newBudget(settings, now, stream)
 	requestCtx, cancel := a.requestContext(ctx, budget)
-	defer cancel()
+	keepContext := false
+	defer func() {
+		if !keepContext {
+			cancel()
+		}
+	}()
 	// The budget rides on the request context so the acquire stage can honour the
 	// retry window for streams (which carry no total deadline). The execute stage
 	// re-attaches a per-attempt budget below, so this value never leaks into the
@@ -185,7 +195,8 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 				a.latency.RecordLatency(lease.KeyID(), a.clock.Now().Sub(attemptStarted).Milliseconds())
 			}
 			observability.SetUpstreamRequestID(ctx, response.Header.Get("X-Request-ID"))
-			return AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: len(attempted)}, nil
+			keepContext = true
+			return AttemptResult{Response: response, Lease: lease, Commit: commit, Attempts: len(attempted), Context: requestCtx, cancel: cancel}, nil
 
 		}
 		lastFault = currentFault

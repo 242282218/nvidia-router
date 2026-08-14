@@ -82,6 +82,31 @@ func TestAttemptTriesEachKeyOnceWithCapturedSettingsAndPerAttemptFirstByteBudget
 	}
 }
 
+func TestAttemptResultCarriesStreamingBudgetContext(t *testing.T) {
+	settings := &countingProvider{snapshot: runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, StreamFirstTokenTimeoutMS: 500,
+		StreamIdleTimeoutMS: 1000, RetryBudgetMS: 1000,
+	}}
+	keyPool := newAttemptPool(settings, 1)
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+	result, err := attempt.Run(context.Background(), 10, true, func(ctx context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		return attemptResponse(http.StatusOK, "data: [DONE]\n\n"), nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer result.Release()
+	if result.Context == nil {
+		t.Fatal("AttemptResult.Context is nil")
+	}
+	if result.Context.Err() != nil {
+		t.Fatalf("result context already canceled: %v", result.Context.Err())
+	}
+	if _, ok := BudgetFromContext(result.Context); !ok {
+		t.Fatal("result context does not carry budget")
+	}
+}
+
 func TestAttemptSecondRunSkipsPersistedFailureState(t *testing.T) {
 	tests := []struct {
 		name     string

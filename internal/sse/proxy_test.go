@@ -488,6 +488,30 @@ func TestProxyWriteWatchdogInterruptsBlockedFlush(t *testing.T) {
 	}
 }
 
+func TestFlushWithUnsupportedDeadlineDoesNotSpawnUnboundedFlush(t *testing.T) {
+	writer := &unsupportedDeadlineWriter{}
+	err := FlushWithDeadline(writer, writer, time.Second)
+	if err == nil {
+		t.Fatal("flushWithDeadline returned nil for unsupported write deadline")
+	}
+	if writer.flushes != 0 {
+		t.Fatalf("Flush calls = %d, want 0 when deadline is unsupported", writer.flushes)
+	}
+}
+
+type unsupportedDeadlineWriter struct {
+	http.ResponseWriter
+	flushes int
+}
+
+func (w *unsupportedDeadlineWriter) Header() http.Header       { return make(http.Header) }
+func (w *unsupportedDeadlineWriter) Write([]byte) (int, error) { return 0, nil }
+func (w *unsupportedDeadlineWriter) WriteHeader(int)           {}
+func (w *unsupportedDeadlineWriter) Flush()                    { w.flushes++ }
+func (w *unsupportedDeadlineWriter) SetWriteDeadline(time.Time) error {
+	return errors.New("write deadline unsupported")
+}
+
 type blockingFlushWriter struct {
 	*httptest.ResponseRecorder
 	flushStarted chan struct{}

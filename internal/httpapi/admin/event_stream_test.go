@@ -43,7 +43,7 @@ func TestEventStreamReplaysRingThenLiveEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	request := httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx)
-	response := httptest.NewRecorder()
+	response := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -93,6 +93,38 @@ func TestEventStreamRejectsWrongMethodAndPath(t *testing.T) {
 		}
 	}
 }
+
+func TestEventStreamRejectsConnectionWhenSubscriberLimitReached(t *testing.T) {
+	hub := eventhub.New(5)
+	first := NewEventStream(hub, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	firstDone := make(chan struct{})
+	go func() {
+		first.ServeHTTP(&deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil).WithContext(ctx))
+		close(firstDone)
+	}()
+	select {
+	case <-firstDone:
+		t.Fatal("first subscriber ended before second connection")
+	case <-time.After(time.Second):
+	}
+	response := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	first.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/events/stream", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	cancel()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first subscriber did not clean up")
+	}
+}
+
+type deadlineRecorder struct{ *httptest.ResponseRecorder }
+
+func (*deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
 
 func contains(haystack, needle string) bool {
 	for index := 0; index+len(needle) <= len(haystack); index++ {

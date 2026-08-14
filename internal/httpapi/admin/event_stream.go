@@ -4,29 +4,36 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"nvidia-router/internal/eventhub"
 	"nvidia-router/internal/observability"
+	"nvidia-router/internal/sse"
+)
+
+const (
+	defaultEventStreamSubscribers = 32
+	eventStreamWriteTimeout       = 30 * time.Second
 )
 
 // requestEventDTO is the wire shape pushed to the live view: a compact,
 // metadata-only view of a completed request. It deliberately mirrors the
 // observability RequestLog fields but carries no bodies (none are captured).
 type requestEventDTO struct {
-	RequestID   string `json:"request_id"`
-	Endpoint    string `json:"endpoint"`
-	ModelID     string `json:"model_id,omitempty"`
-	AccessKeyID *int64 `json:"access_key_id,omitempty"`
-	NVIDIAKeyID *int64 `json:"nvidia_key_id,omitempty"`
-	HTTPStatus  int    `json:"http_status"`
-	Outcome     string `json:"outcome"`
-	ErrorCode   *string `json:"error_code,omitempty"`
-	IsStream    bool   `json:"is_stream"`
-	QueueMS     int64  `json:"queue_ms"`
-	FirstByteMS *int64 `json:"first_byte_ms,omitempty"`
-	FirstTokenMS *int64 `json:"first_token_ms,omitempty"`
-	DurationMS  int64  `json:"duration_ms"`
-	CreatedAt   string `json:"created_at"`
+	RequestID    string  `json:"request_id"`
+	Endpoint     string  `json:"endpoint"`
+	ModelID      string  `json:"model_id,omitempty"`
+	AccessKeyID  *int64  `json:"access_key_id,omitempty"`
+	NVIDIAKeyID  *int64  `json:"nvidia_key_id,omitempty"`
+	HTTPStatus   int     `json:"http_status"`
+	Outcome      string  `json:"outcome"`
+	ErrorCode    *string `json:"error_code,omitempty"`
+	IsStream     bool    `json:"is_stream"`
+	QueueMS      int64   `json:"queue_ms"`
+	FirstByteMS  *int64  `json:"first_byte_ms,omitempty"`
+	FirstTokenMS *int64  `json:"first_token_ms,omitempty"`
+	DurationMS   int64   `json:"duration_ms"`
+	CreatedAt    string  `json:"created_at"`
 }
 
 // RequestEventLine serializes one recorded request into a ready-to-write SSE
@@ -55,11 +62,16 @@ type eventStreamSource interface {
 // Server-Sent Events. It lives under RequireManagement so only an authenticated
 // admin can open a connection.
 type EventStream struct {
-	hub eventStreamSource
+	hub   eventStreamSource
+	slots chan struct{}
 }
 
-func NewEventStream(hub eventStreamSource) *EventStream {
-	return &EventStream{hub: hub}
+func NewEventStream(hub eventStreamSource, limits ...int) *EventStream {
+	limit := defaultEventStreamSubscribers
+	if len(limits) > 0 && limits[0] > 0 {
+		limit = limits[0]
+	}
+	return &EventStream{hub: hub, slots: make(chan struct{}, limit)}
 }
 
 func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -72,6 +84,13 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		http.Error(writer, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	select {
+	case h.slots <- struct{}{}:
+		defer func() { <-h.slots }()
+	default:
+		http.Error(writer, "event stream subscriber limit reached", http.StatusServiceUnavailable)
+		return
+	}
 
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
@@ -79,8 +98,16 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	writer.Header().Set("X-Accel-Buffering", "no")
 	// Heartbeat comment keeps intermediaries from idle-closing the stream while
 	// no request events are flowing.
-	_, _ = writer.Write([]byte(": connected\n\n"))
-	flusher.Flush()
+	if err := sse.SetWriteDeadline(writer, eventStreamWriteTimeout); err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := writer.Write([]byte(": connected\n\n")); err != nil {
+		return
+	}
+	if err := sse.FlushWithDeadline(writer, flusher, eventStreamWriteTimeout); err != nil {
+		return
+	}
 
 	events, unsubscribe := h.hub.Subscribe()
 	defer unsubscribe()
@@ -93,10 +120,15 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 			if !ok {
 				return
 			}
+			if err := sse.SetWriteDeadline(writer, eventStreamWriteTimeout); err != nil {
+				return
+			}
 			if _, err := writer.Write([]byte(event.Serialized)); err != nil {
 				return
 			}
-			flusher.Flush()
+			if err := sse.FlushWithDeadline(writer, flusher, eventStreamWriteTimeout); err != nil {
+				return
+			}
 		}
 	}
 }

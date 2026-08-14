@@ -86,7 +86,11 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	defer func() { _ = result.Response.Body.Close() }()
 
 	if stream {
-		h.streamResponse(request.Context(), writer, result.Response)
+		ctx := result.Context
+		if ctx == nil {
+			ctx = request.Context()
+		}
+		h.streamResponse(ctx, writer, result.Response)
 		return
 	}
 
@@ -147,7 +151,7 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		// request context only fires on disconnect, not on a connected-but-stalled
 		// consumer, so without this a stuck client pins the credential slot until
 		// the upstream closes (audit H6).
-		WriteIdleTimeout: streamWriteIdleTimeout(ctx),
+		WriteIdleTimeout: streamWriteDeadline(ctx),
 	})
 	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
 		// Clean completion, an interrupted stream whose first byte already reached
@@ -210,6 +214,18 @@ func streamWriteIdleTimeout(ctx context.Context) time.Duration {
 		return 0
 	}
 	return budget.StreamIdleTimeout()
+}
+
+func streamWriteDeadline(ctx context.Context) time.Duration {
+	if idle := streamWriteIdleTimeout(ctx); idle > 0 {
+		return idle
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+	}
+	return 0
 }
 
 // applyModelTimeouts returns a context with per-model streaming timeout hints

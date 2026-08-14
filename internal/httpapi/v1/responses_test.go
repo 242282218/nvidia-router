@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
@@ -294,6 +295,25 @@ func TestResponsesDoneCompletionCallbackRunsAfterFlush(t *testing.T) {
 	if !called {
 		t.Fatal("completion callback did not run")
 	}
+}
+
+func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
+	writer := &responseDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+	emitter := &responsesSSEEmitter{
+		encoder:      sse.NewEncoder(writer),
+		commit:       &router.CommitState{},
+		flusher:      writer,
+		writeTimeout: time.Second,
+	}
+	if err := emitter.Emit(responsesprotocol.EmittedEvent{Event: "done"}); err == nil {
+		t.Fatal("Emit returned nil when response write deadline was unsupported")
+	}
+}
+
+type responseDeadlineWriter struct{ *httptest.ResponseRecorder }
+
+func (w *responseDeadlineWriter) SetWriteDeadline(time.Time) error {
+	return errors.New("write deadline unsupported")
 }
 
 func TestChatDeltaSourceJoinsMultilineEventData(t *testing.T) {

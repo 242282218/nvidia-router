@@ -81,7 +81,11 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	defer func() { _ = result.Response.Body.Close() }()
 
 	if stream {
-		h.streamResponse(request.Context(), writer, result.Response, id, model.PublicID)
+		ctx := result.Context
+		if ctx == nil {
+			ctx = request.Context()
+		}
+		h.streamResponse(ctx, writer, result.Response, id, model.PublicID)
 		return
 	}
 
@@ -150,7 +154,8 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		// event reaching the client (response.created or the first delta).
 		onFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
 	}
-	if idle := streamWriteIdleTimeout(ctx); idle > 0 {
+	emitter.writeTimeout = streamWriteDeadline(ctx)
+	if idle := streamWriteDeadline(ctx); idle > 0 {
 		emitter.writeWatchdog = sse.NewWriteWatchdog(idle, func() { _ = upstream.Body.Close() })
 		defer emitter.writeWatchdog.Stop()
 	}
@@ -243,10 +248,14 @@ type responsesSSEEmitter struct {
 	// H6); when it fires, onStall closes the upstream body so the state machine
 	// loop ends and the lease is released.
 	writeWatchdog *sse.WriteWatchdog
+	writeTimeout  time.Duration
 }
 
 func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 	if !e.header {
+		if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+			return err
+		}
 		writeSSEHeaders(e.flusher)
 		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
 		e.header = true
@@ -268,7 +277,9 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 		if e.writeWatchdog != nil {
 			e.writeWatchdog.Arm()
 		}
-		flusher.Flush()
+		if err := sse.FlushWithDeadline(e.flusher, flusher, e.writeTimeout); err != nil {
+			return err
+		}
 		if e.writeWatchdog != nil {
 			e.writeWatchdog.Disarm()
 		}

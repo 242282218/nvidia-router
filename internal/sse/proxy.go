@@ -15,6 +15,7 @@ import (
 )
 
 var ErrStreamInterrupted = errors.New("upstream stream interrupted before [DONE]")
+var ErrWriteDeadlineUnsupported = errors.New("response writer does not support write deadlines")
 
 // ErrStreamWriteStalled reports that the client stopped reading for the whole
 // write-idle window, so TCP backpressure has pinned the flush. The handler
@@ -143,6 +144,9 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			pending.Reset()
 		}
 
+		if err := SetWriteDeadline(writer, opts.WriteIdleTimeout); err != nil {
+			return err
+		}
 		if err := encoder.Encode(event); err != nil {
 			return fmt.Errorf("encode SSE event: %w", err)
 		}
@@ -150,7 +154,7 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		if watchdog != nil {
 			watchdog.Arm()
 		}
-		if err := flushWithDeadline(writer, flusher, opts.WriteIdleTimeout); err != nil {
+		if err := FlushWithDeadline(writer, flusher, opts.WriteIdleTimeout); err != nil {
 			if watchdog != nil {
 				watchdog.Disarm()
 			}
@@ -181,29 +185,31 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 	}
 }
 
-func flushWithDeadline(writer http.ResponseWriter, flusher http.Flusher, timeout time.Duration) error {
+func SetWriteDeadline(writer http.ResponseWriter, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	if err := http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("%w: %v", ErrWriteDeadlineUnsupported, err)
+	}
+	return nil
+}
+
+func FlushWithDeadline(writer http.ResponseWriter, flusher http.Flusher, timeout time.Duration) error {
 	if timeout <= 0 {
 		flusher.Flush()
 		return nil
 	}
-	controller := http.NewResponseController(writer)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-		flusher.Flush()
-		return nil
+	if err := SetWriteDeadline(writer, timeout); err != nil {
+		return err
 	}
-
-	finished := make(chan struct{})
-	go func() {
-		flusher.Flush()
-		close(finished)
-	}()
-	select {
-	case <-finished:
-		_ = controller.SetWriteDeadline(time.Time{})
-		return nil
-	case <-time.After(timeout):
+	started := time.Now()
+	flusher.Flush()
+	_ = http.NewResponseController(writer).SetWriteDeadline(time.Time{})
+	if time.Since(started) >= timeout {
 		return ErrStreamWriteStalled
 	}
+	return nil
 }
 
 // WriteWatchdog detects a flush that stays blocked beyond the idle window. It

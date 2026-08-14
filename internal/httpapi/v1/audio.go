@@ -18,6 +18,7 @@ import (
 	audiocollections "nvidia-router/internal/protocol/audio"
 	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
 
@@ -283,6 +284,13 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if commit == nil {
 		commit = &router.CommitState{}
 	}
+	writeCtx := result.Context
+	if writeCtx == nil {
+		writeCtx = request.Context()
+	}
+	if err := sse.SetWriteDeadline(writer, streamWriteDeadline(writeCtx)); err != nil {
+		return
+	}
 	output := commit.Wrap(writer)
 	output.Header().Set("Content-Type", safeAudioContentType(result.Response.Header.Get("Content-Type")))
 	// Audio speech streams audio bytes; without this header the default nginx
@@ -294,7 +302,7 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	buffer := make([]byte, 32<<10)
 	if _, err := io.CopyBuffer(output, result.Response.Body, buffer); err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, nvidia.ErrAudioStreamIdle) {
-			observability.SetErrorCode(request.Context(), "audio_stream_interrupted")
+			observability.SetErrorCode(writeCtx, "audio_stream_interrupted")
 		}
 	}
 }
