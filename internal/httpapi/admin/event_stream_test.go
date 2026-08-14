@@ -117,6 +117,14 @@ func TestEventStreamUsesEarlierRequestDeadline(t *testing.T) {
 	}
 }
 
+func TestEventStreamExpiredRequestDeadlineIsImmediate(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if got := eventStreamWriteTimeoutFor(ctx); got <= 0 || got > time.Millisecond {
+		t.Fatalf("expired event write timeout = %s, want immediate positive timeout", got)
+	}
+}
+
 type deadlineRecorder struct{ *httptest.ResponseRecorder }
 
 func (*deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }

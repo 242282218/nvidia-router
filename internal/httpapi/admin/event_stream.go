@@ -125,6 +125,9 @@ func (h *EventStream) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 			if !ok {
 				return
 			}
+			if ctx.Err() != nil {
+				return
+			}
 			if err := sse.SetWriteDeadline(writer, writeTimeout); err != nil {
 				return
 			}
@@ -147,6 +150,9 @@ func eventStreamWriteTimeoutFor(ctx context.Context) time.Duration {
 	remaining := time.Until(deadline)
 	if remaining > 0 && remaining < configured {
 		return remaining
+	}
+	if remaining <= 0 {
+		return time.Nanosecond
 	}
 	return configured
 }

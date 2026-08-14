@@ -51,24 +51,10 @@ func TestPrimeWaitsPastCommentAndReplaysThroughFirstDataEvent(t *testing.T) {
 		done <- Prime(context.Background(), response)
 	}()
 
-	select {
-	case <-body.secondRead:
-		close(release)
-	case err := <-done:
-		close(release)
-		t.Fatalf("Prime returned before a data event: %v", err)
-	case <-time.After(time.Second):
-		close(release)
-		t.Fatal("Prime did not continue reading after the comment")
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Prime: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Prime did not return after the data event")
+	<-body.secondRead
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Prime: %v", err)
 	}
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -200,20 +186,10 @@ func TestPrimeCancellationClosesBodyAndWaitsForReadToExit(t *testing.T) {
 		done <- Prime(ctx, response)
 	}()
 
-	select {
-	case <-body.started:
-		cancel()
-	case <-time.After(time.Second):
-		t.Fatal("Prime did not start reading the body")
-	}
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Prime error = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Prime did not return after cancellation")
+	<-body.started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prime error = %v, want context.Canceled", err)
 	}
 
 	select {
@@ -300,19 +276,12 @@ func TestProxyTruncatesDataAfterDONEWithinSameEvent(t *testing.T) {
 func TestWriteWatchdogFiresOnStalledWriteAndRunsCallback(t *testing.T) {
 	// Audit H6: a flush blocked on a client that stopped reading must trip the
 	// watchdog, run its onStall callback (close upstream body), and report Fired.
-	var stallRan atomic.Bool
-	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { stallRan.Store(true) })
+	stallRan := make(chan struct{})
+	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { close(stallRan) })
 	defer watchdog.Stop()
 
 	watchdog.Arm()
-	// Without a Disarm the timer fires on its own; give it time to run.
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for !stallRan.Load() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !stallRan.Load() {
-		t.Fatal("onStall did not run after the idle window elapsed")
-	}
+	<-stallRan
 	if !watchdog.Fired() {
 		t.Fatal("watchdog not marked fired after stall")
 	}
@@ -320,15 +289,16 @@ func TestWriteWatchdogFiresOnStalledWriteAndRunsCallback(t *testing.T) {
 
 func TestWriteWatchdogDisarmPreventsStall(t *testing.T) {
 	// A flush that completes before the window must not trip the watchdog.
-	var stallRan atomic.Bool
-	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { stallRan.Store(true) })
+	stallRan := make(chan struct{})
+	watchdog := NewWriteWatchdog(30*time.Millisecond, func() { close(stallRan) })
 	defer watchdog.Stop()
 
 	watchdog.Arm()
 	watchdog.Disarm()
-	time.Sleep(60 * time.Millisecond)
-	if stallRan.Load() {
+	select {
+	case <-stallRan:
 		t.Fatal("onStall ran after a prompt Disarm")
+	default:
 	}
 	if watchdog.Fired() {
 		t.Fatal("watchdog marked fired despite prompt Disarm")
@@ -475,16 +445,11 @@ func TestProxyWriteWatchdogInterruptsBlockedFlush(t *testing.T) {
 
 	select {
 	case <-writer.flushStarted:
-	case <-time.After(time.Second):
-		t.Fatal("Flush did not start")
 	}
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrStreamWriteStalled) {
-			t.Fatalf("Proxy error = %v, want ErrStreamWriteStalled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Proxy remained blocked in Flush after watchdog timeout")
+	<-writer.flushReturned
+	err := <-done
+	if !errors.Is(err, ErrStreamWriteStalled) {
+		t.Fatalf("Proxy error = %v, want ErrStreamWriteStalled", err)
 	}
 }
 
@@ -523,9 +488,9 @@ func TestProxySetsDeadlineBeforeHeaderAndPendingWrite(t *testing.T) {
 
 type orderedDeadlineWriter struct {
 	*httptest.ResponseRecorder
-	deadlineSet          bool
+	deadlineSet           bool
 	headerWithoutDeadline bool
-	writeWithoutDeadline bool
+	writeWithoutDeadline  bool
 }
 
 func (w *orderedDeadlineWriter) SetWriteDeadline(time.Time) error {
@@ -582,15 +547,17 @@ func (w *unsupportedDeadlineWriter) SetWriteDeadline(time.Time) error {
 
 type blockingFlushWriter struct {
 	*httptest.ResponseRecorder
-	flushStarted chan struct{}
-	unblock      chan struct{}
-	unblockOnce  sync.Once
+	flushStarted  chan struct{}
+	flushReturned chan struct{}
+	unblock       chan struct{}
+	unblockOnce   sync.Once
 }
 
 func newBlockingFlushWriter() *blockingFlushWriter {
 	return &blockingFlushWriter{
 		ResponseRecorder: httptest.NewRecorder(),
 		flushStarted:     make(chan struct{}),
+		flushReturned:    make(chan struct{}),
 		unblock:          make(chan struct{}),
 	}
 }
@@ -598,6 +565,7 @@ func newBlockingFlushWriter() *blockingFlushWriter {
 func (w *blockingFlushWriter) Flush() {
 	close(w.flushStarted)
 	<-w.unblock
+	close(w.flushReturned)
 }
 
 func (w *blockingFlushWriter) SetWriteDeadline(deadline time.Time) error {

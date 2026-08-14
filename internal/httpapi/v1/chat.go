@@ -221,6 +221,8 @@ func streamWriteDeadline(ctx context.Context) time.Duration {
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
 			deadlineRemaining = remaining
+		} else {
+			deadlineRemaining = time.Nanosecond
 		}
 	}
 	if idle := streamWriteIdleTimeout(ctx); idle > 0 {

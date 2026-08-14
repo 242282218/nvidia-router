@@ -310,7 +310,7 @@ func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamWriteDeadlineComputedOnce(t *testing.T) {
+func TestResponsesStreamWriteDeadlineDisabledWithoutBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// The behavior is exercised through the shared helper: a context deadline

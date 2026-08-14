@@ -64,6 +64,29 @@ func TestStreamWriteDeadlineUsesEarlierContextDeadline(t *testing.T) {
 	}
 }
 
+func TestSpeechChatResponsesWriteDeadlineExpiredContextReturnsImmediately(t *testing.T) {
+	settings := &deadlineBudgetSettings{snapshot: runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, StreamFirstTokenTimeoutMS: 100,
+		StreamIdleTimeoutMS: 1000, RetryBudgetMS: 1000,
+	}}
+	keys := pool.New(settings, clock.RealClock{})
+	keys.LoadSnapshot([]keystate.KeySnapshot{{ID: 1, Enabled: true}}, nil)
+	keys.SetModelEnabled(10, true)
+	attempt := router.NewAttempt(settings, keys, deadlineBudgetSecrets{}, deadlineBudgetStates{}, keys, clock.RealClock{})
+	result, err := attempt.Run(context.Background(), 10, true, func(context.Context, int64, []byte, *router.CommitState) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n"))}, nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer result.Release()
+	expired, cancel := context.WithDeadline(result.Context, time.Now().Add(-time.Second))
+	defer cancel()
+	if got := streamWriteDeadline(expired); got <= 0 || got > time.Millisecond {
+		t.Fatalf("expired write deadline = %s, want immediate positive deadline", got)
+	}
+}
+
 type deadlineBudgetSettings struct{ snapshot runtimeconfig.Snapshot }
 
 func (s *deadlineBudgetSettings) Snapshot() runtimeconfig.Snapshot { return s.snapshot }
