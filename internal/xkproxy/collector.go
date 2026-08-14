@@ -8,9 +8,14 @@ import (
 	"time"
 )
 
+type collectorUpstream interface {
+	Fetch(context.Context) ([]Proxy, time.Time, error)
+	Close()
+}
+
 // Collector fetches and validates proxies from upstream on a schedule
 type Collector struct {
-	upstream       *UpstreamClient
+	upstream       collectorUpstream
 	validator      *Validator
 	pool           *Pool
 	logger         *slog.Logger
@@ -20,13 +25,16 @@ type Collector struct {
 	concurrency    int
 	ejectionPolicy EjectionPolicy
 
-	mu      sync.Mutex
-	fetchMu sync.Mutex
-	closed  bool
-	started bool
-	done    chan struct{}
-	wg      sync.WaitGroup
-	lastErr error
+	mu         sync.Mutex
+	fetchMu    sync.Mutex
+	closed     bool
+	started    bool
+	done       chan struct{}
+	closeDone  chan struct{}
+	closeErr   error
+	closeCalls chan struct{}
+	wg         sync.WaitGroup
+	lastErr    error
 
 	// lastFetchAt/lastSuccessAt track collector health for the admin status view:
 	// when the pool is empty the operator needs to see whether the upstream is
@@ -88,6 +96,7 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 		concurrency:    cfg.Concurrency,
 		ejectionPolicy: cfg.EjectionPolicy,
 		done:           make(chan struct{}),
+		closeDone:      make(chan struct{}),
 	}
 }
 
@@ -159,19 +168,11 @@ func (c *Collector) Refresh(ctx context.Context) error {
 	if c == nil {
 		return errors.New("proxy collector is nil")
 	}
-	c.mu.Lock()
-	closed := c.closed
-	c.mu.Unlock()
-	if closed {
+	if !c.beginLifecycle() {
 		return errors.New("proxy collector is closed")
 	}
+	defer c.wg.Done()
 	if !c.fetchSingleFlight(ctx) {
-		c.mu.Lock()
-		closed = c.closed
-		c.mu.Unlock()
-		if closed {
-			return errors.New("proxy collector is closed")
-		}
 		if err := c.LastError(); err != nil {
 			return err
 		}
@@ -180,14 +181,20 @@ func (c *Collector) Refresh(ctx context.Context) error {
 	return nil
 }
 
-func (c *Collector) fetchSingleFlight(ctx context.Context) bool {
+func (c *Collector) beginLifecycle() bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed {
-		c.mu.Unlock()
 		return false
 	}
 	c.wg.Add(1)
-	c.mu.Unlock()
+	return true
+}
+
+func (c *Collector) fetchSingleFlight(ctx context.Context) bool {
+	if !c.beginLifecycle() {
+		return false
+	}
 	defer c.wg.Done()
 
 	c.fetchMu.Lock()
@@ -402,9 +409,17 @@ func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedA
 
 func (c *Collector) Close() error {
 	c.mu.Lock()
+	if c.closeCalls != nil {
+		c.closeCalls <- struct{}{}
+	}
 	if c.closed {
+		done := c.closeDone
 		c.mu.Unlock()
-		return nil
+		<-done
+		c.mu.Lock()
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
 	}
 	c.closed = true
 	c.mu.Unlock()
@@ -414,5 +429,11 @@ func (c *Collector) Close() error {
 
 	c.upstream.Close()
 	c.validator.Close()
-	return nil
+
+	c.mu.Lock()
+	c.closeErr = nil
+	close(c.closeDone)
+	err := c.closeErr
+	c.mu.Unlock()
+	return err
 }

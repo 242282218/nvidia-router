@@ -7,9 +7,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type blockingCollectorUpstream struct {
+	t              *testing.T
+	requestStarted chan struct{}
+	release        chan struct{}
+	refreshDone    chan struct{}
+	resourceClosed chan struct{}
+	closeOnce      sync.Once
+}
+
+func (u *blockingCollectorUpstream) Fetch(ctx context.Context) ([]Proxy, time.Time, error) {
+	close(u.requestStarted)
+	select {
+	case <-u.release:
+		return nil, time.Now(), nil
+	case <-ctx.Done():
+		return nil, time.Time{}, ctx.Err()
+	}
+}
+
+func (u *blockingCollectorUpstream) Close() {
+	u.closeOnce.Do(func() {
+		select {
+		case <-u.refreshDone:
+		default:
+			u.t.Errorf("upstream closed before manual refresh returned")
+		}
+		close(u.resourceClosed)
+	})
+}
 
 // TestCollectorStartIdempotentAndCloseSafe proves Start is a one-shot
 // operation: a second Start must not launch another run loop (both would
@@ -47,43 +78,35 @@ func TestCollectorStartIdempotentAndCloseSafe(t *testing.T) {
 func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
 	requestStarted := make(chan struct{})
 	releaseUpstream := make(chan struct{})
-	release := func() {
-		select {
-		case <-releaseUpstream:
-		default:
-			close(releaseUpstream)
-		}
+	refreshDone := make(chan struct{})
+	upstream := &blockingCollectorUpstream{
+		t:              t,
+		requestStarted: requestStarted,
+		release:        releaseUpstream,
+		refreshDone:    refreshDone,
+		resourceClosed: make(chan struct{}),
 	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(requestStarted)
-		<-releaseUpstream
-	}))
-	defer upstream.Close()
-	defer release()
 
 	collector := NewCollector(CollectorConfig{
-		UpstreamURL:     upstream.URL,
 		UpstreamTimeout: time.Second,
 		Interval:        time.Hour,
 		ProxyTTL:        time.Minute,
 		Concurrency:     1,
 	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	collector.upstream = upstream
 
-	refreshDone := make(chan error, 1)
-	go func() { refreshDone <- collector.Refresh(context.Background()) }()
+	refreshResult := make(chan error, 1)
+	go func() {
+		defer close(upstream.refreshDone)
+		refreshResult <- collector.Refresh(context.Background())
+	}()
 	<-requestStarted
 
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- collector.Close() }()
 
-	select {
-	case err := <-closeDone:
-		t.Fatalf("Close returned before the manual refresh exited: %v", err)
-	case <-time.After(time.Second):
-	}
-
-	release()
-	if err := <-refreshDone; err == nil {
+	close(releaseUpstream)
+	if err := <-refreshResult; err == nil {
 		t.Fatal("Refresh unexpectedly succeeded with an empty upstream response")
 	}
 	if err := <-closeDone; err != nil {
@@ -92,6 +115,72 @@ func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
 
 	if err := collector.Refresh(context.Background()); err == nil || err.Error() != "proxy collector is closed" {
 		t.Fatalf("Refresh after Close error = %v, want proxy collector is closed", err)
+	}
+}
+
+func TestCollectorConcurrentCloseWaitsForResources(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	refreshDone := make(chan struct{})
+	upstream := &blockingCollectorUpstream{
+		t:              t,
+		requestStarted: requestStarted,
+		release:        releaseUpstream,
+		refreshDone:    refreshDone,
+		resourceClosed: make(chan struct{}),
+	}
+	collector := NewCollector(CollectorConfig{
+		UpstreamTimeout: time.Second,
+		Interval:        time.Hour,
+		ProxyTTL:        time.Minute,
+		Concurrency:     1,
+	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	collector.upstream = upstream
+	collector.closeCalls = make(chan struct{}, 2)
+
+	refreshResult := make(chan error, 1)
+	go func() {
+		defer close(upstream.refreshDone)
+		refreshResult <- collector.Refresh(context.Background())
+	}()
+	<-requestStarted
+
+	firstClose := make(chan error, 1)
+	go func() { firstClose <- collector.Close() }()
+	<-collector.closeCalls
+	<-collector.done
+
+	secondClose := make(chan error, 1)
+	secondReturnedBeforeResourceClose := make(chan bool, 1)
+	go func() {
+		err := collector.Close()
+		select {
+		case <-upstream.resourceClosed:
+			secondReturnedBeforeResourceClose <- false
+		default:
+			secondReturnedBeforeResourceClose <- true
+		}
+		secondClose <- err
+	}()
+	<-collector.closeCalls
+
+	close(releaseUpstream)
+	if err := <-refreshResult; err == nil {
+		t.Fatal("Refresh unexpectedly succeeded with an empty upstream response")
+	}
+	if err := <-firstClose; err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := <-secondClose; err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if <-secondReturnedBeforeResourceClose {
+		t.Fatal("second Close returned before resources were closed")
+	}
+	select {
+	case <-collector.closeDone:
+	default:
+		t.Fatal("closeDone was not closed after resources were closed")
 	}
 }
 
