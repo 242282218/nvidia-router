@@ -81,6 +81,14 @@ func (l *bodyLease) tryReserve(bytes int64) bool {
 	}
 }
 
+func (l *bodyLease) releaseReserved(bytes int64) {
+	if l == nil || bytes <= 0 {
+		return
+	}
+	inFlightBodyBytes.Add(-bytes)
+	l.bytes -= bytes
+}
+
 // reconcile adjusts the reserved byte budget to the actual body size once the
 // body has been read. A chunked body reserved a small placeholder; charge the
 // difference so concurrent in-flight bytes track reality instead of either the
@@ -293,7 +301,8 @@ func (r *budgetReservingReadCloser) Read(p []byte) (int, error) {
 			return 0, errBodyBudgetExhausted
 		}
 	}
-	n, err := r.ReadCloser.Read(p[:maxLen])
+		n, err := r.ReadCloser.Read(p[:maxLen])
+		r.lease.releaseReserved(int64(maxLen - n))
 	return n, err
 }
 

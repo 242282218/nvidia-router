@@ -65,6 +65,12 @@ func TestProxyPoolHandlerPreservesPatchFieldPresence(t *testing.T) {
 	if service.patch.ValidationURL == nil || *service.patch.ValidationURL != "" || service.patch.ExpectedQty == nil || *service.patch.ExpectedQty != 0 || service.patch.MaxLatency == nil || *service.patch.MaxLatency != "" {
 		t.Fatalf("explicit clear fields were not preserved: %#v", service.patch)
 	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/admin/api/proxy-pool", strings.NewReader(`{"upstream_url":"http://127.0.0.1:2375/metadata"}`)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("runtime upstream URL status = %d, want 400", response.Code)
+	}
 }
 
 func TestProxyPoolHandlerRejectsInvalidMethodAndDoesNotExposeServiceError(t *testing.T) {

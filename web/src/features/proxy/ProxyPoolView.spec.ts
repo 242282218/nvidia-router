@@ -56,12 +56,13 @@ describe('ProxyPoolView', () => {
 
     expect(wrapper.get('h1').text()).toContain('代理池')
     expect((wrapper.get('[data-testid="proxy-enabled"]').element as HTMLInputElement).checked).toBe(true)
-    expect((wrapper.get('[data-testid="proxy-upstream-url"]').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('[data-testid="proxy-upstream-url"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="proxy-upstream-summary"]').text()).toContain('由运行时 Secret 注入')
     expect((wrapper.get('[data-testid="proxy-validation-url"]').element as HTMLInputElement).value).toBe('https://validate.example.test/health')
     expect((wrapper.get('[data-testid="proxy-validation-status"]').element as HTMLInputElement).value).toBe('204')
     expect((wrapper.get('[data-testid="proxy-concurrency"]').element as HTMLInputElement).value).toBe('4')
     expect((wrapper.get('[data-testid="proxy-max-latency"]').element as HTMLInputElement).value).toBe('2s')
-    expect(wrapper.get('#proxy-upstream-help').text()).toContain('保存后只显示主机和路径')
+    expect(wrapper.get('#proxy-upstream-help').text()).toContain('管理端不可修改')
     expect(wrapper.text()).not.toContain('apikey=')
     expect(wrapper.text()).toContain('运行正常')
   })
@@ -87,6 +88,7 @@ describe('ProxyPoolView', () => {
     }), expect.any(AbortSignal))
     const updateMock = vi.mocked(proxyPoolApi.update)
     expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('auth_key')
+    expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('upstream_url')
     expect(wrapper.text()).toContain('配置已保存')
   })
 

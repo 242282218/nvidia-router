@@ -24,7 +24,6 @@ export interface ProxyPoolResponse {
 
 export interface ProxyPoolPatch {
   enabled: boolean
-  upstream_url?: string
   validation_url: string
   validation_status: number
   interval: string

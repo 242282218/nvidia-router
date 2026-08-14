@@ -20,6 +20,12 @@ compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-compose.XXXXXX.json")"
 trap 'rm -f -- "$compose_config"' EXIT
 env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose --project-directory "$PWD" -p nvidia-router -f docker-compose.yml config --format json >"$compose_config"
 
+echo "==> verify image $NVIDIA_ROUTER_IMAGE"
+if ! docker image inspect "$NVIDIA_ROUTER_IMAGE" >/dev/null 2>&1; then
+  echo "error: image $NVIDIA_ROUTER_IMAGE is not available; refusing to stop the running router" >&2
+  exit 1
+fi
+
 echo "==> backup existing router data"
 data_volume="$(docker volume ls -q --filter label=com.docker.compose.project=nvidia-router --filter label=com.docker.compose.volume=nvidia-router-data | head -n 1)"
 if [[ -n "$data_volume" ]]; then

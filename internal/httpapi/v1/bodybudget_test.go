@@ -241,3 +241,44 @@ func TestBodyBudgetReservingReadCloserRejectsOnExhaustedBudget(t *testing.T) {
 		t.Fatalf("wrapper read error = %v, want errBodyBudgetExhausted", err)
 	}
 }
+
+func TestBodyBudgetReservingReadCloserChargesShortReadsExactly(t *testing.T) {
+	request := chunkedBodyRequest()
+	lease, err := acquireBodyLease(request, bodyReadLimitForJSON())
+	if err != nil {
+		t.Fatalf("acquire chunked lease: %v", err)
+	}
+	defer lease.Release()
+
+	payload := []byte("short read payload")
+	wrapped := &budgetReservingReadCloser{
+		ReadCloser: &oneByteReadCloser{payload: payload},
+		lease:      lease,
+	}
+	read, err := io.ReadAll(wrapped)
+	if err != nil {
+		t.Fatalf("read short body: %v", err)
+	}
+	if string(read) != string(payload) {
+		t.Fatalf("read body = %q, want %q", read, payload)
+	}
+	if got := wrapped.bytesRead(); got != int64(len(payload)) {
+		t.Fatalf("charged bytes = %d, want %d", got, len(payload))
+	}
+}
+
+type oneByteReadCloser struct {
+	payload []byte
+	offset  int
+}
+
+func (r *oneByteReadCloser) Read(payload []byte) (int, error) {
+	if r.offset == len(r.payload) {
+		return 0, io.EOF
+	}
+	payload[0] = r.payload[r.offset]
+	r.offset++
+	return 1, nil
+}
+
+func (r *oneByteReadCloser) Close() error { return nil }

@@ -101,7 +101,6 @@ func (h *ProxyPool) patch(writer http.ResponseWriter, request *http.Request) {
 		ProxyURL         string  `json:"proxy_url"`
 		AuthKey          string  `json:"auth_key"`
 		ClearAuthKey     bool    `json:"clear_auth_key"`
-		UpstreamURL      *string `json:"upstream_url"`
 		ValidationURL    *string `json:"validation_url"`
 		ValidationStatus *int    `json:"validation_status"`
 		Interval         *string `json:"interval"`
@@ -114,7 +113,7 @@ func (h *ProxyPool) patch(writer http.ResponseWriter, request *http.Request) {
 		writeInvalidRequest(writer, "The proxy pool request is invalid.", err)
 		return
 	}
-	patch := xkproxy.Patch{Enabled: input.Enabled, ProxyURL: input.ProxyURL, AuthKey: input.AuthKey, ClearAuthKey: input.ClearAuthKey, UpstreamURL: input.UpstreamURL, ValidationURL: input.ValidationURL, ValidationStatus: input.ValidationStatus, Interval: input.Interval, ProxyTTL: input.ProxyTTL, ExpectedQty: input.ExpectedQty, Concurrency: input.Concurrency, MaxLatency: input.MaxLatency}
+	patch := xkproxy.Patch{Enabled: input.Enabled, ProxyURL: input.ProxyURL, AuthKey: input.AuthKey, ClearAuthKey: input.ClearAuthKey, ValidationURL: input.ValidationURL, ValidationStatus: input.ValidationStatus, Interval: input.Interval, ProxyTTL: input.ProxyTTL, ExpectedQty: input.ExpectedQty, Concurrency: input.Concurrency, MaxLatency: input.MaxLatency}
 	snapshot, err := h.service.Update(request.Context(), patch)
 	if err != nil {
 		var validation *xkproxy.ValidationError

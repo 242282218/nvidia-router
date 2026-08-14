@@ -258,11 +258,11 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 	}
 	t.Cleanup(service.Close)
 
-	updated, err := service.Update(context.Background(), Patch{UpstreamURL: stringPointer("https://new.example.test/XApi?secret=fixture"), Interval: stringPointer("10s")})
+	updated, err := service.Update(context.Background(), Patch{Interval: stringPointer("10s")})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if !updated.Enabled || updated.Mode != "built-in" || !updated.UpstreamConfigured || updated.UpstreamEndpoint != "https://new.example.test/XApi" {
+	if !updated.Enabled || updated.Mode != "built-in" || !updated.UpstreamConfigured || updated.UpstreamEndpoint != "https://old.example.test/XApi" {
 		t.Fatalf("updated snapshot = %#v", updated)
 	}
 	var ciphertext []byte
@@ -288,6 +288,27 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 	}
 	if snapshot.UpstreamEndpoint != "https://old.example.test/XApi" || !snapshot.UpstreamConfigured {
 		t.Fatalf("reloaded snapshot = %#v", snapshot)
+	}
+}
+
+func TestSettingsServiceRejectsRuntimeUpstreamURLPatch(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, &CollectorConfig{
+		UpstreamURL: "https://api.example.test/XApi?apikey=fixture", ValidationURL: "https://validate.example.test",
+		ValidationStatus: 404, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: 10 * time.Second, ProxyTTL: 20 * time.Second, ExpectedQty: 2, Concurrency: 1,
+	}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	upstreamURL := "http://127.0.0.1:2375/metadata"
+	if _, err := service.Update(context.Background(), Patch{UpstreamURL: &upstreamURL}); err == nil || !strings.Contains(err.Error(), "startup") {
+		t.Fatalf("runtime upstream URL patch error = %v, want startup-only validation", err)
 	}
 }
 

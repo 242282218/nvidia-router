@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -74,6 +75,14 @@ func stickySessionLabel(secret []byte, keyID int64) string {
 		digest = digest[:xkStickySessionSize/2]
 	}
 	return hex.EncodeToString(digest)
+}
+
+func proxyLogLabel(key string) string {
+	parts := strings.SplitN(key, "\x00", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "unknown"
+	}
+	return parts[0] + "://" + parts[1]
 }
 
 func newStickySessionKey() ([]byte, error) {
@@ -419,7 +428,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			handle.ReportHTTPFailure(response.StatusCode)
 			if key := handle.ProxyKey(); key != "" {
 				observability.RequestLogger(ctx).Debug("proxy_http_fault",
-					"proxy", key,
+					"proxy", proxyLogLabel(key),
 					"status", response.StatusCode,
 				)
 			}
@@ -443,7 +452,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	// which proxy it dialled without scraping the pool status page.
 	if key := handle.ProxyKey(); key != "" {
 		observability.RequestLogger(ctx).Debug("proxy_transport_error",
-			"proxy", key,
+			"proxy", proxyLogLabel(key),
 			"error", err,
 		)
 	}

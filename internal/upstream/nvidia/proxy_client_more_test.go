@@ -17,6 +17,13 @@ import (
 	"nvidia-router/internal/xkproxy"
 )
 
+func TestProxyLogLabelRedactsCredentials(t *testing.T) {
+	key := strings.Join([]string{"http", "198.51.100.10:8080", "proxy-user", "proxy-password"}, "\x00")
+	if got := proxyLogLabel(key); got != "http://198.51.100.10:8080" {
+		t.Fatalf("proxy log label = %q, want credential-free endpoint", got)
+	}
+}
+
 // TestClientBothProxiesFailReturnsProxyError proves that when both the first
 // lease and the replay lease fail before the request is written, the client
 // returns a stable xkproxy.Error instead of attempting a third request, and no
@@ -174,7 +181,6 @@ func TestClientTruncatedSuccessDoesNotRecordProxySuccess(t *testing.T) {
 	}
 	_ = body.Close()
 }
-
 
 func TestReleaseBodyRequiresSemanticCompletion(t *testing.T) {
 	var completed atomic.Int32

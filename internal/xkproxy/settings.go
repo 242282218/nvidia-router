@@ -356,6 +356,9 @@ func (s *SettingsService) decryptAuthKey(keyVersion int, nonce, ciphertext []byt
 }
 
 func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
+	if patch.UpstreamURL != nil {
+		return proxyConfig{}, invalidSettings("proxy pool upstream URL can only be configured at startup")
+	}
 	if strings.TrimSpace(patch.ProxyURL) != "" || strings.TrimSpace(patch.AuthKey) != "" {
 		return proxyConfig{}, invalidSettings("external proxy settings are unsupported; configure the built-in XApi pool")
 	}
