@@ -124,6 +124,25 @@ func TestChunkedBodyReadSucceedsWhenBudgetAllows(t *testing.T) {
 	}
 }
 
+func TestChunkedBodyReadRejectsByteAfterLimitAndReleasesLease(t *testing.T) {
+	limit := int64(8)
+	chunked := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("123456789"))
+	chunked.ContentLength = -1
+	before := inFlightBodyBytes.Load()
+
+	_, lease, err := readBodyWithLease(chunked, limit, time.Second)
+	if lease != nil {
+		t.Fatal("oversized chunked body returned a lease")
+	}
+	var apiErr *apierror.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "request_too_large" || apiErr.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked limit+1 error = %T %v, want 413 request_too_large", err, err)
+	}
+	if got := inFlightBodyBytes.Load(); got != before {
+		t.Fatalf("in-flight bytes after oversized chunked body = %d, want %d", got, before)
+	}
+}
+
 // panicReadCloser panics on the first read, simulating a body reader blowing
 // up mid-upload.
 type panicReadCloser struct{}

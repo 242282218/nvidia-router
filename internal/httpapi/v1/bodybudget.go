@@ -190,9 +190,9 @@ func readChunkedBody(request *http.Request, limit int64, timeout time.Duration, 
 
 	var out []byte
 	buf := make([]byte, bodyBudgetChunkSize)
-	limited := http.MaxBytesReader(nil, request.Body, limit)
+	limited := http.MaxBytesReader(nil, request.Body, limit+1)
 	for {
-		remaining := limit - int64(len(out))
+		remaining := limit + 1 - int64(len(out))
 		if remaining <= 0 {
 			break
 		}
@@ -206,6 +206,9 @@ func readChunkedBody(request *http.Request, limit int64, timeout time.Duration, 
 		n, readErr := limited.Read(buf[:readLen])
 		if n > 0 {
 			out = append(out, buf[:n]...)
+		}
+		if int64(len(out)) > limit {
+			return nil, classifyBodyReadError(ctx, &http.MaxBytesError{Limit: limit})
 		}
 		if readErr == io.EOF {
 			break
