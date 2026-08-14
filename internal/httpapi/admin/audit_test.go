@@ -28,14 +28,22 @@ func TestAuditRecordSurvivesRequestCancellation(t *testing.T) {
 	if repository.ctxErr != nil {
 		t.Fatal(repository.ctxErr)
 	}
+	if repository.entry.SessionID == nil || *repository.entry.SessionID != "session" {
+		t.Fatalf("audit session ID = %v, want session", repository.entry.SessionID)
+	}
+	if repository.entry.ClientIP != "192.0.2.1" {
+		t.Fatalf("audit client IP = %q, want 192.0.2.1", repository.entry.ClientIP)
+	}
 }
 
 type canceledAuditRepository struct {
 	ctxErr error
+	entry  adminaudit.Entry
 }
 
-func (r *canceledAuditRepository) Insert(ctx context.Context, _ adminaudit.Entry) (int64, error) {
+func (r *canceledAuditRepository) Insert(ctx context.Context, entry adminaudit.Entry) (int64, error) {
 	r.ctxErr = ctx.Err()
+	r.entry = entry
 	return 1, nil
 }
 

@@ -168,6 +168,16 @@ func TestLoginLimiterStateHasBoundedCardinality(t *testing.T) {
 	if got := limiter.stateCount(); got > maxStates {
 		t.Fatalf("limiter state count = %d, want <= %d", got, maxStates)
 	}
+
+	const ip = "capacity-pressure-ip"
+	for attempt := range loginAttemptLimit {
+		if err := limiter.StartAttempt(ip, "user-"+strconv.Itoa(attempt)); err != nil {
+			t.Fatalf("StartAttempt after capacity pressure %d: %v", attempt, err)
+		}
+	}
+	if err := limiter.StartAttempt(ip, "user-final"); !errors.Is(err, ErrLoginRateLimited) {
+		t.Fatalf("rotated username after capacity pressure error = %v, want ErrLoginRateLimited", err)
+	}
 }
 
 func TestLoginRateLimiterExpirationOrderFollowsLastUse(t *testing.T) {
