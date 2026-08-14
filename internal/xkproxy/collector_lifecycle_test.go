@@ -19,16 +19,23 @@ type blockingCollectorUpstream struct {
 	refreshDone    chan struct{}
 	resourceClosed chan struct{}
 	closeOnce      sync.Once
+	refreshDoneOnce sync.Once
 }
 
 func (u *blockingCollectorUpstream) Fetch(ctx context.Context) ([]Proxy, time.Time, error) {
 	close(u.requestStarted)
 	select {
 	case <-u.release:
+		u.markRefreshDone()
 		return nil, time.Now(), nil
 	case <-ctx.Done():
+		u.markRefreshDone()
 		return nil, time.Time{}, ctx.Err()
 	}
+}
+
+func (u *blockingCollectorUpstream) markRefreshDone() {
+	u.refreshDoneOnce.Do(func() { close(u.refreshDone) })
 }
 
 func (u *blockingCollectorUpstream) Close() {
@@ -98,7 +105,6 @@ func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
 	refreshResult := make(chan error, 1)
 	go func() {
 		err := collector.Refresh(context.Background())
-		close(upstream.refreshDone)
 		refreshResult <- err
 	}()
 	<-requestStarted
@@ -142,7 +148,6 @@ func TestCollectorConcurrentCloseWaitsForResources(t *testing.T) {
 	refreshResult := make(chan error, 1)
 	go func() {
 		err := collector.Refresh(context.Background())
-		close(upstream.refreshDone)
 		refreshResult <- err
 	}()
 	<-requestStarted
