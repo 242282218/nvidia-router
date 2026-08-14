@@ -21,8 +21,13 @@ const settings = {
   mode: 'built-in' as const,
   upstream_configured: true,
   upstream_endpoint: 'https://api.example.test/tools/XApi.ashx',
-  collector_interval: '5s',
-  proxy_ttl: '120s',
+  validation_url: 'https://validate.example.test/health',
+  validation_status: 204,
+  collector_interval: '11s',
+  proxy_ttl: '33s',
+  expected_qty: 7,
+  concurrency: 4,
+  max_latency: '2s',
 }
 
 const emptyStatus = {
@@ -51,6 +56,10 @@ describe('ProxyPoolView', () => {
     expect(wrapper.get('h1').text()).toContain('代理池')
     expect((wrapper.get('[data-testid="proxy-enabled"]').element as HTMLInputElement).checked).toBe(true)
     expect((wrapper.get('[data-testid="proxy-upstream-url"]').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('[data-testid="proxy-validation-url"]').element as HTMLInputElement).value).toBe('https://validate.example.test/health')
+    expect((wrapper.get('[data-testid="proxy-validation-status"]').element as HTMLInputElement).value).toBe('204')
+    expect((wrapper.get('[data-testid="proxy-concurrency"]').element as HTMLInputElement).value).toBe('4')
+    expect((wrapper.get('[data-testid="proxy-max-latency"]').element as HTMLInputElement).value).toBe('2s')
     expect(wrapper.get('#proxy-upstream-help').text()).toContain('保存后只显示主机和路径')
     expect(wrapper.text()).not.toContain('apikey=')
     expect(wrapper.text()).toContain('运行正常')
@@ -69,8 +78,11 @@ describe('ProxyPoolView', () => {
       enabled: true,
       interval: '10s',
       proxy_ttl: '90s',
-      expected_qty: 2,
-      concurrency: 2,
+      validation_url: 'https://validate.example.test/health',
+      validation_status: 204,
+      expected_qty: 7,
+      concurrency: 4,
+      max_latency: '2s',
     }), expect.any(AbortSignal))
     const updateMock = vi.mocked(proxyPoolApi.update)
     expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('auth_key')

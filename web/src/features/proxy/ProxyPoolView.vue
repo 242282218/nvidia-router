@@ -52,14 +52,28 @@ function isPoolStatusData(value: unknown): value is { data: PoolStatusData } {
   return (data.configured === undefined || typeof data.configured === 'boolean') && (data.mode === undefined || typeof data.mode === 'string') && (data.healthy_size === undefined || isNonNegativeNumber(data.healthy_size))
 }
 function isNonNegativeNumber(value: unknown): value is number { return isFiniteNumber(value) && value >= 0 }
- function applySettings(next: ProxyPoolSettings): void { settings.value = next; enabled.value = next.enabled; upstreamUrl.value = ''; interval.value = next.collector_interval ?? '5s'; proxyTTL.value = next.proxy_ttl ?? '120s' }
+function applySettings(next: ProxyPoolSettings): void {
+  settings.value = next
+  enabled.value = next.enabled
+  upstreamUrl.value = ''
+  validationUrl.value = next.validation_url
+  validationStatus.value = next.validation_status
+  interval.value = next.collector_interval
+  proxyTTL.value = next.proxy_ttl
+  expectedQty.value = next.expected_qty
+  concurrency.value = next.concurrency
+  maxLatency.value = next.max_latency
+}
 function sourceLabel(source?: ProxyPoolSettings['source']): string { return source === 'database' ? '数据库配置' : source === 'environment' ? '环境变量' : '未配置' }
 function poolLabel(): string { const status = statusData.value; if (!status?.configured) return '未配置'; if (status.healthy_size === 0) return '暂无可用出口'; return status.last_error_code ? `采集异常（${status.last_error_code}）` : '运行正常' }
 function poolClass(): string { const status = statusData.value; return !status?.configured ? 'badge-muted' : status.healthy_size === 0 || status.last_error_code ? 'badge-warning' : 'badge-success' }
 function formatTime(raw?: string): string { if (!raw) return '—'; const date = new Date(raw); return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString() }
 
 async function save(): Promise<void> {
-  await savePatch({ enabled: enabled.value, upstream_url: upstreamUrl.value.trim(), validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: maxLatency.value.trim() })
+  const patch: ProxyPoolPatch = { enabled: enabled.value, validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: maxLatency.value.trim() }
+  const upstream = upstreamUrl.value.trim()
+  if (upstream) patch.upstream_url = upstream
+  await savePatch(patch)
 }
 async function savePatch(patch: ProxyPoolPatch): Promise<void> {
   if (disposed || saving.value) return; if (patch.enabled && !patch.upstream_url && !settings.value?.upstream_configured) { formError.value = '启用内置代理池时必须配置 XApi 上游地址。'; return }

@@ -2,9 +2,11 @@ package xkproxy
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -110,8 +112,9 @@ func TestSettingsServicePoolModeBuildsCollectorManager(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		ValidationURL:    "https://integrate.api.nvidia.com/v1",
 		ValidationStatus: 404,
-		Interval:         time.Hour, // never actually fires in the test window
+		Interval:         10 * time.Second, // never actually fires in the test window
 		ProxyTTL:         time.Minute,
+		ExpectedQty:      2,
 		Concurrency:      2,
 	}
 	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{AuthKey: "pool-secret"}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
@@ -153,7 +156,7 @@ func TestSettingsServicePoolModeRejectsFixedProxyMutation(t *testing.T) {
 		UpstreamURL:   "https://api.xingkongdaili.com/tools/XApi.ashx?apikey=fixture",
 		ValidationURL: "https://integrate.api.nvidia.com/v1", ValidationStatus: 404,
 		UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
-		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+		Interval: 10 * time.Second, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
 	}
 	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
 	if err != nil {
@@ -178,7 +181,7 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 		UpstreamURL:   "https://old.example.test/XApi?secret=fixture",
 		ValidationURL: "https://integrate.api.nvidia.com/v1", ValidationStatus: 404,
 		UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
-		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+		Interval: 10 * time.Second, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
 	}
 	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, initial, http.DefaultTransport.(*http.Transport), discardProxyLogger())
 	if err != nil {
@@ -186,7 +189,7 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 	}
 	t.Cleanup(service.Close)
 
-	updated, err := service.Update(context.Background(), Patch{UpstreamURL: "https://new.example.test/XApi?secret=fixture", Interval: "10s"})
+	updated, err := service.Update(context.Background(), Patch{UpstreamURL: stringPointer("https://new.example.test/XApi?secret=fixture"), Interval: stringPointer("10s")})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -219,6 +222,150 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 	}
 }
 
+func TestSettingsServicePoolPatchRejectsInvalidValues(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, &CollectorConfig{
+		UpstreamURL: "https://api.example.test/XApi?apikey=fixture", ValidationURL: "https://validate.example.test",
+		ValidationStatus: 200, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: 10 * time.Second, ProxyTTL: 20 * time.Second, ExpectedQty: 2, Concurrency: 2,
+	}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	for _, test := range []struct {
+		name  string
+		patch Patch
+	}{
+		{name: "status below range", patch: Patch{ValidationStatus: intPointer(99)}},
+		{name: "status above range", patch: Patch{ValidationStatus: intPointer(600)}},
+		{name: "zero expected quantity", patch: Patch{ExpectedQty: intPointer(0)}},
+		{name: "negative expected quantity", patch: Patch{ExpectedQty: intPointer(-1)}},
+		{name: "zero concurrency", patch: Patch{Concurrency: intPointer(0)}},
+		{name: "negative concurrency", patch: Patch{Concurrency: intPointer(-1)}},
+		{name: "interval below minimum", patch: Patch{Interval: stringPointer("4s")}},
+		{name: "ttl above maximum", patch: Patch{ProxyTTL: stringPointer("181s")}},
+		{name: "ttl not longer than interval", patch: Patch{Interval: stringPointer("15s"), ProxyTTL: stringPointer("15s")}},
+		{name: "ttl shorter than interval", patch: Patch{Interval: stringPointer("15s"), ProxyTTL: stringPointer("10s")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := service.Update(context.Background(), test.patch); err == nil {
+				t.Fatal("Update accepted invalid pool settings")
+			}
+		})
+	}
+}
+
+func TestSettingsServicePoolPatchClearsMaxLatency(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, &CollectorConfig{
+		UpstreamURL: "https://api.example.test/XApi?apikey=fixture", ValidationURL: "https://validate.example.test",
+		ValidationStatus: 200, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		MaxLatency: 3 * time.Second, Interval: 10 * time.Second, ProxyTTL: 20 * time.Second, ExpectedQty: 2, Concurrency: 2,
+	}, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	if _, err := service.Update(context.Background(), Patch{MaxLatency: stringPointer("")}); err != nil {
+		t.Fatalf("clear MaxLatency: %v", err)
+	}
+	var poolConfig string
+	if err := db.QueryRow("SELECT pool_config FROM proxy_pool_settings WHERE id = 1").Scan(&poolConfig); err != nil {
+		t.Fatalf("read pool config: %v", err)
+	}
+	if strings.Contains(poolConfig, "max_latency") {
+		t.Fatalf("cleared MaxLatency persisted: %s", poolConfig)
+	}
+}
+
+func TestSettingsServiceSavingLoadedSnapshotPreservesPoolConfig(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	initial := &CollectorConfig{
+		UpstreamURL: "https://api.example.test/XApi?apikey=fixture", ValidationURL: "https://validate.example.test/health",
+		ValidationStatus: 204, UpstreamTimeout: time.Second, ValidationTimeout: time.Second, MaxLatency: 2 * time.Second,
+		Interval: 10 * time.Second, ProxyTTL: 30 * time.Second, ExpectedQty: 2, Concurrency: 3,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, initial, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	snapshot, err := service.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("initial Snapshot: %v", err)
+	}
+	if _, err := service.Update(context.Background(), patchFromSnapshot(snapshot)); err != nil {
+		t.Fatalf("initial full save: %v", err)
+	}
+	service.Close()
+
+	before := readPoolConfigRow(t, db)
+	reloaded, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, initial, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	t.Cleanup(reloaded.Close)
+	reloadedSnapshot, err := reloaded.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("reloaded Snapshot: %v", err)
+	}
+	if _, err := reloaded.Update(context.Background(), patchFromSnapshot(reloadedSnapshot)); err != nil {
+		t.Fatalf("reloaded full save: %v", err)
+	}
+	after := readPoolConfigRow(t, db)
+	if before != after {
+		t.Fatalf("full snapshot save changed persisted config: before=%s after=%s", before, after)
+	}
+}
+
+func patchFromSnapshot(snapshot Snapshot) Patch {
+	return Patch{
+		ValidationURL:    stringPointer(snapshot.ValidationURL),
+		ValidationStatus: intPointer(snapshot.ValidationStatus),
+		Interval:         stringPointer(snapshot.CollectorInterval),
+		ProxyTTL:         stringPointer(snapshot.ProxyTTL),
+		ExpectedQty:      intPointer(snapshot.ExpectedQty),
+		Concurrency:      intPointer(snapshot.Concurrency),
+		MaxLatency:       stringPointer(snapshot.MaxLatency),
+	}
+}
+
+func readPoolConfigRow(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var row string
+	if err := db.QueryRow("SELECT printf('%d|%s|%s|%s|%s|%d', enabled, proxy_url, pool_config, hex(auth_key_nonce), hex(auth_key_ciphertext), version) FROM proxy_pool_settings WHERE id = 1").Scan(&row); err != nil {
+		t.Fatalf("read persisted pool row: %v", err)
+	}
+	return row
+}
+
+func TestUpstreamClientFetchUsesConfiguredExpectedQty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.URL.Query().Get("qty"); got != "7" {
+			t.Errorf("upstream qty = %q, want 7", got)
+		}
+		_, _ = writer.Write([]byte("203.0.113.10:8080"))
+	}))
+	t.Cleanup(server.Close)
+	client := NewUpstreamClient(server.URL+"?apikey=fixture", time.Second, 7)
+	t.Cleanup(client.Close)
+	if _, _, err := client.Fetch(context.Background()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+}
+
 func TestSettingsServicePoolModeRequiresRuntimeXAPIWhenEnabled(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {
@@ -228,7 +375,7 @@ func TestSettingsServicePoolModeRequiresRuntimeXAPIWhenEnabled(t *testing.T) {
 	poolCfg := &CollectorConfig{
 		UpstreamURL: "https://provider.example/XApi?apikey=fixture", ValidationURL: "https://integrate.api.nvidia.com/v1",
 		ValidationStatus: 404, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
-		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+		Interval: 10 * time.Second, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
 	}
 	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
 	if err != nil {
@@ -284,3 +431,6 @@ func TestSettingsServiceRejectsNewExternalProxyConfiguration(t *testing.T) {
 func discardProxyLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+func stringPointer(value string) *string { return &value }
+func intPointer(value int) *int          { return &value }

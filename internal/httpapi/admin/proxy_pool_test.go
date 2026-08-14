@@ -44,6 +44,29 @@ func TestProxyPoolHandlerReturnsSafeStatusAndForwardsPatch(t *testing.T) {
 	}
 }
 
+func TestProxyPoolHandlerPreservesPatchFieldPresence(t *testing.T) {
+	service := &fakeProxyPoolService{snapshot: xkproxy.Snapshot{Enabled: false}}
+	handler := NewProxyPool(service)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/admin/api/proxy-pool", strings.NewReader(`{"enabled":false}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("omitted fields status = %d: %s", response.Code, response.Body.String())
+	}
+	if service.patch.ValidationURL != nil || service.patch.ExpectedQty != nil || service.patch.MaxLatency != nil {
+		t.Fatalf("omitted fields were populated: %#v", service.patch)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/admin/api/proxy-pool", strings.NewReader(`{"validation_url":"","expected_qty":0,"max_latency":""}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit clear status = %d: %s", response.Code, response.Body.String())
+	}
+	if service.patch.ValidationURL == nil || *service.patch.ValidationURL != "" || service.patch.ExpectedQty == nil || *service.patch.ExpectedQty != 0 || service.patch.MaxLatency == nil || *service.patch.MaxLatency != "" {
+		t.Fatalf("explicit clear fields were not preserved: %#v", service.patch)
+	}
+}
+
 func TestProxyPoolHandlerRejectsInvalidMethodAndDoesNotExposeServiceError(t *testing.T) {
 	handler := NewProxyPool(&fakeProxyPoolService{snapshot: xkproxy.Snapshot{}, updateErr: errors.New("secret must not leak")})
 	response := httptest.NewRecorder()
@@ -58,6 +81,15 @@ func TestProxyPoolHandlerRejectsInvalidMethodAndDoesNotExposeServiceError(t *tes
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/api/proxy-pool", nil))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("POST status = %d, want 404", response.Code)
+	}
+}
+
+func TestProxyPoolHandlerMapsValidationErrorsToBadRequest(t *testing.T) {
+	handler := NewProxyPool(&fakeProxyPoolService{snapshot: xkproxy.Snapshot{}, updateErr: &xkproxy.ValidationError{}})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/admin/api/proxy-pool", strings.NewReader(`{"enabled":false}`)))
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_proxy_pool") {
+		t.Fatalf("validation status/body = %d/%s", response.Code, response.Body.String())
 	}
 }
 

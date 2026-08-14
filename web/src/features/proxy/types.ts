@@ -9,8 +9,13 @@ export interface ProxyPoolSettings {
   mode?: ProxyPoolMode
   upstream_configured?: boolean
   upstream_endpoint?: string
-  collector_interval?: string
-  proxy_ttl?: string
+  collector_interval: string
+  proxy_ttl: string
+  validation_url: string
+  validation_status: number
+  expected_qty: number
+  concurrency: number
+  max_latency: string
 }
 
 export interface ProxyPoolResponse {
@@ -20,13 +25,13 @@ export interface ProxyPoolResponse {
 export interface ProxyPoolPatch {
   enabled: boolean
   upstream_url?: string
-  validation_url?: string
-  validation_status?: number
-  interval?: string
-  proxy_ttl?: string
-  expected_qty?: number
-  concurrency?: number
-  max_latency?: string
+  validation_url: string
+  validation_status: number
+  interval: string
+  proxy_ttl: string
+  expected_qty: number
+  concurrency: number
+  max_latency: string
 }
 
 export interface PoolStatusData {

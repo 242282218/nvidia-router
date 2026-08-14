@@ -97,18 +97,18 @@ func (h *ProxyPool) get(writer http.ResponseWriter, request *http.Request) {
 
 func (h *ProxyPool) patch(writer http.ResponseWriter, request *http.Request) {
 	var input struct {
-		Enabled          *bool  `json:"enabled"`
-		ProxyURL         string `json:"proxy_url"`
-		AuthKey          string `json:"auth_key"`
-		ClearAuthKey     bool   `json:"clear_auth_key"`
-		UpstreamURL      string `json:"upstream_url"`
-		ValidationURL    string `json:"validation_url"`
-		ValidationStatus int    `json:"validation_status"`
-		Interval         string `json:"interval"`
-		ProxyTTL         string `json:"proxy_ttl"`
-		ExpectedQty      int    `json:"expected_qty"`
-		Concurrency      int    `json:"concurrency"`
-		MaxLatency       string `json:"max_latency"`
+		Enabled          *bool   `json:"enabled"`
+		ProxyURL         string  `json:"proxy_url"`
+		AuthKey          string  `json:"auth_key"`
+		ClearAuthKey     bool    `json:"clear_auth_key"`
+		UpstreamURL      *string `json:"upstream_url"`
+		ValidationURL    *string `json:"validation_url"`
+		ValidationStatus *int    `json:"validation_status"`
+		Interval         *string `json:"interval"`
+		ProxyTTL         *string `json:"proxy_ttl"`
+		ExpectedQty      *int    `json:"expected_qty"`
+		Concurrency      *int    `json:"concurrency"`
+		MaxLatency       *string `json:"max_latency"`
 	}
 	if err := decodeJSON(writer, request, &input); err != nil {
 		writeInvalidRequest(writer, "The proxy pool request is invalid.", err)

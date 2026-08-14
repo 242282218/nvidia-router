@@ -38,6 +38,11 @@ type Snapshot struct {
 	UpstreamEndpoint   string `json:"upstream_endpoint,omitempty"`
 	CollectorInterval  string `json:"collector_interval,omitempty"`
 	ProxyTTL           string `json:"proxy_ttl,omitempty"`
+	ValidationURL      string `json:"validation_url,omitempty"`
+	ValidationStatus   int    `json:"validation_status,omitempty"`
+	ExpectedQty        int    `json:"expected_qty,omitempty"`
+	Concurrency        int    `json:"concurrency,omitempty"`
+	MaxLatency         string `json:"max_latency,omitempty"`
 }
 
 type ValidationError struct {
@@ -56,18 +61,18 @@ type EnvironmentConfig struct {
 }
 
 type Patch struct {
-	Enabled          *bool  `json:"enabled"`
-	ProxyURL         string `json:"proxy_url"`
-	AuthKey          string `json:"auth_key"`
-	ClearAuthKey     bool   `json:"clear_auth_key"`
-	UpstreamURL      string `json:"upstream_url"`
-	ValidationURL    string `json:"validation_url"`
-	ValidationStatus int    `json:"validation_status"`
-	Interval         string `json:"interval"`
-	ProxyTTL         string `json:"proxy_ttl"`
-	ExpectedQty      int    `json:"expected_qty"`
-	Concurrency      int    `json:"concurrency"`
-	MaxLatency       string `json:"max_latency"`
+	Enabled          *bool   `json:"enabled"`
+	ProxyURL         string  `json:"proxy_url"`
+	AuthKey          string  `json:"auth_key"`
+	ClearAuthKey     bool    `json:"clear_auth_key"`
+	UpstreamURL      *string `json:"upstream_url"`
+	ValidationURL    *string `json:"validation_url"`
+	ValidationStatus *int    `json:"validation_status"`
+	Interval         *string `json:"interval"`
+	ProxyTTL         *string `json:"proxy_ttl"`
+	ExpectedQty      *int    `json:"expected_qty"`
+	Concurrency      *int    `json:"concurrency"`
+	MaxLatency       *string `json:"max_latency"`
 }
 
 type SettingsService struct {
@@ -412,7 +417,9 @@ func (s *SettingsService) newManager(config proxyConfig) (*Manager, error) {
 		// Built-in pool mode: fetch and validate proxy addresses from the
 		// upstream API. The auth key authenticates the router to the pool's
 		// provider (static-manager compatibility), not a single fixed proxy.
-		manager, err := NewWithPool(*config.poolCfg, config.authKey, s.base, s.logger)
+		poolConfig := *config.poolCfg
+		poolConfig.UpstreamURL = upstreamURLWithQuantity(poolConfig.UpstreamURL, poolConfig.ExpectedQty)
+		manager, err := NewWithPool(poolConfig, config.authKey, s.base, s.logger)
 		if err != nil {
 			return nil, fmt.Errorf("initialize proxy pool manager: %w", err)
 		}
@@ -487,11 +494,26 @@ func validatePoolConfig(cfg CollectorConfig) error {
 	if strings.TrimSpace(cfg.ValidationURL) == "" {
 		return errors.New("proxy pool: validation URL is required")
 	}
-	if cfg.ProxyTTL <= 0 {
-		return errors.New("proxy pool: proxy TTL must be positive")
+	if cfg.ValidationStatus < 100 || cfg.ValidationStatus > 599 {
+		return errors.New("proxy pool: validation status must be between 100 and 599")
 	}
-	if cfg.Interval <= 0 {
-		return errors.New("proxy pool: collect interval must be positive")
+	if cfg.ExpectedQty != 2 {
+		return errors.New("proxy pool: expected quantity must be exactly 2")
+	}
+	if cfg.Concurrency <= 0 {
+		return errors.New("proxy pool: concurrency must be positive")
+	}
+	if cfg.Interval < 5*time.Second {
+		return errors.New("proxy pool: collect interval must be at least 5s")
+	}
+	if cfg.ProxyTTL < time.Second || cfg.ProxyTTL > 180*time.Second {
+		return errors.New("proxy pool: proxy TTL must be between 1s and 180s")
+	}
+	if cfg.ProxyTTL <= cfg.Interval {
+		return errors.New("proxy pool: proxy TTL must be longer than collect interval")
+	}
+	if cfg.UpstreamTimeout > 0 && cfg.UpstreamTimeout >= cfg.Interval {
+		return errors.New("proxy pool: upstream timeout must be less than collect interval")
 	}
 	return nil
 }
@@ -562,6 +584,13 @@ func applyPoolSnapshot(config proxyConfig) proxyConfig {
 		config.snapshot.UpstreamEndpoint = safeEndpoint(config.poolCfg.UpstreamURL)
 		config.snapshot.CollectorInterval = config.poolCfg.Interval.String()
 		config.snapshot.ProxyTTL = config.poolCfg.ProxyTTL.String()
+		config.snapshot.ValidationURL = config.poolCfg.ValidationURL
+		config.snapshot.ValidationStatus = config.poolCfg.ValidationStatus
+		config.snapshot.ExpectedQty = config.poolCfg.ExpectedQty
+		config.snapshot.Concurrency = config.poolCfg.Concurrency
+		if config.poolCfg.MaxLatency > 0 {
+			config.snapshot.MaxLatency = config.poolCfg.MaxLatency.String()
+		}
 	}
 	return config
 }
@@ -641,38 +670,42 @@ func applyPoolPatch(config *CollectorConfig, patch Patch) error {
 	if config == nil {
 		return errors.New("proxy pool config is missing")
 	}
-	if patch.UpstreamURL != "" {
-		config.UpstreamURL = strings.TrimSpace(patch.UpstreamURL)
+	if patch.UpstreamURL != nil {
+		config.UpstreamURL = strings.TrimSpace(*patch.UpstreamURL)
 	}
-	if patch.ValidationURL != "" {
-		config.ValidationURL = strings.TrimSpace(patch.ValidationURL)
+	if patch.ValidationURL != nil {
+		config.ValidationURL = strings.TrimSpace(*patch.ValidationURL)
 	}
-	if patch.ValidationStatus != 0 {
-		config.ValidationStatus = patch.ValidationStatus
+	if patch.ValidationStatus != nil {
+		config.ValidationStatus = *patch.ValidationStatus
 	}
-	if patch.ExpectedQty != 0 {
-		config.ExpectedQty = patch.ExpectedQty
+	if patch.ExpectedQty != nil {
+		config.ExpectedQty = *patch.ExpectedQty
 	}
-	if patch.Concurrency != 0 {
-		config.Concurrency = patch.Concurrency
+	if patch.Concurrency != nil {
+		config.Concurrency = *patch.Concurrency
 	}
 	var err error
-	if patch.Interval != "" {
-		config.Interval, err = time.ParseDuration(patch.Interval)
+	if patch.Interval != nil {
+		config.Interval, err = time.ParseDuration(strings.TrimSpace(*patch.Interval))
 		if err != nil {
 			return invalidSettings("collect interval is invalid")
 		}
 	}
-	if patch.ProxyTTL != "" {
-		config.ProxyTTL, err = time.ParseDuration(patch.ProxyTTL)
+	if patch.ProxyTTL != nil {
+		config.ProxyTTL, err = time.ParseDuration(strings.TrimSpace(*patch.ProxyTTL))
 		if err != nil {
 			return invalidSettings("proxy TTL is invalid")
 		}
 	}
-	if patch.MaxLatency != "" {
-		config.MaxLatency, err = time.ParseDuration(patch.MaxLatency)
-		if err != nil {
-			return invalidSettings("max latency is invalid")
+	if patch.MaxLatency != nil {
+		if strings.TrimSpace(*patch.MaxLatency) == "" {
+			config.MaxLatency = 0
+		} else {
+			config.MaxLatency, err = time.ParseDuration(strings.TrimSpace(*patch.MaxLatency))
+			if err != nil || config.MaxLatency <= 0 {
+				return invalidSettings("max latency is invalid")
+			}
 		}
 	}
 	return validatePoolConfig(*config)

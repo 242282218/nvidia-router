@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -85,11 +86,32 @@ type UpstreamClient struct {
 	client *http.Client
 }
 
-func NewUpstreamClient(url string, timeout time.Duration) *UpstreamClient {
+func NewUpstreamClient(rawURL string, timeout time.Duration, expectedQty ...int) *UpstreamClient {
+	quantity := 2
+	if len(expectedQty) > 0 && expectedQty[0] > 0 {
+		quantity = expectedQty[0]
+	}
+	rawURL = upstreamURLWithQuantity(rawURL, quantity)
 	return &UpstreamClient{
-		URL:     url,
+		URL:     rawURL,
 		timeout: timeout,
 	}
+}
+
+func upstreamURLWithQuantity(rawURL string, quantity int) string {
+	if quantity <= 0 {
+		return rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	query := parsed.Query()
+	if query.Get("qty") == "" {
+		query.Set("qty", fmt.Sprintf("%d", quantity))
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String()
 }
 
 func (c *UpstreamClient) ID() string {
