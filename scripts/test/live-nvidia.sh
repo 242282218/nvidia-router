@@ -58,6 +58,7 @@ required = {
     "Models", "ChatNonstream", "ChatStream", "ResponsesNonstream",
     "ResponsesStream", "Embedding", "ASR", "TTS",
 }
+optional = {"XKProxyStatus", "XKProxyTraffic"}
 records = {}
 pattern = re.compile(r"^case=([^ ]+) status=(PASS|FAIL|SKIP) duration=([0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))$")
 
@@ -71,8 +72,10 @@ try:
             if match is None:
                 raise ValueError("malformed case result")
             name, status, duration = match.groups()
-            if name not in required or name in records:
+            if name not in required | optional or name in records:
                 raise ValueError("unknown or duplicate case result")
+            if name in optional and status != "PASS":
+                raise ValueError("optional infrastructure case did not pass")
             if name in required - {"ASR", "TTS"} and status != "PASS":
                 raise ValueError("required case did not pass")
             if name in {"ASR", "TTS"} and status not in {"PASS", "SKIP"}:
@@ -81,7 +84,7 @@ try:
 except (OSError, ValueError):
     raise SystemExit(1)
 
-if set(records) != required:
+if (set(records) - optional) != required:
     raise SystemExit(1)
 
 for name in ("Models", "ChatNonstream", "ChatStream", "ResponsesNonstream", "ResponsesStream", "Embedding", "ASR", "TTS"):
@@ -385,7 +388,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-for dependency in git curl python3 go mktemp chmod grep; do
+for dependency in curl python3 go mktemp chmod grep; do
   started=$SECONDS
   if command -v "$dependency" >/dev/null 2>&1; then
     report "Dependency-${dependency}" 'PASS' "$started"
@@ -424,7 +427,7 @@ print(f"{value.scheme}://{value.netloc}", end="")
 fi
 report 'Configuration' 'PASS' "$started"
 
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
 started=$SECONDS
@@ -472,6 +475,42 @@ if [[ "$login_status" != '200' || -z "$admin_session" ]]; then
   exit 1
 fi
 report 'AdminLogin' 'PASS' "$started"
+
+if [[ "${NVIDIA_ROUTER_LIVE_REQUIRE_XK_PROXY:-0}" == '1' ]]; then
+  started=$SECONDS
+  if ! proxy_status_response="$(admin_request GET '/admin/api/proxy-pool/status' '')"; then
+    report 'XKProxyStatus' 'FAIL' "$started"
+    exit 1
+  fi
+  proxy_status_code="$(response_status "$proxy_status_response")"
+  proxy_status_body="$(response_body "$proxy_status_response")"
+  if [[ "$proxy_status_code" != '200' ]] || ! printf '%s' "$proxy_status_body" | python3 -c '
+import json
+import os
+import sys
+
+try:
+    data = json.load(sys.stdin).get("data", {})
+    required_mode = os.environ.get("NVIDIA_ROUTER_LIVE_REQUIRE_XK_MODE", "built-in")
+    if data.get("mode") != required_mode:
+        raise SystemExit(1)
+    if required_mode == "built-in":
+        if data.get("collector_enabled") is not True:
+            raise SystemExit(1)
+        if int(data.get("healthy_size", 0)) < 1 or not data.get("last_success_at"):
+            raise SystemExit(1)
+        if not isinstance(data.get("proxies"), list) or not data["proxies"]:
+            raise SystemExit(1)
+except (ValueError, AttributeError, TypeError):
+    raise SystemExit(1)
+' 2>/dev/null; then
+    unset proxy_status_response proxy_status_code proxy_status_body
+    report 'XKProxyStatus' 'FAIL' "$started"
+    exit 1
+  fi
+  unset proxy_status_response proxy_status_code proxy_status_body
+  report 'XKProxyStatus' 'PASS' "$started"
+fi
 
 started=$SECONDS
 if ! nvidia_import_payload="$(python3 -c '
@@ -780,4 +819,31 @@ elif (( live_status_result == 2 )); then
 else
   report 'LiveGoTest' 'FAIL' "$started"
   exit 1
+fi
+
+if [[ "${NVIDIA_ROUTER_LIVE_REQUIRE_XK_PROXY:-0}" == '1' ]]; then
+  started=$SECONDS
+  if ! proxy_traffic_response="$(admin_request GET '/admin/api/proxy-pool/status' '')"; then
+    report 'XKProxyTraffic' 'FAIL' "$started"
+    exit 1
+  fi
+  proxy_traffic_status="$(response_status "$proxy_traffic_response")"
+  proxy_traffic_body="$(response_body "$proxy_traffic_response")"
+  if [[ "$proxy_traffic_status" != '200' ]] || ! printf '%s' "$proxy_traffic_body" | python3 -c '
+import json
+import sys
+try:
+    data = json.load(sys.stdin).get("data", {})
+    proxies = data.get("proxies", [])
+    if not isinstance(proxies, list) or sum(int(item.get("request_success_count", 0)) for item in proxies) < 1:
+        raise SystemExit(1)
+except (ValueError, AttributeError, TypeError):
+    raise SystemExit(1)
+' 2>/dev/null; then
+    unset proxy_traffic_response proxy_traffic_status proxy_traffic_body
+    report 'XKProxyTraffic' 'FAIL' "$started"
+    exit 1
+  fi
+  unset proxy_traffic_response proxy_traffic_status proxy_traffic_body
+  report 'XKProxyTraffic' 'PASS' "$started"
 fi

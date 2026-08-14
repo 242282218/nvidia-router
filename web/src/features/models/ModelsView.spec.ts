@@ -56,6 +56,22 @@ describe('ModelsView', () => {
     expect(wrapper.text()).not.toContain('Chat')
   })
 
+  it('surfaces a persistent load error with retry instead of an empty model table', async () => {
+    vi.mocked(modelsApi.list)
+      .mockRejectedValueOnce(new Error('gateway timeout'))
+      .mockResolvedValueOnce({ data: [makeModel()] })
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    const panel = wrapper.get('[data-testid="models-load-error"]')
+    expect(panel.text()).toContain('加载失败')
+
+    await wrapper.get('[data-testid="models-retry"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="models-load-error"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain(makeModel().display_name)
+  })
+
   it.each([
     ['a non-array data field', { data: null }],
     ['an invalid candidate item', {

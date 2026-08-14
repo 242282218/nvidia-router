@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/tests/mocknvidia"
 )
 
@@ -257,6 +258,11 @@ func TestProxyUnavailableReturns502WithoutDirectTraffic(t *testing.T) {
 		tlsUpstream:  fixture.upstream,
 		proxyURL:     proxyURL,
 		proxyAuthKey: "proxy-secret",
+		settings: runtimeconfig.Snapshot{
+			QueueCapacity: 10, QueueWaitTimeoutMS: 1000,
+			ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 1000,
+			NonstreamTotalTimeoutMS: 5000, ShutdownGraceMS: 1000,
+		},
 	})
 	keyID := harness.keyIDs[0]
 	modelID := harness.modelID

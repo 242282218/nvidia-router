@@ -21,6 +21,9 @@ func Prime(ctx context.Context, response *http.Response) error {
 	if response == nil || response.Body == nil {
 		return io.ErrUnexpectedEOF
 	}
+	if marker, ok := response.Body.(interface{ RequireSemanticCompletion() }); ok {
+		marker.RequireSemanticCompletion()
+	}
 
 	captured := &captureReader{reader: response.Body}
 	result := make(chan error, 1)
@@ -81,6 +84,21 @@ func (r *captureReader) Read(payload []byte) (int, error) {
 type replayReadCloser struct {
 	io.Reader
 	closer io.Closer
+}
+
+// MarkComplete forwards semantic stream completion through the replay wrapper
+// so proxy quality sees the terminal marker after priming has buffered bytes.
+func (r *replayReadCloser) MarkComplete() {
+	if marker, ok := r.closer.(interface{ MarkComplete() }); ok {
+		marker.MarkComplete()
+	}
+}
+
+// RequireSemanticCompletion forwards the stream contract through replay.
+func (r *replayReadCloser) RequireSemanticCompletion() {
+	if marker, ok := r.closer.(interface{ RequireSemanticCompletion() }); ok {
+		marker.RequireSemanticCompletion()
+	}
 }
 
 func (r *replayReadCloser) Close() error {

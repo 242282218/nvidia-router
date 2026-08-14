@@ -449,13 +449,20 @@ func TestStreamDoneEventsCarryAccumulatedText(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	textDone := ""
+	partDoneText := ""
 	var itemContent []any
-	seenTextDone, seenItemDone := false, false
+	seenTextDone, seenPartDone, seenItemDone := false, false, false
 	for _, e := range emit.events {
 		switch e.Event {
 		case "response.output_text.done":
 			seenTextDone = true
 			textDone, _ = e.Data["text"].(string)
+		case "response.content_part.done":
+			seenPartDone = true
+			part, _ := e.Data["part"].(map[string]any)
+			if part != nil {
+				partDoneText, _ = part["text"].(string)
+			}
 		case "response.output_item.done":
 			item, _ := e.Data["item"].(map[string]any)
 			if item["type"] == "message" {
@@ -464,11 +471,14 @@ func TestStreamDoneEventsCarryAccumulatedText(t *testing.T) {
 			}
 		}
 	}
-	if !seenTextDone || !seenItemDone {
-		t.Fatalf("done events missing; text_done=%v item_done=%v", seenTextDone, seenItemDone)
+	if !seenTextDone || !seenPartDone || !seenItemDone {
+		t.Fatalf("done events missing; text_done=%v part_done=%v item_done=%v", seenTextDone, seenPartDone, seenItemDone)
 	}
 	if textDone != "Hello world" {
 		t.Fatalf("output_text.done text = %q, want %q", textDone, "Hello world")
+	}
+	if partDoneText != "Hello world" {
+		t.Fatalf("content_part.done part text = %q, want %q", partDoneText, "Hello world")
 	}
 	if len(itemContent) != 1 {
 		t.Fatalf("output_item.done content = %#v, want one output_text part", itemContent)

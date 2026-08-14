@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import { ApiError } from '../../shared/api/client'
+import { useDialog } from '../../shared/useDialog'
 import { accessKeysApi } from './api'
 import type { AccessKey, AccessKeyPolicy } from './types'
 
@@ -10,6 +11,9 @@ const emit = defineEmits<{
   close: []
   saved: []
 }>()
+
+const panel = ref<globalThis.HTMLElement | null>(null)
+useDialog(computed(() => props.open), panel, () => emit('close'))
 
 const rpm = ref('')
 const tpm = ref('')
@@ -130,7 +134,10 @@ function close(): void {
       aria-modal="true"
       aria-labelledby="edit-access-key-policy-title"
     >
-      <section class="modal-panel max-w-lg">
+      <section
+        ref="panel"
+        class="modal-panel max-w-lg"
+      >
         <div class="border-b border-[var(--color-border)] px-6 py-4">
           <h2
             id="edit-access-key-policy-title"
@@ -162,7 +169,7 @@ function close(): void {
               <span
                 v-if="fieldErrors.rpm"
                 data-testid="access-key-rpm-error"
-                class="mt-1 block text-xs text-[#F87171]"
+                class="mt-1 block text-xs text-[var(--color-danger)]"
                 role="alert"
               >{{ fieldErrors.rpm }}</span>
               <span class="mt-1 block text-xs text-[var(--color-text-muted)]">每分钟请求数上限，0 表示不限制。</span>
@@ -184,7 +191,7 @@ function close(): void {
               <span
                 v-if="fieldErrors.tpm"
                 data-testid="access-key-tpm-error"
-                class="mt-1 block text-xs text-[#F87171]"
+                class="mt-1 block text-xs text-[var(--color-danger)]"
                 role="alert"
               >{{ fieldErrors.tpm }}</span>
               <span class="mt-1 block text-xs text-[var(--color-text-muted)]">每分钟 Token 数上限，0 表示不限制。</span>
@@ -206,7 +213,7 @@ function close(): void {
               <span
                 v-if="fieldErrors.maxConcurrent"
                 data-testid="access-key-max-concurrent-error"
-                class="mt-1 block text-xs text-[#F87171]"
+                class="mt-1 block text-xs text-[var(--color-danger)]"
                 role="alert"
               >{{ fieldErrors.maxConcurrent }}</span>
               <span class="mt-1 block text-xs text-[var(--color-text-muted)]">同时进行的请求数上限，0 表示不限制。</span>
@@ -228,7 +235,7 @@ function close(): void {
               <span
                 v-if="fieldErrors.tokenBudget"
                 data-testid="access-key-token-budget-error"
-                class="mt-1 block text-xs text-[#F87171]"
+                class="mt-1 block text-xs text-[var(--color-danger)]"
                 role="alert"
               >{{ fieldErrors.tokenBudget }}</span>
               <span class="mt-1 block text-xs text-[var(--color-text-muted)]">该 Key 累计可消耗的 Token 上限，用尽后拒绝请求，0 表示不限制。</span>
@@ -246,7 +253,7 @@ function close(): void {
               <span
                 v-if="fieldErrors.expiresAt"
                 data-testid="access-key-expires-at-error"
-                class="mt-1 block text-xs text-[#F87171]"
+                class="mt-1 block text-xs text-[var(--color-danger)]"
                 role="alert"
               >{{ fieldErrors.expiresAt }}</span>
               <span class="mt-1 block text-xs text-[var(--color-text-muted)]">留空表示永不过期。</span>
@@ -256,7 +263,7 @@ function close(): void {
               <p
                 v-if="errorMessage"
                 data-testid="edit-access-key-policy-error"
-                class="text-sm text-[#F87171]"
+                class="text-sm text-[var(--color-danger)]"
                 role="alert"
               >
                 {{ errorMessage }}
@@ -288,9 +295,11 @@ function close(): void {
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -300,9 +309,11 @@ function close(): void {
 .modal-leave-to section {
   transform: scale(0.95);
 }
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

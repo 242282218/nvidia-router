@@ -325,12 +325,16 @@ func (s *streamState) closeOpenMessage(emit Emitter) error {
 	if err := emit.Emit(textDone); err != nil {
 		return fmt.Errorf("emit output_text.done: %w", err)
 	}
+	part := map[string]any{"type": "output_text"}
+	if text != "" {
+		part["text"] = text
+	}
 	partDone := EmittedEvent{Event: "response.content_part.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"item_id":         s.messageID,
 		"output_index":    s.messageIndex,
 		"content_index":   0,
-		"part":            map[string]any{"type": "output_text"},
+		"part":            part,
 	}}
 	if err := emit.Emit(partDone); err != nil {
 		return fmt.Errorf("emit content_part.done: %w", err)

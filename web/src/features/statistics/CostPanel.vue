@@ -94,10 +94,18 @@ function formatUSD(value: number): string {
 
     <p
       v-if="errorMessage"
-      class="mt-3 text-sm text-[var(--color-danger)]"
+      class="mt-3 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
       role="alert"
     >
-      {{ errorMessage }}
+      <span>{{ errorMessage }}</span>
+      <button
+        class="btn-secondary rounded-lg px-3 py-1 text-xs"
+        type="button"
+        :disabled="loading"
+        @click="load"
+      >
+        重试
+      </button>
     </p>
 
     <div
@@ -131,7 +139,7 @@ function formatUSD(value: number): string {
           </p>
           <p
             class="mt-2 text-2xl font-semibold"
-            :class="unpricedCount > 0 ? 'text-[#F59E0B]' : 'text-[var(--color-success)]'"
+            :class="unpricedCount > 0 ? 'text-[var(--color-warning)]' : 'text-[var(--color-success)]'"
           >
             {{ unpricedCount }}
           </p>

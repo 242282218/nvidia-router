@@ -98,6 +98,11 @@ type Patch struct {
 	SupportsTools       *bool   `json:"supports_tools,omitempty"`
 	SupportsReasoning   *bool   `json:"supports_reasoning,omitempty"`
 	ReasoningWireFormat *string `json:"reasoning_wire_format,omitempty"`
+	// StreamFirstTokenTimeoutMS / StreamIdleTimeoutMS override the global
+	// runtime_settings windows for this model. They mirror the models-table
+	// columns seeded by migration 016/022; a nil value leaves the current value.
+	StreamFirstTokenTimeoutMS *int `json:"stream_first_token_timeout_ms,omitempty"`
+	StreamIdleTimeoutMS       *int `json:"stream_idle_timeout_ms,omitempty"`
 	// Pricing is kept separate from capability Selection (which models
 	// upstream-discovered attributes): these are operator-owned cost columns.
 	InputUSDPerMTok  *float64 `json:"input_usd_per_mtok,omitempty"`

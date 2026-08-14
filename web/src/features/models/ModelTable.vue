@@ -49,6 +49,18 @@ function formatPrice(value?: number): string {
   return `$${value} /1M`
 }
 
+// formatStreamTimeout renders the per-model streaming timeout override, or the
+// global-default marker when the model carries no override. The columns are
+// seeded by migration 016/022 (e.g. deepseek 300s); exposing them here makes the
+// override observable without the operator querying the raw API.
+function formatStreamTimeout(firstToken?: number, idle?: number): string {
+  if (firstToken === undefined && idle === undefined) return '全局默认'
+  const parts: string[] = []
+  if (firstToken !== undefined) parts.push(`首 ${(firstToken / 1000).toFixed(0)}s`)
+  if (idle !== undefined) parts.push(`空闲 ${(idle / 1000).toFixed(0)}s`)
+  return parts.join(' · ')
+}
+
 function audioNeedsVerification(model: Model): boolean {
   return (model.kind === 'asr' || model.kind === 'tts') && !model.capability_verified_at
 }
@@ -81,6 +93,9 @@ function capBadge(supported: boolean): string {
           </th>
           <th class="data-table-th">
             单价 (USD /1M)
+          </th>
+          <th class="data-table-th">
+            流式超时
           </th>
           <th class="data-table-th">
             状态
@@ -172,6 +187,14 @@ function capBadge(supported: boolean): string {
           </td>
           <td class="data-table-td">
             <span
+              class="font-mono text-xs"
+              :class="model.stream_first_token_timeout_ms !== undefined || model.stream_idle_timeout_ms !== undefined ? 'text-[var(--color-accent-bright)]' : 'text-[var(--color-text-muted)]'"
+            >
+              {{ formatStreamTimeout(model.stream_first_token_timeout_ms, model.stream_idle_timeout_ms) }}
+            </span>
+          </td>
+          <td class="data-table-td">
+            <span
               v-if="model.enabled"
               class="badge-success"
             >启用</span>
@@ -202,7 +225,7 @@ function capBadge(supported: boolean): string {
                 v-for="keyId in model.blocked_by_key_ids"
                 :key="keyId"
                 :data-testid="`model-table-unblock-${keyId}`"
-                class="block text-xs text-[#F87171] underline hover:text-[#FCA5A5] disabled:opacity-40"
+                class="block text-xs text-[var(--color-danger)] underline hover:opacity-75 disabled:opacity-40"
                 type="button"
                 :disabled="busyId === model.id"
                 @click="emit('unblock', keyId, model)"
@@ -225,7 +248,7 @@ function capBadge(supported: boolean): string {
         </tr>
         <tr v-if="models.length === 0">
           <td
-            colspan="6"
+            colspan="7"
             class="px-4 py-8 text-center text-[var(--color-text-muted)]"
           >
             暂无模型白名单。

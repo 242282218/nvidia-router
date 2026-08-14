@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"nvidia-router/internal/fault"
+	"nvidia-router/internal/observability"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/xkproxy"
 )
@@ -281,10 +282,10 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 	// proxy produced from an HTTP response (e.g. a 5xx CONNECT answer) means the
 	// proxy is up and already refused the request; replaying would just double
 	// the upstream load on a known-bad path (audit R5). Such proxy-produced
-	// answers are also NOT an NVIDIA key fault: wrap them as xkproxy.Error so the
-	// router's executeLease short-circuits instead of cooldowning the key.
+	// answers are also NOT an NVIDIA key fault: wrap them as a proxy-rejected
+	// error so the router's executeLease surfaces a 502 without a key switch.
 	if !replayableProxyError(err) {
-		return nil, xkproxy.NewTransportError(err)
+		return nil, xkproxy.NewProxyRejectedError(err)
 	}
 	response, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
 	if err == nil || response != nil {
@@ -364,6 +365,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 		handle.Release()
 		return nil, false, false, err
 	}
+	started := time.Now()
 	firstByteTimer := startFirstByteWatch(snapshot.FirstByteDeadline)
 	trace := &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
@@ -378,10 +380,8 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
 	httpClient := *c.httpClient
 	httpClient.Transport = handle.Transport()
-	started := time.Now()
 	response, err := httpClient.Do(request)
 	firstByteTimer.Stop()
-	elapsed := time.Since(started)
 	if response != nil {
 		if response.Body == nil {
 			handle.Release()
@@ -390,7 +390,16 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			}
 			return nil, wrote.Load(), false, err
 		}
-		response.Body = newReleaseBody(response.Body, handle.Release)
+		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+			// The response header marks the network-observable first-byte point;
+			// full body generation time must never influence proxy IP ranking.
+			handle.ReportRequestLatency(time.Since(started))
+		}
+		response.Body = newReleaseBody(response.Body, handle.Release, func() {
+			if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+				handle.ReportLatency(0)
+			}
+		}, handle.ReportRequestFailure)
 		if err != nil {
 			_ = response.Body.Close()
 			return nil, wrote.Load(), false, err
@@ -406,10 +415,14 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 		// Latency is deliberately not fed on HTTP failures: a fast rejection must
 		// not make a failing exit look fast.
 		switch {
-		case response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices:
-			handle.ReportLatency(elapsed)
 		case isProxyHTTPFault(response.StatusCode):
-			handle.ReportHTTPFailure()
+			handle.ReportHTTPFailure(response.StatusCode)
+			if key := handle.ProxyKey(); key != "" {
+				observability.RequestLogger(ctx).Debug("proxy_http_fault",
+					"proxy", key,
+					"status", response.StatusCode,
+				)
+			}
 		}
 		return response, wrote.Load(), false, nil
 	}
@@ -417,8 +430,22 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 		err = errors.New("NVIDIA proxy transport returned no response")
 	}
 	if ctx.Err() != nil || wrote.Load() || firstByteTimer.Expired() {
+		if firstByteTimer.Expired() && wrote.Load() {
+			handle.ReportRequestFailure()
+			handle.Invalidate()
+		}
 		handle.Release()
 		return nil, wrote.Load(), false, err
+	}
+	// A pure transport failure through a pooled exit is worth one replay, but it
+	// is also the clearest signal that a specific exit is failing. Record the exit
+	// identity at debug so an operator correlating a slow/failed request can see
+	// which proxy it dialled without scraping the pool status page.
+	if key := handle.ProxyKey(); key != "" {
+		observability.RequestLogger(ctx).Debug("proxy_transport_error",
+			"proxy", key,
+			"error", err,
+		)
 	}
 	handle.Retire(xkproxy.RetireReasonTransportError)
 	handle.Release()
@@ -466,12 +493,62 @@ func (w *firstByteWatch) Expired() bool { return w.expired.Load() }
 
 type releaseBody struct {
 	io.ReadCloser
-	release func()
-	once    sync.Once
+	release          func()
+	onComplete       func()
+	onFailure        func()
+	once             sync.Once
+	terminal         atomic.Uint32
+	semanticRequired atomic.Bool
 }
 
-func newReleaseBody(body io.ReadCloser, release func()) *releaseBody {
-	return &releaseBody{ReadCloser: body, release: release}
+func newReleaseBody(body io.ReadCloser, release func(), onComplete func(), onFailure func()) *releaseBody {
+	return &releaseBody{ReadCloser: body, release: release, onComplete: onComplete, onFailure: onFailure}
+}
+
+func (b *releaseBody) Read(payload []byte) (int, error) {
+	read, err := b.ReadCloser.Read(payload)
+	if err == io.EOF {
+		if b.semanticRequired.Load() {
+			b.failTerminal()
+		} else {
+			b.completeTerminal()
+		}
+	} else if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return read, err
+		}
+		b.failTerminal()
+	}
+	return read, err
+}
+
+// RequireSemanticCompletion makes ordinary EOF a failed stream termination.
+func (b *releaseBody) RequireSemanticCompletion() {
+	b.semanticRequired.Store(true)
+}
+
+// MarkComplete records semantic completion for framed streams whose terminal
+// marker arrives before the underlying connection reaches EOF.
+func (b *releaseBody) MarkComplete() {
+	b.completeTerminal()
+}
+
+func (b *releaseBody) completeTerminal() {
+	if !b.terminal.CompareAndSwap(0, 1) {
+		return
+	}
+	if b.onComplete != nil {
+		b.onComplete()
+	}
+}
+
+func (b *releaseBody) failTerminal() {
+	if !b.terminal.CompareAndSwap(0, 2) {
+		return
+	}
+	if b.onFailure != nil {
+		b.onFailure()
+	}
 }
 
 func (b *releaseBody) Close() error {

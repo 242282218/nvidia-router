@@ -11,7 +11,10 @@
   --color-text: #edf1f2;
   --color-text-secondary: #a7b0b8;
   --color-text-muted: #7f8a94;
-  --color-text-subtle: #75818d;
+  /* #7d8994 keeps a visibly "subtle" step below secondary while lifting the
+     elevated-surface contrast from 4.35:1 to 4.85:1 (design-aesthetics: normal
+     text must clear 4.5:1 on every surface it renders on, including modals). */
+  --color-text-subtle: #7d8994;
   --color-accent: #76b900;
   --color-accent-bright: #8bd31f;
   --color-accent-foreground: #081000;
@@ -61,7 +64,7 @@ body {
   overflow-x: hidden;
   background: var(--color-canvas);
   color: var(--color-text);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 15px;
   line-height: 1.55;
   text-rendering: optimizeLegibility;
@@ -92,6 +95,11 @@ select:focus-visible {
 ::selection {
   background: color-mix(in srgb, var(--color-accent) 28%, transparent);
   color: var(--color-text);
+}
+
+.font-mono-data {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .sr-only {

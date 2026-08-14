@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { ApiError } from '../../shared/api/client'
+import { useDialog } from '../../shared/useDialog'
 import { accessKeysApi } from './api'
 
 const props = defineProps<{ open: boolean }>()
@@ -15,6 +16,12 @@ const plaintext = ref('')
 const errorMessage = ref('')
 const copyMessage = ref('')
 const submitting = ref(false)
+const panel = ref<globalThis.HTMLElement | null>(null)
+
+// Esc closes, Tab stays trapped in the panel, focus returns to the trigger, and
+// the background scroll is locked while open. `open` is a prop, so wrap it in a
+// computed ref; Esc routes through emit('close') and the parent flips the prop.
+useDialog(computed(() => props.open), panel, () => emit('close'))
 
 watch(() => props.open, (open) => {
   if (!open) clearSensitiveState()
@@ -92,7 +99,10 @@ function clearSensitiveState(): void {
       aria-modal="true"
       aria-labelledby="create-access-key-title"
     >
-      <section class="modal-panel max-w-lg">
+      <section
+        ref="panel"
+        class="modal-panel max-w-lg"
+      >
         <!-- Created state -->
         <template v-if="plaintext">
           <div class="border-b border-[var(--color-border)] px-6 py-4">
@@ -104,10 +114,10 @@ function clearSensitiveState(): void {
             </h2>
           </div>
           <div class="p-6 space-y-4">
-            <div class="rounded-lg border border-[#F59E0B]/30 bg-[#F59E0B]/5 p-3">
+            <div class="rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3">
               <div class="flex items-start gap-2">
                 <svg
-                  class="mt-0.5 h-4 w-4 shrink-0 text-[#FBBF24]"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -119,7 +129,7 @@ function clearSensitiveState(): void {
                     d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
                   />
                 </svg>
-                <p class="text-sm text-[#FBBF24]">
+                <p class="text-sm text-[var(--color-warning)]">
                   明文仅显示这一次。关闭后无法恢复，请立即复制并安全保存。
                 </p>
               </div>
@@ -204,7 +214,7 @@ function clearSensitiveState(): void {
               <Transition name="slide">
                 <p
                   v-if="errorMessage"
-                  class="text-sm text-[#F87171]"
+                  class="text-sm text-[var(--color-danger)]"
                   role="alert"
                 >
                   {{ errorMessage }}
@@ -235,9 +245,11 @@ function clearSensitiveState(): void {
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -247,17 +259,21 @@ function clearSensitiveState(): void {
 .modal-leave-to section {
   transform: scale(0.95);
 }
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

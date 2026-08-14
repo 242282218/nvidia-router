@@ -93,7 +93,10 @@ func NewUpstreamClient(url string, timeout time.Duration) *UpstreamClient {
 }
 
 func (c *UpstreamClient) ID() string {
-	return c.URL
+	// The configured XApi URL can contain apikey/sign credentials. Keep the
+	// provider identity opaque so callers cannot accidentally put secrets in
+	// logs, metrics, or audit records.
+	return "xingkong-xapi"
 }
 
 func (c *UpstreamClient) httpClient() *http.Client {

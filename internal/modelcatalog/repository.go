@@ -144,11 +144,15 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 		provider = CASE WHEN ? IS NULL THEN provider ELSE ? END,
 		input_usd_per_mtok  = CASE WHEN ? IS NULL THEN input_usd_per_mtok  ELSE ? END,
 		output_usd_per_mtok = CASE WHEN ? IS NULL THEN output_usd_per_mtok ELSE ? END,
+		stream_first_token_timeout_ms = CASE WHEN ? IS NULL THEN stream_first_token_timeout_ms ELSE ? END,
+		stream_idle_timeout_ms        = CASE WHEN ? IS NULL THEN stream_idle_timeout_ms        ELSE ? END,
 		updated_at = ? WHERE id = ?`,
 		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningWireFormat, optionalTimestamp(selection.CapabilityVerifiedAt),
 		patch.Provider, patchDerefString(patch.Provider),
 		patch.InputUSDPerMTok, patchDeref(patch.InputUSDPerMTok),
 		patch.OutputUSDPerMTok, patchDeref(patch.OutputUSDPerMTok),
+		patch.StreamFirstTokenTimeoutMS, patchDerefInt(patch.StreamFirstTokenTimeoutMS),
+		patch.StreamIdleTimeoutMS, patchDerefInt(patch.StreamIdleTimeoutMS),
 		updatedAt, id)
 	if err != nil {
 		return Model{}, "", fmt.Errorf("save model patch: %w", err)
@@ -637,6 +641,15 @@ func patchDeref(value *float64) any {
 // patchDerefString is the ELSE branch of the provider CASE: nil preserves the
 // stored provider, a non-nil value replaces it.
 func patchDerefString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+// patchDerefInt is the ELSE branch of the stream-timeout CASE: nil preserves the
+// stored value, a non-nil value replaces it.
+func patchDerefInt(value *int) any {
 	if value == nil {
 		return nil
 	}

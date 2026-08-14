@@ -30,10 +30,9 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 ```dotenv
 NVIDIA_ROUTER_MASTER_KEY=替换为上面命令生成的值
-NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=替换为至少 12 个字符的随机密码
-# 星空代理池独立部署时填写其可达地址和同一个 PROXY_AUTH_KEY
-NVIDIA_ROUTER_XK_PROXY_URL=http://proxy-pool:8080
-NVIDIA_ROUTER_XK_PROXY_AUTH_KEY=替换为星空代理池的代理 Key
+NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=<生成至少12个字符的随机密码>
+# 内置星空采集器：完整 XApi 地址只从运行时 Secret 注入，不写入 Web/数据库
+NVIDIA_ROUTER_XK_UPSTREAM_URL=由运行时 Secret Provider 注入
 ```
 
 不要把真实密码写入仓库或命令历史；已有管理员记录后，初始密码不会覆盖现有密码，但 Compose 仍要求该变量存在以完成配置校验。
@@ -90,12 +89,15 @@ docker compose stop app
 | `NVIDIA_ROUTER_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `NVIDIA_ROUTER_TEMP_DIR` | `/tmp` | 请求临时资源目录 |
 | `NVIDIA_ROUTER_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | NVIDIA 上游 HTTPS 地址 |
-| `NVIDIA_ROUTER_XK_PROXY_URL` | 空 | 星空代理池标准 HTTP/HTTPS 正向代理地址；为空时直连，非空时所有 NVIDIA 请求强制走代理 |
-| `NVIDIA_ROUTER_XK_PROXY_AUTH_KEY` | 空 | 代理池的 `PROXY_AUTH_KEY`；配置代理地址时必填，首次启动可通过环境变量注入 |
+| `NVIDIA_ROUTER_XK_UPSTREAM_URL` | 空 | 内置采集器的 XApi 地址；必须带 provider query 凭据，只从运行时 Secret 注入，不进入数据库或 Web 响应 |
+| `NVIDIA_ROUTER_XK_VALIDATION_URL` | NVIDIA 基础地址 | 代理验证地址，不含 query 或凭据 |
+| `NVIDIA_ROUTER_XK_VALIDATION_STATUS` | `404` | 代理验证期望的 HTTP 状态码 |
+| `NVIDIA_ROUTER_XK_COLLECT_INTERVAL` | `5s` | 采集周期 |
+| `NVIDIA_ROUTER_XK_PROXY_TTL` | `120s` | 代理出口 TTL |
+| `NVIDIA_ROUTER_XK_EXPECTED_QTY` | `2` | 每次租约期望出口数量 |
+| `NVIDIA_ROUTER_XK_CONCURRENCY` | `2` | 代理验证并发数 |
 
-`nvida反代` 不再调用星空 XApi，也不提取或保存单个代理 IP。它只连接星空代理池的标准 HTTP 正向代理；代理池负责 XApi、出口轮换、测活和过期处理。代理配置启用后不会静默回退直连；代理池未就绪、认证失败或 CONNECT 失败会返回临时不可用。
-
-代理池和本项目独立 Compose 部署时，应把两个容器接入同一个 Docker 网络，或使用代理池宿主机的可达地址；`NVIDIA_ROUTER_XK_PROXY_URL` 使用代理池的 `8080` 端点。代理用户名固定为 `proxy`，认证 Key 必须与代理池的 `PROXY_AUTH_KEY` 一致。管理员也可以在 Web 的“代理池”页面修改启用状态、地址和认证 Key；数据库配置优先于环境变量，认证 Key 以现有主密钥加密后保存，不会写入日志或 API 响应。
+`nvida反代` 在单体进程内完成 XApi 采集、TXT 解析、代理验证、TTL 管理、质量评分、轮换和 NVIDIA CONNECT。代理配置启用后不会静默回退直连；上游未就绪、代理池为空或 CONNECT 失败会返回临时不可用。Web 可以热更新非敏感采集参数；完整 XApi URL 只在当前进程内存中生效，重启必须重新由运行时 Secret 注入。
 
 流式请求的运行时设置将首 token 等待与已提交响应的空闲窗口分开：`stream_first_token_timeout_ms` 默认 60000，`stream_idle_timeout_ms` 默认 180000。DeepSeek v4-flash 这类长思考模型建议保留较大的 idle 窗口；窗口越大，单个 Key 的流式槽位被占用时间越长。429 会尊重上游 `Retry-After` 后再切换 Key，NVIDIA 529 临时过载也会进入有界重试和冷却，不会通过代理失败静默回退直连。
 

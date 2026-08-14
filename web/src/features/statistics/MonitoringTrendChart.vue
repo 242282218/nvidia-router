@@ -31,6 +31,27 @@ const values = computed(() => props.series.map((point) => {
 
 const maxValue = computed(() => Math.max(1, ...values.value))
 
+// Each metric carries its own semantic colour (design-aesthetics 数据可视化
+// P0#3): failures are danger red, latency is warning amber, tokens success
+// green and requests the neutral info indigo. A single colour for every chart
+// made "failure trend" read like "request trend" at a glance.
+const seriesColor = computed(() => {
+  switch (props.metric) {
+    case 'failures':
+      return 'var(--color-danger)'
+    case 'latency':
+      return 'var(--color-warning)'
+    case 'tokens':
+      return 'var(--color-success)'
+    default:
+      return 'var(--color-info)'
+  }
+})
+
+// Failures additionally use a dashed line as a second encoding, so the series
+// stays distinguishable for colour-blind operators who cannot rely on hue.
+const lineDash = computed(() => (props.metric === 'failures' ? '6 4' : undefined))
+
 const points = computed(() => values.value.map((value, index) => {
   const x = values.value.length <= 1 ? plotLeft + plotWidth / 2 : plotLeft + (index / (values.value.length - 1)) * plotWidth
   const y = 188 - (value / maxValue.value) * 160
@@ -42,14 +63,27 @@ const points = computed(() => values.value.map((value, index) => {
 const plotLeft = 48
 const plotWidth = 720 - plotLeft
 
-// Y-axis labels at the three gridline rows (0, midpoint, max), using "good
-// numbers" per design-aesthetics P0#126 so absolute values are readable on the
-// chart itself, not only in the collapsed data table.
+// Y-axis labels at the three gridline rows (0, midpoint, max). The midpoint is
+// snapped to a "good number" (1/2/2.5/5 × 10^n) so absolute values stay
+// readable on the chart (design-aesthetics P0#126): a raw max/2 can render as
+// 33.5, which is a measurement, not a label.
 const yAxisLabels = computed(() => [
   { y: 188, value: 0 },
-  { y: 108, value: Math.round(maxValue.value / 2) },
+  { y: 108, value: niceMidpoint(maxValue.value) },
   { y: 28, value: maxValue.value },
 ])
+
+function niceMidpoint(maxValue: number): number {
+  const raw = maxValue / 2
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(raw, 1)))
+  for (const base of [1, 2, 2.5, 5]) {
+    const step = base * magnitude
+    if (step >= raw) {
+      return step
+    }
+  }
+  return 10 * magnitude
+}
 
 function formatValue(value: number): string {
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(value)
@@ -131,7 +165,8 @@ function formatValue(value: number): string {
           <polyline
             :points="points"
             fill="none"
-            stroke="var(--color-info)"
+            :stroke="seriesColor"
+            :stroke-dasharray="lineDash"
             stroke-width="3"
             stroke-linecap="round"
             stroke-linejoin="round"

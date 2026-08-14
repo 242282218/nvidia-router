@@ -2,6 +2,7 @@ package xkproxy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -20,7 +21,9 @@ type Collector struct {
 	ejectionPolicy EjectionPolicy
 
 	mu      sync.Mutex
+	fetchMu sync.Mutex
 	closed  bool
+	started bool
 	done    chan struct{}
 	wg      sync.WaitGroup
 	lastErr error
@@ -69,6 +72,11 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 	if cfg.Interval <= 0 {
 		cfg.Interval = 5 * time.Second
 	}
+	// A zero/negative concurrency would block every validation goroutine on the
+	// empty semaphore forever and hang Close(); normalize to one worker.
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 1
+	}
 	return &Collector{
 		upstream:       NewUpstreamClient(cfg.UpstreamURL, cfg.UpstreamTimeout),
 		validator:      NewValidatorWithMaxLatency(cfg.ValidationURL, cfg.ValidationStatus, cfg.ValidationTimeout, cfg.MaxLatency),
@@ -85,13 +93,17 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 
 func (c *Collector) Start(ctx context.Context) {
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.started {
 		c.mu.Unlock()
 		return
 	}
+	// Mark started and register the goroutine under the lock so a concurrent
+	// Start cannot launch a second run loop (both would mutate backoffLevel)
+	// and Close cannot reach Wait() before the goroutine is registered.
+	c.started = true
+	c.wg.Add(1)
 	c.mu.Unlock()
 
-	c.wg.Add(1)
 	go c.run(ctx)
 }
 
@@ -100,7 +112,7 @@ func (c *Collector) run(ctx context.Context) {
 
 	// Immediate first fetch; its outcome seeds the backoff state so a startup
 	// against a not-yet-ready upstream does not hammer it on the base interval.
-	success := c.fetch(ctx)
+	success := c.fetchSingleFlight(ctx)
 
 	timer := time.NewTimer(c.nextInterval(success))
 	defer timer.Stop()
@@ -112,7 +124,7 @@ func (c *Collector) run(ctx context.Context) {
 		case <-c.done:
 			return
 		case <-timer.C:
-			success := c.fetch(ctx)
+			success := c.fetchSingleFlight(ctx)
 			timer.Reset(c.nextInterval(success))
 		}
 	}
@@ -133,70 +145,145 @@ func (c *Collector) nextInterval(success bool) time.Duration {
 	return c.interval << c.backoffLevel
 }
 
+// validationRetryLimit bounds how many times fetch re-fetches after a batch of
+// proxies all fail validation. The upstream's proxy quality is random (a single
+// dead IP is common), so one immediate re-fetch usually lands a usable exit
+// without waiting out the next interval. The limit keeps a persistently-dead
+// upstream from being hammered inside a single fetch.
+const validationRetryLimit = 3
+
+// Refresh performs one bounded collection cycle. It is intentionally single-flight:
+// the scheduler and an operator-triggered refresh must never overlap and consume two
+// provider leases at once.
+func (c *Collector) Refresh(ctx context.Context) error {
+	if c == nil {
+		return errors.New("proxy collector is nil")
+	}
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return errors.New("proxy collector is closed")
+	}
+	if !c.fetchSingleFlight(ctx) {
+		if err := c.LastError(); err != nil {
+			return err
+		}
+		return errors.New("proxy collection did not produce a healthy batch")
+	}
+	return nil
+}
+
+func (c *Collector) fetchSingleFlight(ctx context.Context) bool {
+	c.fetchMu.Lock()
+	defer c.fetchMu.Unlock()
+	return c.fetch(ctx)
+}
+
 func (c *Collector) fetch(ctx context.Context) bool {
 	started := time.Now()
-	c.logger.Info("upstream_fetch_start")
+	// Per-poll noise stays at Debug; the operator-facing health is the status
+	// projection (LastError/LastFetchResult), not one Info line every 5s.
+	c.logger.Debug("upstream_fetch_start")
 
-	proxies, fetchedAt, err := c.upstream.Fetch(ctx)
-	if err != nil {
-		c.mu.Lock()
-		c.lastErr = err
-		c.lastFetchAt = time.Now()
-		c.mu.Unlock()
+	for attempt := 0; attempt < validationRetryLimit; attempt++ {
+		proxies, fetchedAt, err := c.upstream.Fetch(ctx)
+		if err != nil {
+			c.mu.Lock()
+			c.lastErr = err
+			c.lastFetchAt = time.Now()
+			c.mu.Unlock()
 
-		code := ErrorCode(err)
-		c.logger.Warn("upstream_fetch_failed",
-			"error", err,
-			"provider_code", code,
-			"duration_ms", time.Since(started).Milliseconds(),
-		)
-		// Keep serving last-known-good exits while the provider is unreachable:
-		// without this the whole pool drains after one TTL window (~2min) and the
-		// provider's own outage becomes a request outage (audit H6). Dead exits
-		// still fall off via their normal TTL, and the cap bounds staleness.
-		if extended := c.pool.Grace(time.Now(), c.proxyTTL/2, c.proxyTTL*2); extended > 0 {
-			c.logger.Info("proxy_ttl_grace",
-				"extended", extended,
-				"grace_ms", (c.proxyTTL / 2).Milliseconds(),
+			code := ErrorCode(err)
+			c.logger.Warn("upstream_fetch_failed",
+				"error_class", upstreamErrorClass(err),
+				"provider_code", code,
+				"duration_ms", time.Since(started).Milliseconds(),
 			)
+			c.gracePool()
+			return false
 		}
-		return false
-	}
 
-	if len(proxies) == 0 {
-		c.logger.Warn("upstream_fetch_empty",
-			"duration_ms", time.Since(started).Milliseconds(),
+		if len(proxies) == 0 {
+			c.logger.Warn("upstream_fetch_empty",
+				"duration_ms", time.Since(started).Milliseconds(),
+			)
+			c.mu.Lock()
+			c.lastFetchAt = time.Now()
+			c.mu.Unlock()
+			c.gracePool()
+			return false
+		}
+
+		// Validate proxies concurrently
+		validated := c.validateBatch(ctx, proxies, fetchedAt)
+		if len(validated) > 0 {
+			c.pool.Merge(time.Now(), validated, c.ejectionPolicy)
+			c.logger.Debug("pool_updated",
+				"validated_count", len(validated),
+				"pool_size", c.pool.LiveSize(time.Now()),
+			)
+			c.mu.Lock()
+			c.lastErr = nil
+			c.lastFetchAt = time.Now()
+			c.lastSuccessAt = time.Now()
+			c.mu.Unlock()
+			return true
+		}
+
+		// The upstream answered but every fetched exit failed validation. The
+		// provider is returning unusable exits rather than being down, so retain
+		// last-known-good exits the same way a fetch error does — otherwise a
+		// bad-exit patch drains the pool and turns a provider quality dip into a
+		// request outage. One immediate re-fetch is worth it because proxy quality
+		// is random per lease; a rate-limit or account code is not, so no further
+		// attempts are made in those cases.
+		c.logger.Warn("validation_all_failed",
+			"fetched_count", len(proxies),
+			"attempt", attempt+1,
 		)
-		c.mu.Lock()
-		c.lastFetchAt = time.Now()
-		c.mu.Unlock()
-		return false
-	}
-
-	c.logger.Info("upstream_fetch_success",
-		"count", len(proxies),
-		"duration_ms", time.Since(started).Milliseconds(),
-	)
-
-	// Validate proxies concurrently
-	validated := c.validateBatch(ctx, proxies, fetchedAt)
-
-	if len(validated) > 0 {
-		c.pool.Merge(time.Now(), validated, c.ejectionPolicy)
-		c.logger.Info("pool_updated",
-			"validated_count", len(validated),
-			"pool_size", c.pool.LiveSize(time.Now()),
-		)
-	} else {
-		c.logger.Warn("validation_all_failed", "fetched_count", len(proxies))
+		if !c.retryWorthwhile(ctx, attempt) {
+			break
+		}
 	}
 
 	c.mu.Lock()
 	c.lastErr = nil
 	c.lastFetchAt = time.Now()
-	c.lastSuccessAt = time.Now()
 	c.mu.Unlock()
-	return true
+	c.gracePool()
+	// A batch that failed validation is not a "success": returning false keeps
+	// the backoff schedule from snapping to the base interval and re-hammering a
+	// degraded upstream every interval.
+	return false
+}
+
+// retryWorthwhile reports whether another fetch/validate round is worth starting
+// after a validation-all-failed batch. Reaching this point already means the
+// upstream answered with proxy lines (a rate-limit or account code would have
+// surfaced as a fetch error), so the provider is merely handing out dead exits.
+// Proxy quality is random per lease, so one more round usually lands a usable
+// exit; only the attempt cap and client cancellation stop the loop.
+func (c *Collector) retryWorthwhile(ctx context.Context, attempt int) bool {
+	if attempt >= validationRetryLimit-1 {
+		return false
+	}
+	return ctx.Err() == nil
+}
+
+// gracePool extends live proxies' TTL so a short upstream degradation (fetch
+// error, empty response, or a batch that all fail validation) does not drain the
+// pool while the collector keeps polling. Without this the whole pool drains
+// after one TTL window and the provider's own quality dip becomes a request
+// outage (audit H6). Dead exits still fall off via their normal TTL, and the
+// maxLifetime cap bounds how stale a retained exit may become.
+func (c *Collector) gracePool() {
+	if extended := c.pool.Grace(time.Now(), c.proxyTTL/2, c.proxyTTL*2); extended > 0 {
+		c.logger.Info("proxy_ttl_grace",
+			"extended", extended,
+			"grace_ms", (c.proxyTTL / 2).Milliseconds(),
+		)
+	}
 }
 
 // LastError returns the most recent upstream fetch error, or nil when the last
@@ -223,6 +310,35 @@ func (c *Collector) LastFetchResult() (lastFetchAt time.Time, lastSuccessAt time
 	return c.lastFetchAt, c.lastSuccessAt, code
 }
 
+func upstreamErrorClass(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if _, ok := err.(*ProviderError); ok {
+		return "provider"
+	}
+	return "transport_or_parse"
+}
+
+func validationErrorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrProxyAuth):
+		return "auth"
+	case errors.Is(err, ErrTimeout):
+		return "timeout"
+	case errors.Is(err, ErrDial):
+		return "dial"
+	case errors.Is(err, ErrStatus):
+		return "status"
+	case errors.Is(err, ErrProxyAddress):
+		return "address"
+	case errors.Is(err, ErrSlowProxy):
+		return "slow"
+	default:
+		return "other"
+	}
+}
+
 func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedAt time.Time) []Proxy {
 	sem := make(chan struct{}, c.concurrency)
 	results := make(chan Proxy, len(proxies))
@@ -239,8 +355,7 @@ func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedA
 			latency, err := c.validator.ValidateWithLatency(ctx, p)
 			if err != nil {
 				c.logger.Debug("proxy_validation_failed",
-					"address", p.Address,
-					"error", err,
+					"error_class", validationErrorClass(err),
 					"latency_ms", latency.Milliseconds(),
 				)
 				return
@@ -250,6 +365,9 @@ func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedA
 			p.ValidatedAt = time.Now()
 			p.ExpiresAt = fetchedAt.Add(c.proxyTTL)
 			p.LatencyEWMA = latency
+			// First validation is one latency sample; Merge then increments it on
+			// every re-validation so the UI can tell a fresh EWMA from a noisy one.
+			p.LatencySamples = 1
 			results <- p
 		}(proxy)
 	}

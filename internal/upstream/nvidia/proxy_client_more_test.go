@@ -159,6 +159,97 @@ func TestClientWroteRequestThenDisconnectDoesNotRetireProxy(t *testing.T) {
 	handle.Release()
 }
 
+// TestClientTruncatedSuccessDoesNotRecordProxySuccess proves a 2xx header is
+// not enough evidence of a healthy exit: a truncated response body must not
+// increase the real-request success count used by quality routing.
+func TestClientTruncatedSuccessDoesNotRecordProxySuccess(t *testing.T) {
+	var completed atomic.Int32
+	body := newReleaseBody(io.NopCloser(strings.NewReader("data: partial\n\n")), func() {}, func() { completed.Add(1) }, func() {})
+	body.RequireSemanticCompletion()
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if completed.Load() != 0 {
+		t.Fatalf("completion callback count = %d, want 0 for a stream without [DONE]", completed.Load())
+	}
+	_ = body.Close()
+}
+
+
+func TestReleaseBodyRequiresSemanticCompletion(t *testing.T) {
+	var completed atomic.Int32
+	var failures atomic.Int32
+	body := newReleaseBody(io.NopCloser(strings.NewReader("complete")), func() {}, func() { completed.Add(1) }, func() { failures.Add(1) })
+	body.RequireSemanticCompletion()
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if completed.Load() != 0 {
+		t.Fatalf("completion callback count = %d, want 0 before semantic completion", completed.Load())
+	}
+	if failures.Load() != 1 {
+		t.Fatalf("failure callback count = %d, want 1 after semantic EOF", failures.Load())
+	}
+	body.MarkComplete()
+	if completed.Load() != 0 {
+		t.Fatalf("completion callback count = %d, want 0 after late semantic completion", completed.Load())
+	}
+	_ = body.Close()
+}
+
+func TestReleaseBodySemanticRequirementAppliesBeforePrimingEOF(t *testing.T) {
+	var completed atomic.Int32
+	var failures atomic.Int32
+	body := newReleaseBody(io.NopCloser(strings.NewReader(": keep-alive\n\n")), func() {}, func() { completed.Add(1) }, func() { failures.Add(1) })
+	body.RequireSemanticCompletion()
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if completed.Load() != 0 {
+		t.Fatalf("completion callback count = %d, want 0 for EOF without [DONE]", completed.Load())
+	}
+	if failures.Load() != 1 {
+		t.Fatalf("failure callback count = %d, want 1 for EOF without [DONE]", failures.Load())
+	}
+	_ = body.Close()
+}
+
+func TestReleaseBodyReportsReadFailureOnce(t *testing.T) {
+	var failures atomic.Int32
+	body := newReleaseBody(proxyReadErrorBody{}, func() {}, func() {}, func() { failures.Add(1) })
+	buffer := make([]byte, 8)
+	for range 2 {
+		_, _ = body.Read(buffer)
+	}
+	if failures.Load() != 1 {
+		t.Fatalf("failure callback count = %d, want 1", failures.Load())
+	}
+	_ = body.Close()
+}
+
+func TestReleaseBodyDoesNotReportCallerCancellationAsProxyFailure(t *testing.T) {
+	var failures atomic.Int32
+	body := newReleaseBody(proxyReadContextErrorBody{err: context.Canceled}, func() {}, func() {}, func() { failures.Add(1) })
+	_, err := body.Read(make([]byte, 8))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Read error = %v, want context.Canceled", err)
+	}
+	if failures.Load() != 0 {
+		t.Fatalf("failure callback count = %d, want 0 for caller cancellation", failures.Load())
+	}
+	_ = body.Close()
+}
+
+type proxyReadErrorBody struct{}
+
+func (proxyReadErrorBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (proxyReadErrorBody) Close() error             { return nil }
+
+type proxyReadContextErrorBody struct{ err error }
+
+func (b proxyReadContextErrorBody) Read([]byte) (int, error) { return 0, b.err }
+func (proxyReadContextErrorBody) Close() error               { return nil }
+
 // TestClientProxyModeForbidsDirectUpstream proves the request succeeds even
 // when the base transport is hardened to reject every dial that is not the
 // proxy address, i.e. there is no silent direct fallback.

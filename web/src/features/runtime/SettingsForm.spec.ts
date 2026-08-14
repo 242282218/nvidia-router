@@ -225,6 +225,13 @@ describe('SettingsForm', () => {
     expect(wrapper.get('[data-testid="hint-retry_budget_ms"]').text()).toContain('1000-600000')
   })
 
+  it('explains that the routing switch uses request quality for proxy exits', () => {
+    const wrapper = mountForm()
+
+    expect(wrapper.text()).toContain('质量感知调度')
+    expect(wrapper.text()).toContain('真实请求质量')
+  })
+
   it('saves attempt cap and retry budget', async () => {
     const wrapper = mountForm()
 

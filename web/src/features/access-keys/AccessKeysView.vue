@@ -10,6 +10,7 @@ import type { AccessKey } from './types'
 
 const keys = ref<AccessKey[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const dialogOpen = ref(false)
 const editDialogOpen = ref(false)
 const editingKey = ref<AccessKey | null>(null)
@@ -35,6 +36,7 @@ async function loadKeys(): Promise<void> {
   if (disposed) return
   const sequence = ++loadSequence
   loading.value = true
+  loadError.value = ''
   try {
     const response: unknown = await accessKeysApi.list()
     if (disposed || sequence !== loadSequence) return
@@ -44,7 +46,10 @@ async function loadKeys(): Promise<void> {
     keys.value = response.data
   } catch (error) {
     if (disposed || sequence !== loadSequence) return
-    toastError(errorMessage(error, 'Access Key 列表加载失败。'))
+    // A failed load must not read as "no keys exist": keep the list untouched
+    // and surface a persistent error with a retry instead of an empty state.
+    loadError.value = errorMessage(error, 'Access Key 列表加载失败。')
+    toastError(loadError.value)
   } finally {
     if (!disposed && sequence === loadSequence) loading.value = false
   }
@@ -119,6 +124,30 @@ function budgetUsagePercent(key: AccessKey): number {
   if (key.token_budget <= 0) return 0
   return Math.min(100, Math.round((key.consumed_tokens / key.token_budget) * 100))
 }
+
+// isExpired reports whether the key's expiry time has passed.
+function isExpired(key: AccessKey): boolean {
+  if (!key.expires_at) return false
+  const expiry = new Date(key.expires_at)
+  return !Number.isNaN(expiry.getTime()) && expiry.getTime() <= Date.now()
+}
+
+// isBudgetExhausted reports whether a budgeted key has consumed its whole
+// token budget.
+function isBudgetExhausted(key: AccessKey): boolean {
+  return key.token_budget > 0 && key.consumed_tokens >= key.token_budget
+}
+
+// keyState derives the operator-facing state with a fixed precedence:
+// revoked > expired > budget exhausted > valid. A key can be simultaneously
+// expired and out of budget; the first condition wins so the UI never claims
+// a refused key is usable.
+function keyState(key: AccessKey): { label: string; badge: string } {
+  if (key.revoked_at) return { label: '已撤销', badge: 'badge-muted' }
+  if (isExpired(key)) return { label: '已过期', badge: 'badge-warning' }
+  if (isBudgetExhausted(key)) return { label: '预算已耗尽', badge: 'badge-danger' }
+  return { label: '有效', badge: 'badge-success' }
+}
 </script>
 
 <template>
@@ -126,7 +155,7 @@ function budgetUsagePercent(key: AccessKey): number {
     <div class="content-wrapper">
       <header class="section-header">
         <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[#F59E0B]">
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
             安全管理
           </p>
           <h1 class="page-title mt-1">
@@ -162,7 +191,24 @@ function budgetUsagePercent(key: AccessKey): number {
       </header>
 
       <div class="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-        <template v-if="loading">
+        <div
+          v-if="loadError"
+          data-testid="access-keys-load-error"
+          class="flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+          role="alert"
+        >
+          <span>{{ loadError }}</span>
+          <button
+            data-testid="access-keys-retry"
+            class="btn-secondary rounded-lg px-3 py-1.5 text-sm"
+            type="button"
+            :disabled="loading"
+            @click="loadKeys"
+          >
+            {{ loading ? '重试中…' : '重新加载' }}
+          </button>
+        </div>
+        <template v-else-if="loading">
           <div class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]">
             <svg
               class="h-4 w-4 animate-spin"
@@ -210,13 +256,9 @@ function budgetUsagePercent(key: AccessKey): number {
                   <code class="mt-1 block truncate font-mono text-xs text-[var(--color-info)]">{{ key.key_prefix }}</code>
                 </div>
                 <span
-                  v-if="key.revoked_at"
-                  class="badge-muted shrink-0"
-                >已撤销</span>
-                <span
-                  v-else
-                  class="badge-success shrink-0"
-                >有效</span>
+                  :class="keyState(key).badge"
+                  class="shrink-0"
+                >{{ keyState(key).label }}</span>
               </div>
               <div class="mt-3 space-y-1 text-xs text-[var(--color-text-muted)]">
                 <div class="flex justify-between">
@@ -226,6 +268,20 @@ function budgetUsagePercent(key: AccessKey): number {
                 <div class="flex justify-between">
                   <span>最后使用</span>
                   <span>{{ formatDate(key.last_used_at) }}</span>
+                </div>
+                <div
+                  v-if="key.expires_at"
+                  class="flex justify-between"
+                >
+                  <span>过期时间</span>
+                  <span>{{ formatDate(key.expires_at) }}</span>
+                </div>
+                <div
+                  v-if="key.token_budget > 0"
+                  class="flex justify-between"
+                >
+                  <span>Token 预算</span>
+                  <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}（{{ budgetUsagePercent(key) }}%）</span>
                 </div>
               </div>
               <div class="mt-4 flex gap-2">
@@ -305,14 +361,14 @@ function budgetUsagePercent(key: AccessKey): number {
                     class="w-32"
                     :data-testid="`access-key-budget-${key.id}`"
                   >
-                    <div class="flex justify-between font-mono text-[11px] text-[var(--color-text-muted)]">
+                    <div class="flex justify-between font-mono text-xs text-[var(--color-text-muted)]">
                       <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}</span>
                       <span>{{ budgetUsagePercent(key) }}%</span>
                     </div>
                     <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
                       <div
                         class="h-full rounded-full transition-all"
-                        :class="budgetUsagePercent(key) >= 90 ? 'bg-[#EF4444]' : budgetUsagePercent(key) >= 60 ? 'bg-[#F59E0B]' : 'bg-[var(--color-success)]'"
+                        :class="budgetUsagePercent(key) >= 90 ? 'bg-[var(--color-danger)]' : budgetUsagePercent(key) >= 60 ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'"
                         :style="{ width: `${budgetUsagePercent(key)}%` }"
                       />
                     </div>
@@ -326,13 +382,14 @@ function budgetUsagePercent(key: AccessKey): number {
                 </td>
                 <td class="data-table-td">
                   <span
-                    v-if="key.revoked_at"
-                    class="badge-muted"
-                  >已撤销</span>
+                    :class="keyState(key).badge"
+                  >{{ keyState(key).label }}</span>
                   <span
-                    v-else
-                    class="badge-success"
-                  >有效</span>
+                    v-if="key.expires_at && keyState(key).label !== '已过期'"
+                    class="ml-2 block text-xs text-[var(--color-text-subtle)]"
+                  >
+                    {{ formatDate(key.expires_at) }} 过期
+                  </span>
                 </td>
                 <td class="data-table-td text-right">
                   <button

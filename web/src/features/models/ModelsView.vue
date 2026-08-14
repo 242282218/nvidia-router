@@ -12,6 +12,7 @@ const models = ref<Model[]>([])
 const candidates = ref<Candidate[]>([])
 const selectedCandidates = ref<Record<string, boolean>>({})
 const loading = ref(false)
+const loadError = ref('')
 const discovering = ref(false)
 const saving = ref(false)
 const busyId = ref<number | null>(null)
@@ -33,6 +34,7 @@ async function loadModels(): Promise<void> {
   if (disposed) return
   const sequence = ++loadSequence
   loading.value = true
+  loadError.value = ''
   try {
     const response: unknown = await modelsApi.list()
     if (disposed || sequence !== loadSequence) return
@@ -43,7 +45,10 @@ async function loadModels(): Promise<void> {
     errorMessage.value = ''
   } catch (error) {
     if (disposed || sequence !== loadSequence) return
-    errorMessage.value = error instanceof ApiError ? error.message : '模型列表加载失败。'
+    // A failed load must not read as "no models configured": the empty table
+    // would invite a pointless re-discovery. The error panel (not the
+    // action-error alert) carries the message.
+    loadError.value = error instanceof ApiError ? error.message : '模型列表加载失败。'
   } finally {
     if (!disposed && sequence === loadSequence) loading.value = false
   }
@@ -65,6 +70,8 @@ function isModel(value: unknown): value is Model {
     && (value.capability_verified_at === undefined || typeof value.capability_verified_at === 'string')
     && (value.input_usd_per_mtok === undefined || typeof value.input_usd_per_mtok === 'number')
     && (value.output_usd_per_mtok === undefined || typeof value.output_usd_per_mtok === 'number')
+    && (value.stream_first_token_timeout_ms === undefined || typeof value.stream_first_token_timeout_ms === 'number')
+    && (value.stream_idle_timeout_ms === undefined || typeof value.stream_idle_timeout_ms === 'number')
     && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
 }
 
@@ -301,7 +308,7 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
       <Transition name="slide">
         <p
           v-if="errorMessage"
-          class="mb-4 text-sm text-[#F87171]"
+          class="mb-4 text-sm text-[var(--color-danger)]"
           role="alert"
         >
           {{ errorMessage }}
@@ -342,6 +349,23 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
           </svg>
           加载中…
         </div>
+        <div
+          v-else-if="loadError"
+          data-testid="models-load-error"
+          class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+          role="alert"
+        >
+          <span>{{ loadError }}</span>
+          <button
+            data-testid="models-retry"
+            class="btn-secondary rounded-lg px-3 py-1.5 text-sm"
+            type="button"
+            :disabled="loading"
+            @click="loadModels"
+          >
+            {{ loading ? '重试中…' : '重新加载' }}
+          </button>
+        </div>
         <template v-else>
           <ModelTable
             :models="models"
@@ -363,9 +387,11 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
 </template>
 
 <style scoped>
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.25s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.25s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.25s ease;
+  transition: opacity 0.18s cubic-bezier(0.4, 0.0, 1, 1), transform 0.18s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

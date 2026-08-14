@@ -168,8 +168,9 @@ func TestQueueBusyHeadRotatesSoLaterWaiterProceeds(t *testing.T) {
 	second := acquireAsync(p, context.Background(), 1)
 	waitForQueueLength(t, p, 2)
 
-	// Freeing key 1 cannot serve the busy-stalled head, so the later waiter
-	// must get it instead of being stalled behind the whole queue.
+	// Freeing key 1 cannot serve the busy-stalled head in the strict pass (its
+	// attempted set excludes key 1), so the later waiter gets it instead of
+	// being stalled behind the whole queue.
 	holderA.Release()
 	secondResult := receiveAcquire(t, second)
 	if secondResult.err != nil {
@@ -178,17 +179,45 @@ func TestQueueBusyHeadRotatesSoLaterWaiterProceeds(t *testing.T) {
 	if got := secondResult.lease.KeyID(); got != 1 {
 		t.Fatalf("second Lease key = %d, want 1", got)
 	}
-	secondResult.lease.Release()
-	holderB.Release()
 
+	// Key 1 is idle again and key 2 is still busy: the relaxed pass must serve
+	// the head waiter with its attempted key right away instead of stalling it
+	// until key 2 frees or the queue timeout fires (single-head stall fix).
+	secondResult.lease.Release()
 	firstResult := receiveAcquire(t, first)
 	if firstResult.err != nil {
-		t.Fatalf("first Acquire after rotation: %v", firstResult.err)
+		t.Fatalf("first Acquire after relaxation: %v", firstResult.err)
 	}
-	if got := firstResult.lease.KeyID(); got != 2 {
-		t.Fatalf("first Lease key = %d, want 2", got)
+	if got := firstResult.lease.KeyID(); got != 1 {
+		t.Fatalf("first Lease key = %d, want 1 (relaxed retry of the idle attempted key)", got)
 	}
 	firstResult.lease.Release()
+	holderB.Release()
+}
+
+// TestQueueHeadRetriesIdleAttemptedKeyWhenNoAlternative locks in the single-head
+// stall fix: a head waiter whose attempted key became idle must be served from
+// it immediately when no other key is assignable, instead of waiting out the
+// queue timeout. Before the fix, a busy-but-unattempted key counted as "ready"
+// and suppressed the relaxed pass.
+func TestQueueHeadRetriesIdleAttemptedKeyWhenNoAlternative(t *testing.T) {
+	p := newQueueTestPool(queueSnapshot(10, time.Second), 1, 2)
+	// Pin key 2 to a holder (skip key 1 via attempted) so key 1 stays idle.
+	holderB := mustAcquireWithAttempted(t, p, 2, map[int64]struct{}{1: {}})
+	// Key 1 is idle; the waiter already tried it (attempted={1}) and key 2 is
+	// busy, so the strict pass can never serve it. The relaxed pass fires at
+	// enqueue time: the waiter is served the idle attempted key without ever
+	// occupying the queue.
+	first := acquireAsyncWithAttempted(p, context.Background(), 1, map[int64]struct{}{1: {}})
+	result := receiveAcquire(t, first)
+	if result.err != nil {
+		t.Fatalf("head Acquire after relaxation: %v", result.err)
+	}
+	if got := result.lease.KeyID(); got != 1 {
+		t.Fatalf("head Lease key = %d, want 1 (idle attempted key must be retried)", got)
+	}
+	result.lease.Release()
+	holderB.Release()
 }
 
 func TestShutdownRejectsQueuedAndFutureAcquire(t *testing.T) {
@@ -332,6 +361,48 @@ func TestSingleKeyPoolAttemptedWaiterRecoversAfterRelease(t *testing.T) {
 		t.Fatalf("waiter Lease key = %d, want 1", got)
 	}
 	result.lease.Release()
+}
+
+func TestAcquireDoesNotRelaxAttemptedIdleKeyWithoutQueuedWaiter(t *testing.T) {
+	// A completed proxy failure must not immediately reacquire the same idle
+	// key when every candidate was already attempted. The relaxed pass exists
+	// for an already-queued waiter whose attempted key was busy, not for a new
+	// failover attempt.
+	p := newQueueTestPool(queueSnapshot(10, 2*time.Second), 1)
+	_, err := p.Acquire(context.Background(), 1, map[int64]struct{}{1: {}}, false)
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("Acquire error = %T %v, want *apierror.Error", err, err)
+	}
+	if publicError.Code != "no_available_keys" {
+		t.Fatalf("Acquire code = %q, want no_available_keys", publicError.Code)
+	}
+}
+
+func TestMarkedFailoverAcquireDoesNotRelaxAttemptedKey(t *testing.T) {
+	p := newQueueTestPool(queueSnapshot(10, 500*time.Millisecond), 1, 2)
+	holder := mustAcquireWithAttempted(t, p, 2, map[int64]struct{}{1: {}})
+	result := acquireAsyncWithAttempted(p, WithNoAttemptedRelaxation(context.Background()), 1, map[int64]struct{}{1: {}})
+	waitForQueueLength(t, p, 1)
+
+	select {
+	case received := <-result:
+		if received.lease != nil {
+			received.lease.Release()
+		}
+		t.Fatalf("marked failover acquire completed before unattempted key was released: %v", received.err)
+	default:
+	}
+
+	holder.Release()
+	received := receiveAcquire(t, result)
+	if received.err != nil {
+		t.Fatalf("marked failover acquire after release: %v", received.err)
+	}
+	if got := received.lease.KeyID(); got != 2 {
+		t.Fatalf("acquired key = %d, want unattempted key 2", got)
+	}
+	received.lease.Release()
 }
 
 func TestSingleKeyPoolAttemptedWaiterTimesOutWithoutRelease(t *testing.T) {

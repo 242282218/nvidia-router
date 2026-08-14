@@ -141,6 +141,11 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		commit:  commit,
 		flusher: writer,
 		header:  false,
+		onComplete: func() {
+			if marker, ok := upstream.Body.(interface{ MarkComplete() }); ok {
+				marker.MarkComplete()
+			}
+		},
 		// TTFT for Responses streams: the first emitted event is the first data
 		// event reaching the client (response.created or the first delta).
 		onFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
@@ -168,7 +173,17 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 				Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
 				Message: "The server could not complete the stream.",
 			})
+			return
 		}
+		// The stream committed but ended in a fault: the client already has
+		// events, so nothing more can be written. Log so a truncated generation
+		// is traceable; a client disconnect (context cancellation) is expected
+		// churn and stays at Debug, upstream faults after commit are Warn.
+		if ctx.Err() != nil {
+			observability.RequestLogger(ctx).Debug("stream_context_cancelled_after_commit", "error", err)
+			return
+		}
+		observability.RequestLogger(ctx).Warn("stream_truncated_after_commit", "error", err)
 		return
 	}
 	// ErrStreamInterrupted was already mapped by the state machine to a stable
@@ -223,6 +238,7 @@ type responsesSSEEmitter struct {
 	header      bool
 	notified    bool
 	onFirstData func()
+	onComplete  func()
 	// writeWatchdog guards the flush against a client that stops reading (audit
 	// H6); when it fires, onStall closes the upstream body so the state machine
 	// loop ends and the lease is released.
@@ -256,6 +272,9 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 		if e.writeWatchdog != nil {
 			e.writeWatchdog.Disarm()
 		}
+	}
+	if event.Event == "done" && e.onComplete != nil {
+		e.onComplete()
 	}
 	if !e.notified {
 		e.notified = true

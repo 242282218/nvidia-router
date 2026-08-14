@@ -3,6 +3,7 @@ package xkproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,7 +26,13 @@ type ErrorReason string
 
 const (
 	ReasonTransportFailed ErrorReason = "transport_failed"
-	ReasonManagerClosed   ErrorReason = "manager_closed"
+	// ReasonProxyRejected marks a proxy that answered with an HTTP error (e.g. a
+	// 5xx CONNECT answer) rather than a pure transport failure. The proxy is up
+	// and already refused the request, so replaying or switching keys would just
+	// double the upstream load on a known-bad path (audit R5). The router surfaces
+	// the error without a key switch, unlike ReasonTransportFailed.
+	ReasonProxyRejected ErrorReason = "proxy_rejected"
+	ReasonManagerClosed ErrorReason = "manager_closed"
 	// ReasonNoHealthyProxy marks a pool that is momentarily empty (e.g. every
 	// TTL expired between two collector fetches). The request never reached the
 	// upstream through any exit, so the router treats it as retryable instead of
@@ -44,6 +51,12 @@ func (e *Error) Reason() ErrorReason { return e.reason }
 
 func NewTransportError(cause error) *Error {
 	return &Error{reason: ReasonTransportFailed, cause: cause}
+}
+
+// NewProxyRejectedError marks a proxy that answered with an HTTP error rather
+// than a transport failure (see ReasonProxyRejected).
+func NewProxyRejectedError(cause error) *Error {
+	return &Error{reason: ReasonProxyRejected, cause: cause}
 }
 
 // NewNoHealthyProxyError marks a momentarily empty pool (see
@@ -69,9 +82,28 @@ type Manager struct {
 	transports map[transportKey]*cachedTransport
 	clock      uint64
 	closed     bool
+	// policy is the single source of ejection parameters for this manager.
+	// Pool mode takes the operator-configured CollectorConfig.EjectionPolicy;
+	// static mode falls back to the defaults. retire/ReportLatency/
+	// ReportHTTPFailure all use it so a custom policy actually takes effect
+	// everywhere instead of only inside the collector.
+	policy EjectionPolicy
 }
 
 const maxCachedTransports = 64
+
+// defaultEjectionPolicy is the fallback used by static-proxy managers and by
+// pool managers whose CollectorConfig carries no explicit policy. It matches
+// the values the reporting paths previously hardcoded.
+func defaultEjectionPolicy() EjectionPolicy {
+	return EjectionPolicy{
+		FailureLimit: 3,
+		BaseDuration: 10 * time.Second,
+		MaxDuration:  60 * time.Second,
+		MaxEjections: 3,
+		LatencyAlpha: 0.3,
+	}
+}
 
 // stickyRebindInterval bounds how long a session stays pinned to one exit.
 // Session affinity prevents keys from racing each other through different
@@ -131,6 +163,7 @@ func New(proxyURL *url.URL, authKey string, base *http.Transport, logger *slog.L
 		base:       base,
 		logger:     logger,
 		transports: make(map[transportKey]*cachedTransport),
+		policy:     defaultEjectionPolicy(),
 	}, nil
 }
 
@@ -155,6 +188,7 @@ func NewWithPool(cfg CollectorConfig, authKey string, base *http.Transport, logg
 		base:       base,
 		logger:     logger,
 		transports: make(map[transportKey]*cachedTransport),
+		policy:     cfg.EjectionPolicy.normalized(),
 	}, nil
 }
 
@@ -163,6 +197,14 @@ func (m *Manager) StartCollector(ctx context.Context) {
 	if m.collector != nil {
 		m.collector.Start(ctx)
 	}
+}
+
+// Refresh runs one collector cycle for an operator-triggered refresh.
+func (m *Manager) Refresh(ctx context.Context) error {
+	if m == nil || m.collector == nil {
+		return errors.New("built-in proxy collector is not enabled")
+	}
+	return m.collector.Refresh(ctx)
 }
 
 func validateProxyURL(value *url.URL) error {
@@ -217,7 +259,13 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 		var selectedProxy Proxy
 		var hasProxy bool
 		if m.pool != nil {
-			selectedProxy, hasProxy = m.pool.Get(time.Now())
+			// Quality-aware scheduling prefers exits with real request evidence;
+			// the legacy rotation remains available when the setting is off.
+			if snapshot.LatencyRoutingEnabled {
+				selectedProxy, hasProxy = m.pool.GetWithQuality(time.Now())
+			} else {
+				selectedProxy, hasProxy = m.pool.Get(time.Now())
+			}
 			if !hasProxy {
 				// The pool is momentarily empty: the request never reached the
 				// upstream, so this is not a key fault. ReasonNoHealthyProxy lets
@@ -226,7 +274,11 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 				return nil, NewNoHealthyProxyError()
 			}
 		}
-		entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key(), createdAt: time.Now()}
+		transport, err := m.newTransport(key, selectedProxy)
+		if err != nil {
+			return nil, NewTransportError(err)
+		}
+		entry = &cachedTransport{transport: transport, proxyKey: selectedProxy.Key(), createdAt: time.Now()}
 		m.transports[key] = entry
 	} else if m.pool != nil && entry.proxyKey != "" {
 		now := time.Now()
@@ -238,9 +290,20 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 			// momentarily empty, the healthy cached connection stays usable, and
 			// when the pool's best proxy is the current one, rebinding would just
 			// re-CONNECT for nothing.
-			if selectedProxy, hasProxy := m.pool.Get(now); hasProxy && (!stale || selectedProxy.Key() != entry.proxyKey) {
+			var selectedProxy Proxy
+			var hasProxy bool
+			if snapshot.LatencyRoutingEnabled {
+				selectedProxy, hasProxy = m.pool.GetWithQuality(now)
+			} else {
+				selectedProxy, hasProxy = m.pool.Get(now)
+			}
+			if hasProxy && (!stale || selectedProxy.Key() != entry.proxyKey) {
 				entry.transport.CloseIdleConnections()
-				entry = &cachedTransport{transport: m.newTransport(key, selectedProxy), proxyKey: selectedProxy.Key(), createdAt: now}
+				transport, err := m.newTransport(key, selectedProxy)
+				if err != nil {
+					return nil, NewTransportError(err)
+				}
+				entry = &cachedTransport{transport: transport, proxyKey: selectedProxy.Key(), createdAt: now}
 				m.transports[key] = entry
 			}
 		}
@@ -267,15 +330,16 @@ func (m *Manager) evictLeastRecentlyUsed() {
 	delete(m.transports, oldestKey)
 }
 
-func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
+func (m *Manager) newTransport(key transportKey, proxy Proxy) (*http.Transport, error) {
 	transport := m.base.Clone()
 
 	// If we have a proxy from the pool, use it; otherwise use the configured proxyURL
 	if proxy.Address != "" {
 		proxyURL, err := proxy.URL()
-		if err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("configure selected proxy %q: %w", proxy.Address, err)
 		}
+		transport.Proxy = http.ProxyURL(proxyURL)
 	} else if m.proxyURL != nil {
 		transport.Proxy = http.ProxyURL(m.proxyURL)
 	}
@@ -290,7 +354,13 @@ func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
 		}
 	}
 	connectTimeout := time.Duration(key.connectTimeoutMS) * time.Millisecond
-	baseDialContext := transport.DialContext
+	if connectTimeout > 0 {
+		// DialContext already bounds the TCP connect; without a matching TLS
+		// handshake timeout the proxy-leg (or tunnel-target) TLS could hang far
+		// beyond the operator's connect intent — ResponseHeaderTimeout does not
+		// cover the handshake, which happens before the request is written.
+		transport.TLSHandshakeTimeout = connectTimeout
+	}
 	// KeepAlive probes prevent NAT/firewall tables from silently dropping idle
 	// CONNECT tunnels, which would appear as phantom transport errors on the next
 	// request that tries to reuse the cached connection.
@@ -298,15 +368,10 @@ func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
 		Timeout:   connectTimeout,
 		KeepAlive: 30 * time.Second,
 	}
-	if baseDialContext == nil {
-		transport.DialContext = keepAliveDialer.DialContext
-	} else if connectTimeout > 0 {
-		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			limited, cancel := context.WithTimeout(ctx, connectTimeout)
-			defer cancel()
-			return baseDialContext(limited, network, address)
-		}
-	}
+	// The manager's transport always dials the configured proxy, so it must not
+	// inherit a caller transport's custom dialer. Such a dialer may be scoped to
+	// the direct upstream (as in TLS test clients) and would bypass the proxy.
+	transport.DialContext = keepAliveDialer.DialContext
 	transport.ResponseHeaderTimeout = time.Duration(key.firstByteTimeoutMS) * time.Millisecond
 	// Larger idle pools reduce connection churn when many sticky sessions are
 	// active simultaneously; 90s keeps CONNECT tunnels alive past most
@@ -322,7 +387,7 @@ func (m *Manager) newTransport(key transportKey, proxy Proxy) *http.Transport {
 	// (found in real 联调 2026-08-12). Direct mode already enables h2 (chat.go);
 	// the proxy path must match so ALPN negotiates h2 with the target.
 	transport.ForceAttemptHTTP2 = true
-	return transport
+	return transport, nil
 }
 
 func (m *Manager) retire(handle *Handle, reason RetireReason) {
@@ -339,13 +404,7 @@ func (m *Manager) retire(handle *Handle, reason RetireReason) {
 
 	// Report failure to pool if we have one
 	if m.pool != nil && handle.proxyKey != "" {
-		policy := EjectionPolicy{
-			FailureLimit: 3,
-			BaseDuration: 10 * time.Second,
-			MaxDuration:  60 * time.Second,
-			MaxEjections: 3,
-		}
-		m.pool.ReportFailure(handle.proxyKey, time.Now(), policy)
+		m.pool.ReportFailure(handle.proxyKey, time.Now(), m.policy)
 	}
 }
 
@@ -373,27 +432,98 @@ func (m *Manager) Close() {
 
 // PoolStatus returns current pool status for monitoring
 func (m *Manager) PoolStatus() PoolStatus {
-	if m == nil || m.pool == nil {
+	if m == nil {
 		return PoolStatus{}
 	}
+	m.mu.Lock()
+	proxyURL := ""
+	if m.proxyURL != nil {
+		publicURL := *m.proxyURL
+		publicURL.User = nil
+		proxyURL = publicURL.String()
+	}
+	closed := m.closed
+	pool := m.pool
+	m.mu.Unlock()
+	if closed {
+		return PoolStatus{}
+	}
+	if pool == nil {
+		status := PoolStatus{Configured: proxyURL != "", Mode: "external", Endpoint: proxyURL}
+		if proxyURL == "" {
+			return status
+		}
+		// /healthz is deliberately used instead of /readyz: the latter requires
+		// the pool's separate admin credential, which must never be copied into
+		// the NVIDIA router. Reachability is useful diagnostics; request routing
+		// still fails closed when the pool has no usable lease.
+		healthURL, err := url.Parse(proxyURL)
+		if err != nil {
+			return status
+		}
+		healthURL.Path = "/healthz"
+		healthURL.RawQuery = ""
+		healthURL.Fragment = ""
+		if m.base == nil {
+			return status
+		}
+		transport := m.base.Clone()
+		transport.Proxy = nil
+		client := &http.Client{Transport: transport, Timeout: time.Second}
+		started := time.Now()
+		response, err := client.Get(healthURL.String())
+		if err == nil {
+			response.Body.Close()
+			status.Reachable = response.StatusCode == http.StatusOK
+			status.HealthLatencyMS = time.Since(started).Milliseconds()
+		}
+		transport.CloseIdleConnections()
+		return status
+	}
 	now := time.Now()
+	upstreamOverloaded, lastUpstreamOverloadAt := m.pool.UpstreamOverloadStatus(now)
 	status := PoolStatus{
-		TotalSize:   m.pool.LiveSize(now),
-		HealthySize: m.pool.Size(now),
-		Proxies:     m.pool.List(now),
+		Configured:             true,
+		Mode:                   "built-in",
+		TotalSize:              pool.LiveSize(now),
+		HealthySize:            m.pool.Size(now),
+		CollectorEnabled:       m.collector != nil,
+		Proxies:                pool.List(now),
+		UpstreamOverloaded:     upstreamOverloaded,
+		LastUpstreamOverloadAt: lastUpstreamOverloadAt,
+		// Panic mode: candidates exist but every one is ejected or TTL-expired;
+		// the pool would serve them anyway to keep the service alive.
+		PanicMode: pool.LiveSize(now) > 0 && pool.Size(now) == 0,
 	}
 	// Collector health tells the operator why the pool might be empty: the
 	// upstream is unreachable (LastErrorCode set) or simply returned nothing.
 	if m.collector != nil {
 		status.LastFetchAt, status.LastSuccessAt, status.LastErrorCode = m.collector.LastFetchResult()
+		status.Endpoint = "xingkong-xapi"
 	}
 	return status
 }
 
 type PoolStatus struct {
-	TotalSize   int
-	HealthySize int
-	Proxies     []Proxy
+	// Configured and Mode describe both external and built-in modes. The external
+	// mode is the production path: the router only talks to the pool's standard
+	// HTTP forward-proxy port and never receives individual exits.
+	Configured             bool   `json:"configured"`
+	Mode                   string `json:"mode"`
+	Endpoint               string `json:"endpoint"`
+	Reachable              bool   `json:"reachable"`
+	HealthLatencyMS        int64  `json:"health_latency_ms"`
+	TotalSize              int
+	HealthySize            int
+	CollectorEnabled       bool
+	Proxies                []Proxy
+	UpstreamOverloaded     bool      `json:"upstream_overloaded"`
+	LastUpstreamOverloadAt time.Time `json:"last_upstream_overload_at"`
+
+	// PanicMode reports that live candidates exist but none is currently
+	// available (all ejected or expired), so selection would serve a degraded
+	// exit to keep the service alive.
+	PanicMode bool `json:"panic_mode"`
 
 	// Collector diagnostics (zero/empty when not in pool mode).
 	LastFetchAt   time.Time
@@ -403,33 +533,63 @@ type PoolStatus struct {
 
 // JSON-safe projection of a pooled proxy for the admin UI. Only non-sensitive,
 // operator-visible quality fields are exposed: the exit address, its measured
-// latency, remaining TTL, and isolation state.
+// latency, remaining TTL, isolation state and recent failure signals.
 type ProxyStatus struct {
-	Address          string `json:"address"`
-	LatencyEWMAMS    int64  `json:"latency_ewma_ms"`
-	RemainingSeconds int    `json:"remaining_seconds"`
-	Healthy          bool   `json:"healthy"`
-	Ejected          bool   `json:"ejected"`
-	SuccessCount     uint64 `json:"success_count"`
-	FailureCount     uint64 `json:"failure_count"`
+	Address               string `json:"address"`
+	LatencyEWMAMS         int64  `json:"latency_ewma_ms"`
+	LatencySamples        int    `json:"latency_samples"`
+	RemainingSeconds      int    `json:"remaining_seconds"`
+	Healthy               bool   `json:"healthy"`
+	Ejected               bool   `json:"ejected"`
+	EjectionCount         int    `json:"ejection_count"`
+	HealthFails           int    `json:"health_fails"`
+	SuccessCount          uint64 `json:"success_count"`
+	FailureCount          uint64 `json:"failure_count"`
+	QualityScore          int    `json:"quality_score"`
+	RequestSuccessCount   uint64 `json:"request_success_count"`
+	RequestFailureCount   uint64 `json:"request_failure_count"`
+	RequestFailureStreak  int    `json:"request_failure_streak"`
+	RequestLatencyEWMAMS  int64  `json:"request_latency_ewma_ms"`
+	RequestLatencySamples int    `json:"request_latency_samples"`
 	// HTTPFailCount exposes the consecutive 429/5xx pattern so the UI can flag
 	// exits that are throttled but not yet isolated.
 	HTTPFailCount int `json:"http_fail_count"`
+	// LastHTTPStatus is the most recent HTTP failure status through this exit
+	// (0 when none); 529 is observed but never counted toward isolation.
+	LastHTTPStatus int `json:"last_http_status"`
+	// LastFailureAt is the most recent transport or HTTP failure timestamp
+	// (RFC3339 UTC, empty when the exit has never failed).
+	LastFailureAt string `json:"last_failure_at"`
 }
 
 func (s PoolStatus) View() []ProxyStatus {
 	now := time.Now()
 	view := make([]ProxyStatus, 0, len(s.Proxies))
 	for _, proxy := range s.Proxies {
+		lastFailure := ""
+		if !proxy.LastFailureAt.IsZero() {
+			lastFailure = proxy.LastFailureAt.UTC().Format(time.RFC3339)
+		}
 		view = append(view, ProxyStatus{
-			Address:          proxy.Address,
-			LatencyEWMAMS:    proxy.LatencyEWMA.Milliseconds(),
-			RemainingSeconds: int(proxy.RemainingLife(now) / time.Second),
-			Healthy:          proxy.AvailableAt(now),
-			Ejected:          proxy.EjectedAt(now),
-			SuccessCount:     proxy.SuccessCount,
-			FailureCount:     proxy.FailureCount,
-			HTTPFailCount:    proxy.HTTPFailCount,
+			Address:               proxy.Address,
+			LatencyEWMAMS:         proxy.LatencyEWMA.Milliseconds(),
+			LatencySamples:        proxy.LatencySamples,
+			RemainingSeconds:      int(proxy.RemainingLife(now) / time.Second),
+			Healthy:               proxy.AvailableAt(now),
+			Ejected:               proxy.EjectedAt(now),
+			EjectionCount:         proxy.EjectionCount,
+			HealthFails:           proxy.HealthFails,
+			SuccessCount:          proxy.SuccessCount,
+			FailureCount:          proxy.FailureCount,
+			QualityScore:          proxy.QualityScore(),
+			RequestSuccessCount:   proxy.RequestSuccessCount,
+			RequestFailureCount:   proxy.RequestFailureCount,
+			RequestFailureStreak:  proxy.RequestFailureStreak,
+			RequestLatencyEWMAMS:  proxy.RequestLatencyEWMA.Milliseconds(),
+			RequestLatencySamples: proxy.RequestLatencySamples,
+			HTTPFailCount:         proxy.HTTPFailCount,
+			LastHTTPStatus:        proxy.LastHTTPFailureStatus,
+			LastFailureAt:         lastFailure,
 		})
 	}
 	return view
@@ -442,6 +602,16 @@ func (h *Handle) Transport() http.RoundTripper {
 	return h.transport
 }
 
+// ProxyKey reports the pool identity of the exit this handle's transport dials,
+// or "" in static-proxy mode (no pool). The request path uses it for diagnostics
+// so a failed or slow request can be correlated with a specific proxy exit.
+func (h *Handle) ProxyKey() string {
+	if h == nil {
+		return ""
+	}
+	return h.proxyKey
+}
+
 func (h *Handle) Retire(reason RetireReason) {
 	if h == nil || h.manager == nil {
 		return
@@ -449,22 +619,37 @@ func (h *Handle) Retire(reason RetireReason) {
 	h.manager.retire(h, reason)
 }
 
-// ReportLatency feeds the observed request latency of a successful response back
-// into the pool's EWMA so selection preference reflects live quality, not just
-// the collector's last probe (audit H4). A proxy that has quietly slowed down
-// gets demoted by demoteSlow on subsequent Acquires. Best-effort: a nil pool or
-// empty proxyKey (static proxy mode) is a no-op.
+// Invalidate drops the cached transport bound to this handle without treating
+// the exit as conclusively dead. It is used when a request-level first-byte
+// timeout makes the connection unusable but cannot distinguish a slow target
+// from a bad proxy. The next request gets a fresh transport and can explore a
+// different exit.
+func (h *Handle) Invalidate() {
+	if h == nil || h.manager == nil {
+		return
+	}
+	h.manager.invalidate(h.key, h.transport)
+}
+
+// ReportLatency records a successful request and, when latency is positive,
+// feeds its duration into the pool's EWMA. A zero duration is a valid semantic
+// completion signal for callers that already recorded first-byte latency; it
+// increments success without adding a second latency sample. Best-effort: a
+// nil pool or empty proxyKey (static proxy mode) is a no-op.
 func (h *Handle) ReportLatency(latency time.Duration) {
+	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" || latency < 0 {
+		return
+	}
+	h.manager.pool.ReportSuccess(h.proxyKey, time.Now(), latency, h.manager.policy)
+}
+
+// ReportRequestLatency records network latency without marking the request as
+// a completed NVIDIA request. This is the signal used for first-byte quality.
+func (h *Handle) ReportRequestLatency(latency time.Duration) {
 	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" || latency <= 0 {
 		return
 	}
-	h.manager.pool.ReportSuccess(h.proxyKey, time.Now(), latency, EjectionPolicy{
-		FailureLimit: 3,
-		BaseDuration: 10 * time.Second,
-		MaxDuration:  60 * time.Second,
-		MaxEjections: 3,
-		LatencyAlpha: 0.3,
-	})
+	h.manager.pool.ReportRequestLatency(h.proxyKey, time.Now(), latency, h.manager.policy)
 }
 
 // ReportHTTPFailure feeds an application-level failure (429/5xx observed
@@ -473,17 +658,31 @@ func (h *Handle) ReportLatency(latency time.Duration) {
 // not clear an existing isolation window and does not update the latency EWMA:
 // a fast rejection must not make a failing exit look fast. Best-effort like
 // ReportLatency.
-func (h *Handle) ReportHTTPFailure() {
+func (h *Handle) ReportHTTPFailure(status int) {
 	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" {
 		return
 	}
-	h.manager.pool.ReportHTTPFailure(h.proxyKey, time.Now(), EjectionPolicy{
-		FailureLimit: 3,
-		BaseDuration: 10 * time.Second,
-		MaxDuration:  60 * time.Second,
-		MaxEjections: 3,
-		LatencyAlpha: 0.3,
-	})
+	h.manager.pool.ReportHTTPFailure(h.proxyKey, time.Now(), status, h.manager.policy)
+}
+
+// ReportRequestFailure records a failure while reading a response body. It
+// feeds quality routing without applying transport-level proxy isolation.
+func (h *Handle) ReportRequestFailure() {
+	if h == nil || h.manager == nil || h.manager.pool == nil || h.proxyKey == "" {
+		return
+	}
+	h.manager.pool.ReportRequestFailure(h.proxyKey, time.Now())
 }
 
 func (h *Handle) Release() {}
+
+func (m *Manager) invalidate(key transportKey, transport http.RoundTripper) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry := m.transports[key]
+	if entry == nil || entry.transport != transport {
+		return
+	}
+	entry.transport.CloseIdleConnections()
+	delete(m.transports, key)
+}

@@ -9,23 +9,30 @@ vi.mock('./api', () => ({
     get: vi.fn(),
     update: vi.fn(),
     status: vi.fn(),
+    refresh: vi.fn(),
   },
 }))
 
 const settings = {
   enabled: true,
-  proxy_url: 'http://proxy-pool:8080',
+  proxy_url: '',
   auth_configured: true,
   source: 'environment' as const,
+  mode: 'built-in' as const,
+  upstream_configured: true,
+  upstream_endpoint: 'https://api.example.test/tools/XApi.ashx',
+  collector_interval: '5s',
+  proxy_ttl: '120s',
 }
 
 const emptyStatus = {
-  total_size: 0,
-  healthy_size: 0,
-  proxies: [],
-  last_fetch_at: '',
-  last_success_at: '',
-  last_error_code: '',
+  configured: true,
+  mode: 'built-in' as const,
+  total_size: 2,
+  healthy_size: 2,
+  collector_enabled: true,
+  last_success_at: '2026-08-14T08:00:00Z',
+  proxies: [{ address: '203.0.113.10:8080', healthy: true, latency_ewma_ms: 42, quality_score: 91, remaining_seconds: 96 }],
 }
 
 beforeEach(() => {
@@ -33,99 +40,94 @@ beforeEach(() => {
   vi.mocked(proxyPoolApi.get).mockResolvedValue({ data: settings })
   vi.mocked(proxyPoolApi.update).mockResolvedValue({ data: { ...settings, source: 'database' } })
   vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: emptyStatus })
+  vi.mocked(proxyPoolApi.refresh).mockResolvedValue({ data: { message: 'ok' } })
 })
 
 describe('ProxyPoolView', () => {
-  it('shows the proxy address, enabled state, and redacted auth status', async () => {
+  it('shows built-in collector configuration without exposing the XApi secret', async () => {
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
 
     expect(wrapper.get('h1').text()).toContain('代理池')
     expect((wrapper.get('[data-testid="proxy-enabled"]').element as HTMLInputElement).checked).toBe(true)
-    expect((wrapper.get('[data-testid="proxy-url"]').element as HTMLInputElement).value).toBe(settings.proxy_url)
-    expect(wrapper.get('[data-testid="proxy-auth-status"]').text()).toContain('已配置')
-    expect(wrapper.text()).not.toContain('proxy-secret')
+    expect((wrapper.get('[data-testid="proxy-upstream-url"]').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.get('#proxy-upstream-help').text()).toContain('保存后只显示主机和路径')
+    expect(wrapper.text()).not.toContain('apikey=')
+    expect(wrapper.text()).toContain('运行正常')
   })
 
-  it('saves a disabled proxy configuration and can clear the key without displaying it', async () => {
+  it('saves collector settings and does not send a fixed proxy credential', async () => {
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
 
-    await wrapper.get('[data-testid="proxy-enabled"]').setValue(false)
+    await wrapper.get('[data-testid="proxy-interval"]').setValue('10s')
+    await wrapper.get('[data-testid="proxy-ttl"]').setValue('90s')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(proxyPoolApi.update).toHaveBeenCalledWith({
-      enabled: false,
-      proxy_url: settings.proxy_url,
-      auth_key: '',
-    }, expect.any(AbortSignal))
-
-    await wrapper.get('[data-testid="proxy-clear-auth"]').trigger('click')
-    await flushPromises()
-    expect(proxyPoolApi.update).toHaveBeenLastCalledWith({
-      enabled: false,
-      proxy_url: settings.proxy_url,
-      auth_key: '',
-      clear_auth_key: true,
-    }, expect.any(AbortSignal))
+    expect(proxyPoolApi.update).toHaveBeenCalledWith(expect.objectContaining({
+      enabled: true,
+      interval: '10s',
+      proxy_ttl: '90s',
+      expected_qty: 2,
+      concurrency: 2,
+    }), expect.any(AbortSignal))
+    const updateMock = vi.mocked(proxyPoolApi.update)
+    expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('auth_key')
+    expect(wrapper.text()).toContain('配置已保存')
   })
 
-  it('shows live pool status: healthy counts and per-proxy quality', async () => {
-    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
-      total_size: 2,
-      healthy_size: 1,
-      proxies: [
-        { address: '10.0.0.1:8080', latency_ewma_ms: 150, remaining_seconds: 95, healthy: true, ejected: false, success_count: 8, failure_count: 0, http_fail_count: 0 },
-        { address: '10.0.0.2:8080', latency_ewma_ms: 900, remaining_seconds: 30, healthy: false, ejected: true, success_count: 1, failure_count: 4, http_fail_count: 2 },
-      ],
-      last_fetch_at: '2026-08-12T04:00:00Z',
-      last_success_at: '2026-08-12T04:00:00Z',
-      last_error_code: '',
-    } })
+  it('runs one immediate collection and refreshes status', async () => {
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('健康 1 / 2')
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.1:8080')
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('10.0.0.2:8080')
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('150 ms')
-    // The throttled exit shows its consecutive HTTP-failure pattern.
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('限流信号 ×2')
+    await wrapper.get('[data-testid="proxy-refresh-now"]').trigger('click')
+    await flushPromises()
+
+    expect(proxyPoolApi.refresh).toHaveBeenCalledOnce()
+    expect(proxyPoolApi.status).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('已完成一轮采集与验证')
   })
 
-  it('surfaces collector health: last fetch time and a provider error hint', async () => {
-    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
-      total_size: 1,
-      healthy_size: 1,
-      proxies: [],
-      last_fetch_at: '2026-08-12T04:00:00Z',
-      last_success_at: '2026-08-12T03:58:00Z',
-      last_error_code: '403',
-    } })
+  it('renders pool quality rows and an empty-pool recovery message', async () => {
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('203.0.113.10:8080')
+    expect(wrapper.text()).toContain('42 ms')
+    expect(wrapper.text()).toContain('91')
+
+    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: { ...emptyStatus, healthy_size: 0, proxies: [] } })
+    await wrapper.get('section button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('暂无可用出口')
+    expect(wrapper.text()).toContain('暂无已验证出口')
+  })
+
+  it('keeps a recoverable status error visible after malformed data', async () => {
+    vi.mocked(proxyPoolApi.status)
+      .mockResolvedValueOnce({ data: emptyStatus })
+      .mockResolvedValueOnce({ data: { ...emptyStatus, healthy_size: -1 } })
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
 
-    const panel = wrapper.get('[data-testid="proxy-status-panel"]')
-    expect(panel.text()).toContain('上次采集')
-    expect(panel.text()).toContain('上游异常（403）')
-    // The raw upstream error (which embeds credentials) is never rendered.
-    expect(panel.text()).not.toContain('http')
-    expect(panel.text()).not.toContain('?')
+    await wrapper.get('section button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('代理池状态加载失败')
+    expect(wrapper.text()).toContain('203.0.113.10:8080')
   })
 
-  it('shows a healthy collector badge when the last fetch succeeded', async () => {
-    vi.mocked(proxyPoolApi.status).mockResolvedValue({ data: {
-      total_size: 0,
-      healthy_size: 0,
-      proxies: [],
-      last_fetch_at: '2026-08-12T04:00:00Z',
-      last_success_at: '2026-08-12T04:00:00Z',
-      last_error_code: '',
-    } })
+  it('shows a persistent settings load error with retry', async () => {
+    vi.mocked(proxyPoolApi.get)
+      .mockRejectedValueOnce(new Error('backend unreachable'))
+      .mockResolvedValueOnce({ data: settings })
     const wrapper = mount(ProxyPoolView)
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="proxy-status-panel"]').text()).toContain('采集正常')
+    expect(wrapper.get('[data-testid="proxy-settings-load-error"]').text()).toContain('代理池配置加载失败')
+    expect(wrapper.find('[data-testid="proxy-enabled"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="proxy-settings-retry"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="proxy-settings-load-error"]').exists()).toBe(false)
   })
 })

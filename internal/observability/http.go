@@ -54,6 +54,11 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := source.Now()
 		ctx, state := WithRequestState(request.Context())
+		// Carry the request logger on the context so handlers deep in the chain
+		// can log request-scoped events without threading a logger through every
+		// constructor. RequestLogger falls back to the default logger when no
+		// handler wrapped the request.
+		ctx = WithRequestLogger(ctx, logger)
 		requestID := newRequestID()
 		writer.Header().Set("X-Request-ID", requestID)
 		tracked := newTrackingWriter(writer, ctx, started, source, request.URL.Path)

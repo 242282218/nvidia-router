@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { ApiError, isRecord } from '../../shared/api/client'
+import { useDialog } from '../../shared/useDialog'
 import { nvidiaKeysApi } from './api'
 import { isImportResult } from './types'
 import type { ImportResult, KeyTestResult } from './types'
@@ -14,6 +15,9 @@ const errorMessage = ref('')
 const submitting = ref(false)
 const testing = ref(false)
 const testResults = ref<KeyTestResult[]>([])
+const panel = ref<globalThis.HTMLElement | null>(null)
+
+useDialog(computed(() => props.open), panel, () => close())
 
 watch(() => props.open, (open) => {
   if (!open) {
@@ -113,9 +117,11 @@ function testStatusClass(status: string): string {
       role="dialog"
       aria-modal="true"
       @click.self="close"
-      @keydown.esc="close"
     >
-      <section class="modal-panel flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden animate-scale-in">
+      <section
+        ref="panel"
+        class="modal-panel flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden animate-scale-in"
+      >
         <!-- Header -->
         <div class="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] px-4 py-4 sm:px-6">
           <div class="min-w-0">
@@ -170,7 +176,7 @@ function testStatusClass(status: string): string {
             <Transition name="fade">
               <p
                 v-if="errorMessage"
-                class="text-sm text-[#F87171]"
+                class="text-sm text-[var(--color-danger)]"
                 role="alert"
               >
                 {{ errorMessage }}
@@ -325,9 +331,11 @@ function testStatusClass(status: string): string {
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -337,9 +345,11 @@ function testStatusClass(status: string): string {
 .modal-leave-to .modal-panel {
   transform: scale(0.95);
 }
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {

@@ -1,484 +1,91 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { proxyPoolApi } from './api'
-import type { PoolProxyStatus, PoolStatusData, ProxyPoolPatch, ProxyPoolSettings } from './types'
+import type { PoolStatusData, ProxyPoolPatch, ProxyPoolSettings } from './types'
 
 const settings = ref<ProxyPoolSettings | null>(null)
 const enabled = ref(false)
-const proxyUrl = ref('')
-const authKey = ref('')
+const upstreamUrl = ref('')
+const validationUrl = ref('')
+const validationStatus = ref(404)
+const interval = ref('5s')
+const proxyTTL = ref('120s')
+const expectedQty = ref(2)
+const concurrency = ref(2)
+const maxLatency = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const refreshing = ref(false)
 const errorMessage = ref('')
 const formError = ref('')
 const savedMessage = ref('')
 const statusData = ref<PoolStatusData | null>(null)
 const statusLoading = ref(false)
 const statusError = ref('')
-// statusUpdatedAt records when the last status poll landed, so the operator can
-// judge how stale the displayed quality numbers are between the 10s polls.
 const statusUpdatedAt = ref<Date | null>(null)
 let disposed = false
-let controller: globalThis.AbortController | null = null
-let statusController: globalThis.AbortController | null = null
-let statusTimer: ReturnType<typeof globalThis.setInterval> | undefined
+let controller: AbortController | null = null
+let statusController: AbortController | null = null
+let statusTimer: ReturnType<typeof setInterval> | undefined
 
-onMounted(() => {
-  void loadSettings()
-  void refreshStatus()
-  statusTimer = globalThis.setInterval(() => void refreshStatus(), 10_000)
-})
-
-onBeforeUnmount(() => {
-  disposed = true
-  controller?.abort()
-  statusController?.abort()
-  if (statusTimer !== undefined) globalThis.clearInterval(statusTimer)
-})
+onMounted(() => { void loadSettings(); void refreshStatus(); statusTimer = setInterval(() => void refreshStatus(), 10000) })
+onBeforeUnmount(() => { disposed = true; controller?.abort(); statusController?.abort(); if (statusTimer) clearInterval(statusTimer) })
 
 async function loadSettings(): Promise<void> {
-  controller?.abort()
-  const nextController = new globalThis.AbortController()
-  controller = nextController
-  loading.value = true
-  try {
-    applySettings((await proxyPoolApi.get(nextController.signal)).data)
-    errorMessage.value = ''
-  } catch (error) {
-    if (!disposed && !isAbortError(error)) {
-      errorMessage.value = error instanceof ApiError ? error.message : '代理池配置加载失败。'
-    }
-  } finally {
-    if (!disposed && controller === nextController) loading.value = false
-  }
+  controller?.abort(); const next = new AbortController(); controller = next; loading.value = true
+  try { applySettings((await proxyPoolApi.get(next.signal)).data); errorMessage.value = '' }
+  catch (error) { if (!disposed && !isAbortError(error)) errorMessage.value = error instanceof ApiError ? error.message : '代理池配置加载失败。' }
+  finally { if (!disposed && controller === next) loading.value = false }
 }
 
 async function refreshStatus(): Promise<void> {
-  if (disposed) return
-  statusController?.abort()
-  const nextController = new globalThis.AbortController()
-  statusController = nextController
-  if (statusData.value === null) statusLoading.value = true
-  try {
-    const response: unknown = await proxyPoolApi.status(nextController.signal)
-    if (disposed || statusController !== nextController) return
-    if (!isPoolStatusData(response)) throw new TypeError('Invalid proxy pool status response.')
-    statusData.value = response.data
-    statusUpdatedAt.value = new Date()
-    statusError.value = ''
-  } catch (error) {
-    if (disposed || statusController !== nextController || isAbortError(error)) return
-    statusError.value = error instanceof ApiError ? error.message : '代理池状态加载失败。'
-  } finally {
-    if (!disposed && statusController === nextController) statusLoading.value = false
-  }
+  if (disposed) return; statusController?.abort(); const next = new AbortController(); statusController = next; statusLoading.value = true
+  try { const response: unknown = await proxyPoolApi.status(next.signal); if (disposed || statusController !== next) return; if (!isPoolStatusData(response)) throw new TypeError('Invalid proxy pool status response.'); statusData.value = response.data; statusUpdatedAt.value = new Date(); statusError.value = '' }
+  catch (error) { if (!disposed && statusController === next && !isAbortError(error)) statusError.value = error instanceof ApiError ? error.message : '代理池状态加载失败。' }
+  finally { if (!disposed && statusController === next) statusLoading.value = false }
 }
 
 function isPoolStatusData(value: unknown): value is { data: PoolStatusData } {
   if (!isRecord(value) || !isRecord(value.data)) return false
   const data = value.data
-  return isFiniteNumber(data.total_size)
-    && isFiniteNumber(data.healthy_size)
-    && Array.isArray(data.proxies)
-    && data.proxies.every(isPoolProxyStatus)
-    && (data.last_fetch_at === undefined || typeof data.last_fetch_at === 'string')
-    && (data.last_success_at === undefined || typeof data.last_success_at === 'string')
-    && (data.last_error_code === undefined || typeof data.last_error_code === 'string')
+  return (data.configured === undefined || typeof data.configured === 'boolean') && (data.mode === undefined || typeof data.mode === 'string') && (data.healthy_size === undefined || isNonNegativeNumber(data.healthy_size))
 }
-
-function isPoolProxyStatus(value: unknown): value is PoolProxyStatus {
-  if (!isRecord(value) || typeof value.address !== 'string') return false
-  return typeof value.healthy === 'boolean'
-    && typeof value.ejected === 'boolean'
-    && isFiniteNumber(value.latency_ewma_ms)
-    && isFiniteNumber(value.remaining_seconds)
-    && isFiniteNumber(value.success_count)
-    && isFiniteNumber(value.failure_count)
-    && isFiniteNumber(value.http_fail_count)
-}
-
-function formatLatency(ms: number): string {
-  return `${ms} ms`
-}
-
-function formatRemaining(seconds: number): string {
-  if (seconds < 0) return '—'
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes}m ${seconds % 60}s`
-}
-
-function formatClock(value: Date): string {
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
-}
-
-function formatDateTime(value: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
-// providerErrorText maps a collector error code to an operator-facing hint.
-// Raw fetch errors are never shown: they embed the upstream URL credentials.
-function providerErrorText(code: string): string {
-  switch (code) {
-    case '403':
-      return '上游限流（请求频率过高），采集已退避'
-    case '406':
-      return '上游限流（提取频率过高），采集已退避'
-    case '208':
-    case '205':
-      return '上游配额已耗尽，请检查星空代理池订单'
-    case '204':
-      return '上游套餐已过期，请检查星空代理池订单'
-    case 'transport':
-      return '上游不可达，保留 last-known-good 出口中'
-    default:
-      return `上游返回异常（${code}），采集已退避`
-  }
-}
-
-function sourceLabel(source?: ProxyPoolSettings['source']): string {
-  if (source === 'database') return '数据库配置'
-  if (source === 'environment') return '环境变量兜底'
-  return '未配置'
-}
-
-function applySettings(next: ProxyPoolSettings): void {
-  settings.value = next
-  enabled.value = next.enabled
-  proxyUrl.value = next.proxy_url
-  authKey.value = ''
-}
+function isNonNegativeNumber(value: unknown): value is number { return isFiniteNumber(value) && value >= 0 }
+ function applySettings(next: ProxyPoolSettings): void { settings.value = next; enabled.value = next.enabled; upstreamUrl.value = ''; interval.value = next.collector_interval ?? '5s'; proxyTTL.value = next.proxy_ttl ?? '120s' }
+function sourceLabel(source?: ProxyPoolSettings['source']): string { return source === 'database' ? '数据库配置' : source === 'environment' ? '环境变量' : '未配置' }
+function poolLabel(): string { const status = statusData.value; if (!status?.configured) return '未配置'; if (status.healthy_size === 0) return '暂无可用出口'; return status.last_error_code ? `采集异常（${status.last_error_code}）` : '运行正常' }
+function poolClass(): string { const status = statusData.value; return !status?.configured ? 'badge-muted' : status.healthy_size === 0 || status.last_error_code ? 'badge-warning' : 'badge-success' }
+function formatTime(raw?: string): string { if (!raw) return '—'; const date = new Date(raw); return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString() }
 
 async function save(): Promise<void> {
-  await savePatch({ enabled: enabled.value, proxy_url: proxyUrl.value.trim(), auth_key: authKey.value })
+  await savePatch({ enabled: enabled.value, upstream_url: upstreamUrl.value.trim(), validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: maxLatency.value.trim() })
 }
-
-async function clearAuthKey(): Promise<void> {
-  await savePatch({
-    enabled: false,
-    proxy_url: proxyUrl.value.trim(),
-    auth_key: '',
-    clear_auth_key: true,
-  })
-}
-
 async function savePatch(patch: ProxyPoolPatch): Promise<void> {
-  if (disposed || saving.value) return
-  if (patch.enabled && !isValidProxyURL(patch.proxy_url)) {
-    formError.value = '启用代理池时请输入有效的 HTTP 或 HTTPS 代理地址。'
-    return
-  }
-  controller?.abort()
-  const nextController = new globalThis.AbortController()
-  controller = nextController
-  saving.value = true
-  formError.value = ''
-  savedMessage.value = ''
-  try {
-    applySettings((await proxyPoolApi.update(patch, nextController.signal)).data)
-    savedMessage.value = patch.clear_auth_key ? '认证 Key 已清除。' : '配置已保存，新请求立即使用此配置。'
-  } catch (error) {
-    if (!disposed && !isAbortError(error)) {
-      formError.value = error instanceof ApiError ? error.message : '代理池配置保存失败。'
-    }
-  } finally {
-    if (!disposed && controller === nextController) saving.value = false
-  }
+  if (disposed || saving.value) return; if (patch.enabled && !patch.upstream_url && !settings.value?.upstream_configured) { formError.value = '启用内置代理池时必须配置 XApi 上游地址。'; return }
+  controller?.abort(); const next = new AbortController(); controller = next; saving.value = true; formError.value = ''; savedMessage.value = ''
+  try { applySettings((await proxyPoolApi.update(patch, next.signal)).data); savedMessage.value = '配置已保存，新请求立即使用内置代理池。'; await refreshStatus() }
+  catch (error) { if (!disposed && !isAbortError(error)) formError.value = error instanceof ApiError ? error.message : '代理池配置保存失败。' }
+  finally { if (!disposed && controller === next) saving.value = false }
 }
-
-function isValidProxyURL(raw: string): boolean {
-  try {
-    const parsed = new globalThis.URL(raw)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
-      && parsed.hostname !== ''
-      && parsed.username === ''
-      && parsed.password === ''
-      && parsed.search === ''
-      && parsed.hash === ''
-      && (parsed.pathname === '' || parsed.pathname === '/')
-  } catch {
-    return false
-  }
+async function refreshPool(): Promise<void> {
+  if (disposed || refreshing.value) return; refreshing.value = true; formError.value = ''
+  try { await proxyPoolApi.refresh(); savedMessage.value = '已完成一轮采集与验证。'; await refreshStatus() }
+  catch (error) { formError.value = error instanceof ApiError ? error.message : '立即采集失败。' }
+  finally { refreshing.value = false }
 }
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
-    <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent-bright)]">
-            出口连接
-          </p>
-          <h1 class="page-title mt-1">
-            代理池
-          </h1>
-          <p class="page-subtitle">
-            管理星空代理池的标准 HTTP 正向代理连接。认证 Key 只显示配置状态，不会回显。
-          </p>
-        </div>
-      </header>
-
-      <p
-        v-if="errorMessage"
-        class="mb-4 text-sm text-[var(--color-danger)]"
-        role="alert"
-      >
-        {{ errorMessage }}
-      </p>
-
-      <div
-        v-if="loading"
-        class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
-      >
-        <span class="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
-        加载中…
-      </div>
-
-      <form
-        v-else
-        class="card max-w-3xl p-5 animate-slide-up"
-        novalidate
-        @submit.prevent="save"
-      >
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 class="text-sm font-medium text-[var(--color-text)]">
-              代理池连接
-            </h2>
-            <p class="mt-1 text-sm text-[var(--color-text-muted)]">
-              保存后，新的 NVIDIA 请求会立即采用当前配置；正在进行的请求保持原连接。
-            </p>
-          </div>
-          <span
-            data-testid="proxy-source"
-            class="badge-muted"
-          >{{ sourceLabel(settings?.source) }}</span>
-        </div>
-
-        <label class="mt-6 flex cursor-pointer items-center gap-3 text-sm font-medium text-[var(--color-text-secondary)]">
-          <input
-            v-model="enabled"
-            data-testid="proxy-enabled"
-            class="h-4 w-4 accent-[var(--color-accent)]"
-            type="checkbox"
-          >
-          <span>启用代理池</span>
-        </label>
-
-        <div class="mt-5 grid gap-5 sm:grid-cols-2">
-          <label class="block text-sm font-medium text-[var(--color-text-secondary)] sm:col-span-2">
-            <span>代理地址</span>
-            <input
-              v-model="proxyUrl"
-              data-testid="proxy-url"
-              class="input-field mt-1.5 font-mono"
-              type="url"
-              inputmode="url"
-              autocomplete="url"
-              placeholder="http://proxy-pool:8080"
-              :aria-invalid="Boolean(formError)"
-            >
-            <span class="mt-1 block text-xs text-[var(--color-text-muted)]">仅支持 HTTP/HTTPS、主机和端口，不要填写用户名、密码、路径或查询参数。</span>
-          </label>
-
-          <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-            <span>认证 Key</span>
-            <input
-              v-model="authKey"
-              data-testid="proxy-auth-key"
-              class="input-field mt-1.5 font-mono"
-              type="password"
-              autocomplete="new-password"
-              placeholder="留空保持现有 Key"
-            >
-            <span class="mt-1 block text-xs text-[var(--color-text-muted)]">提交后不会再次显示明文。</span>
-          </label>
-
-          <div class="text-sm text-[var(--color-text-secondary)]">
-            <span class="block font-medium">认证状态</span>
-            <span
-              data-testid="proxy-auth-status"
-              class="mt-2 inline-flex"
-              :class="settings?.auth_configured ? 'badge-success' : 'badge-muted'"
-            >{{ settings?.auth_configured ? '已配置' : '未配置' }}</span>
-          </div>
-        </div>
-
-        <p
-          v-if="formError"
-          data-testid="proxy-pool-error"
-          class="mt-4 text-sm text-[var(--color-danger)]"
-          role="alert"
-        >
-          {{ formError }}
-        </p>
-        <p
-          v-if="savedMessage"
-          data-testid="proxy-pool-saved"
-          class="mt-4 text-sm badge-success inline-flex px-3 py-1"
-        >
-          {{ savedMessage }}
-        </p>
-
-        <div class="mt-6 flex flex-wrap justify-end gap-3">
-          <button
-            data-testid="proxy-clear-auth"
-            class="btn-secondary rounded-lg px-4 py-2.5 text-sm"
-            type="button"
-            :disabled="saving || !settings?.auth_configured"
-            @click="clearAuthKey"
-          >
-            清除认证 Key
-          </button>
-          <button
-            data-testid="proxy-save"
-            class="btn-primary rounded-lg px-5 py-2.5 text-sm"
-            type="submit"
-            :disabled="saving || !settings"
-          >
-            {{ saving ? '保存中…' : '保存配置' }}
-          </button>
-        </div>
-      </form>
-
-      <section
-        data-testid="proxy-status-panel"
-        class="card mt-4 animate-slide-up"
-        aria-labelledby="proxy-status-heading"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
-          <div>
-            <h2
-              id="proxy-status-heading"
-              class="text-sm font-medium text-[var(--color-text)]"
-            >
-              代理池状态
-            </h2>
-            <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-              内置池实时质量：健康代理数、延迟与剩余寿命。静态代理模式不采集。
-            </p>
-          </div>
-          <div class="flex items-center gap-3">
-            <span
-              v-if="statusData"
-              class="text-xs text-[var(--color-text-muted)]"
-            >
-              健康 <span class="font-mono font-semibold text-[var(--color-success)]">{{ statusData.healthy_size }}</span> / {{ statusData.total_size }}
-            </span>
-            <span
-              v-if="statusUpdatedAt"
-              class="hidden text-xs text-[var(--color-text-subtle)] sm:inline"
-              :title="`最后刷新于 ${statusUpdatedAt.toLocaleString()}`"
-            >
-              更新于 {{ formatClock(statusUpdatedAt) }}
-            </span>
-            <button
-              class="btn-ghost"
-              type="button"
-              :disabled="statusLoading"
-              aria-label="刷新代理池状态"
-              @click="refreshStatus"
-            >
-              {{ statusLoading && statusData === null ? '加载中…' : '刷新' }}
-            </button>
-          </div>
-        </div>
-
-        <p
-          v-if="statusError"
-          class="m-4 rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
-          role="alert"
-        >
-          {{ statusError }}
-        </p>
-        <p
-          v-else-if="statusLoading && statusData === null"
-          class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
-        >
-          <span class="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
-          加载代理池状态…
-        </p>
-        <template v-else-if="statusData">
-          <div
-            v-if="statusData.last_fetch_at"
-            class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--color-border)] px-5 py-2.5 text-xs text-[var(--color-text-muted)]"
-          >
-            <span>
-              上次采集 {{ formatDateTime(statusData.last_fetch_at) }}
-            </span>
-            <span
-              v-if="statusData.last_success_at"
-            >
-              上次成功 {{ formatDateTime(statusData.last_success_at) }}
-            </span>
-            <span
-              v-if="statusData.last_error_code"
-              class="badge-warning"
-              :title="providerErrorText(statusData.last_error_code)"
-            >
-              上游异常（{{ statusData.last_error_code }}）
-            </span>
-            <span
-              v-else
-              class="badge-success"
-            >
-              采集正常
-            </span>
-          </div>
-          <div
-            v-if="statusData.proxies.length === 0"
-            class="p-6 text-center text-sm text-[var(--color-text-muted)]"
-          >
-            <p>{{ statusData.total_size === 0 ? '当前无动态代理：静态代理模式不采集，或上游采集尚未返回有效代理。' : '所有代理均在隔离或冷却中，等待下一次采集恢复。' }}</p>
-            <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
-              内置池每 5 秒向上游采集并校验一次；若长时间为空，请检查上游地址与配额。
-            </p>
-          </div>
-          <ul
-            v-else
-            class="divide-y divide-[var(--color-border)]"
-          >
-            <li
-              v-for="proxy in statusData.proxies"
-              :key="proxy.address"
-              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 py-3"
-            >
-              <span class="min-w-0 flex-1 font-mono text-sm text-[var(--color-text)]">
-                {{ proxy.address }}
-              </span>
-              <span
-                :class="proxy.healthy ? 'badge-success' : (proxy.ejected ? 'badge-danger' : 'badge-warning')"
-              >
-                {{ proxy.healthy ? '健康' : (proxy.ejected ? '隔离' : '待检') }}
-              </span>
-              <span class="text-xs text-[var(--color-text-muted)]">
-                延迟 <span class="font-mono text-[var(--color-text-secondary)]">{{ formatLatency(proxy.latency_ewma_ms) }}</span>
-              </span>
-              <span class="text-xs text-[var(--color-text-muted)]">
-                剩余 <span class="font-mono text-[var(--color-text-secondary)]">{{ formatRemaining(proxy.remaining_seconds) }}</span>
-              </span>
-              <span class="text-xs text-[var(--color-text-muted)]">
-                成功 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.success_count }}</span> · 失败 <span class="font-mono text-[var(--color-text-secondary)]">{{ proxy.failure_count }}</span>
-              </span>
-              <span
-                v-if="proxy.http_fail_count > 0"
-                class="badge-warning"
-                :title="`连续 ${proxy.http_fail_count} 次 HTTP 失败（429/5xx），可能被上游限流`"
-              >
-                限流信号 ×{{ proxy.http_fail_count }}
-              </span>
-            </li>
-          </ul>
-        </template>
-      </section>
-    </div>
-  </div>
+  <div class="page-container animate-fade-in"><div class="content-wrapper">
+    <header class="section-header"><div><p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent-bright)]">内置出口层</p><h1 class="page-title mt-1">代理池</h1><p class="page-subtitle">XApi 采集、出口验证、质量路由和 NVIDIA CONNECT 全部运行在本服务内。</p></div><span :class="poolClass()">{{ poolLabel() }}</span></header>
+    <div v-if="errorMessage" data-testid="proxy-settings-load-error" class="card mb-4 flex items-center justify-between gap-3 p-4 text-sm text-[var(--color-danger)]" role="alert"><span>{{ errorMessage }}</span><button data-testid="proxy-settings-retry" class="btn-secondary" type="button" @click="loadSettings">重新加载</button></div>
+    <div v-else-if="loading" class="card p-6 text-sm text-[var(--color-text-muted)]">加载内置代理配置…</div>
+    <form v-else class="card p-5 animate-slide-up" novalidate @submit.prevent="save">
+      <div class="flex flex-wrap items-start justify-between gap-4"><div><h2 class="text-sm font-medium">运行配置</h2><p class="mt-1 text-sm text-[var(--color-text-muted)]">当前配置来源：{{ sourceLabel(settings?.source) }}。XApi 完整地址只在当前进程内存生效，重启需重新注入。</p></div><label class="flex min-h-11 items-center gap-3 text-sm"><input v-model="enabled" data-testid="proxy-enabled" class="h-4 w-4 accent-[var(--color-accent)]" type="checkbox"><span>启用内置代理池</span></label></div>
+      <div class="mt-6 grid gap-5 md:grid-cols-2"><label class="block text-sm font-medium md:col-span-2"><span>XApi 上游地址</span><input v-model="upstreamUrl" data-testid="proxy-upstream-url" class="input-field mt-1.5 font-mono" type="url" autocomplete="off" placeholder="https://api2.xkdaili.com/tools/XApi.ashx?..." aria-describedby="proxy-upstream-help"><span id="proxy-upstream-help" class="mt-1 block text-xs text-[var(--color-text-muted)]">保存后只显示主机和路径；请勿把密钥写入普通日志或文档。</span></label><label class="block text-sm font-medium"><span>验证地址</span><input v-model="validationUrl" data-testid="proxy-validation-url" class="input-field mt-1.5 font-mono" type="url" placeholder="留空使用 NVIDIA API 根地址"></label><label class="block text-sm font-medium"><span>预期状态码</span><input v-model.number="validationStatus" data-testid="proxy-validation-status" class="input-field mt-1.5" type="number" min="100" max="599"></label><label class="block text-sm font-medium"><span>采集周期</span><input v-model="interval" data-testid="proxy-interval" class="input-field mt-1.5 font-mono" placeholder="5s"></label><label class="block text-sm font-medium"><span>代理 TTL</span><input v-model="proxyTTL" data-testid="proxy-ttl" class="input-field mt-1.5 font-mono" placeholder="120s"></label><label class="block text-sm font-medium"><span>采集并发</span><input v-model.number="concurrency" data-testid="proxy-concurrency" class="input-field mt-1.5" type="number" min="1" max="20"></label><label class="block text-sm font-medium"><span>最大延迟（可选）</span><input v-model="maxLatency" data-testid="proxy-max-latency" class="input-field mt-1.5 font-mono" placeholder="例如 3s"></label></div>
+       <p v-if="formError" class="mt-4 text-sm text-[var(--color-danger)]" role="alert">{{ formError }}</p><p v-if="savedMessage" class="mt-4 inline-flex text-sm badge-success px-3 py-1">{{ savedMessage }}</p><div class="mt-6 flex flex-wrap justify-end gap-3"><button data-testid="proxy-refresh-now" class="btn-secondary" type="button" :disabled="refreshing || !settings?.enabled" @click="refreshPool">{{ refreshing ? '采集中…' : '立即采集' }}</button><button data-testid="proxy-save" class="btn-primary" type="submit" :disabled="saving || !settings">{{ saving ? '保存中…' : '保存配置' }}</button></div>
+    </form>
+    <section data-testid="proxy-status-panel" class="card mt-4 animate-slide-up" :aria-busy="statusLoading" aria-labelledby="proxy-status-heading"><div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4"><div><h2 id="proxy-status-heading" class="text-sm font-medium">实时池状态</h2><p class="mt-1 text-xs text-[var(--color-text-muted)]">状态来自本进程内置 Collector，不依赖独立代理池服务。</p></div><button class="btn-ghost" type="button" :disabled="statusLoading" @click="refreshStatus">刷新</button></div><div v-if="statusError" class="m-4 text-sm text-[var(--color-danger)]" role="alert">{{ statusError }}</div><div v-if="statusData" class="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4"><div class="metric-card"><span>有效出口</span><strong>{{ statusData.healthy_size ?? 0 }}</strong></div><div class="metric-card"><span>池内记录</span><strong>{{ statusData.total_size ?? 0 }}</strong></div><div class="metric-card"><span>最近采集</span><strong class="text-sm">{{ formatTime(statusData.last_success_at) }}</strong></div><div class="metric-card"><span>上游状态</span><strong class="text-sm">{{ statusData.last_error_code || '正常' }}</strong></div></div><div v-if="statusData?.proxies?.length" class="overflow-x-auto border-t border-[var(--color-border)]"><table class="w-full min-w-[760px] text-left text-sm"><caption class="sr-only">内置代理出口质量</caption><thead class="text-xs text-[var(--color-text-muted)]"><tr><th class="px-5 py-3" scope="col">出口</th><th class="px-5 py-3" scope="col">状态</th><th class="px-5 py-3" scope="col">延迟</th><th class="px-5 py-3" scope="col">质量分</th><th class="px-5 py-3" scope="col">剩余 TTL</th></tr></thead><tbody><tr v-for="proxy in statusData.proxies" :key="proxy.address" class="border-t border-[var(--color-border)]"><td class="px-5 py-3 font-mono">{{ proxy.address }}</td><td class="px-5 py-3">{{ proxy.healthy ? '健康' : proxy.ejected ? '隔离' : '待验证' }}</td><td class="px-5 py-3">{{ proxy.latency_ewma_ms ?? '—' }} ms</td><td class="px-5 py-3">{{ proxy.quality_score ?? '—' }}</td><td class="px-5 py-3">{{ proxy.remaining_seconds ?? 0 }} s</td></tr></tbody></table></div><p v-else-if="statusData" class="p-5 text-sm text-[var(--color-text-muted)]">暂无已验证出口。可点击“立即采集”重试。</p><p v-if="statusUpdatedAt" class="border-t border-[var(--color-border)] px-5 py-3 text-xs text-[var(--color-text-subtle)]">更新于 {{ statusUpdatedAt.toLocaleTimeString() }}</p></section>
+  </div></div>
 </template>

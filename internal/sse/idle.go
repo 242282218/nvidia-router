@@ -39,6 +39,20 @@ type idleReadCloser struct {
 	expired bool
 }
 
+// MarkComplete forwards semantic stream completion through the idle wrapper.
+func (r *idleReadCloser) MarkComplete() {
+	if marker, ok := r.ReadCloser.(interface{ MarkComplete() }); ok {
+		marker.MarkComplete()
+	}
+}
+
+// RequireSemanticCompletion forwards the stream contract through the idle wrapper.
+func (r *idleReadCloser) RequireSemanticCompletion() {
+	if marker, ok := r.ReadCloser.(interface{ RequireSemanticCompletion() }); ok {
+		marker.RequireSemanticCompletion()
+	}
+}
+
 func (r *idleReadCloser) Read(payload []byte) (int, error) {
 	read, err := r.ReadCloser.Read(payload)
 	if read > 0 {

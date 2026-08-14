@@ -2,10 +2,13 @@ package router
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/runtimeconfig"
@@ -33,6 +36,54 @@ func TestAttemptStopsAtMaxAttempts(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("upstream calls = %d, want 3 (cap), pool had 8 keys", calls)
+	}
+}
+
+// TestAttemptStreamAcquireBoundedByRetryDeadline locks in that a streaming
+// request's pre-commit queue wait honours the retry window. A stream carries no
+// total deadline, so before this fix its acquire waited on the pool's queue
+// timer alone: an operator who set queue_wait_timeout_ms above retry_budget_ms
+// let the request sit in the queue long after the pre-commit phase was supposed
+// to end, occupying a queue slot with no way for the loop's retryDeadline check
+// to fire. The retry deadline must bound the queue phase and surface the same
+// retryable queue_timeout the non-stream path already produces.
+func TestAttemptStreamAcquireBoundedByRetryDeadline(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	settings.snapshot.QueueWaitTimeoutMS = 5000 // longer than the retry window
+	settings.snapshot.RetryBudgetMS = 100
+	settings.snapshot.MaxAttemptsPerRequest = 3
+	keyPool := newAttemptPool(settings, 1)
+	// Saturate the per-key streaming budget (default MaxStreamingPerKey=2) so the
+	// request under test must queue. A non-stream busy slot does not block stream
+	// acquires (audit R4: streams draw from an independent per-key budget), so
+	// holding key 1 non-stream would let the stream through immediately.
+	for i := 0; i < 2; i++ {
+		lease, err := keyPool.Acquire(context.Background(), 1, nil, true)
+		if err != nil {
+			t.Fatalf("hold streaming slot %d: %v", i, err)
+		}
+		defer lease.Release()
+	}
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+	var calls atomic.Int32
+
+	started := time.Now()
+	_, err := attempt.Run(context.Background(), 1, true, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		calls.Add(1)
+		return attemptResponse(200, ""), nil
+	})
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) {
+		t.Fatalf("Run error = %T %v, want *apierror.Error", err, err)
+	}
+	if publicError.Status != http.StatusTooManyRequests || publicError.Code != "queue_timeout" {
+		t.Fatalf("Run error = status %d code %q, want 429 queue_timeout", publicError.Status, publicError.Code)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("Execute calls = %d, want 0 (the request never left the queue)", calls.Load())
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("stream queue wait elapsed = %s, want the 100ms retry deadline to fire far before the 5s queue wait", elapsed)
 	}
 }
 

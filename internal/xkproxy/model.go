@@ -24,11 +24,21 @@ type Proxy struct {
 	EjectedUntil  time.Time
 	EjectionCount int
 
-	// LatencyEWMA smooths observed validation latency for selection preference
+	// LatencyEWMA smooths collector validation latency. It proves reachability,
+	// not that NVIDIA accepts real traffic through this exit.
 	LatencyEWMA   time.Duration
 	SuccessCount  uint64
 	FailureCount  uint64
 	LastSuccessAt time.Time
+
+	// Request quality is tracked separately from collector validation. A proxy
+	// can answer the probe quickly while being throttled or unreliable for real
+	// NVIDIA requests.
+	RequestSuccessCount   uint64
+	RequestFailureCount   uint64
+	RequestFailureStreak  int
+	RequestLatencyEWMA    time.Duration
+	RequestLatencySamples int
 
 	// HTTPFailCount is the consecutive application-level failures (429/5xx
 	// through this exit) since the last real 2xx. Unlike transport failures it is
@@ -42,6 +52,22 @@ type Proxy struct {
 	// exit has served a 2xx recently, repeated 429/5xx are a key-level or global
 	// upstream condition and no exit gets blamed (audit H8).
 	LastRequestSuccessAt time.Time
+
+	// LastFailureAt and LastFailureStatus record the most recent transport or
+	// HTTP failure observed through this exit for the operator view. The HTTP
+	// count window in ReportHTTPFailure uses LastHTTPFailureAt to forget stale
+	// patterns spread over hours.
+	LastFailureAt     time.Time
+	LastHTTPFailureAt time.Time
+
+	// LastHTTPFailureStatus is the most recent 429/5xx status seen through this
+	// exit; 0 when the exit has never produced one. 529 is deliberately never
+	// treated as exit-specific (see ReportHTTPFailure).
+	LastHTTPFailureStatus int
+
+	// LatencySamples counts how many latency measurements fed the EWMA so the
+	// UI can distinguish a fresh EWMA from one based on a single sample.
+	LatencySamples int
 }
 
 func (p Proxy) Key() string {

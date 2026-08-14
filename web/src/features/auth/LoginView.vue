@@ -43,7 +43,7 @@ async function submit(): Promise<void> {
     <section class="relative w-full max-w-sm animate-fade-in">
       <!-- Logo -->
       <div class="mb-8 text-center">
-        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-accent)] text-lg font-bold text-[var(--color-canvas)]">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-accent)] text-lg font-bold text-[var(--color-accent-foreground)]">
           N
         </div>
         <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">
@@ -63,7 +63,7 @@ async function submit(): Promise<void> {
       <!-- HTTP warning -->
       <div
         v-if="isPlainHttp"
-        class="mb-6 rounded-lg border border-[#F59E0B]/30 bg-[#F59E0B]/5 p-3 text-sm text-[#FBBF24]"
+        class="mb-6 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3 text-sm text-[var(--color-warning)]"
         role="alert"
       >
         <div class="flex items-start gap-2">
@@ -123,16 +123,16 @@ async function submit(): Promise<void> {
           <Transition name="slide">
             <p
               v-if="formError"
-              class="rounded-lg bg-[#EF4444]/5 border border-[#EF4444]/20 px-3 py-2 text-sm text-[#F87171]"
+              class="rounded-lg bg-[var(--color-danger)]/5 border border-[var(--color-danger)]/20 px-3 py-2 text-sm text-[var(--color-danger)]"
               data-testid="form-error"
-              role="status"
+              role="alert"
             >
               {{ formError }}
             </p>
           </Transition>
 
           <button
-            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:opacity-40"
+            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:border-[var(--color-border-strong)] disabled:bg-[var(--color-surface)] disabled:text-[var(--color-text-muted)]"
             :disabled="submitting"
             type="submit"
           >

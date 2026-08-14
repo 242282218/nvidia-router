@@ -177,10 +177,18 @@ function formatDate(value?: string): string {
       <Transition name="slide">
         <p
           v-if="errorMessage"
-          class="mb-4 text-sm text-[#F87171]"
+          class="mb-4 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
-          {{ errorMessage }}
+          <span>{{ errorMessage }}</span>
+          <button
+            class="btn-secondary rounded-lg px-3 py-1 text-xs"
+            type="button"
+            :disabled="loading"
+            @click="loadRuntime"
+          >
+            重试
+          </button>
         </p>
       </Transition>
 
@@ -232,18 +240,18 @@ function formatDate(value?: string): string {
             </h2>
             <div class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm">
               <span class="text-[var(--color-text-secondary)]">总数 <strong class="text-[var(--color-text)]">{{ summary.keys.total }}</strong></span>
-              <span class="text-[#4ADE80]">就绪 <strong>{{ summary.keys.ready }}</strong></span>
+              <span class="text-[var(--color-success)]">就绪 <strong>{{ summary.keys.ready }}</strong></span>
               <span class="text-[var(--color-text-secondary)]">启用 <strong class="text-[var(--color-text)]">{{ summary.keys.enabled }}</strong></span>
               <span class="text-[var(--color-text-secondary)]">停用 <strong class="text-[var(--color-text)]">{{ summary.keys.disabled }}</strong></span>
-              <span class="text-[#FBBF24]">冷却 <strong>{{ summary.keys.cooling_down }}</strong></span>
-              <span class="text-[#F87171]">失效 <strong>{{ summary.keys.auth_invalid }}</strong></span>
+              <span class="text-[var(--color-warning)]">冷却 <strong>{{ summary.keys.cooling_down }}</strong></span>
+              <span class="text-[var(--color-danger)]">失效 <strong>{{ summary.keys.auth_invalid }}</strong></span>
             </div>
           </div>
 
           <!-- Active requests -->
           <div
             data-testid="runtime-active"
-            class="stat-card animate-slide-up runtime-delay-50"
+            class="stat-card animate-slide-up"
           >
             <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
               活跃请求
@@ -257,7 +265,7 @@ function formatDate(value?: string): string {
           <!-- Queue -->
           <div
             data-testid="runtime-queue"
-            class="stat-card animate-slide-up runtime-delay-100"
+            class="stat-card animate-slide-up"
           >
             <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
               队列 / 容量
@@ -270,7 +278,7 @@ function formatDate(value?: string): string {
           <!-- Earliest cooldown -->
           <div
             data-testid="runtime-cooldown"
-            class="stat-card animate-slide-up runtime-delay-150"
+            class="stat-card animate-slide-up"
           >
             <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
               最早冷却结束
@@ -283,18 +291,18 @@ function formatDate(value?: string): string {
           <!-- Shutdown status -->
           <div
             data-testid="runtime-shutdown"
-            class="stat-card animate-slide-up runtime-delay-200"
+            class="stat-card animate-slide-up"
           >
             <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
               服务状态
             </h2>
             <p
               class="mt-2 flex items-center gap-2 font-medium"
-              :class="summary.shutting_down ? 'text-[#FBBF24]' : 'text-[#4ADE80]'"
+              :class="summary.shutting_down ? 'text-[var(--color-warning)]' : 'text-[var(--color-success)]'"
             >
               <span
                 class="inline-block h-2 w-2 rounded-full pulse-dot"
-                :class="summary.shutting_down ? 'bg-[#F59E0B]' : 'bg-[var(--color-accent)]'"
+                :class="summary.shutting_down ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-accent)]'"
               />
               {{ summary.shutting_down ? '关闭中' : '接收请求' }}
             </p>
@@ -328,21 +336,14 @@ function formatDate(value?: string): string {
 </template>
 
 <style scoped>
-.runtime-delay-50 {
-  animation-delay: 50ms;
+/* The stat-card entrance animates as one group on the loading→loaded state
+   change; per-card stagger delays were pure decoration (design-aesthetics
+   交互动效 P0#1: every animation must explain a state change). */
+.slide-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
 }
-.runtime-delay-100 {
-  animation-delay: 100ms;
-}
-.runtime-delay-150 {
-  animation-delay: 150ms;
-}
-.runtime-delay-200 {
-  animation-delay: 200ms;
-}
-.slide-enter-active,
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

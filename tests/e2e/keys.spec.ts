@@ -58,7 +58,7 @@ test.describe('management resources', () => {
     await expect(page.getByTestId('key-cards')).toBeHidden()
     await expect(page.getByTestId('key-table')).toContainText('fixture-…')
     await page.getByTestId('test-all-keys').click()
-    await expect(page.getByTestId('key-test-results')).toContainText('valid')
+    await expect(page.getByTestId('key-test-results')).toContainText('可用')
     await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click()
 
     const toggle = page.getByTestId('key-table-toggle-1')

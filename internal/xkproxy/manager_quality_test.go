@@ -148,3 +148,114 @@ func TestManagerStickyRebindSkipsSameProxy(t *testing.T) {
 	}
 	first.Release()
 }
+
+func TestHandleInvalidateDropsCachedExit(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{
+		{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(10 * time.Minute)},
+		{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: now.Add(10 * time.Minute)},
+	})
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	first, err := manager.Acquire(context.Background(), snapshot, "session-timeout")
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	firstKey := first.proxyKey
+	first.Invalidate()
+	first.Release()
+
+	second, err := manager.Acquire(context.Background(), snapshot, "session-timeout")
+	if err != nil {
+		t.Fatalf("second Acquire: %v", err)
+	}
+	t.Cleanup(second.Release)
+	if second.proxyKey == firstKey {
+		t.Fatalf("second Acquire reused timed-out proxy %q", firstKey)
+	}
+}
+
+func TestManagerQualityRoutingPrefersRealRequestQuality(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{
+		{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(10 * time.Minute), LatencyEWMA: 20 * time.Millisecond, LatencySamples: 8},
+		{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: now.Add(10 * time.Minute), RequestSuccessCount: 4, RequestLatencyEWMA: 180 * time.Millisecond, RequestLatencySamples: 4},
+	})
+
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000, LatencyRoutingEnabled: true}
+	handle, err := manager.Acquire(context.Background(), snapshot, "session-quality")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(handle.Release)
+	if handle.proxyKey != (Proxy{Scheme: "http", Address: "10.0.0.2:8080"}).Key() {
+		t.Fatalf("selected proxy = %q, want real-request quality exit", handle.proxyKey)
+	}
+}
+
+func TestManagerRejectsMalformedSelectedProxyInsteadOfFallingBackDirect(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{{
+		Scheme: "ftp", Address: "10.0.0.9:8080", ExpiresAt: now.Add(10 * time.Minute),
+	}})
+
+	_, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000, LatencyRoutingEnabled: true,
+	}, "session-malformed-proxy")
+	if err == nil {
+		t.Fatal("Acquire with malformed selected proxy succeeded; proxy mode must not fall back to direct")
+	}
+	var proxyErr *Error
+	if !errors.As(err, &proxyErr) || proxyErr.Reason() != ReasonTransportFailed {
+		t.Fatalf("error = %T %v, want proxy transport failure", err, err)
+	}
+}
+
+// TestHandleProxyKeyExposesExitIdentity proves the request path can read which
+// pooled exit a handle dials, so failed/slow requests can be correlated with a
+// specific proxy in logs (static-proxy mode reports empty).
+func TestHandleProxyKeyExposesExitIdentity(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{{
+		Scheme: "http", Address: "10.0.0.7:8080", ExpiresAt: now.Add(10 * time.Minute),
+	}})
+
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000,
+	}, "session-proxykey")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(handle.Release)
+
+	want := (Proxy{Scheme: "http", Address: "10.0.0.7:8080"}).Key()
+	if got := handle.ProxyKey(); got != want {
+		t.Fatalf("ProxyKey = %q, want %q", got, want)
+	}
+}
+
+func TestHandleReportLatencyZeroRecordsSuccessfulRequest(t *testing.T) {
+	now := time.Now()
+	manager := newPoolManager(t, []Proxy{{
+		Scheme: "http", Address: "10.0.0.8:8080", ExpiresAt: now.Add(10 * time.Minute),
+	}})
+
+	handle, err := manager.Acquire(context.Background(), runtimeconfig.Snapshot{
+		ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000,
+	}, "session-request-success")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(handle.Release)
+
+	handle.ReportLatency(0)
+	proxies := manager.pool.List(time.Now())
+	if len(proxies) != 1 {
+		t.Fatalf("pool size = %d, want 1", len(proxies))
+	}
+	if proxies[0].RequestSuccessCount != 1 {
+		t.Fatalf("request success count = %d, want 1", proxies[0].RequestSuccessCount)
+	}
+	if proxies[0].RequestLatencySamples != 0 {
+		t.Fatalf("request latency samples = %d, want 0 for zero latency", proxies[0].RequestLatencySamples)
+	}
+}

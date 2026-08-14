@@ -3,6 +3,7 @@ package xkproxy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,8 @@ import (
 )
 
 const proxyPoolAuthKeyAAD = "proxy-pool-auth-key:v1"
+const proxyPoolConfigPrefix = "xkcfg:v1:"
+const builtInProxyURLSentinel = "__built_in_xk_pool__"
 
 type Source string
 
@@ -26,10 +29,15 @@ const (
 )
 
 type Snapshot struct {
-	Enabled        bool   `json:"enabled"`
-	ProxyURL       string `json:"proxy_url"`
-	AuthConfigured bool   `json:"auth_configured"`
-	Source         Source `json:"source"`
+	Enabled            bool   `json:"enabled"`
+	ProxyURL           string `json:"proxy_url"`
+	AuthConfigured     bool   `json:"auth_configured"`
+	Source             Source `json:"source"`
+	Mode               string `json:"mode,omitempty"`
+	UpstreamConfigured bool   `json:"upstream_configured,omitempty"`
+	UpstreamEndpoint   string `json:"upstream_endpoint,omitempty"`
+	CollectorInterval  string `json:"collector_interval,omitempty"`
+	ProxyTTL           string `json:"proxy_ttl,omitempty"`
 }
 
 type ValidationError struct {
@@ -48,10 +56,18 @@ type EnvironmentConfig struct {
 }
 
 type Patch struct {
-	Enabled      *bool  `json:"enabled"`
-	ProxyURL     string `json:"proxy_url"`
-	AuthKey      string `json:"auth_key"`
-	ClearAuthKey bool   `json:"clear_auth_key"`
+	Enabled          *bool  `json:"enabled"`
+	ProxyURL         string `json:"proxy_url"`
+	AuthKey          string `json:"auth_key"`
+	ClearAuthKey     bool   `json:"clear_auth_key"`
+	UpstreamURL      string `json:"upstream_url"`
+	ValidationURL    string `json:"validation_url"`
+	ValidationStatus int    `json:"validation_status"`
+	Interval         string `json:"interval"`
+	ProxyTTL         string `json:"proxy_ttl"`
+	ExpectedQty      int    `json:"expected_qty"`
+	Concurrency      int    `json:"concurrency"`
+	MaxLatency       string `json:"max_latency"`
 }
 
 type SettingsService struct {
@@ -77,11 +93,25 @@ type proxyConfig struct {
 	snapshot Snapshot
 	proxyURL *url.URL
 	authKey  string
+	poolCfg  *CollectorConfig
+}
+
+type persistedPoolConfig struct {
+	ValidationURL     string `json:"validation_url"`
+	ValidationStatus  int    `json:"validation_status"`
+	UpstreamTimeout   string `json:"upstream_timeout"`
+	ValidationTimeout string `json:"validation_timeout"`
+	MaxLatency        string `json:"max_latency,omitempty"`
+	Interval          string `json:"interval"`
+	ProxyTTL          string `json:"proxy_ttl"`
+	ExpectedQty       int    `json:"expected_qty"`
+	Concurrency       int    `json:"concurrency"`
 }
 
 type storedProxyConfig struct {
 	enabled    bool
 	proxyURL   string
+	poolConfig string
 	nonce      []byte
 	ciphertext []byte
 	version    int
@@ -136,6 +166,13 @@ func (s *SettingsService) PoolStatus() PoolStatus {
 		return PoolStatus{}
 	}
 	return s.switcher.PoolStatus()
+}
+
+func (s *SettingsService) Refresh(ctx context.Context) error {
+	if s == nil || s.switcher == nil {
+		return errors.New("proxy settings service is nil")
+	}
+	return s.switcher.Refresh(ctx)
 }
 
 func (s *SettingsService) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -225,9 +262,9 @@ func (s *SettingsService) loadStored(ctx context.Context) (*storedProxyConfig, e
 	var enabled int
 	var stored storedProxyConfig
 	err := s.db.QueryRowContext(ctx, `
-		SELECT enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version
+		SELECT enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext, version, key_version
 		FROM proxy_pool_settings WHERE id = 1`).Scan(
-		&enabled, &stored.proxyURL, &stored.nonce, &stored.ciphertext, &stored.version, &stored.keyVersion,
+		&enabled, &stored.proxyURL, &stored.poolConfig, &stored.nonce, &stored.ciphertext, &stored.version, &stored.keyVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -243,6 +280,33 @@ func (s *SettingsService) loadStored(ctx context.Context) (*storedProxyConfig, e
 }
 
 func (s *SettingsService) databaseProxyConfig(stored storedProxyConfig) (proxyConfig, error) {
+	if s.poolCfg == nil && stored.proxyURL != "" && stored.proxyURL != builtInProxyURLSentinel {
+		return proxyConfig{}, errors.New("load proxy settings: external proxy settings are unsupported; configure the built-in XApi pool")
+	}
+	if s.poolCfg != nil || stored.proxyURL == builtInProxyURLSentinel {
+		if stored.proxyURL != "" && stored.proxyURL != builtInProxyURLSentinel {
+			return proxyConfig{}, errors.New("load proxy settings: built-in mode contains an invalid fixed proxy URL")
+		}
+		if s.poolCfg == nil {
+			if stored.enabled {
+				return proxyConfig{}, errors.New("load proxy settings: enabled built-in pool requires runtime XApi configuration")
+			}
+			return makeProxyConfig(false, nil, "", SourceDatabase), nil
+		}
+		config := makeProxyConfig(stored.enabled, nil, "", SourceDatabase)
+		config.poolCfg = cloneCollectorConfig(s.poolCfg)
+		if len(stored.ciphertext) > 0 {
+			return proxyConfig{}, errors.New("load proxy settings: built-in pool contains persisted credential data")
+		}
+		if stored.poolConfig != "" {
+			poolConfig, err := collectorConfigFromPersisted(stored.poolConfig, s.poolCfg.UpstreamURL)
+			if err != nil {
+				return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
+			}
+			config.poolCfg = poolConfig
+		}
+		return applyPoolSnapshot(config), nil
+	}
 	if stored.version != 1 {
 		return proxyConfig{}, fmt.Errorf("load proxy settings: unsupported version %d", stored.version)
 	}
@@ -257,10 +321,15 @@ func (s *SettingsService) databaseProxyConfig(stored storedProxyConfig) (proxyCo
 	if err != nil {
 		return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
 	}
-	if stored.enabled && (proxyURL == nil || authKey == "") {
+	if stored.enabled && s.poolCfg == nil && (proxyURL == nil || authKey == "") {
 		return proxyConfig{}, errors.New("load proxy settings: enabled proxy requires URL and authentication key")
 	}
-	return makeProxyConfig(stored.enabled, proxyURL, authKey, SourceDatabase), nil
+	config := makeProxyConfig(stored.enabled, proxyURL, authKey, SourceDatabase)
+	if s.poolCfg != nil {
+		config.snapshot.Mode = "built-in"
+		config.snapshot.AuthConfigured = true
+	}
+	return config, nil
 }
 
 func (s *SettingsService) decryptAuthKey(keyVersion int, nonce, ciphertext []byte) (string, error) {
@@ -282,10 +351,28 @@ func (s *SettingsService) decryptAuthKey(keyVersion int, nonce, ciphertext []byt
 }
 
 func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
+	if strings.TrimSpace(patch.ProxyURL) != "" || strings.TrimSpace(patch.AuthKey) != "" {
+		return proxyConfig{}, invalidSettings("external proxy settings are unsupported; configure the built-in XApi pool")
+	}
 	current := s.current
 	nextEnabled := current.snapshot.Enabled
 	if patch.Enabled != nil {
 		nextEnabled = *patch.Enabled
+	}
+	if s.poolCfg != nil || current.poolCfg != nil {
+		if strings.TrimSpace(patch.ProxyURL) != "" || strings.TrimSpace(patch.AuthKey) != "" || patch.ClearAuthKey {
+			return proxyConfig{}, invalidSettings("built-in mode does not accept fixed proxy credentials")
+		}
+		poolConfig := cloneCollectorConfig(current.poolCfg)
+		if poolConfig == nil {
+			poolConfig = cloneCollectorConfig(s.poolCfg)
+		}
+		if err := applyPoolPatch(poolConfig, patch); err != nil {
+			return proxyConfig{}, err
+		}
+		config := makeProxyConfig(nextEnabled, nil, "", SourceDatabase)
+		config.poolCfg = poolConfig
+		return applyPoolSnapshot(config), nil
 	}
 	nextURLRaw := current.snapshot.ProxyURL
 	if patch.ProxyURL != "" {
@@ -321,11 +408,11 @@ func (s *SettingsService) newManager(config proxyConfig) (*Manager, error) {
 	if s.base == nil {
 		return nil, errors.New("initialize proxy manager: HTTP transport is required")
 	}
-	if s.poolCfg != nil && config.proxyURL == nil {
+	if config.poolCfg != nil && config.proxyURL == nil {
 		// Built-in pool mode: fetch and validate proxy addresses from the
 		// upstream API. The auth key authenticates the router to the pool's
 		// provider (static-manager compatibility), not a single fixed proxy.
-		manager, err := NewWithPool(*s.poolCfg, config.authKey, s.base, s.logger)
+		manager, err := NewWithPool(*config.poolCfg, config.authKey, s.base, s.logger)
 		if err != nil {
 			return nil, fmt.Errorf("initialize proxy pool manager: %w", err)
 		}
@@ -341,7 +428,14 @@ func (s *SettingsService) newManager(config proxyConfig) (*Manager, error) {
 
 func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error {
 	var nonce, ciphertext []byte
-	if config.authKey != "" {
+	poolConfig := ""
+	if config.poolCfg != nil {
+		encoded, err := marshalPoolConfig(*config.poolCfg)
+		if err != nil {
+			return err
+		}
+		poolConfig = encoded
+	} else if config.authKey != "" {
 		plaintext := []byte(config.authKey)
 		defer crypto.Zero(plaintext)
 		var err error
@@ -352,19 +446,24 @@ func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error
 		defer crypto.Zero(nonce)
 		defer crypto.Zero(ciphertext)
 	}
+	proxyURL := config.snapshot.ProxyURL
+	if config.poolCfg != nil && config.snapshot.Enabled {
+		proxyURL = builtInProxyURLSentinel
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO proxy_pool_settings (
-			id, enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
-			) VALUES (1, ?, ?, ?, ?, 1, ?, ?)
+			id, enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
+			) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 			enabled = excluded.enabled,
 			proxy_url = excluded.proxy_url,
 			auth_key_nonce = excluded.auth_key_nonce,
 			auth_key_ciphertext = excluded.auth_key_ciphertext,
+				pool_config = excluded.pool_config,
 				version = excluded.version,
 				key_version = excluded.key_version,
 				updated_at = excluded.updated_at`,
-		boolInt(config.snapshot.Enabled), config.snapshot.ProxyURL, nonce, ciphertext, s.keys.ActiveVersion(), proxyTimestamp())
+		boolInt(config.snapshot.Enabled), proxyURL, poolConfig, nonce, ciphertext, s.keys.ActiveVersion(), proxyTimestamp())
 	if err != nil {
 		return fmt.Errorf("persist proxy settings: %w", err)
 	}
@@ -427,7 +526,9 @@ func (s *SettingsService) environmentProxyConfig() (proxyConfig, error) {
 		// from the upstream API configured in poolCfg. There is no fixed proxy
 		// URL, so proxyURL is nil and newManager routes to NewWithPool. The auth
 		// key (pool provider credential) comes from the static env override.
-		return makeProxyConfig(true, nil, s.env.AuthKey, SourceEnvironment), nil
+		config := makeProxyConfig(true, nil, "", SourceEnvironment)
+		config.poolCfg = cloneCollectorConfig(s.poolCfg)
+		return applyPoolSnapshot(config), nil
 	}
 	if s.env.URL == nil {
 		return makeProxyConfig(false, nil, "", SourceNone), nil
@@ -440,11 +541,141 @@ func makeProxyConfig(enabled bool, proxyURL *url.URL, authKey string, source Sou
 	if proxyURL != nil {
 		proxyURLString = proxyURL.String()
 	}
+	mode := "none"
+	if enabled && proxyURL == nil {
+		mode = "built-in"
+	} else if enabled {
+		mode = "external"
+	}
 	return proxyConfig{
-		snapshot: Snapshot{Enabled: enabled, ProxyURL: proxyURLString, AuthConfigured: strings.TrimSpace(authKey) != "", Source: source},
+		snapshot: Snapshot{Enabled: enabled, ProxyURL: proxyURLString, AuthConfigured: strings.TrimSpace(authKey) != "", Source: source, Mode: mode},
 		proxyURL: proxyURL,
 		authKey:  authKey,
 	}
+}
+
+func applyPoolSnapshot(config proxyConfig) proxyConfig {
+	config.snapshot.Mode = "built-in"
+	config.snapshot.AuthConfigured = config.poolCfg != nil && strings.TrimSpace(config.poolCfg.UpstreamURL) != ""
+	if config.poolCfg != nil {
+		config.snapshot.UpstreamConfigured = config.snapshot.AuthConfigured
+		config.snapshot.UpstreamEndpoint = safeEndpoint(config.poolCfg.UpstreamURL)
+		config.snapshot.CollectorInterval = config.poolCfg.Interval.String()
+		config.snapshot.ProxyTTL = config.poolCfg.ProxyTTL.String()
+	}
+	return config
+}
+
+func safeEndpoint(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func cloneCollectorConfig(value *CollectorConfig) *CollectorConfig {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func marshalPoolConfig(config CollectorConfig) (string, error) {
+	persisted := persistedPoolConfig{ValidationURL: config.ValidationURL, ValidationStatus: config.ValidationStatus, UpstreamTimeout: config.UpstreamTimeout.String(), ValidationTimeout: config.ValidationTimeout.String(), Interval: config.Interval.String(), ProxyTTL: config.ProxyTTL.String(), ExpectedQty: config.ExpectedQty, Concurrency: config.Concurrency}
+	if config.MaxLatency > 0 {
+		persisted.MaxLatency = config.MaxLatency.String()
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		return "", fmt.Errorf("marshal proxy pool config: %w", err)
+	}
+	return proxyPoolConfigPrefix + string(data), nil
+}
+
+func collectorConfigFromPersisted(value, upstreamURL string) (*CollectorConfig, error) {
+	var persisted persistedPoolConfig
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(value, proxyPoolConfigPrefix)), &persisted); err != nil {
+		return nil, fmt.Errorf("decode proxy pool config: %w", err)
+	}
+	return collectorConfigFromPersistedValues(persisted, upstreamURL)
+}
+
+func collectorConfigFromPersistedValues(value persistedPoolConfig, upstreamURL string) (*CollectorConfig, error) {
+	upstreamTimeout, err := time.ParseDuration(value.UpstreamTimeout)
+	if err != nil {
+		return nil, invalidSettings("upstream timeout is invalid")
+	}
+	validationTimeout, err := time.ParseDuration(value.ValidationTimeout)
+	if err != nil {
+		return nil, invalidSettings("validation timeout is invalid")
+	}
+	interval, err := time.ParseDuration(value.Interval)
+	if err != nil {
+		return nil, invalidSettings("collect interval is invalid")
+	}
+	proxyTTL, err := time.ParseDuration(value.ProxyTTL)
+	if err != nil {
+		return nil, invalidSettings("proxy TTL is invalid")
+	}
+	maxLatency := time.Duration(0)
+	if value.MaxLatency != "" {
+		maxLatency, err = time.ParseDuration(value.MaxLatency)
+		if err != nil {
+			return nil, invalidSettings("max latency is invalid")
+		}
+	}
+	config := &CollectorConfig{UpstreamURL: upstreamURL, ValidationURL: value.ValidationURL, ValidationStatus: value.ValidationStatus, UpstreamTimeout: upstreamTimeout, ValidationTimeout: validationTimeout, MaxLatency: maxLatency, Interval: interval, ProxyTTL: proxyTTL, ExpectedQty: value.ExpectedQty, Concurrency: value.Concurrency}
+	if err := validatePoolConfig(*config); err != nil {
+		return nil, invalidSettings(err.Error())
+	}
+	return config, nil
+}
+
+func applyPoolPatch(config *CollectorConfig, patch Patch) error {
+	if config == nil {
+		return errors.New("proxy pool config is missing")
+	}
+	if patch.UpstreamURL != "" {
+		config.UpstreamURL = strings.TrimSpace(patch.UpstreamURL)
+	}
+	if patch.ValidationURL != "" {
+		config.ValidationURL = strings.TrimSpace(patch.ValidationURL)
+	}
+	if patch.ValidationStatus != 0 {
+		config.ValidationStatus = patch.ValidationStatus
+	}
+	if patch.ExpectedQty != 0 {
+		config.ExpectedQty = patch.ExpectedQty
+	}
+	if patch.Concurrency != 0 {
+		config.Concurrency = patch.Concurrency
+	}
+	var err error
+	if patch.Interval != "" {
+		config.Interval, err = time.ParseDuration(patch.Interval)
+		if err != nil {
+			return invalidSettings("collect interval is invalid")
+		}
+	}
+	if patch.ProxyTTL != "" {
+		config.ProxyTTL, err = time.ParseDuration(patch.ProxyTTL)
+		if err != nil {
+			return invalidSettings("proxy TTL is invalid")
+		}
+	}
+	if patch.MaxLatency != "" {
+		config.MaxLatency, err = time.ParseDuration(patch.MaxLatency)
+		if err != nil {
+			return invalidSettings("max latency is invalid")
+		}
+	}
+	return validatePoolConfig(*config)
 }
 
 func parseProxyURL(raw string) (*url.URL, error) {

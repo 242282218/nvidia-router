@@ -9,6 +9,11 @@ export default tseslint.config(
   {
     files: ['**/*.vue'],
     languageOptions: {
+      globals: {
+        AbortController: 'readonly',
+        clearInterval: 'readonly',
+        setInterval: 'readonly',
+      },
       parserOptions: {
         parser: tseslint.parser,
       },

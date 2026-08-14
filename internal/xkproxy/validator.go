@@ -155,6 +155,14 @@ func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.
 		// one-shot connection per proxy: disable keep-alives and let every probe
 		// use its own connection.
 		DisableKeepAlives: true,
+		// The validation target (NVIDIA) sits behind a CDN that speaks HTTP/2.
+		// Like the request-path transport (manager.go), the probe's outer leg to
+		// the proxy is plain HTTP CONNECT, so ForceAttemptHTTP2 only governs the
+		// TLS connection to the TARGET inside the tunnel. Leaving it false made
+		// every probe HTTP/1.1 while the target replied with h2 frames, so every
+		// fetched proxy failed validation and the pool drained to stale
+		// last-known-good exits (found in real 联调 2026-08-13).
+		ForceAttemptHTTP2: true,
 	}
 	if err == nil {
 		transport.Proxy = http.ProxyURL(parsed)

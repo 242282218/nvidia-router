@@ -265,12 +265,23 @@ func TestAttemptDoesNotPersistProxyFailureOrSwitchKey(t *testing.T) {
 	states := &countingStateWriter{}
 	attempt := NewAttempt(settings, keyPool, testSecrets{}, states, keyPool, clock.RealClock{})
 
-	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+	attempted := 0
+	_, err := attempt.Run(context.Background(), 1, false, func(_ context.Context, _ int64, _ []byte, _ *CommitState) (*http.Response, error) {
+		attempted++
 		return nil, xkproxy.NewTransportError(errors.New("private proxy cause"))
 	})
-	var proxyErr *xkproxy.Error
-	if !errors.As(err, &proxyErr) {
-		t.Fatalf("Run error = %T %v, want proxy error", err, err)
+	// A transport-level proxy failure is retryable across keys (audit R5): the
+	// request never reached NVIDIA, so it surfaces as a retryable fault, not a raw
+	// error that would short-circuit the retry loop.
+	var lastFault fault.Fault
+	if !errors.As(err, &lastFault) {
+		t.Fatalf("Run error = %T %v, want a retryable fault", err, err)
+	}
+	if lastFault.PublicCode != "upstream_proxy_unavailable" || !lastFault.Retryable {
+		t.Fatalf("fault = %+v, want retryable upstream_proxy_unavailable", lastFault)
+	}
+	if attempted < 2 {
+		t.Fatalf("attempted keys = %d, want at least 2 (transport failure must switch keys)", attempted)
 	}
 	if states.failures != 0 || states.successes != 0 {
 		t.Fatalf("state writes = success:%d failure:%d, want zero", states.successes, states.failures)
@@ -329,9 +340,9 @@ func TestAttemptProxyFailureSkipsStateSyncAndModelBlockPropagation(t *testing.T)
 	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
 		return nil, xkproxy.NewTransportError(errors.New("private proxy cause"))
 	})
-	var proxyErr *xkproxy.Error
-	if !errors.As(err, &proxyErr) {
-		t.Fatalf("Run error = %T %v, want proxy error", err, err)
+	var lastFault fault.Fault
+	if !errors.As(err, &lastFault) {
+		t.Fatalf("Run error = %T %v, want a retryable fault", err, err)
 	}
 	if states.failures != 0 || states.successes != 0 {
 		t.Fatalf("state writes = success:%d failure:%d, want zero", states.successes, states.failures)

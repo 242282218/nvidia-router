@@ -38,19 +38,21 @@ func TestBudgetSplitsStreamFirstTokenAndIdleWindows(t *testing.T) {
 	}
 }
 
-// TestBudgetStreamTimeoutFallsBackTo1sFloorWhenUnset mirrors the connect/first
-// byte fallback: a zero-valued snapshot must still produce usable stream
-// windows instead of a zero idle that silently disables the wrap or a deadline
-// equal to `now` that fires immediately.
-func TestBudgetStreamTimeoutFallsBackTo1sFloorWhenUnset(t *testing.T) {
-	floor := 1000 * time.Millisecond
+// TestBudgetStreamTimeoutFallsBackToDocumentedDefaultsWhenUnset locks the
+// zero-snapshot fallback to the migration 014 documented defaults, not the
+// validator's 1s floor: snapshot.go promises "the budget layer resolves 0 to
+// the documented defaults", and a 1s stream idle window would truncate any
+// slow-but-live generation on an uninitialised-provider or test path.
+func TestBudgetStreamTimeoutFallsBackToDocumentedDefaultsWhenUnset(t *testing.T) {
+	wantFirstToken := 60000 * time.Millisecond
+	wantIdle := 180000 * time.Millisecond
 	now := time.Unix(1_700_000_000, 0)
 	budget := newBudget(runtimeconfig.Snapshot{}, now, true)
-	if got := budget.StreamIdleTimeout(); got != floor {
-		t.Fatalf("StreamIdleTimeout = %s, want %s when StreamIdleTimeoutMS unset", got, floor)
+	if got := budget.StreamIdleTimeout(); got != wantIdle {
+		t.Fatalf("StreamIdleTimeout = %s, want %s when StreamIdleTimeoutMS unset", got, wantIdle)
 	}
-	if got := budget.forAttempt(now).FirstTokenDeadline(); !got.Equal(now.Add(floor)) {
-		t.Fatalf("FirstTokenDeadline = %v, want %v when StreamFirstTokenTimeoutMS unset", got, now.Add(floor))
+	if got := budget.forAttempt(now).FirstTokenDeadline(); !got.Equal(now.Add(wantFirstToken)) {
+		t.Fatalf("FirstTokenDeadline = %v, want %v when StreamFirstTokenTimeoutMS unset", got, now.Add(wantFirstToken))
 	}
 
 	short := 50 * time.Millisecond

@@ -124,8 +124,8 @@ func TestSettingsServicePoolModeBuildsCollectorManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if !initial.Enabled {
-		t.Fatal("pool mode should be enabled by default")
+	if !initial.Enabled || initial.Mode != "built-in" || initial.ProxyURL != "" {
+		t.Fatalf("pool mode snapshot = %#v", initial)
 	}
 	if initial.Source != SourceEnvironment {
 		t.Fatalf("Source = %q, want environment", initial.Source)
@@ -139,6 +139,145 @@ func TestSettingsServicePoolModeBuildsCollectorManager(t *testing.T) {
 	}
 	if !switcher.Configured() {
 		t.Fatal("pool mode switcher should be configured")
+	}
+}
+
+func TestSettingsServicePoolModeRejectsFixedProxyMutation(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	poolCfg := &CollectorConfig{
+		UpstreamURL:   "https://api.xingkongdaili.com/tools/XApi.ashx?apikey=fixture",
+		ValidationURL: "https://integrate.api.nvidia.com/v1", ValidationStatus: 404,
+		UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	enabled := true
+	_, err = service.Update(context.Background(), Patch{Enabled: &enabled, ProxyURL: "http://other:8080"})
+	if err == nil || !strings.Contains(err.Error(), "built-in") {
+		t.Fatalf("Update error = %v, want built-in mode validation", err)
+	}
+}
+
+func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	initial := &CollectorConfig{
+		UpstreamURL:   "https://old.example.test/XApi?secret=fixture",
+		ValidationURL: "https://integrate.api.nvidia.com/v1", ValidationStatus: 404,
+		UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, initial, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	updated, err := service.Update(context.Background(), Patch{UpstreamURL: "https://new.example.test/XApi?secret=fixture", Interval: "10s"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !updated.Enabled || updated.Mode != "built-in" || !updated.UpstreamConfigured || updated.UpstreamEndpoint != "https://new.example.test/XApi" {
+		t.Fatalf("updated snapshot = %#v", updated)
+	}
+	var ciphertext []byte
+	var poolConfig string
+	if err := db.QueryRow("SELECT auth_key_ciphertext, pool_config FROM proxy_pool_settings WHERE id = 1").Scan(&ciphertext, &poolConfig); err != nil {
+		t.Fatalf("read persisted pool settings: %v", err)
+	}
+	if len(ciphertext) != 0 {
+		t.Fatal("built-in pool persisted encrypted credential data")
+	}
+	if strings.Contains(poolConfig, "secret=") || strings.Contains(poolConfig, "old.example") || strings.Contains(poolConfig, "new.example") {
+		t.Fatalf("pool_config contains sensitive upstream data: %q", poolConfig)
+	}
+
+	reloaded, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, initial, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	t.Cleanup(reloaded.Close)
+	snapshot, err := reloaded.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("reloaded Snapshot: %v", err)
+	}
+	if snapshot.UpstreamEndpoint != "https://old.example.test/XApi" || !snapshot.UpstreamConfigured {
+		t.Fatalf("reloaded snapshot = %#v", snapshot)
+	}
+}
+
+func TestSettingsServicePoolModeRequiresRuntimeXAPIWhenEnabled(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	poolCfg := &CollectorConfig{
+		UpstreamURL: "https://provider.example/XApi?apikey=fixture", ValidationURL: "https://integrate.api.nvidia.com/v1",
+		ValidationStatus: 404, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: time.Hour, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	enabled := true
+	if _, err := service.Update(context.Background(), Patch{Enabled: &enabled}); err != nil {
+		t.Fatalf("persist enabled pool: %v", err)
+	}
+	service.Close()
+
+	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil || !strings.Contains(err.Error(), "runtime XApi") {
+		t.Fatalf("reload without runtime XApi error = %v", err)
+	}
+}
+
+func TestSettingsServiceRejectsLegacyExternalDatabaseConfiguration(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+		INSERT INTO proxy_pool_settings (
+			id, enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
+		) VALUES (1, 1, 'http://legacy-proxy:8080', x'01', x'02', 1, 1, '2026-08-14T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("insert legacy settings: %v", err)
+	}
+	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil || !strings.Contains(err.Error(), "external proxy settings are unsupported") {
+		t.Fatalf("legacy external settings error = %v", err)
+	}
+}
+
+func TestSettingsServiceRejectsNewExternalProxyConfiguration(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	enabled := true
+	_, err = service.Update(context.Background(), Patch{Enabled: &enabled, ProxyURL: "http://legacy-proxy:8080", AuthKey: "runtime-only"})
+	if err == nil || !strings.Contains(err.Error(), "external proxy settings are unsupported") {
+		t.Fatalf("external configuration error = %v", err)
 	}
 }
 

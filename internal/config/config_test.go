@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
-	"time"
 )
 
 const testInitialAdminPassword = "test-initial-admin-password"
@@ -155,28 +154,22 @@ func TestLoadFromEnvRejectsInvalidProxyConfiguration(t *testing.T) {
 			t.Setenv("NVIDIA_ROUTER_XK_PROXY_URL", test.rawURL)
 			t.Setenv("NVIDIA_ROUTER_XK_PROXY_AUTH_KEY", "proxy-secret")
 			_, err := LoadFromEnv(LoadOptions{})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
+			if err == nil || !strings.Contains(err.Error(), "external Xingkong proxy settings are unsupported") {
 				t.Fatalf("LoadFromEnv error = %v, want %q", err, test.want)
 			}
 		})
 	}
 }
 
-func TestLoadFromEnvLoadsStaticProxyPoolConfiguration(t *testing.T) {
+func TestLoadFromEnvRejectsStaticProxyPoolConfiguration(t *testing.T) {
 	clearConfigEnv(t)
 	setBaseConfigEnv(t)
 	t.Setenv("NVIDIA_ROUTER_XK_PROXY_URL", "http://proxy-pool:8080")
 	t.Setenv("NVIDIA_ROUTER_XK_PROXY_AUTH_KEY", "proxy-secret")
 
-	cfg, err := LoadFromEnv(LoadOptions{})
-	if err != nil {
-		t.Fatalf("LoadFromEnv: %v", err)
-	}
-	if cfg.XKProxyURL == nil || cfg.XKProxyURL.Host != "proxy-pool:8080" {
-		t.Fatalf("XKProxyURL = %#v, want proxy-pool:8080", cfg.XKProxyURL)
-	}
-	if cfg.XKProxyAuthKey != "proxy-secret" {
-		t.Fatalf("XKProxyAuthKey = %q, want proxy-secret", cfg.XKProxyAuthKey)
+	_, err := LoadFromEnv(LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "external Xingkong proxy settings are unsupported") {
+		t.Fatalf("LoadFromEnv error = %v, want external mode rejection", err)
 	}
 }
 
@@ -186,59 +179,33 @@ func TestLoadFromEnvRejectsProxyPoolWithoutAuthKey(t *testing.T) {
 	t.Setenv("NVIDIA_ROUTER_XK_PROXY_URL", "http://proxy-pool:8080")
 
 	_, err := LoadFromEnv(LoadOptions{})
-	if err == nil || !strings.Contains(err.Error(), "NVIDIA_ROUTER_XK_PROXY_AUTH_KEY") {
-		t.Fatalf("LoadFromEnv error = %v, want missing proxy auth key", err)
+	if err == nil || !strings.Contains(err.Error(), "external Xingkong proxy settings are unsupported") {
+		t.Fatalf("LoadFromEnv error = %v, want external mode rejection", err)
 	}
 }
 
-func TestLoadFromEnvLoadsBuiltInProxyPool(t *testing.T) {
+func TestLoadFromEnvLoadsBuiltInProxyPoolConfiguration(t *testing.T) {
 	clearConfigEnv(t)
 	setBaseConfigEnv(t)
-	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
-	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_URL", "https://integrate.api.nvidia.com/v1")
-	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_STATUS", "404")
-	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "6s")
-	t.Setenv("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", "10s")
-	t.Setenv("NVIDIA_ROUTER_XK_PROXY_TTL", "180s")
-	t.Setenv("NVIDIA_ROUTER_XK_CONCURRENCY", "4")
-	t.Setenv("NVIDIA_ROUTER_XK_MAX_LATENCY", "3s")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "http://xapi.example.test/tools/XApi.ashx?apikey=test")
 
 	cfg, err := LoadFromEnv(LoadOptions{})
 	if err != nil {
 		t.Fatalf("LoadFromEnv: %v", err)
 	}
-	if cfg.XKPool == nil {
-		t.Fatal("XKPool = nil, want built-in pool config")
+	if cfg.XKPool == nil || cfg.XKPool.UpstreamURL != "http://xapi.example.test/tools/XApi.ashx?apikey=test" {
+		t.Fatalf("XKPool = %#v, want built-in collector config", cfg.XKPool)
 	}
-	if cfg.XKPool.UpstreamURL != "https://api.xingkongdaili.com/api/getproxy/123" {
-		t.Fatalf("XKPool.UpstreamURL = %q", cfg.XKPool.UpstreamURL)
-	}
-	if cfg.XKPool.ValidationURL != "https://integrate.api.nvidia.com/v1" {
-		t.Fatalf("XKPool.ValidationURL = %q", cfg.XKPool.ValidationURL)
-	}
-	if cfg.XKPool.ValidationStatus != 404 {
-		t.Fatalf("XKPool.ValidationStatus = %d, want 404", cfg.XKPool.ValidationStatus)
-	}
-	if cfg.XKPool.UpstreamTimeout != 6*time.Second {
-		t.Fatalf("XKPool.UpstreamTimeout = %v, want 6s", cfg.XKPool.UpstreamTimeout)
-	}
-	if cfg.XKPool.Interval != 10*time.Second {
-		t.Fatalf("XKPool.Interval = %v, want 10s", cfg.XKPool.Interval)
-	}
-	if cfg.XKPool.ProxyTTL != 180*time.Second {
-		t.Fatalf("XKPool.ProxyTTL = %v, want 180s", cfg.XKPool.ProxyTTL)
-	}
-	if cfg.XKPool.Concurrency != 4 {
-		t.Fatalf("XKPool.Concurrency = %d, want 4", cfg.XKPool.Concurrency)
-	}
-	if cfg.XKPool.MaxLatency != 3*time.Second {
-		t.Fatalf("XKPool.MaxLatency = %v, want 3s", cfg.XKPool.MaxLatency)
-	}
-	if cfg.XKPool.ExpectedQty != 2 {
-		t.Fatalf("XKPool.ExpectedQty = %d, want default 2", cfg.XKPool.ExpectedQty)
-	}
-	if cfg.XKPool.ValidationTimeout != 5*time.Second {
-		t.Fatalf("XKPool.ValidationTimeout = %v, want default 5s", cfg.XKPool.ValidationTimeout)
+}
+
+func TestLoadFromEnvRejectsInlineXKUpstreamConfiguration(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "http://xapi.example.test/tools/XApi.ashx?apikey=test")
+
+	_, err := LoadFromEnv(LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
 	}
 }
 
@@ -247,18 +214,18 @@ func TestLoadFromEnvRejectsStaticAndPoolProxyTogether(t *testing.T) {
 	setBaseConfigEnv(t)
 	t.Setenv("NVIDIA_ROUTER_XK_PROXY_URL", "http://proxy-pool:8080")
 	t.Setenv("NVIDIA_ROUTER_XK_PROXY_AUTH_KEY", "proxy-secret")
-	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123?apikey=test")
 
 	_, err := LoadFromEnv(LoadOptions{})
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("LoadFromEnv error = %v, want mutual-exclusion error", err)
+	if err == nil || !strings.Contains(err.Error(), "external Xingkong proxy settings are unsupported") {
+		t.Fatalf("LoadFromEnv error = %v, want mutually exclusive proxy modes", err)
 	}
 }
 
 func TestLoadFromEnvRejectsInvalidPoolValidationStatus(t *testing.T) {
 	clearConfigEnv(t)
 	setBaseConfigEnv(t)
-	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123?apikey=test")
 	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_STATUS", "999")
 
 	_, err := LoadFromEnv(LoadOptions{})
@@ -270,12 +237,12 @@ func TestLoadFromEnvRejectsInvalidPoolValidationStatus(t *testing.T) {
 func TestLoadFromEnvRejectsInvalidPoolDuration(t *testing.T) {
 	clearConfigEnv(t)
 	setBaseConfigEnv(t)
-	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123")
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "https://api.xingkongdaili.com/api/getproxy/123?apikey=test")
 	t.Setenv("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", "bogus")
 
 	_, err := LoadFromEnv(LoadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "NVIDIA_ROUTER_XK_COLLECT_INTERVAL") {
-		t.Fatalf("LoadFromEnv error = %v, want interval duration error", err)
+		t.Fatalf("LoadFromEnv error = %v, want collect interval error", err)
 	}
 }
 

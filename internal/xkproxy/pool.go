@@ -1,6 +1,7 @@
 package xkproxy
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,11 +33,34 @@ type EjectionPolicy struct {
 
 const slowLatencyFactor = 3
 
+// qualityExploreEvery gives an under-sampled but otherwise clean exit an
+// occasional request. A bad exit cannot become preferred merely by being
+// unexplored, while a newly collected exit is not permanently ignored.
+const qualityExploreEvery = 8
+
+const qualityMinRequestSamples = 3
+
 // httpEjectSuccessWindow is how recently some exit must have served a real 2xx
 // for HTTP failures on another exit to count toward isolation. It is the
 // "pool is working" evidence: without it a key-level 429/5xx storm would blame
 // and eject every exit, emptying the pool (audit H8).
 const httpEjectSuccessWindow = 60 * time.Second
+
+// httpFailureWindow bounds how long an exit's HTTP-failure count is allowed to
+// accumulate. A slow-drip pattern spread over hours is not the sustained
+// 429/5xx storm isolation is for; without the window a merely noisy exit would
+// be ejected on a pattern it never actually maintained.
+const httpFailureWindow = 60 * time.Second
+
+// httpStatusOverloaded is NVIDIA's "overloaded" status. It describes the
+// target's own load, not the exit: it recurs across every exit at once, so an
+// exit must never be blamed for it (see ReportHTTPFailure).
+const httpStatusOverloaded = 529
+
+// upstreamOverloadWindow keeps a recent 529 visible long enough for the admin
+// poller to explain an outage without turning an old overload into a current
+// status. It is pool-wide because the signal describes NVIDIA, not an exit.
+const upstreamOverloadWindow = 60 * time.Second
 
 func (e EjectionPolicy) normalized() EjectionPolicy {
 	if e.FailureLimit <= 0 {
@@ -61,9 +85,10 @@ func (e EjectionPolicy) normalized() EjectionPolicy {
 }
 
 type Pool struct {
-	mu              sync.RWMutex
-	proxies         []Proxy
-	selectionCursor atomic.Uint64
+	mu                     sync.RWMutex
+	proxies                []Proxy
+	selectionCursor        atomic.Uint64
+	lastUpstreamOverloadAt time.Time
 
 	// removed records proxies permanently ejected (EjectionCount exceeded
 	// MaxEjections) so a later fetch does not immediately resurrect a
@@ -105,7 +130,7 @@ func (p *Pool) Clear() {
 func (p *Pool) Peek(now time.Time) (Proxy, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	ordered, _ := p.orderedLocked(now, 0)
+	ordered, _ := p.orderedLocked(now, 0, false)
 	if len(ordered) == 0 {
 		return Proxy{}, false
 	}
@@ -120,10 +145,172 @@ func (p *Pool) Get(now time.Time) (Proxy, bool) {
 	return candidates[0], true
 }
 
-func (p *Pool) Candidates(now time.Time, minRemainingLife time.Duration) (candidates []Proxy, panicMode bool) {
+// GetWithLatency selects the best exit honouring measured latency ordering
+// (EWMA ascending first, unmeasured last with rotation-driven exploration).
+// It is used when the operator enables latency-aware scheduling; the default
+// Get keeps the legacy rotation + 3x-slow demotion behaviour.
+func (p *Pool) GetWithLatency(now time.Time) (Proxy, bool) {
+	candidates, _ := p.CandidatesWithLatency(now, 0, true)
+	if len(candidates) == 0 {
+		return Proxy{}, false
+	}
+	return candidates[0], true
+}
+
+// GetWithQuality selects by real request quality first. Probe latency is only
+// a tie-breaker: a fast validation response is not evidence that NVIDIA will
+// accept traffic through the exit.
+func (p *Pool) GetWithQuality(now time.Time) (Proxy, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	ordered, panicMode := p.orderedLocked(now, minRemainingLife)
+
+	candidates, _ := p.orderedLocked(now, 0, false)
+	if len(candidates) == 0 {
+		return Proxy{}, false
+	}
+	ordered := orderByQuality(candidates)
+	selection := p.selectionCursor.Add(1) - 1
+	if selection%qualityExploreEvery == qualityExploreEvery-1 {
+		for _, candidate := range ordered[1:] {
+			// Exploration is for learning about unknown exits, not for feeding an
+			// exit whose only real request evidence is a failure: a failed sample
+			// does not make the exit "unexplored", it makes it suspect.
+			if candidate.RequestSamples() < qualityMinRequestSamples && candidate.HTTPFailCount == 0 && candidate.HealthFails == 0 && candidate.RequestFailureStreak == 0 {
+				return candidate, true
+			}
+		}
+	}
+	return ordered[0], true
+}
+
+func orderByQuality(candidates []Proxy) []Proxy {
+	ordered := append([]Proxy(nil), candidates...)
+	// Pool-relative slowness is a strong signal only among exits whose latency is
+	// measured on the same scale (real request latency). Probe latency is a
+	// different quantity (fast health check vs. full LLM round-trip) and must not
+	// demote a proven real-request exit just because a probe-only exit answered a
+	// validation ping faster. The threshold is computed from real-request samples
+	// only; when none exist, no slow demotion happens and the score tie-breaker
+	// below still prefers measured exits.
+	slowThreshold := relativeSlowThreshold(ordered)
+	sort.SliceStable(ordered, func(a, b int) bool {
+		slowA := slowThreshold > 0 && ordered[a].RequestLatencyEWMA > slowThreshold
+		slowB := slowThreshold > 0 && ordered[b].RequestLatencyEWMA > slowThreshold
+		if slowA != slowB {
+			return !slowA
+		}
+		scoreA, scoreB := ordered[a].QualityScore(), ordered[b].QualityScore()
+		if scoreA != scoreB {
+			return scoreA > scoreB
+		}
+		latencyA, latencyB := ordered[a].EffectiveRequestLatency(), ordered[b].EffectiveRequestLatency()
+		if latencyA <= 0 {
+			return false
+		}
+		if latencyB <= 0 {
+			return true
+		}
+		return latencyA < latencyB
+	})
+	return ordered
+}
+
+// relativeSlowThreshold returns fastestRequestLatency×slowLatencyFactor across
+// candidates with a measured real-request latency, or zero when no candidate has
+// one. Probe latency is deliberately excluded: it is a different scale than a
+// full request round-trip, so mixing the two would let a probe-only exit demote a
+// proven (but slower) real-request exit.
+func relativeSlowThreshold(candidates []Proxy) time.Duration {
+	fastest := time.Duration(0)
+	for _, candidate := range candidates {
+		if candidate.RequestLatencyEWMA <= 0 {
+			continue
+		}
+		if fastest == 0 || candidate.RequestLatencyEWMA < fastest {
+			fastest = candidate.RequestLatencyEWMA
+		}
+	}
+	if fastest == 0 {
+		return 0
+	}
+	return fastest * slowLatencyFactor
+}
+
+func (p Proxy) RequestSamples() uint64 {
+	return p.RequestSuccessCount + p.RequestFailureCount
+}
+
+func (p Proxy) EffectiveRequestLatency() time.Duration {
+	if p.RequestLatencyEWMA > 0 {
+		return p.RequestLatencyEWMA
+	}
+	return p.LatencyEWMA
+}
+
+// QualityScore returns a bounded, explainable score for real request routing.
+// The neutral score for an untested exit is intentional: it can be explored,
+// but cannot outrank an exit with a convincing success history by latency alone.
+func (p Proxy) QualityScore() int {
+	score := 50
+	samples := p.RequestSamples()
+	if samples > 0 {
+		successRate := float64(p.RequestSuccessCount) / float64(samples)
+		confidence := math.Min(float64(samples), 10) / 10
+		score += int(math.Round((successRate - 0.5) * 60 * confidence))
+	}
+	score -= minInt(p.HTTPFailCount*10, 30)
+	score -= minInt(p.HealthFails*10, 30)
+	score -= minInt(p.RequestFailureStreak*8, 30)
+	if p.RequestLatencyEWMA > 0 {
+		switch {
+		case p.RequestLatencyEWMA > 800*time.Millisecond:
+			score -= 15
+		case p.RequestLatencyEWMA > 300*time.Millisecond:
+			score -= 8
+		case p.RequestLatencyEWMA > 100*time.Millisecond:
+			score -= 3
+		}
+	} else if p.LatencyEWMA > 0 {
+		// Cold-start fallback: without a real-request sample, the collector probe
+		// latency is the only evidence of exit speed. It is a different scale than
+		// a full LLM round-trip, so it never demotes an exit that already has real
+		// request latency — but for an untested exit, a very slow tunnel (a few
+		// seconds) is a strong prior that the real request will be slow too, so
+		// demote it now instead of letting the first request pay the penalty
+		// (measured on the 星空 pool: probe 4.1s exit served requests at 4.8s).
+		switch {
+		case p.LatencyEWMA > 3*time.Second:
+			score -= 15
+		case p.LatencyEWMA > 2*time.Second:
+			score -= 8
+		case p.LatencyEWMA > time.Second:
+			score -= 3
+		}
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+func minInt(value, limit int) int {
+	if value < limit {
+		return value
+	}
+	return limit
+}
+
+func (p *Pool) Candidates(now time.Time, minRemainingLife time.Duration) (candidates []Proxy, panicMode bool) {
+	return p.CandidatesWithLatency(now, minRemainingLife, false)
+}
+
+func (p *Pool) CandidatesWithLatency(now time.Time, minRemainingLife time.Duration, preferLatency bool) (candidates []Proxy, panicMode bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	ordered, panicMode := p.orderedLocked(now, minRemainingLife, preferLatency)
 	if len(ordered) == 0 {
 		return nil, false
 	}
@@ -131,7 +318,7 @@ func (p *Pool) Candidates(now time.Time, minRemainingLife time.Duration) (candid
 	return ordered, panicMode
 }
 
-func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration) (ordered []Proxy, panicMode bool) {
+func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration, preferLatency bool) (ordered []Proxy, panicMode bool) {
 	live := make([]Proxy, 0, len(p.proxies))
 	available := make([]Proxy, 0, len(p.proxies))
 	preferred := make([]Proxy, 0, len(p.proxies))
@@ -150,7 +337,7 @@ func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration) (ord
 	}
 
 	if len(preferred) > 0 {
-		return p.rotate(preferred), false
+		return p.rotateFor(preferred, preferLatency), false
 	}
 	if minRemainingLife > 0 {
 		sufficientLive := make([]Proxy, 0, len(live))
@@ -160,18 +347,53 @@ func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration) (ord
 			}
 		}
 		if len(sufficientLive) > 0 {
-			return p.rotate(sufficientLive), true
+			return p.rotateFor(sufficientLive, preferLatency), true
 		}
 		return nil, false
 	}
 	switch {
 	case len(available) > 0:
-		return p.rotate(available), false
+		return p.rotateFor(available, preferLatency), false
 	case len(live) > 0:
-		return p.rotate(live), true
+		return p.rotateFor(live, preferLatency), true
 	default:
 		return nil, false
 	}
+}
+
+func (p *Pool) rotateFor(source []Proxy, preferLatency bool) []Proxy {
+	if preferLatency {
+		return p.rotateLatency(source)
+	}
+	return p.rotate(source)
+}
+
+// rotateLatency orders the selection window by measured EWMA so faster exits
+// are served first, while still rotating the window so every exit (including
+// unmeasured newcomers) is served as the cursor advances under load. Unmeasured
+// exits sort last: they keep exploration opportunities as the rotation cycles
+// past the measured ones, but do not displace exits with proven latency.
+func (p *Pool) rotateLatency(source []Proxy) []Proxy {
+	length := len(source)
+	ordered := make([]Proxy, length)
+	copy(ordered, source)
+	sort.SliceStable(ordered, func(a, b int) bool {
+		latencyA, latencyB := ordered[a].LatencyEWMA, ordered[b].LatencyEWMA
+		if latencyA <= 0 {
+			return false
+		}
+		if latencyB <= 0 {
+			return true
+		}
+		return latencyA < latencyB
+	})
+	cursor := p.selectionCursor.Load()
+	start := int(cursor % uint64(length))
+	result := make([]Proxy, length)
+	for offset := range result {
+		result[offset] = ordered[(start+offset)%length]
+	}
+	return result
 }
 
 func (p *Pool) rotate(source []Proxy) []Proxy {
@@ -263,6 +485,7 @@ func (p *Pool) Merge(now time.Time, incoming []Proxy, policies ...EjectionPolicy
 		current.Password = candidate.Password
 		if candidate.LatencyEWMA > 0 {
 			current.LatencyEWMA = blendLatency(current.LatencyEWMA, candidate.LatencyEWMA, policy.LatencyAlpha)
+			current.LatencySamples++
 		}
 		if !candidate.FetchedAt.IsZero() && (current.FetchedAt.IsZero() || candidate.FetchedAt.Before(current.FetchedAt)) {
 			current.FetchedAt = candidate.FetchedAt
@@ -336,7 +559,10 @@ func (p *Pool) ReportFailure(identity string, now time.Time, policy EjectionPoli
 		}
 
 		proxy.FailureCount++
+		proxy.RequestFailureCount++
+		proxy.RequestFailureStreak++
 		proxy.HealthFails++
+		proxy.LastFailureAt = now
 		if proxy.HealthFails < policy.FailureLimit {
 			survivors = append(survivors, proxy)
 			continue
@@ -361,6 +587,25 @@ func (p *Pool) ReportFailure(identity string, now time.Time, policy EjectionPoli
 	return outcome
 }
 
+// ReportRequestFailure records a real request body/stream failure without
+// treating it as proof that the exit is unreachable. The upstream may have
+// closed a response after headers, so this signal affects quality ranking but
+// does not increment transport health failures or eject the proxy.
+func (p *Pool) ReportRequestFailure(identity string, now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.pruneLocked(now)
+	for i := range p.proxies {
+		if !matches(p.proxies[i], identity) {
+			continue
+		}
+		p.proxies[i].RequestFailureCount++
+		p.proxies[i].RequestFailureStreak++
+		p.proxies[i].LastFailureAt = now
+	}
+}
+
 func ejectionWindow(policy EjectionPolicy, ejections int) time.Duration {
 	window := policy.BaseDuration * time.Duration(ejections)
 	if window > policy.MaxDuration {
@@ -377,14 +622,22 @@ func ejectionWindow(policy EjectionPolicy, ejections int) time.Duration {
 // works, this one consistently doesn't" condition that identifies a
 // rate-limited or blocked IP (audit H8). During a key-wide 429 storm no exit
 // counts, protecting the pool from being blamed and emptied by a condition that
-// is not about the proxies at all.
-func (p *Pool) ReportHTTPFailure(identity string, now time.Time, policy EjectionPolicy) Outcome {
+// is not about the proxies at all. 529 is observed at pool scope but never
+// counted toward exit quality or isolation: it is the target's own overload
+// signal.
+func (p *Pool) ReportHTTPFailure(identity string, now time.Time, status int, policy EjectionPolicy) Outcome {
 	policy = policy.normalized()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.pruneLocked(now)
+	if status == httpStatusOverloaded {
+		// 529 is NVIDIA's own overload signal. Keep it at pool scope and return
+		// before touching the selected exit's failure state.
+		p.lastUpstreamOverloadAt = now
+		return OutcomeCounted
+	}
 	outcome := OutcomeCounted
 	canEject := p.hasRecentRequestSuccessLocked(now)
 
@@ -395,12 +648,23 @@ func (p *Pool) ReportHTTPFailure(identity string, now time.Time, policy Ejection
 			continue
 		}
 
+		prevFailureAt := proxy.LastHTTPFailureAt
 		proxy.FailureCount++
+		proxy.LastFailureAt = now
+		proxy.LastHTTPFailureAt = now
+		proxy.LastHTTPFailureStatus = status
+		proxy.RequestFailureCount++
 		// Observe the pattern regardless of attribution (the UI shows it), but
 		// saturate at the limit so a key-wide storm cannot inflate the counter
 		// without bound. Only the isolation decision is gated below.
 		if proxy.HTTPFailCount < policy.HTTPFailureLimit {
 			proxy.HTTPFailCount++
+		}
+		// Forget failures older than the window before counting this one: an
+		// exit that failed 5 times two hours ago and fails again today is not
+		// "six consecutive failures".
+		if !prevFailureAt.IsZero() && now.Sub(prevFailureAt) > httpFailureWindow {
+			proxy.HTTPFailCount = 1
 		}
 		if !canEject || proxy.HTTPFailCount < policy.HTTPFailureLimit {
 			survivors = append(survivors, proxy)
@@ -424,6 +688,18 @@ func (p *Pool) ReportHTTPFailure(identity string, now time.Time, policy Ejection
 	}
 	p.truncateLocked(survivors)
 	return outcome
+}
+
+// UpstreamOverloadStatus reports the recent pool-wide 529 signal and its
+// timestamp as one lock-consistent snapshot.
+func (p *Pool) UpstreamOverloadStatus(now time.Time) (bool, time.Time) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return recentUpstreamOverload(p.lastUpstreamOverloadAt, now), p.lastUpstreamOverloadAt
+}
+
+func recentUpstreamOverload(last, now time.Time) bool {
+	return !last.IsZero() && !now.Before(last) && now.Sub(last) <= upstreamOverloadWindow
 }
 
 // hasRecentRequestSuccessLocked reports whether any exit served a real 2xx
@@ -451,6 +727,8 @@ func (p *Pool) ReportSuccess(identity string, now time.Time, latency time.Durati
 			continue
 		}
 		p.proxies[i].SuccessCount++
+		p.proxies[i].RequestSuccessCount++
+		p.proxies[i].RequestFailureStreak = 0
 		p.proxies[i].LastSuccessAt = now
 		// A real 2xx through this exit proves it currently works: reset the
 		// HTTP-failure pattern and clear any isolation (audit H8).
@@ -465,6 +743,30 @@ func (p *Pool) ReportSuccess(identity string, now time.Time, latency time.Durati
 		p.proxies[i].EjectedUntil = time.Time{}
 		if latency > 0 {
 			p.proxies[i].LatencyEWMA = blendLatency(p.proxies[i].LatencyEWMA, latency, policy.LatencyAlpha)
+			p.proxies[i].LatencySamples++
+			p.proxies[i].RequestLatencyEWMA = blendLatency(p.proxies[i].RequestLatencyEWMA, latency, policy.LatencyAlpha)
+			p.proxies[i].RequestLatencySamples++
+		}
+	}
+}
+
+// ReportRequestLatency records a completed request's network-observable
+// latency without declaring the request semantically successful. Callers use
+// this for time-to-first-byte so model generation length cannot distort proxy
+// quality, while ReportSuccess remains the terminal success signal.
+func (p *Pool) ReportRequestLatency(identity string, now time.Time, latency time.Duration, policy EjectionPolicy) {
+	if latency <= 0 {
+		return
+	}
+	policy = policy.normalized()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pruneLocked(now)
+	for i := range p.proxies {
+		if matches(p.proxies[i], identity) {
+			p.proxies[i].RequestLatencyEWMA = blendLatency(p.proxies[i].RequestLatencyEWMA, latency, policy.LatencyAlpha)
+			p.proxies[i].RequestLatencySamples++
 		}
 	}
 }
@@ -543,19 +845,31 @@ func (p *Pool) Prune(now time.Time) int {
 // can be kept after the provider stopped refreshing it: past that cap the pool
 // drains and requests degrade to retryable 503 instead of serving increasingly
 // stale exits.
+//
+// The cap is anchored to each proxy's own ValidatedAt, not to `now`: the
+// collector calls Grace every fetch cycle (audit H6), so a cap of
+// `now + maxLifetime` would be recomputed from a later `now` on every call and
+// never actually expire — a persistent dead-exit patch would keep the pool
+// "full" of stale exits forever. Anchoring to ValidatedAt makes the retained
+// exit age out exactly maxLifetime after it was last genuinely validated.
 func (p *Pool) Grace(now time.Time, grace time.Duration, maxLifetime time.Duration) int {
 	if grace <= 0 || maxLifetime <= 0 {
 		return 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cap := now.Add(maxLifetime)
 	extended := 0
 	for i := range p.proxies {
 		proxy := &p.proxies[i]
 		if !proxy.LiveAt(now) {
 			continue
 		}
+		// A proxy that was never actually validated has no proof it ever worked;
+		// it must not be retained past its natural TTL, so skip it.
+		if proxy.ValidatedAt.IsZero() {
+			continue
+		}
+		cap := proxy.ValidatedAt.Add(maxLifetime)
 		candidate := proxy.ExpiresAt.Add(grace)
 		if candidate.After(cap) {
 			candidate = cap
@@ -608,7 +922,7 @@ func (p *Pool) StickyGet(sessionKey string, now time.Time, minRemainingLife time
 
 		for _, proxy := range p.proxies {
 			if proxy.Key() == binding.proxyKey && proxy.AvailableAt(now) && proxy.RemainingLife(now) >= minRemainingLife {
-				allCandidates, pm := p.orderedLocked(now, minRemainingLife)
+				allCandidates, pm := p.orderedLocked(now, minRemainingLife, false)
 				if len(allCandidates) == 0 {
 					return nil, false, false
 				}

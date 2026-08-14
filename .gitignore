@@ -1,5 +1,6 @@
 node_modules/
 /web/dist/
+/web/test-results/
 coverage/
 *.log
 .zcode/
@@ -7,12 +8,25 @@ design_system_output.txt
 diff-trans.txt
 *.exe
 *.test
+/.tmp-*
+/data/
+/tmp/
+/start.bat
+/gen.go
+/console.log*
+/nul*
 
 # Local credential dumps (NVIDIA keys, account exports). Never commit.
 /key/
 
 # Ad-hoc build/test transcripts that escape the *.log rule.
 log_*.txt
+
+# One-off remote diagnostics may contain runtime-only connection details.
+# Reusable product checks stay as tracked shell/Go/TypeScript tests.
+/scripts/test/*.py
+/scripts/test/__pycache__/
+/scripts/test/live-xk-proxy.sh
 
 /internal/web/dist/*
 !/internal/web/dist/

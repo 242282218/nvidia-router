@@ -1,6 +1,9 @@
 .git
 .github
 .superpowers
+start.bat
+data
+tmp
 **/.env*
 **/*.db
 **/*.db-*

@@ -65,7 +65,7 @@ function formatDate(value?: string): string {
           >
             <td class="data-table-td">
               <code class="font-mono text-sm text-[var(--color-info)]">{{ key.masked }}</code>
-              <span class="mt-1 block font-mono text-[11px] text-[var(--color-text-subtle)]">#{{ key.id }}</span>
+              <span class="mt-1 block font-mono text-xs text-[var(--color-text-subtle)]">#{{ key.id }}</span>
             </td>
             <td class="data-table-td">
               <span :class="statusBadgeClass(key)">{{ statusLabel(key) }}</span>

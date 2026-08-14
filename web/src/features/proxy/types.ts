@@ -1,10 +1,16 @@
 export type ProxyPoolSource = 'database' | 'environment' | 'none'
+export type ProxyPoolMode = 'none' | 'built-in' | string
 
 export interface ProxyPoolSettings {
   enabled: boolean
   proxy_url: string
   auth_configured: boolean
   source: ProxyPoolSource
+  mode?: ProxyPoolMode
+  upstream_configured?: boolean
+  upstream_endpoint?: string
+  collector_interval?: string
+  proxy_ttl?: string
 }
 
 export interface ProxyPoolResponse {
@@ -13,33 +19,42 @@ export interface ProxyPoolResponse {
 
 export interface ProxyPoolPatch {
   enabled: boolean
-  proxy_url: string
-  auth_key: string
-  clear_auth_key?: boolean
-}
-
-/** Live quality projection of one pooled exit proxy. */
-export interface PoolProxyStatus {
-  address: string
-  latency_ewma_ms: number
-  remaining_seconds: number
-  healthy: boolean
-  ejected: boolean
-  success_count: number
-  failure_count: number
-  /** Consecutive 429/5xx through this exit since the last real 2xx (0 when clean). */
-  http_fail_count: number
+  upstream_url?: string
+  validation_url?: string
+  validation_status?: number
+  interval?: string
+  proxy_ttl?: string
+  expected_qty?: number
+  concurrency?: number
+  max_latency?: string
 }
 
 export interface PoolStatusData {
-  total_size: number
-  healthy_size: number
-  proxies: PoolProxyStatus[]
-  /** Collector diagnostics; empty strings when not in pool mode. */
-  last_fetch_at: string
-  last_success_at: string
-  /** Provider error code ("403"/"208") or "transport"; empty when healthy. */
-  last_error_code: string
+  configured?: boolean
+  mode?: ProxyPoolMode
+  endpoint?: string
+  reachable?: boolean
+  health_latency_ms?: number
+  // Detailed per-exit quality is rendered by the built-in operations table.
+  total_size?: number
+  healthy_size?: number
+  collector_enabled?: boolean
+  panic_mode?: boolean
+  upstream_overloaded?: boolean
+  last_upstream_overload_at?: string
+  proxies?: ProxyStatus[]
+  last_fetch_at?: string
+  last_success_at?: string
+  last_error_code?: string
+}
+
+export interface ProxyStatus {
+  address: string
+  healthy?: boolean
+  ejected?: boolean
+  latency_ewma_ms?: number
+  quality_score?: number
+  remaining_seconds?: number
 }
 
 export interface PoolStatusResponse {

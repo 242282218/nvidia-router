@@ -133,6 +133,11 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 	budget := newBudget(settings, now, stream)
 	requestCtx, cancel := a.requestContext(ctx, budget)
 	defer cancel()
+	// The budget rides on the request context so the acquire stage can honour the
+	// retry window for streams (which carry no total deadline). The execute stage
+	// re-attaches a per-attempt budget below, so this value never leaks into the
+	// handler's budget reads.
+	requestCtx = withBudget(requestCtx, budget)
 
 	// Build the failover matcher once per request: the spec lives on the same
 	// snapshot the rest of the budget reads, so decoding it during Run keeps the
@@ -147,6 +152,14 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		lease, err := a.acquire(requestCtx, settings, modelID, attempted, stream)
 		totalQueue += a.clock.Now().Sub(queueStarted)
 		if err != nil {
+			// A queue-limit answer (429) is the honest signal for "we were
+			// waiting in line": prefer it over a stale upstream fault from an
+			// earlier attempt. Otherwise a total-deadline expiry that coincides
+			// with the queue would surface the wrong error class (an old 5xx
+			// instead of queue_timeout), and clients would mis-retry.
+			if isQueueLimitError(err) {
+				return AttemptResult{}, err
+			}
 			if lastFault != nil && a.budgetExpired(requestCtx) {
 				return AttemptResult{}, *lastFault
 			}
@@ -255,6 +268,22 @@ func (a *Attempt) acquire(
 	attempted map[int64]struct{},
 	stream bool,
 ) (pool.Lease, error) {
+	if len(attempted) > 0 {
+		ctx = pool.WithNoAttemptedRelaxation(ctx)
+	}
+	// A stream carries no total deadline on its request context, so without an
+	// explicit bound here its queue wait would run for the whole pool queue-wait
+	// window even when the operator sets queue_wait_timeout_ms above the retry
+	// budget. Clamp the acquire context to the retry deadline: the queue is part
+	// of the pre-commit phase, and the loop's own retryDeadline check is
+	// unreachable while the request is parked in the queue.
+	if stream {
+		if budget, ok := BudgetFromContext(ctx); ok && !budget.retryDeadline.IsZero() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, budget.retryDeadline)
+			defer cancel()
+		}
+	}
 	lease, err := a.keyPool.AcquireWithSnapshot(ctx, modelID, attempted, settings, stream)
 	if errors.Is(err, context.DeadlineExceeded) {
 		// During acquire the only thing we waited on is a free credential slot:
@@ -267,10 +296,33 @@ func (a *Attempt) acquire(
 		return nil, &apierror.Error{
 			Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "queue_timeout",
 			Message:    "The request timed out while waiting for an upstream credential.",
-			RetryAfter: time.Second,
+			RetryAfter: a.queueRetryAfter(settings),
 		}
 	}
 	return lease, err
+}
+
+// queueRetryAfter returns the Retry-After for queue-limit answers, aligned with
+// the operator's queue-wait setting so clients do not hammer the pool back on a
+// fixed one-second cadence that is shorter than the queue horizon.
+func (a *Attempt) queueRetryAfter(settings runtimeconfig.Snapshot) time.Duration {
+	if wait := time.Duration(settings.QueueWaitTimeoutMS) * time.Millisecond; wait > 0 {
+		return wait
+	}
+	return time.Second
+}
+
+// isQueueLimitError reports whether the acquire failed because the pool's own
+// queue rejected the request (429 queue_timeout/queue_full). Such answers carry
+// Retry-After and must win over a stale upstream fault when the total budget
+// and the queue timer race.
+func isQueueLimitError(err error) bool {
+	var apiErr *apierror.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Status == http.StatusTooManyRequests &&
+		(apiErr.Code == "queue_timeout" || apiErr.Code == "queue_full")
 }
 
 func (a *Attempt) executeLease(
@@ -301,19 +353,37 @@ func (a *Attempt) executeLease(
 		var proxyErr *xkproxy.Error
 		if errors.As(executeErr, &proxyErr) {
 			closeResponse(response)
-			// A momentarily empty proxy pool is not a key fault: the request never
-			// reached the upstream, so cooldowning the key would take every key
-			// offline while the collector refills. Surface a retryable 503 instead
-			// and let the retry loop switch keys with backoff, giving the collector
-			// time to land the next fetch (audit D3).
-			if proxyErr.Reason() == xkproxy.ReasonNoHealthyProxy {
+			switch proxyErr.Reason() {
+			case xkproxy.ReasonNoHealthyProxy:
+				// A momentarily empty proxy pool is not a key fault: the request never
+				// reached the upstream, so cooldowning the key would take every key
+				// offline while the collector refills. Surface a retryable 503 instead
+				// and let the retry loop switch keys with backoff, giving the collector
+				// time to land the next fetch (audit D3).
 				classified := &fault.Fault{
 					HTTPStatus: http.StatusServiceUnavailable, Scope: fault.ScopeUpstreamGlobal, Retryable: true,
 					PublicType: "server_error", PublicCode: "upstream_proxy_unavailable",
 					PublicMessage: "The upstream proxy pool is temporarily unavailable.", Cause: proxyErr,
 				}
 				return nil, commit, classified, nil
+			case xkproxy.ReasonTransportFailed:
+				// A transport-level proxy failure is also not a key fault: the exit
+				// died mid-dial, and the request likely never reached NVIDIA. Returning
+				// the raw error here would short-circuit Run's retry loop before it can
+				// switch keys (audit R5) — the very loop that would acquire a fresh
+				// exit and replay. Classify it as a retryable upstream fault so the
+				// next key attempt actually happens, matching ReasonNoHealthyProxy.
+				classified := &fault.Fault{
+					HTTPStatus: http.StatusBadGateway, Scope: fault.ScopeUpstreamGlobal, Retryable: true,
+					PublicType: "server_error", PublicCode: "upstream_proxy_unavailable",
+					PublicMessage: "The upstream proxy is temporarily unavailable.", Cause: proxyErr,
+				}
+				return nil, commit, classified, nil
 			}
+			// ReasonProxyRejected (and any other reason) keeps the pre-existing
+			// short-circuit behaviour: the proxy already refused the request with an
+			// HTTP answer, so there is nothing to retry. Returning the raw error here
+			// makes Run surface it as a 502 without a key switch (audit R5).
 			return nil, commit, nil, executeErr
 		}
 	}

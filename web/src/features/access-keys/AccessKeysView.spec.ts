@@ -78,6 +78,58 @@ describe('AccessKeysView', () => {
     expect(wrapper.text()).not.toContain('旧数据')
   })
 
+  it('flags an expired key instead of claiming it is valid', async () => {
+    vi.mocked(accessKeysApi.list).mockResolvedValue({
+      data: [{ ...listedKey, expires_at: '2020-01-01T00:00:00Z' }],
+    })
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    const table = wrapper.get('[data-testid="access-key-table"]')
+    expect(table.text()).toContain('已过期')
+    expect(table.text()).not.toContain('有效')
+  })
+
+  it('flags a key whose token budget is exhausted', async () => {
+    vi.mocked(accessKeysApi.list).mockResolvedValue({
+      data: [{ ...listedKey, token_budget: 1000, consumed_tokens: 1000 }],
+    })
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="access-key-table"]').text()).toContain('预算已耗尽')
+  })
+
+  it('shows expiry and budget on mobile cards', async () => {
+    vi.mocked(accessKeysApi.list).mockResolvedValue({
+      data: [{ ...listedKey, expires_at: '2027-01-01T00:00:00Z', token_budget: 1000000, consumed_tokens: 250000 }],
+    })
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    const card = wrapper.get('[data-testid="access-key-cards"]')
+    expect(card.text()).toContain('过期时间')
+    expect(card.text()).toContain('Token 预算')
+    expect(card.text()).toContain('25%')
+  })
+
+  it('surfaces a persistent load error with retry instead of an empty state', async () => {
+    vi.mocked(accessKeysApi.list)
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce({ data: [listedKey] })
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    const panel = wrapper.get('[data-testid="access-keys-load-error"]')
+    expect(panel.text()).toContain('列表加载失败')
+    expect(wrapper.text()).not.toContain('尚未创建')
+
+    await wrapper.get('[data-testid="access-keys-retry"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="access-keys-load-error"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('家庭电脑')
+  })
+
   it('does not update list state after unmount', async () => {
     const request = deferred<AccessKeysResponse>()
     vi.mocked(accessKeysApi.list).mockReset().mockReturnValueOnce(request.promise)

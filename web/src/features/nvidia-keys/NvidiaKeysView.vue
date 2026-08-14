@@ -21,6 +21,7 @@ const testResults = ref<KeyTestResult[]>([])
 const importError = ref('')
 const submitting = ref(false)
 const loading = ref(false)
+const loadError = ref('')
 const testingAll = ref(false)
 const batchOpen = ref(false)
 const testDialogOpen = ref(false)
@@ -46,6 +47,7 @@ async function loadKeys(): Promise<void> {
   if (disposed) return
   const sequence = ++loadSequence
   loading.value = true
+  loadError.value = ''
   try {
     const response: unknown = await nvidiaKeysApi.list()
     if (disposed || sequence !== loadSequence) return
@@ -55,7 +57,10 @@ async function loadKeys(): Promise<void> {
     keys.value = response.data
   } catch (error) {
     if (disposed || sequence !== loadSequence) return
-    toastError(errorMessage(error, 'NVIDIA Key 列表加载失败。'))
+    // A failed load must not read as "no keys exist": surface a persistent
+    // error with a retry instead of letting the empty state lie.
+    loadError.value = errorMessage(error, 'NVIDIA Key 列表加载失败。')
+    toastError(loadError.value)
   } finally {
     if (!disposed && sequence === loadSequence) loading.value = false
   }
@@ -322,7 +327,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
         <Transition name="fade">
           <p
             v-if="importError"
-            class="mt-3 text-sm text-[#F87171]"
+            class="mt-3 text-sm text-[var(--color-danger)]"
             role="alert"
           >
             {{ importError }}
@@ -365,6 +370,23 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           </svg>
           加载中…
         </div>
+        <div
+          v-else-if="loadError"
+          data-testid="nvidia-keys-load-error"
+          class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+          role="alert"
+        >
+          <span>{{ loadError }}</span>
+          <button
+            data-testid="nvidia-keys-retry"
+            class="btn-secondary rounded-lg px-3 py-1.5 text-sm"
+            type="button"
+            :disabled="loading"
+            @click="loadKeys"
+          >
+            {{ loading ? '重试中…' : '重新加载' }}
+          </button>
+        </div>
         <template v-else>
           <KeyTable
             :keys="keys"
@@ -400,9 +422,11 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
 </template>
 
 <style scoped>
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {

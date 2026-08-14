@@ -62,10 +62,12 @@ func TestProxyPoolHandlerRejectsInvalidMethodAndDoesNotExposeServiceError(t *tes
 }
 
 type fakeProxyPoolService struct {
-	snapshot  xkproxy.Snapshot
-	patch     xkproxy.Patch
-	updateErr error
-	status    xkproxy.PoolStatus
+	snapshot   xkproxy.Snapshot
+	patch      xkproxy.Patch
+	updateErr  error
+	status     xkproxy.PoolStatus
+	refreshed  bool
+	refreshErr error
 }
 
 func (f *fakeProxyPoolService) Snapshot(context.Context) (xkproxy.Snapshot, error) {
@@ -84,9 +86,28 @@ func (f *fakeProxyPoolService) PoolStatus() xkproxy.PoolStatus {
 	return f.status
 }
 
+func (f *fakeProxyPoolService) Refresh(context.Context) error {
+	f.refreshed = true
+	return f.refreshErr
+}
+
+func TestProxyPoolHandlerRefreshesBuiltInCollector(t *testing.T) {
+	service := &fakeProxyPoolService{refreshErr: errors.New("collector unavailable")}
+	handler := NewProxyPool(service)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/api/proxy-pool/refresh", nil))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("refresh status = %d, want 502", response.Code)
+	}
+	if !service.refreshed {
+		t.Fatal("collector refresh was not called")
+	}
+}
+
 func TestProxyPoolHandlerStatusEndpoint(t *testing.T) {
 	service := &fakeProxyPoolService{status: xkproxy.PoolStatus{
-		TotalSize: 3, HealthySize: 2,
+		TotalSize: 3, HealthySize: 2, UpstreamOverloaded: true,
+		LastUpstreamOverloadAt: time.Date(2026, time.August, 12, 4, 5, 0, 0, time.UTC),
 		Proxies: []xkproxy.Proxy{
 			{Address: "10.0.0.1:8080", LatencyEWMA: 150 * time.Millisecond, SuccessCount: 5, ExpiresAt: time.Now().Add(time.Minute)},
 			{Address: "10.0.0.2:8080", LatencyEWMA: 800 * time.Millisecond, FailureCount: 2},
@@ -100,9 +121,11 @@ func TestProxyPoolHandlerStatusEndpoint(t *testing.T) {
 	}
 	var body struct {
 		Data struct {
-			TotalSize   int `json:"total_size"`
-			HealthySize int `json:"healthy_size"`
-			Proxies     []xkproxy.ProxyStatus `json:"proxies"`
+			TotalSize              int                   `json:"total_size"`
+			HealthySize            int                   `json:"healthy_size"`
+			UpstreamOverloaded     bool                  `json:"upstream_overloaded"`
+			LastUpstreamOverloadAt string                `json:"last_upstream_overload_at"`
+			Proxies                []xkproxy.ProxyStatus `json:"proxies"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
@@ -111,10 +134,59 @@ func TestProxyPoolHandlerStatusEndpoint(t *testing.T) {
 	if body.Data.TotalSize != 3 || body.Data.HealthySize != 2 {
 		t.Fatalf("counts = %d/%d, want 3/2", body.Data.TotalSize, body.Data.HealthySize)
 	}
+	if !body.Data.UpstreamOverloaded || body.Data.LastUpstreamOverloadAt != "2026-08-12T04:05:00Z" {
+		t.Fatalf("upstream overload = %v at %q, want true at 2026-08-12T04:05:00Z", body.Data.UpstreamOverloaded, body.Data.LastUpstreamOverloadAt)
+	}
 	if len(body.Data.Proxies) != 2 {
 		t.Fatalf("proxies len = %d, want 2", len(body.Data.Proxies))
 	}
 	if body.Data.Proxies[0].LatencyEWMAMS != 150 {
 		t.Fatalf("latency = %d, want 150", body.Data.Proxies[0].LatencyEWMAMS)
+	}
+}
+
+func TestProxyPoolHandlerStatusExposesRequestQualityWithoutCredentials(t *testing.T) {
+	service := &fakeProxyPoolService{status: xkproxy.PoolStatus{
+		Proxies: []xkproxy.Proxy{{
+			Scheme:                "http",
+			Address:               "10.0.0.1:8080",
+			Username:              "hidden-user",
+			Password:              "hidden-password",
+			RequestSuccessCount:   4,
+			RequestFailureCount:   1,
+			RequestLatencyEWMA:    180 * time.Millisecond,
+			RequestLatencySamples: 5,
+			ExpiresAt:             time.Now().Add(time.Minute),
+		}},
+	}}
+	handler := NewProxyPool(service)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/api/proxy-pool/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Proxies []struct {
+				QualityScore          int    `json:"quality_score"`
+				RequestSuccessCount   uint64 `json:"request_success_count"`
+				RequestFailureCount   uint64 `json:"request_failure_count"`
+				RequestLatencyEWMAMS  int64  `json:"request_latency_ewma_ms"`
+				RequestLatencySamples int    `json:"request_latency_samples"`
+			} `json:"proxies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(body.Data.Proxies) != 1 {
+		t.Fatalf("proxies len = %d, want 1", len(body.Data.Proxies))
+	}
+	proxy := body.Data.Proxies[0]
+	if proxy.QualityScore == 0 || proxy.RequestSuccessCount != 4 || proxy.RequestFailureCount != 1 || proxy.RequestLatencyEWMAMS != 180 || proxy.RequestLatencySamples != 5 {
+		t.Fatalf("quality projection = %+v", proxy)
+	}
+	if strings.Contains(response.Body.String(), "hidden-password") || strings.Contains(response.Body.String(), "hidden-user") {
+		t.Fatal("proxy credentials leaked in status response")
 	}
 }

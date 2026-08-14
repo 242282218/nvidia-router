@@ -76,14 +76,14 @@ function capBadge(supported: boolean): string {
         v-if="model.blocked_by_key_ids?.length"
         class="mt-3 space-y-1"
       >
-        <p class="text-xs text-[#FBBF24]">
+        <p class="text-xs text-[var(--color-warning)]">
           已 block：
         </p>
         <button
           v-for="keyId in model.blocked_by_key_ids"
           :key="keyId"
           :data-testid="`model-unblock-${keyId}`"
-          class="block text-xs text-[#F87171] underline disabled:opacity-40"
+          class="block text-xs text-[var(--color-danger)] underline disabled:opacity-40"
           type="button"
           :disabled="busyId === model.id"
           @click="emit('unblock', keyId, model)"

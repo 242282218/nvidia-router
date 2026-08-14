@@ -105,7 +105,7 @@ function parseDetail(raw: string | undefined): string {
     <div class="content-wrapper">
       <header class="section-header">
         <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[#F59E0B]">
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
             安全管理
           </p>
           <h1 class="page-title mt-1">

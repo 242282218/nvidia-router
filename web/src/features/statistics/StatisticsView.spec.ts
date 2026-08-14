@@ -204,4 +204,28 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(wrapper.get('[data-testid="monitoring-summary-error"]').text()).toContain('监控汇总加载失败')
     expect(wrapper.text()).not.toContain('response body')
   })
+
+  it('keeps the last good data during a reload and flags stale background polls', async () => {
+    vi.useFakeTimers()
+    try {
+      const wrapper = mount(StatisticsView)
+      await flushPromises()
+      expect(wrapper.text()).toContain('1,234')
+
+      // A background poll failure must keep the numbers on screen but flag them.
+      vi.mocked(statisticsApi.getSummary).mockRejectedValueOnce(new Error('poll failed'))
+      await vi.advanceTimersByTimeAsync(30_000)
+      const stale = wrapper.get('[data-testid="monitoring-summary-stale"]')
+      expect(stale.text()).toContain('未更新')
+      expect(wrapper.text()).toContain('1,234')
+
+      // The retry recovers and clears the stale banner.
+      vi.mocked(statisticsApi.getSummary).mockResolvedValue({ data: snapshot })
+      await wrapper.get('[data-testid="monitoring-summary-stale"] button').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="monitoring-summary-stale"]').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

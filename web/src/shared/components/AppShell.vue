@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useSession } from '../../features/auth/useSession'
@@ -11,6 +11,44 @@ const route = useRoute()
 const session = useSession()
 const sidebarOpen = ref(false)
 const loggingOut = ref(false)
+const menuButton = ref<globalThis.HTMLButtonElement | null>(null)
+const sidebar = ref<globalThis.HTMLElement | null>(null)
+// The sidebar is a full-time navigation rail on desktop; the mobile drawer is
+// only focus-managed (inert when closed, focus moved in/out) below lg.
+const isMobile = ref(false)
+let mediaQuery: ReturnType<typeof globalThis.matchMedia> | null = null
+
+function onMediaChange(event: globalThis.MediaQueryListEvent): void {
+  isMobile.value = event.matches
+}
+
+onMounted(() => {
+  // happy-dom (unit tests) does not implement matchMedia; guard so the shell
+  // still mounts in tests.
+  mediaQuery = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia('(max-width: 1023px)') : null
+  isMobile.value = mediaQuery?.matches ?? false
+  mediaQuery?.addEventListener('change', onMediaChange)
+  globalThis.addEventListener('keydown', onKeydown)
+})
+
+onBeforeUnmount(() => {
+  globalThis.removeEventListener('keydown', onKeydown)
+  mediaQuery?.removeEventListener('change', onMediaChange)
+})
+
+// Focus the drawer when it opens and return focus to the menu button when it
+// closes, so keyboard users never lose their place in the document. Runs
+// post-flush: the inert attribute must be removed before focus() will land on
+// a drawer link (inert elements are unfocusable by spec).
+watch(sidebarOpen, async (open) => {
+  if (!isMobile.value) return
+  await nextTick()
+  if (open) {
+    sidebar.value?.querySelector<globalThis.HTMLAnchorElement>('nav a')?.focus()
+  } else {
+    menuButton.value?.focus()
+  }
+}, { flush: 'post' })
 
 const navItems = [
   { path: '/nvidia-keys', label: 'NVIDIA Key', icon: 'key', testId: 'nav-nvidia-keys' },
@@ -51,12 +89,6 @@ async function logout(): Promise<void> {
 function onKeydown(event: globalThis.KeyboardEvent): void {
   if (event.key === 'Escape') sidebarOpen.value = false
 }
-
-onBeforeUnmount(() => {
-  globalThis.removeEventListener('keydown', onKeydown)
-})
-
-globalThis.addEventListener('keydown', onKeydown)
 </script>
 
 <template>
@@ -64,7 +96,8 @@ globalThis.addEventListener('keydown', onKeydown)
     <!-- Mobile header -->
     <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-canvas)]/95 px-4 backdrop-blur-md lg:hidden">
       <button
-        class="btn-ghost rounded-lg p-2"
+        ref="menuButton"
+        class="btn-ghost h-11 w-11 rounded-lg p-2"
         type="button"
         aria-label="切换菜单"
         :aria-expanded="sidebarOpen"
@@ -118,8 +151,10 @@ globalThis.addEventListener('keydown', onKeydown)
     <!-- Sidebar -->
     <aside
       id="admin-sidebar"
+      ref="sidebar"
       class="fixed inset-y-0 left-0 z-40 flex w-64 -translate-x-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
       :class="sidebarOpen ? 'translate-x-0' : ''"
+      :inert="isMobile && !sidebarOpen"
       aria-label="管理侧栏"
     >
       <div class="flex h-16 items-center gap-3 border-b border-[var(--color-border)] px-5">
@@ -137,7 +172,7 @@ globalThis.addEventListener('keydown', onKeydown)
       </div>
 
       <div class="border-b border-[var(--color-border)] px-4 py-4">
-        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
+        <p class="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
           运行环境
         </p>
         <div class="mt-2 flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">

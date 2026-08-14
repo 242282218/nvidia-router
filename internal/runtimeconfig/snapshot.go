@@ -74,10 +74,10 @@ type Snapshot struct {
 	// in-stream idle guard, so a slow-but-live generation is not truncated by a
 	// window sized for the first token.
 	StreamIdleTimeoutMS int
-	// LatencyRoutingEnabled toggles latency-aware key scheduling. When on, the
-	// pool prefers keys whose historical response time (EWMA) is faster, with an
-	// exploration weight for keys still accumulating samples. Off restores pure
-	// round-robin.
+	// LatencyRoutingEnabled toggles quality-aware scheduling. The legacy field
+	// name is kept for API compatibility; when on, key scheduling uses live
+	// request quality and the proxy pool uses request quality with latency as a
+	// tie-breaker. Off restores the legacy round-robin behaviour.
 	LatencyRoutingEnabled bool
 	// EmbeddingCacheEnabled gates the in-memory exact-match cache for
 	// /v1/embeddings. The cache is optional because it changes observable

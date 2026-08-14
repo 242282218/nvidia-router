@@ -1066,3 +1066,43 @@ func TestListIncludesBlockedNVIDIAKeyIDs(t *testing.T) {
 		t.Fatalf("BlockedByKeyIDs = %v, want [%d %d]", got, firstKeyID, secondKeyID)
 	}
 }
+
+// TestPatchStreamTimeoutsPersistsAndRoundsTrips proves the per-model streaming
+// timeout override columns are patchable and round-trip through the repository
+// (migration 016/022 seeded them, but the Patch surface previously dropped them).
+func TestPatchStreamTimeoutsPersistsAndRoundsTrips(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "stream-timeout", UpstreamID: "vendor/stream-timeout", DisplayName: "Stream timeout", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	modelID := result.Models[0].ID
+
+	firstToken := 240000
+	idle := 300000
+	patched, err := service.Patch(context.Background(), modelID, Patch{
+		StreamFirstTokenTimeoutMS: &firstToken,
+		StreamIdleTimeoutMS:       &idle,
+	})
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if patched.StreamFirstTokenTimeoutMS == nil || *patched.StreamFirstTokenTimeoutMS != firstToken {
+		t.Fatalf("StreamFirstTokenTimeoutMS = %v, want %d", patched.StreamFirstTokenTimeoutMS, firstToken)
+	}
+	if patched.StreamIdleTimeoutMS == nil || *patched.StreamIdleTimeoutMS != idle {
+		t.Fatalf("StreamIdleTimeoutMS = %v, want %d", patched.StreamIdleTimeoutMS, idle)
+	}
+
+	// A second patch omitting the timeout fields must preserve the stored values.
+	display := "Renamed"
+	again, err := service.Patch(context.Background(), modelID, Patch{DisplayName: &display})
+	if err != nil {
+		t.Fatalf("second Patch: %v", err)
+	}
+	if again.StreamFirstTokenTimeoutMS == nil || *again.StreamFirstTokenTimeoutMS != firstToken {
+		t.Fatalf("StreamFirstTokenTimeoutMS after display-only patch = %v, want preserved %d", again.StreamFirstTokenTimeoutMS, firstToken)
+	}
+}

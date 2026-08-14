@@ -79,13 +79,72 @@ func TestPrimeWaitsPastCommentAndReplaysThroughFirstDataEvent(t *testing.T) {
 	}
 }
 
+func TestPrimeReplayBodyForwardsSemanticCompletion(t *testing.T) {
+	body := &markableReadCloser{Reader: strings.NewReader("data: payload\n\n")}
+	response := &http.Response{Body: body}
+
+	if err := Prime(context.Background(), response); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if !body.semanticRequired {
+		t.Fatal("Prime did not require semantic completion")
+	}
+	marker, ok := response.Body.(interface{ MarkComplete() })
+	if !ok {
+		t.Fatal("primed body does not expose MarkComplete")
+	}
+	marker.MarkComplete()
+	if !body.completed {
+		t.Fatal("MarkComplete was not forwarded to the original body")
+	}
+	_ = response.Body.Close()
+}
+
+func TestPrimeReplayBodyKeepsSemanticCompletionRequired(t *testing.T) {
+	body := &markableReadCloser{Reader: strings.NewReader("data: payload\n\n")}
+	response := &http.Response{Body: body}
+
+	if err := Prime(context.Background(), response); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if marker, ok := response.Body.(interface{ RequireSemanticCompletion() }); ok {
+		marker.RequireSemanticCompletion()
+	} else {
+		t.Fatal("primed body does not expose RequireSemanticCompletion")
+	}
+	if !body.semanticRequired {
+		t.Fatal("semantic completion requirement did not reach original body")
+	}
+	_ = response.Body.Close()
+}
+
+func TestPrimeRequiresSemanticCompletionBeforeDataAndEOFRead(t *testing.T) {
+	body := &markableReadCloser{Reader: strings.NewReader("data: payload\n\n")}
+	response := &http.Response{Body: body}
+
+	if err := Prime(context.Background(), response); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if !body.semanticRequired {
+		t.Fatal("Prime required semantic completion too late for a data-and-EOF read")
+	}
+	if body.eofBeforeSemantic {
+		t.Fatal("underlying body observed EOF before Prime required semantic completion")
+	}
+	_ = response.Body.Close()
+}
+
 func TestPrimeCommentOnlyEOFReturnsInterrupted(t *testing.T) {
-	response := &http.Response{Body: io.NopCloser(strings.NewReader(": keep-alive\n\n"))}
+	body := &markableReadCloser{Reader: strings.NewReader(": keep-alive\n\n")}
+	response := &http.Response{Body: body}
 
 	err := Prime(context.Background(), response)
 
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("Prime error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if !body.semanticRequired {
+		t.Fatal("Prime did not require semantic completion when the stream ended before its first data event")
 	}
 }
 
@@ -177,6 +236,18 @@ func TestProxyDeduplicatesDONE(t *testing.T) {
 	count := strings.Count(body, "[DONE]")
 	if count != 1 {
 		t.Fatalf("[DONE] count = %d, want 1; body = %s", count, body)
+	}
+}
+
+func TestProxyMarksUnderlyingBodyCompleteAfterDONE(t *testing.T) {
+	var completed atomic.Int32
+	body := io.NopCloser(strings.NewReader("data: [DONE]\n\n"))
+	upstream := &http.Response{Body: body}
+	if err := Proxy(context.Background(), httptest.NewRecorder(), upstream, ProxyOptions{OnComplete: func() { completed.Add(1) }}); err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("completion callback count = %d, want 1", completed.Load())
 	}
 }
 
@@ -283,6 +354,27 @@ type repeatEventReader struct {
 	left  int64
 }
 
+type markableReadCloser struct {
+	*strings.Reader
+	completed         bool
+	semanticRequired  bool
+	eofBeforeSemantic bool
+}
+
+func (r *markableReadCloser) Close() error { return nil }
+
+func (r *markableReadCloser) Read(payload []byte) (int, error) {
+	read, err := r.Reader.Read(payload)
+	if err == io.EOF && !r.semanticRequired {
+		r.eofBeforeSemantic = true
+	}
+	return read, err
+}
+
+func (r *markableReadCloser) RequireSemanticCompletion() { r.semanticRequired = true }
+
+func (r *markableReadCloser) MarkComplete() { r.completed = true }
+
 func (r *repeatEventReader) Read(payload []byte) (int, error) {
 	if r.left <= 0 {
 		return 0, io.EOF
@@ -371,6 +463,62 @@ func TestProxyOnFirstDataNotFiredForCommentOnlyStream(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("OnFirstData calls = %d, want 0 for a comment-only stream", calls)
 	}
+}
+
+func TestProxyWriteWatchdogInterruptsBlockedFlush(t *testing.T) {
+	upstream := &http.Response{Body: io.NopCloser(strings.NewReader("data: first\n\n"))}
+	writer := newBlockingFlushWriter()
+	done := make(chan error, 1)
+	go func() {
+		done <- Proxy(context.Background(), writer, upstream, ProxyOptions{WriteIdleTimeout: 20 * time.Millisecond})
+	}()
+
+	select {
+	case <-writer.flushStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Flush did not start")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStreamWriteStalled) {
+			t.Fatalf("Proxy error = %v, want ErrStreamWriteStalled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Proxy remained blocked in Flush after watchdog timeout")
+	}
+}
+
+type blockingFlushWriter struct {
+	*httptest.ResponseRecorder
+	flushStarted chan struct{}
+	unblock      chan struct{}
+	unblockOnce  sync.Once
+}
+
+func newBlockingFlushWriter() *blockingFlushWriter {
+	return &blockingFlushWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		flushStarted:     make(chan struct{}),
+		unblock:          make(chan struct{}),
+	}
+}
+
+func (w *blockingFlushWriter) Flush() {
+	close(w.flushStarted)
+	<-w.unblock
+}
+
+func (w *blockingFlushWriter) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() {
+		wait := time.Until(deadline)
+		if wait < 0 {
+			wait = 0
+		}
+		time.AfterFunc(wait, func() {
+			w.unblockOnce.Do(func() { close(w.unblock) })
+		})
+	}
+	return nil
 }
 
 type stagedReadCloser struct {

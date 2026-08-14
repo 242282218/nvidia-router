@@ -220,6 +220,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
 	metricsHandler := metricsapi.New(keyPool, observabilityRepository)
+	// The built-in proxy pool is the project's core, so its live health belongs
+	// in Prometheus next to the key pool: operators can alert on "pool drained"
+	// without scraping the admin page. Static-proxy mode leaves this nil and the
+	// pool metrics absent, which is itself a distinguishable state.
+	metricsHandler.WithProxyPool(proxySettings)
 	// The audit middleware wraps the full router so it observes both management
 	// mutations (already carrying a principal from RequireManagement) and
 	// unauthenticated attempts at /admin/api/auth/*; its path guard leaves

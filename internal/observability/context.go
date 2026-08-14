@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,24 @@ type RequestState struct {
 func WithRequestState(ctx context.Context) (context.Context, *RequestState) {
 	state := &RequestState{}
 	return context.WithValue(ctx, requestStateKey{}, state), state
+}
+
+type requestLoggerKey struct{}
+
+// WithRequestLogger stores the request-scoped logger on the context so handlers
+// deep in the chain can log request-scoped events without threading a logger
+// through every constructor. The middleware injects it once per request.
+func WithRequestLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	return context.WithValue(ctx, requestLoggerKey{}, logger)
+}
+
+// RequestLogger returns the logger stored by WithRequestLogger, or the default
+// logger when the middleware did not wrap the request (direct handler tests).
+func RequestLogger(ctx context.Context) *slog.Logger {
+	if logger, ok := ctx.Value(requestLoggerKey{}).(*slog.Logger); ok && logger != nil {
+		return logger
+	}
+	return slog.Default()
 }
 
 func SetAccessKey(ctx context.Context, id int64) {

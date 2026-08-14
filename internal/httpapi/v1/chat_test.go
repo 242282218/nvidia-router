@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"nvidia-router/internal/clock"
@@ -173,6 +174,111 @@ func TestChatStreamResponseUncommittedInterruptionWritesError(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewChat(nil, nil, nil).streamResponse(context.Background(), response, upstream)
 	assertChatError(t, response, http.StatusBadGateway, "upstream_protocol_error")
+}
+
+// TestChatStreamTruncationAfterCommitLogsWarn locks in that a stream which
+// committed its first event and then died on an upstream error is logged at
+// Warn. Before this, the error was swallowed: the client observed a truncated
+// generation and ops had no trace that the upstream stalled.
+func TestChatStreamTruncationAfterCommitLogsWarn(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &scriptedBody{
+			chunks: [][]byte{[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")},
+			err:    errors.New("boom"),
+		},
+	}
+	logger := &recordingLogHandler{}
+	ctx := observability.WithRequestLogger(context.Background(), slog.New(logger))
+	response := httptest.NewRecorder()
+	NewChat(nil, nil, nil).streamResponse(ctx, response, upstream)
+	if !logger.contains("stream_truncated_after_commit") {
+		t.Fatalf("post-commit truncation was not logged; got %v", logger.messages())
+	}
+}
+
+// TestChatStreamClientDisconnectAfterCommitLogsDebug keeps a client disconnect
+// (context cancellation) after commit at Debug, so the Warn line above stays a
+// reliable upstream-fault signal instead of drowning in expected churn.
+func TestChatStreamClientDisconnectAfterCommitLogsDebug(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &scriptedBody{
+			chunks: [][]byte{[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")},
+			err:    errors.New("boom"),
+		},
+	}
+	logger := &recordingLogHandler{}
+	ctx, cancel := context.WithCancel(observability.WithRequestLogger(context.Background(), slog.New(logger)))
+	response := httptest.NewRecorder()
+	// The context is already cancelled before the proxy runs: the first event
+	// still commits (the scripted body ignores Close), then the read error is
+	// attributed to the disconnect, not the upstream.
+	cancel()
+	NewChat(nil, nil, nil).streamResponse(ctx, response, upstream)
+	if logger.contains("stream_truncated_after_commit") {
+		t.Fatalf("client disconnect was logged as an upstream truncation: %v", logger.messages())
+	}
+	if !logger.contains("stream_context_cancelled_after_commit") {
+		t.Fatalf("client disconnect after commit was not logged at Debug; got %v", logger.messages())
+	}
+}
+
+// scriptedBody serves fixed chunks and then a fixed read error, letting tests
+// exercise a stream that commits its first event and then dies.
+type scriptedBody struct {
+	chunks [][]byte
+	index  int
+	err    error
+}
+
+func (b *scriptedBody) Read(payload []byte) (int, error) {
+	if b.index < len(b.chunks) {
+		chunk := b.chunks[b.index]
+		b.index++
+		return copy(payload, chunk), nil
+	}
+	return 0, b.err
+}
+
+func (*scriptedBody) Close() error { return nil }
+
+// recordingLogHandler captures slog messages so tests can assert on the log
+// lines a handler emitted.
+type recordingLogHandler struct {
+	mu       sync.Mutex
+	recorded []string
+}
+
+func (h *recordingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingLogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recorded = append(h.recorded, record.Message)
+	return nil
+}
+
+func (h *recordingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingLogHandler) contains(message string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.recorded {
+		if m == message {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *recordingLogHandler) messages() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.recorded...)
 }
 
 func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.T) {

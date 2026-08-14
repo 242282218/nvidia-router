@@ -48,13 +48,13 @@ function validateNewPassword(password: string): string {
   <div class="flex min-h-screen items-center justify-center bg-[var(--color-canvas)] px-4">
     <!-- Ambient decoration -->
     <div class="fixed inset-0 overflow-hidden pointer-events-none">
-      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[#F59E0B]/5 blur-3xl" />
+      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[var(--color-warning)]/5 blur-3xl" />
       <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[var(--color-info)]/5 blur-3xl" />
     </div>
 
     <section class="relative w-full max-w-sm animate-fade-in">
       <div class="mb-8 text-center">
-        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#F59E0B] text-lg font-bold text-[var(--color-canvas)]">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-warning)] text-lg font-bold text-[var(--color-canvas)]">
           !
         </div>
         <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">
@@ -67,7 +67,7 @@ function validateNewPassword(password: string): string {
 
       <div
         v-if="isPlainHttp"
-        class="mb-6 rounded-lg border border-[#F59E0B]/30 bg-[#F59E0B]/5 p-3 text-sm text-[#FBBF24]"
+        class="mb-6 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3 text-sm text-[var(--color-warning)]"
         role="alert"
       >
         <div class="flex items-start gap-2">
@@ -125,16 +125,16 @@ function validateNewPassword(password: string): string {
           <Transition name="slide">
             <p
               v-if="formError"
-              class="rounded-lg bg-[#EF4444]/5 border border-[#EF4444]/20 px-3 py-2 text-sm text-[#F87171]"
+              class="rounded-lg bg-[var(--color-danger)]/5 border border-[var(--color-danger)]/20 px-3 py-2 text-sm text-[var(--color-danger)]"
               data-testid="form-error"
-              role="status"
+              role="alert"
             >
               {{ formError }}
             </p>
           </Transition>
 
           <button
-            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:opacity-40"
+            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:border-[var(--color-border-strong)] disabled:bg-[var(--color-surface)] disabled:text-[var(--color-text-muted)]"
             :disabled="submitting"
             type="submit"
           >
@@ -169,9 +169,11 @@ function validateNewPassword(password: string): string {
 </template>
 
 <style scoped>
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

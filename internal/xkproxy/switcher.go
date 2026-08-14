@@ -77,6 +77,18 @@ func (s *Switcher) PoolStatus() PoolStatus {
 	return s.manager.PoolStatus()
 }
 
+func (s *Switcher) Refresh(ctx context.Context) error {
+	if s == nil {
+		return errors.New("proxy switcher is nil")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || !s.enabled || s.manager == nil {
+		return errors.New("proxy pool is disabled")
+	}
+	return s.manager.Refresh(ctx)
+}
+
 func (s *Switcher) Apply(manager *Manager, enabled bool) error {
 	if s == nil {
 		if manager != nil {

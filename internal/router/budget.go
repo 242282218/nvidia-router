@@ -64,7 +64,7 @@ func newBudget(settings runtimeconfig.Snapshot, now time.Time, stream bool) Budg
 	// through unchanged on a non-positive idle).
 	streamIdleTimeoutMS := settings.StreamIdleTimeoutMS
 	if streamIdleTimeoutMS <= 0 {
-		streamIdleTimeoutMS = 1000
+		streamIdleTimeoutMS = defaultStreamIdleTimeoutMS
 	}
 	budget.streamIdleTimeout = time.Duration(streamIdleTimeoutMS) * time.Millisecond
 	// Streams split the pre-commit window: firstByteTimeout keeps bounding the
@@ -73,7 +73,7 @@ func newBudget(settings runtimeconfig.Snapshot, now time.Time, stream bool) Budg
 	if stream {
 		firstTokenTimeoutMS := settings.StreamFirstTokenTimeoutMS
 		if firstTokenTimeoutMS <= 0 {
-			firstTokenTimeoutMS = 1000
+			firstTokenTimeoutMS = defaultStreamFirstTokenTimeoutMS
 		}
 		budget.streamFirstTokenTimeout = time.Duration(firstTokenTimeoutMS) * time.Millisecond
 	}
@@ -104,6 +104,14 @@ func newBudget(settings runtimeconfig.Snapshot, now time.Time, stream bool) Budg
 const (
 	defaultRetryBudgetMS         = 120000
 	defaultMaxAttemptsPerRequest = 5
+	// Zero-value stream timeouts fall back to the migration 014 documented
+	// defaults (60000/180000), NOT the validator's 1s floor. A snapshot that has
+	// not been through the migration carries 0 for both columns, and snapshot.go
+	// promises the budget layer resolves 0 to the documented defaults; a 1s
+	// stream idle window would truncate any slow-but-live generation, which is
+	// exactly the false-positive truncation the 014 split was designed to avoid.
+	defaultStreamFirstTokenTimeoutMS = 60000
+	defaultStreamIdleTimeoutMS       = 180000
 )
 
 func (b Budget) ConnectTimeout() time.Duration {

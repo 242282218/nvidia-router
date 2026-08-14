@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { useDialog } from '../../shared/useDialog'
+
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { toastError, toastSuccess } from '../../shared/toast'
 import { providersApi } from './api'
@@ -12,6 +14,11 @@ const errorMessage = ref('')
 const dialogOpen = ref(false)
 const saving = ref(false)
 const busyId = ref<number | null>(null)
+const dialogPanel = ref<globalThis.HTMLElement | null>(null)
+
+// dialogOpen is a local ref, so Esc closes it directly and focus returns to the
+// "新增提供商" trigger button on close.
+useDialog(dialogOpen, dialogPanel, () => { dialogOpen.value = false })
 
 const createForm = ref({ name: '', base_url: '', key: '' })
 const createError = ref('')
@@ -119,7 +126,7 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
     <div class="content-wrapper">
       <header class="section-header">
         <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[#F59E0B]">
+          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
             提供商管理
           </p>
           <h1 class="page-title mt-1">
@@ -150,10 +157,18 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
       <Transition name="slide">
         <p
           v-if="errorMessage"
-          class="mb-4 text-sm text-[#F87171]"
+          class="mb-4 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
-          {{ errorMessage }}
+          <span>{{ errorMessage }}</span>
+          <button
+            class="btn-secondary rounded-lg px-3 py-1 text-xs"
+            type="button"
+            :disabled="loading"
+            @click="load"
+          >
+            重试
+          </button>
         </p>
       </Transition>
 
@@ -243,7 +258,10 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
         aria-modal="true"
         @click.self="dialogOpen = false"
       >
-        <section class="modal-panel max-w-lg">
+        <section
+          ref="dialogPanel"
+          class="modal-panel max-w-lg"
+        >
           <div class="border-b border-[var(--color-border)] px-6 py-4">
             <h2 class="text-base font-semibold text-[var(--color-text)]">
               新增 OpenAI 兼容提供商
@@ -291,7 +309,7 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
               <Transition name="fade">
                 <p
                   v-if="createError"
-                  class="text-sm text-[#F87171]"
+                  class="text-sm text-[var(--color-danger)]"
                   role="alert"
                 >
                   {{ createError }}
@@ -323,9 +341,11 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .modal-enter-from,
 .modal-leave-to {
@@ -335,17 +355,21 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
 .modal-leave-to section {
   transform: scale(0.95);
 }
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.25s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.25s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.25s ease;
+  transition: opacity 0.18s cubic-bezier(0.4, 0.0, 1, 1), transform 0.18s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

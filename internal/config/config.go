@@ -40,16 +40,12 @@ type Config struct {
 	NVIDIABaseURL          *url.URL
 	XKProxyURL             *url.URL
 	XKProxyAuthKey         string
-	// XKPool enables the built-in proxy pool (collector mode). It is non-nil
-	// when NVIDIA_ROUTER_XK_UPSTREAM_URL is set; static XKProxyURL and the
-	// pool mode are mutually exclusive so the admin page's effective source
-	// stays unambiguous.
+	// XKPool enables the absorbed Xingkong collector when the XApi URL is set.
+	// XKProxyURL remains available for the standalone forward-proxy deployment.
 	XKPool *XKPoolConfig
 }
 
-// XKPoolConfig configures the built-in proxy collector that fetches proxy
-// addresses from an upstream API, validates their quality against NVIDIA, and
-// serves requests through the best available exit.
+// XKPoolConfig configures the absorbed Xingkong XApi collector and validator.
 type XKPoolConfig struct {
 	UpstreamURL       string
 	UpstreamTimeout   time.Duration
@@ -113,16 +109,17 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load NVIDIA base URL: %w", err)
 	}
-	xkProxyURL, xkProxyAuthKey, err := loadXKProxyConfig()
-	if err != nil {
-		return Config{}, err
-	}
+	var xkProxyURL *url.URL
+	var xkProxyAuthKey string
 	xkPool, err := loadXKPoolConfig()
 	if err != nil {
 		return Config{}, err
 	}
-	if xkProxyURL != nil && xkPool != nil {
-		return Config{}, errors.New("NVIDIA_ROUTER_XK_PROXY_URL and NVIDIA_ROUTER_XK_UPSTREAM_URL are mutually exclusive: configure either the static proxy or the built-in proxy pool, not both")
+	if strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_XK_PROXY_URL")) != "" || strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_XK_PROXY_AUTH_KEY")) != "" {
+		return Config{}, errors.New("external Xingkong proxy settings are unsupported; configure the built-in XApi pool")
+	}
+	if xkPool != nil && xkProxyURL != nil {
+		return Config{}, errors.New("NVIDIA_ROUTER_XK_UPSTREAM_URL and NVIDIA_ROUTER_XK_PROXY_URL cannot be combined")
 	}
 
 	return Config{
@@ -248,17 +245,19 @@ const (
 )
 
 // loadXKPoolConfig reads the built-in proxy pool (collector mode) environment
-// variables. It returns nil when NVIDIA_ROUTER_XK_UPSTREAM_URL is unset. When
-// set, the validation URL is required and defaulted by the caller only through
-// NewCollector's zero handling; here we validate the URL shapes and durations.
+// variables. The XApi URL is retained only in memory and must never be logged.
 func loadXKPoolConfig() (*XKPoolConfig, error) {
 	const upstreamEnv = "NVIDIA_ROUTER_XK_UPSTREAM_URL"
 	rawUpstream := strings.TrimSpace(os.Getenv(upstreamEnv))
 	if rawUpstream == "" {
 		return nil, nil
 	}
-	if _, err := url.Parse(rawUpstream); err != nil || strings.TrimSpace(rawUpstream) == "" {
-		return nil, proxyConfigError(upstreamEnv, "must be an absolute HTTP or HTTPS URL")
+	parsedUpstream, err := url.Parse(rawUpstream)
+	if err != nil || parsedUpstream.Host == "" || (parsedUpstream.Scheme != "http" && parsedUpstream.Scheme != "https") || parsedUpstream.User != nil || parsedUpstream.Fragment != "" {
+		return nil, proxyConfigError(upstreamEnv, "must be an absolute HTTP or HTTPS URL without userinfo or fragment")
+	}
+	if parsedUpstream.RawQuery == "" {
+		return nil, proxyConfigError(upstreamEnv, "must include the provider query credentials")
 	}
 
 	validationURL := strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_XK_VALIDATION_URL"))
@@ -267,8 +266,9 @@ func loadXKPoolConfig() (*XKPoolConfig, error) {
 		// validation target would pass every proxy regardless of real reachability.
 		validationURL = defaultNVIDIABaseURL
 	}
-	if _, err := url.Parse(validationURL); err != nil || validationURL == "" {
-		return nil, proxyConfigError("NVIDIA_ROUTER_XK_VALIDATION_URL", "must be an absolute HTTP or HTTPS URL")
+	parsedValidationURL, err := url.Parse(validationURL)
+	if err != nil || parsedValidationURL.Host == "" || (parsedValidationURL.Scheme != "http" && parsedValidationURL.Scheme != "https") || parsedValidationURL.User != nil || parsedValidationURL.RawQuery != "" || parsedValidationURL.Fragment != "" {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_VALIDATION_URL", "must be an absolute HTTP or HTTPS URL without credentials, query, or fragment")
 	}
 
 	validationStatus, err := loadPositiveInt("NVIDIA_ROUTER_XK_VALIDATION_STATUS", httpStatusNotFound)
@@ -303,6 +303,18 @@ func loadXKPoolConfig() (*XKPoolConfig, error) {
 	expectedQty, err := loadPositiveInt("NVIDIA_ROUTER_XK_EXPECTED_QTY", xkPoolDefaultExpectedQty)
 	if err != nil {
 		return nil, err
+	}
+	if interval < 5*time.Second {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_COLLECT_INTERVAL", "must be at least 5s")
+	}
+	if proxyTTL < time.Second || proxyTTL > 180*time.Second {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_PROXY_TTL", "must be between 1s and 180s")
+	}
+	if upstreamTimeout >= interval {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "must be less than collect interval")
+	}
+	if expectedQty != 2 {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_EXPECTED_QTY", "must be exactly 2 for the Xingkong lease contract")
 	}
 	concurrency, err := loadPositiveInt("NVIDIA_ROUTER_XK_CONCURRENCY", xkPoolDefaultConcurrency)
 	if err != nil {

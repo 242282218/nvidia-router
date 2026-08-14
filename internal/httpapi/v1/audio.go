@@ -80,6 +80,14 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	})
 	defer stop()
 	request = request.WithContext(readCtx)
+	// Wrap the wire body so a chunked multipart upload charges the global byte
+	// budget incrementally while ParseMultipart streams it to temp files. A
+	// known Content-Length was already charged exactly by acquireBodyLease.
+	var budgetBody *budgetReservingReadCloser
+	if request.ContentLength < 0 {
+		budgetBody = &budgetReservingReadCloser{ReadCloser: request.Body, lease: bodyLease}
+		request.Body = budgetBody
+	}
 	// Capture the wrapped body after ParseMultipart assigns it so AfterFunc
 	// closes the correct closer. The mutex ensures the AfterFunc sees the final
 	// value even if the deadline fires during the assignment race window.
@@ -91,6 +99,11 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	// long-lived upstream call cannot monopolize the body-read budget, and drop
 	// the upload deadline so it cannot eat into the attempt's first-byte budget.
 	bodyLease.releaseSlot()
+	if budgetBody != nil {
+		// Reconcile the chunked placeholder down to the bytes the wrapper
+		// actually charged so the byte budget tracks reality.
+		bodyLease.reconcile(budgetBody.bytesRead())
+	}
 	request = request.WithContext(originalCtx)
 	if parseErr == nil {
 		defer func() { _ = parsed.Close() }()
@@ -106,6 +119,10 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if parseErr != nil {
+		if errors.Is(parseErr, errBodyBudgetExhausted) {
+			writeChatError(writer, bodyBusyError())
+			return
+		}
 		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
 			writeChatError(writer, &apierror.Error{
 				Status: http.StatusRequestTimeout, Type: "invalid_request_error", Code: "request_timeout",

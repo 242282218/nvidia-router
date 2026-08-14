@@ -24,6 +24,8 @@ var ErrStreamWriteStalled = errors.New("upstream stream write stalled for too lo
 
 type ProxyOptions struct {
 	CommitState *router.CommitState
+	// OnComplete fires after a valid terminal [DONE] marker is forwarded.
+	OnComplete func()
 	// OnFirstData fires exactly once, after the first SSE data event has been
 	// written and flushed to the client. It lets the streaming handler record
 	// time-to-first-token without coupling the proxy to observability.
@@ -148,13 +150,15 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		if watchdog != nil {
 			watchdog.Arm()
 		}
-		flusher.Flush()
+		if err := flushWithDeadline(writer, flusher, opts.WriteIdleTimeout); err != nil {
+			if watchdog != nil {
+				watchdog.Disarm()
+			}
+			return err
+		}
 		if watchdog != nil {
 			watchdog.Disarm()
 			if watchdog.Fired() {
-				// The flush was blocked on a client that stopped reading beyond
-				// the write-idle window; the watchdog closed the upstream body,
-				// which will surface as a decode error on the next iteration.
 				return ErrStreamWriteStalled
 			}
 		}
@@ -169,8 +173,36 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		}
 
 		if seenDone {
+			if opts.OnComplete != nil {
+				opts.OnComplete()
+			}
 			return nil
 		}
+	}
+}
+
+func flushWithDeadline(writer http.ResponseWriter, flusher http.Flusher, timeout time.Duration) error {
+	if timeout <= 0 {
+		flusher.Flush()
+		return nil
+	}
+	controller := http.NewResponseController(writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		flusher.Flush()
+		return nil
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		flusher.Flush()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+		_ = controller.SetWriteDeadline(time.Time{})
+		return nil
+	case <-time.After(timeout):
+		return ErrStreamWriteStalled
 	}
 }
 
@@ -182,9 +214,9 @@ type WriteWatchdog struct {
 	timeout time.Duration
 	onStall func()
 
-	mu     sync.Mutex
-	timer  *time.Timer
-	fired  bool
+	mu    sync.Mutex
+	timer *time.Timer
+	fired bool
 }
 
 func NewWriteWatchdog(timeout time.Duration, onStall func()) *WriteWatchdog {

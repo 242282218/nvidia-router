@@ -9,6 +9,7 @@ import (
 
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
+	"nvidia-router/internal/xkproxy"
 )
 
 type fakeSummary struct{}
@@ -25,6 +26,12 @@ type fakeRequests struct{}
 
 func (fakeRequests) MetricsSummary(context.Context) (observability.MetricsSummary, error) {
 	return observability.MetricsSummary{Requests: 12, Successes: 10, Failures: 2}, nil
+}
+
+type fakeProxyPool struct{}
+
+func (fakeProxyPool) PoolStatus() xkproxy.PoolStatus {
+	return xkproxy.PoolStatus{TotalSize: 9, HealthySize: 7, PanicMode: true, UpstreamOverloaded: true}
 }
 
 func TestMetricsHandlerExposesPrometheusText(t *testing.T) {
@@ -46,6 +53,24 @@ func TestMetricsHandlerExposesPrometheusText(t *testing.T) {
 		"nvidia_router_requests_total 12",
 		"nvidia_router_requests_succeeded_total 10",
 		"nvidia_router_requests_failed_total 2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsHandlerExposesProxyPoolHealth(t *testing.T) {
+	handler := New(fakeSummary{}, fakeRequests{}).WithProxyPool(fakeProxyPool{})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := response.Body.String()
+	for _, want := range []string{
+		"nvidia_router_proxy_pool_total 9",
+		"nvidia_router_proxy_pool_healthy 7",
+		"nvidia_router_proxy_pool_panic_mode 1",
+		"nvidia_router_proxy_pool_upstream_overloaded 1",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, body)

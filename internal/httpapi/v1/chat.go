@@ -135,6 +135,11 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 	commit := &router.CommitState{}
 	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{
 		CommitState: commit,
+		OnComplete: func() {
+			if marker, ok := upstream.Body.(interface{ MarkComplete() }); ok {
+				marker.MarkComplete()
+			}
+		},
 		// TTFT is the first SSE data event reaching the client, distinct from
 		// the first-byte metric which also fires for error bodies before commit.
 		OnFirstData: func() { observability.SetFirstTokenAt(ctx, time.Now()) },
@@ -168,7 +173,18 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 			Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error",
 			Message: "The server could not complete the stream.",
 		})
+		return
 	}
+	// The stream committed but ended with an error outside the benign set above.
+	// The client already has headers, so nothing more can be written; log so a
+	// truncated generation is traceable instead of silently disappearing. A
+	// client disconnect (context cancellation) is expected churn and stays at
+	// Debug; upstream stalls and decode errors after commit are genuine faults.
+	if ctx.Err() != nil {
+		observability.RequestLogger(ctx).Debug("stream_context_cancelled_after_commit", "error", err)
+		return
+	}
+	observability.RequestLogger(ctx).Warn("stream_truncated_after_commit", "error", err)
 }
 
 func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {

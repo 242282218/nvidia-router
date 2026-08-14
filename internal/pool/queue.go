@@ -17,6 +17,20 @@ const (
 	queueRetryAfter           = time.Second
 )
 
+type noAttemptedRelaxationKey struct{}
+
+// WithNoAttemptedRelaxation marks a failover acquire so a queued retry cannot
+// reuse a key that this request already attempted. Ordinary callers retain the
+// queue's relaxed recovery behaviour for an attempted key whose lease was busy.
+func WithNoAttemptedRelaxation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noAttemptedRelaxationKey{}, true)
+}
+
+func noAttemptedRelaxation(ctx context.Context) bool {
+	value, _ := ctx.Value(noAttemptedRelaxationKey{}).(bool)
+	return value
+}
+
 type UnavailableReason uint8
 
 const (
@@ -116,6 +130,16 @@ func (p *Pool) acquire(
 		if unavailable.reason != UnavailableBusy {
 			p.mu.Unlock()
 			return nil, unavailableError(unavailable)
+		}
+		// A fresh retry attempt must not enqueue and then relax its attempted
+		// set: that would immediately reacquire the same key after a proxy
+		// failure, turning a one-key request into an unbounded retry loop.
+		// Keep queueing when an unattempted candidate exists (it may simply be
+		// busy), but fail fast once every eligible key is already attempted.
+		if !p.hasUnattemptedEligibleLocked(modelID, attempted) &&
+			!p.hasBusyAttemptedEligibleLocked(modelID, attempted, stream, settings.maxStreamingPerKey) {
+			p.mu.Unlock()
+			return nil, unavailableError(unavailableState{reason: UnavailableDisabled})
 		}
 	}
 	if p.waiters.Len() >= settings.capacity {
@@ -258,7 +282,8 @@ func (p *Pool) dispatchWaitersLocked() {
 	// the very key it just failed.
 	if p.waiters.Len() > 0 && remaining == 0 {
 		waiter := p.waiters.front()
-		if !p.hasNonAttemptedReadyLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey, waiter.latencyEnabled) {
+		if !noAttemptedRelaxation(waiter.ctx) &&
+			!p.hasNonAttemptedReadyLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey, waiter.latencyEnabled) {
 			lease, unavailable := p.tryAcquireLocked(waiter.modelID, waiter.attempted, waiter.stream, waiter.maxStreamingPerKey, waiter.latencyEnabled, true)
 			if lease != nil {
 				p.waiters.remove(waiter)
@@ -272,11 +297,12 @@ func (p *Pool) dispatchWaitersLocked() {
 }
 
 // hasNonAttemptedReadyLocked reports whether the pool holds a ready key outside
-// the waiter's attempted set that could serve the request, regardless of whether
-// it is momentarily busy. Used to decide whether relaxing the attempted
-// exclusion is safe: when such a key exists the pool can still make progress
-// (a later dispatch, or this key freeing up) without retrying a key the request
-// already failed.
+// the waiter's attempted set that could serve the request RIGHT NOW. Used to
+// decide whether relaxing the attempted exclusion is safe: a key that is busy
+// (or streaming-saturated) is not assignable, and counting it as "ready" left
+// the head waiter stalled while the only idle key sat in its attempted set
+// (single-head stall: W1 attempted A, A idle, B busy and un-attempted — the
+// relaxed pass never fired and W1 waited on B's release or the queue timeout).
 func (p *Pool) hasNonAttemptedReadyLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int, latencyEnabled bool) bool {
 	now := p.clock.Now()
 	for offset := range p.order {
@@ -294,7 +320,72 @@ func (p *Pool) hasNonAttemptedReadyLocked(modelID int64, attempted map[int64]str
 		if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
 			continue
 		}
+		if stream {
+			if state.streamingBusy >= maxStreamingPerKey {
+				continue
+			}
+		} else {
+			if state.busy {
+				continue
+			}
+		}
 		return true
+	}
+	return false
+}
+
+// hasUnattemptedEligibleLocked reports whether any enabled, unblocked,
+// non-cooling key remains outside attempted. Busy keys count: a fresh acquire
+// should wait for one of them, while a request whose entire eligible set was
+// already attempted must stop instead of entering the relaxed waiter path.
+func (p *Pool) hasUnattemptedEligibleLocked(modelID int64, attempted map[int64]struct{}) bool {
+	now := p.clock.Now()
+	for _, id := range p.order {
+		state := p.keys[id]
+		if !state.snapshot.Enabled || state.snapshot.AuthInvalid {
+			continue
+		}
+		if _, blocked := state.blocks[modelID]; blocked {
+			continue
+		}
+		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
+			continue
+		}
+		if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// hasBusyAttemptedEligibleLocked reports whether waiting can still make
+// progress by reusing an attempted key after its current lease is released.
+// This preserves the queued-waiter recovery path while preventing an idle
+// attempted key from being reacquired immediately by a fresh retry.
+func (p *Pool) hasBusyAttemptedEligibleLocked(modelID int64, attempted map[int64]struct{}, stream bool, maxStreamingPerKey int) bool {
+	now := p.clock.Now()
+	for _, id := range p.order {
+		state := p.keys[id]
+		if !state.snapshot.Enabled || state.snapshot.AuthInvalid {
+			continue
+		}
+		if _, blocked := state.blocks[modelID]; blocked {
+			continue
+		}
+		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
+			continue
+		}
+		if _, alreadyAttempted := attempted[state.snapshot.ID]; !alreadyAttempted {
+			continue
+		}
+		if stream {
+			if state.streamingBusy >= maxStreamingPerKey {
+				return true
+			}
+		} else if state.busy {
+			return true
+		}
 	}
 	return false
 }

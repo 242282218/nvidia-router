@@ -107,8 +107,8 @@ func TestClientDoesNotReplayProxy5xxConnectResponse(t *testing.T) {
 	if !errors.As(err, &proxyErr) {
 		t.Fatalf("error = %T %v, want *xkproxy.Error so the router does not cooldown the key", err, err)
 	}
-	if proxyErr.Reason() != xkproxy.ReasonTransportFailed {
-		t.Fatalf("proxy error reason = %q, want transport_failed", proxyErr.Reason())
+	if proxyErr.Reason() != xkproxy.ReasonProxyRejected {
+		t.Fatalf("proxy error reason = %q, want proxy_rejected", proxyErr.Reason())
 	}
 	if proxy.Connects() != 1 {
 		t.Fatalf("proxy CONNECTs = %d, want 1 (5xx must not be replayed)", proxy.Connects())

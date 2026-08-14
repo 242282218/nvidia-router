@@ -36,6 +36,10 @@ const logs = ref<RequestLogsPage | null>(null)
 const loading = ref(false)
 const summaryError = ref('')
 const logsError = ref('')
+// summaryStale marks a background poll failure: the last good data stays on
+// screen but must be flagged as not-fresh instead of silently reading as live.
+const summaryStale = ref(false)
+const summaryStaleSince = ref<Date | null>(null)
 // filterError surfaces invalid numeric filter input (e.g. a non-positive ID)
 // instead of silently dropping it on the floor.
 const filterError = ref('')
@@ -125,8 +129,13 @@ async function pollSummary(): Promise<void> {
     if (!isMonitoringSnapshot(response)) return
     snapshot.value = response.data
     summaryUpdatedAt.value = new Date()
+    summaryStale.value = false
+    summaryStaleSince.value = null
   } catch {
-    // Keep the previous snapshot; the next poll retries.
+    // Keep the previous snapshot; the next poll retries. The stale flag tells
+    // the operator the numbers on screen are no longer live.
+    if (!summaryStale.value) summaryStaleSince.value = new Date()
+    summaryStale.value = true
   }
 }
 
@@ -142,10 +151,15 @@ async function loadDashboard(): Promise<void> {
   loadController = controller
   const sequence = ++loadSequence
   loading.value = true
-  snapshot.value = null
-  logs.value = null
   summaryError.value = ''
   logsError.value = ''
+  // Only the first load clears the panels: a refresh (range/filter/page
+  // change) keeps the current content visible until the new data lands, so
+  // the page does not flash to an empty loading state and lose context.
+  if (snapshot.value === null && logs.value === null) {
+    snapshot.value = null
+    logs.value = null
+  }
   await Promise.all([
     loadSummary(controller.signal, sequence),
     loadLogs(controller.signal, sequence),
@@ -160,6 +174,8 @@ async function loadSummary(signal: globalThis.AbortSignal, sequence: number): Pr
     if (!isMonitoringSnapshot(response)) throw new TypeError('Invalid monitoring summary response.')
     snapshot.value = response.data
     summaryUpdatedAt.value = new Date()
+    summaryStale.value = false
+    summaryStaleSince.value = null
   } catch (error) {
     if (disposed || sequence !== loadSequence || isAbortError(error)) return
     summaryError.value = error instanceof ApiError ? error.message : '监控汇总加载失败。'
@@ -450,9 +466,25 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
       <template v-else>
         <p
+          v-if="summaryStale"
+          data-testid="monitoring-summary-stale"
+          class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]"
+          role="status"
+        >
+          <span>汇总自 {{ summaryStaleSince ? formatClock(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
+          <button
+            class="btn-ghost underline"
+            type="button"
+            :disabled="loading"
+            @click="loadDashboard"
+          >
+            立即重试
+          </button>
+        </p>
+        <p
           v-if="summaryError"
           data-testid="monitoring-summary-error"
-          class="mb-4 rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
+          class="mb-4 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
           {{ summaryError }}
@@ -541,7 +573,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             <p class="mt-2 text-xl font-semibold text-[var(--color-text)]">
               {{ formatTokens(summary.prompt_tokens + summary.completion_tokens) }}
             </p>
-            <p class="mt-1 text-[11px] text-[var(--color-text-subtle)]">
+            <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
               输入 {{ formatTokens(summary.prompt_tokens) }} · 输出 {{ formatTokens(summary.completion_tokens) }}
             </p>
           </article>
@@ -695,10 +727,18 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
           <p
             v-if="logsError"
-            class="m-4 rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 p-4 text-sm text-[var(--color-danger)]"
+            class="m-4 flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 p-4 text-sm text-[var(--color-danger)]"
             role="alert"
           >
-            {{ logsError }}
+            <span>{{ logsError }}</span>
+            <button
+              class="btn-secondary rounded-lg px-3 py-1 text-xs"
+              type="button"
+              :disabled="loading"
+              @click="loadDashboard"
+            >
+              重试
+            </button>
           </p>
           <p
             v-else-if="logs && logs.items.length === 0"

@@ -1,14 +1,31 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+
+import { useDialog } from '../../shared/useDialog'
 import type { KeyTestResult } from './types'
 
-defineProps<{ open: boolean; results: KeyTestResult[] }>()
+const props = defineProps<{ open: boolean; results: KeyTestResult[] }>()
 const emit = defineEmits<{ close: [] }>()
+
+const panel = ref<globalThis.HTMLElement | null>(null)
+useDialog(computed(() => props.open), panel, () => emit('close'))
 
 function statusBadge(status: string): string {
   switch (status) {
-    case 'ok': return 'badge-success'
+    // The backend reports a successful live test as "valid" (not "ok").
+    case 'ok':
+    case 'valid': return 'badge-success'
     case 'error': return 'badge-danger'
     default: return 'badge-warning'
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'ok':
+    case 'valid': return '可用'
+    case 'error': return '失败'
+    default: return status
   }
 }
 </script>
@@ -22,9 +39,9 @@ function statusBadge(status: string): string {
       aria-modal="true"
       aria-labelledby="key-test-results-title"
       @click.self="emit('close')"
-      @keydown.esc="emit('close')"
     >
       <section
+        ref="panel"
         data-testid="key-test-results"
         class="modal-panel max-h-[85vh] max-w-lg overflow-y-auto"
       >
@@ -67,7 +84,7 @@ function statusBadge(status: string): string {
           >
             <div class="flex items-center justify-between mb-3">
               <span class="text-sm font-medium text-[var(--color-text)]">Key #{{ result.id }}</span>
-              <span :class="statusBadge(result.status)">{{ result.status }}</span>
+              <span :class="statusBadge(result.status)">{{ statusLabel(result.status) }}</span>
             </div>
             <dl class="space-y-2 text-sm">
               <div
@@ -110,9 +127,11 @@ function statusBadge(status: string): string {
 </template>
 
 <style scoped>
-.modal-enter-active,
+.modal-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .modal-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .modal-enter-from,
 .modal-leave-to {

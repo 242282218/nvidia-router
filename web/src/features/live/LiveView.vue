@@ -31,7 +31,11 @@ function onListScroll(): void {
 
 function scrollToTop(): void {
   pinnedToTop.value = true
-  listEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
+  // JS smooth scrolling is invisible to the theme.css reduced-motion guard
+  // (it only neutralises CSS animations/transitions), so honour the preference
+  // here directly (design-aesthetics 交互动效 P0#6).
+  const reduced = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches
+  listEl.value?.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' })
 }
 
 function clearEvents(): void {
@@ -135,7 +139,7 @@ function formatLatency(value: number | undefined): string {
 
 function latencyColor(duration: number): string {
   if (duration < 1000) return 'text-[var(--color-success)]'
-  if (duration < 5000) return 'text-[#F59E0B]'
+  if (duration < 5000) return 'text-[var(--color-warning)]'
   return 'text-[var(--color-danger)]'
 }
 </script>
@@ -186,7 +190,7 @@ function latencyColor(duration: number): string {
 
       <div
         v-if="errorMessage"
-        class="mt-4 rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
+        class="mt-4 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
         role="alert"
       >
         {{ errorMessage }}
@@ -252,9 +256,11 @@ function latencyColor(duration: number): string {
 </template>
 
 <style scoped>
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.18s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.18s ease;
+  transition: opacity 0.13s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {

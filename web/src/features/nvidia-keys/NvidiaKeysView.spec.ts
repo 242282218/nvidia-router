@@ -213,7 +213,7 @@ describe('NvidiaKeysView', () => {
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
-    const secret = 'nvapi-fixture-not-a-real-key-123456789'
+    const secret = 'nvapi-fixture-ui-redaction'
     await wrapper.get('[name="nvidia-key"]').setValue(secret)
     await wrapper.get('[data-testid="single-import-form"]').trigger('submit')
 
@@ -286,5 +286,21 @@ describe('NvidiaKeysView', () => {
     expect(dialog.text()).toContain('#7')
     expect(dialog.text()).toContain('#8')
     expect(dialog.text()).toContain('authentication failed')
+  })
+
+  it('surfaces a persistent load error with retry instead of an empty key list', async () => {
+    vi.mocked(nvidiaKeysApi.list)
+      .mockRejectedValueOnce(new Error('service unavailable'))
+      .mockResolvedValueOnce({ data: [makeKey({ id: 9, masked: 'nvapi…9999' })] })
+    const wrapper = mount(NvidiaKeysView)
+    await flushPromises()
+
+    const panel = wrapper.get('[data-testid="nvidia-keys-load-error"]')
+    expect(panel.text()).toContain('加载失败')
+
+    await wrapper.get('[data-testid="nvidia-keys-retry"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="nvidia-keys-load-error"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('nvapi…9999')
   })
 })

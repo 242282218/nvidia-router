@@ -203,7 +203,7 @@ function fieldError(param: SettingParam): string {
           <span
             v-if="fieldError(rule.param)"
             :data-testid="`error-${rule.param}`"
-            class="mt-1 block text-xs text-[#F87171]"
+            class="mt-1 block text-xs text-[var(--color-danger)]"
             role="alert"
           >{{ fieldError(rule.param) }}</span>
         </Transition>
@@ -225,7 +225,7 @@ function fieldError(param: SettingParam): string {
           <span
             v-if="fieldError('failover_status_codes')"
             data-testid="error-failover_status_codes"
-            class="mt-1 block text-xs text-[#F87171]"
+            class="mt-1 block text-xs text-[var(--color-danger)]"
             role="alert"
           >{{ fieldError('failover_status_codes') }}</span>
         </Transition>
@@ -239,8 +239,8 @@ function fieldError(param: SettingParam): string {
           type="checkbox"
         >
         <span>
-          <span class="font-medium text-[var(--color-text)]">延迟感知调度</span>
-          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">按每个 Key 的历史响应时间加权选择（快者优先，未测 Key 保持探索），关闭则恢复纯轮转。</span>
+          <span class="font-medium text-[var(--color-text)]">质量感知调度</span>
+          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">按真实请求质量优先、请求延迟辅助选择出口；未充分采样的出口低频探索，关闭则恢复纯轮转。</span>
         </span>
       </label>
 
@@ -262,7 +262,7 @@ function fieldError(param: SettingParam): string {
       <p
         v-if="formError"
         data-testid="runtime-settings-error"
-        class="mt-3 text-sm text-[#F87171]"
+        class="mt-3 text-sm text-[var(--color-danger)]"
         role="alert"
       >
         {{ formError }}
@@ -304,17 +304,21 @@ function fieldError(param: SettingParam): string {
 </template>
 
 <style scoped>
-.fade-enter-active,
+.fade-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
-.slide-enter-active,
+.slide-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+}
 .slide-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .slide-enter-from,
 .slide-leave-to {

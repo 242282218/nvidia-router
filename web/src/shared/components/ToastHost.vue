@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { toastState, dismiss, type ToastType } from '../toast'
+import { toastState, dismiss, pauseDismiss, resumeDismiss, type ToastType } from '../toast'
 
 defineOptions({ name: 'ToastHost' })
 
@@ -9,11 +9,29 @@ const accentByType: Record<ToastType, string> = {
   info: 'var(--color-info)',
   warning: 'var(--color-warning)',
 }
+
+// Errors announce assertively, successes politely (design-aesthetics toast:
+// role="alert" for errors, role="status" for the rest). A live region must not
+// be dynamically inserted, so the container is always mounted.
+function toastRole(type: ToastType): 'alert' | 'status' {
+  return type === 'error' ? 'alert' : 'status'
+}
+
+function onToastEnter(id: number): void {
+  // Pause the auto-dismiss so a hovered/focused toast stays readable; resume the
+  // full window on leave (not continue) so the user re-reads without a timer
+  // racing the pointer.
+  pauseDismiss(id)
+}
+
+function onToastLeave(id: number, type: ToastType): void {
+  resumeDismiss(id, type)
+}
 </script>
 
 <template>
   <div
-    class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2"
+    class="pointer-events-none fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-50 flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 md:right-6"
     aria-live="polite"
     aria-atomic="false"
   >
@@ -21,8 +39,12 @@ const accentByType: Record<ToastType, string> = {
       <div
         v-for="toast in toastState.toasts"
         :key="toast.id"
-        role="status"
+        :role="toastRole(toast.type)"
         class="pointer-events-auto flex items-start gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] px-3.5 py-3 shadow-[var(--shadow-overlay)]"
+        @mouseenter="onToastEnter(toast.id)"
+        @mouseleave="onToastLeave(toast.id, toast.type)"
+        @focusin="onToastEnter(toast.id)"
+        @focusout="onToastLeave(toast.id, toast.type)"
       >
         <svg
           class="mt-0.5 h-4 w-4 shrink-0"
@@ -58,13 +80,13 @@ const accentByType: Record<ToastType, string> = {
           {{ toast.message }}
         </p>
         <button
-          class="shrink-0 rounded p-0.5 text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]"
+          class="flex h-11 w-11 shrink-0 items-center justify-center rounded text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]"
           type="button"
           aria-label="关闭提示"
           @click="dismiss(toast.id)"
         >
           <svg
-            class="h-3.5 w-3.5"
+            class="h-4 w-4"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,11 +13,33 @@ import (
 
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/observability"
 	responsesprotocol "nvidia-router/internal/protocol/responses"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
+
+// TestResponsesStreamTruncationAfterCommitLogsWarn mirrors the Chat contract:
+// a Responses stream that committed its first event and then died on an
+// upstream error must be logged at Warn instead of silently disappearing.
+func TestResponsesStreamTruncationAfterCommitLogsWarn(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &scriptedBody{
+			chunks: [][]byte{[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")},
+			err:    errors.New("boom"),
+		},
+	}
+	logger := &recordingLogHandler{}
+	ctx := observability.WithRequestLogger(context.Background(), slog.New(logger))
+	response := httptest.NewRecorder()
+	NewResponses(nil, nil, nil).streamResponse(ctx, response, upstream, "resp_1", "public-chat")
+	if !logger.contains("stream_truncated_after_commit") {
+		t.Fatalf("post-commit truncation was not logged; got %v", logger.messages())
+	}
+}
 
 func TestResponsesNonStreamText(t *testing.T) {
 	upstreamChat := []byte(`{"id":"c1","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
@@ -250,6 +274,28 @@ func TestResponsesStreamEmitsResponsesEventSequence(t *testing.T) {
 	}
 }
 
+func TestResponsesDoneCompletionCallbackRunsAfterFlush(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	called := false
+	emitter := &responsesSSEEmitter{
+		encoder: sse.NewEncoder(recorder),
+		commit:  &router.CommitState{},
+		flusher: recorder,
+		onComplete: func() {
+			called = true
+			if !strings.Contains(recorder.Body.String(), "[DONE]") {
+				t.Error("completion callback ran before [DONE] was written")
+			}
+		},
+	}
+	if err := emitter.Emit(responsesprotocol.EmittedEvent{Event: "done"}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !called {
+		t.Fatal("completion callback did not run")
+	}
+}
+
 func TestChatDeltaSourceJoinsMultilineEventData(t *testing.T) {
 	input := "data: {\"choices\":[{\n" +
 		"data: \"delta\":{\"content\":\"hello\"}\n" +
@@ -388,6 +434,10 @@ func serveStreamResponses(t *testing.T, sseBody string) (*httptest.ResponseRecor
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses",
 		strings.NewReader(`{"model":"public-chat","input":"x","stream":true}`))
+	// A discard request logger keeps post-commit truncation Warn lines (a
+	// deliberate signal, not test noise) out of the test output.
+	request = request.WithContext(observability.WithRequestLogger(request.Context(),
+		slog.New(slog.NewTextHandler(io.Discard, nil))))
 	handler.ServeHTTP(response, request)
 	return response, lease
 }

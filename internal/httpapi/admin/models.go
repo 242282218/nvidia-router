@@ -64,9 +64,13 @@ type modelDTO struct {
 	SupportsReasoning    bool              `json:"supports_reasoning"`
 	ReasoningWireFormat  string            `json:"reasoning_wire_format"`
 	CapabilityVerifiedAt *time.Time        `json:"capability_verified_at,omitempty"`
-	InputUSDPerMTok      *float64          `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok     *float64          `json:"output_usd_per_mtok,omitempty"`
-	BlockedByKeyIDs      []int64           `json:"blocked_by_key_ids"`
+	// StreamFirstTokenTimeoutMS / StreamIdleTimeoutMS are per-model overrides of
+	// the global streaming windows; nil means "use the global setting".
+	StreamFirstTokenTimeoutMS *int     `json:"stream_first_token_timeout_ms,omitempty"`
+	StreamIdleTimeoutMS       *int     `json:"stream_idle_timeout_ms,omitempty"`
+	InputUSDPerMTok           *float64 `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok          *float64 `json:"output_usd_per_mtok,omitempty"`
+	BlockedByKeyIDs           []int64  `json:"blocked_by_key_ids"`
 }
 type selectionDTO struct {
 	PublicID            string            `json:"public_id"`
@@ -278,6 +282,8 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		SupportsReasoning:    v.SupportsReasoning,
 		ReasoningWireFormat:  v.ReasoningWireFormat,
 		CapabilityVerifiedAt: v.CapabilityVerifiedAt,
+		StreamFirstTokenTimeoutMS: v.StreamFirstTokenTimeoutMS,
+		StreamIdleTimeoutMS:       v.StreamIdleTimeoutMS,
 		InputUSDPerMTok:      v.InputUSDPerMTok,
 		OutputUSDPerMTok:     v.OutputUSDPerMTok,
 		BlockedByKeyIDs:      v.BlockedByKeyIDs,

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Windows installations without WSL cannot execute this Bash harness. Use the
+# Go harness directly from PowerShell in that environment so E2E still gets an
+# isolated database and a deterministic initial admin password.
+if [[ "${OS:-}" == "Windows_NT" ]] && ! command -v uname >/dev/null 2>&1; then
+  printf '%s\n' 'E2E harness requires Git Bash, WSL, or a Linux runner.' >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS_TMP_DIR="$(mktemp -d)"
 HARNESS_BIN="${HARNESS_TMP_DIR}/nvidia-router-e2e-harness"
