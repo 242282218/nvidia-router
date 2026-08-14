@@ -90,6 +90,35 @@ func TestSettingsServiceRejectsEnableWithoutProxyCredentials(t *testing.T) {
 	}
 }
 
+func TestSettingsServiceDisabledSnapshotIncludesSaveablePoolDefaults(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	snapshot, err := service.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snapshot.Enabled || snapshot.CollectorInterval != "5s" || snapshot.ProxyTTL != "120s" || snapshot.ValidationURL != "" || snapshot.ValidationStatus != 404 || snapshot.ExpectedQty != 2 || snapshot.Concurrency != 2 || snapshot.MaxLatency != "" {
+		t.Fatalf("disabled snapshot defaults = %#v", snapshot)
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	for _, field := range []string{`"collector_interval":"5s"`, `"proxy_ttl":"120s"`, `"validation_url":""`, `"validation_status":404`, `"expected_qty":2`, `"concurrency":2`, `"max_latency":""`} {
+		if !strings.Contains(string(data), field) {
+			t.Fatalf("snapshot JSON = %s, missing %s", data, field)
+		}
+	}
+}
+
 func testProxyKeySet(t *testing.T, firstByte byte) *crypto.KeySet {
 	t.Helper()
 	var master [32]byte

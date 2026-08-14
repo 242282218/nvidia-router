@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { proxyPoolApi } from './api'
 import ProxyPoolView from './ProxyPoolView.vue'
+import type { ProxyPoolSettings } from './types'
 
 vi.mock('./api', () => ({
   proxyPoolApi: {
@@ -100,6 +101,36 @@ describe('ProxyPoolView', () => {
     await flushPromises()
 
     expect(proxyPoolApi.update).toHaveBeenCalledWith(expect.objectContaining({ max_latency: '' }), expect.any(AbortSignal))
+  })
+
+  it('saves defaults when collector fields are absent from a disabled snapshot', async () => {
+    const settingsWithoutCollectorFields = { ...settings }
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).validation_url
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).validation_status
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).collector_interval
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).proxy_ttl
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).expected_qty
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).concurrency
+    delete (settingsWithoutCollectorFields as Partial<typeof settings>).max_latency
+    settingsWithoutCollectorFields.enabled = false
+    settingsWithoutCollectorFields.upstream_configured = false
+    vi.mocked(proxyPoolApi.get).mockResolvedValueOnce({ data: settingsWithoutCollectorFields as unknown as ProxyPoolSettings })
+    const wrapper = mount(ProxyPoolView)
+    await flushPromises()
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(proxyPoolApi.update).toHaveBeenCalledWith(expect.objectContaining({
+      enabled: false,
+      validation_url: '',
+      validation_status: 404,
+      interval: '5s',
+      proxy_ttl: '120s',
+      expected_qty: 2,
+      concurrency: 2,
+      max_latency: '',
+    }), expect.any(AbortSignal))
   })
 
   it('runs one immediate collection and refreshes status', async () => {

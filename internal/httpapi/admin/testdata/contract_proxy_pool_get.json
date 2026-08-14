@@ -1,9 +1,15 @@
 {
   "data": {
     "auth_configured": true,
+    "collector_interval": "",
+    "concurrency": 0,
     "enabled": true,
+    "expected_qty": 0,
     "max_latency": "",
+    "proxy_ttl": "",
     "proxy_url": "http://proxy-pool:8080",
-    "source": "database"
+    "source": "database",
+    "validation_status": 0,
+    "validation_url": ""
   }
 }

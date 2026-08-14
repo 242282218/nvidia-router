@@ -36,12 +36,12 @@ type Snapshot struct {
 	Mode               string `json:"mode,omitempty"`
 	UpstreamConfigured bool   `json:"upstream_configured,omitempty"`
 	UpstreamEndpoint   string `json:"upstream_endpoint,omitempty"`
-	CollectorInterval  string `json:"collector_interval,omitempty"`
-	ProxyTTL           string `json:"proxy_ttl,omitempty"`
-	ValidationURL      string `json:"validation_url,omitempty"`
-	ValidationStatus   int    `json:"validation_status,omitempty"`
-	ExpectedQty        int    `json:"expected_qty,omitempty"`
-	Concurrency        int    `json:"concurrency,omitempty"`
+	CollectorInterval  string `json:"collector_interval"`
+	ProxyTTL           string `json:"proxy_ttl"`
+	ValidationURL      string `json:"validation_url"`
+	ValidationStatus   int    `json:"validation_status"`
+	ExpectedQty        int    `json:"expected_qty"`
+	Concurrency        int    `json:"concurrency"`
 	MaxLatency         string `json:"max_latency"`
 }
 
@@ -570,7 +570,18 @@ func makeProxyConfig(enabled bool, proxyURL *url.URL, authKey string, source Sou
 		mode = "external"
 	}
 	return proxyConfig{
-		snapshot: Snapshot{Enabled: enabled, ProxyURL: proxyURLString, AuthConfigured: strings.TrimSpace(authKey) != "", Source: source, Mode: mode},
+		snapshot: Snapshot{
+			Enabled:           enabled,
+			ProxyURL:          proxyURLString,
+			AuthConfigured:    strings.TrimSpace(authKey) != "",
+			Source:            source,
+			Mode:              mode,
+			CollectorInterval: "5s",
+			ProxyTTL:          "120s",
+			ValidationStatus:  http.StatusNotFound,
+			ExpectedQty:       2,
+			Concurrency:       2,
+		},
 		proxyURL: proxyURL,
 		authKey:  authKey,
 	}

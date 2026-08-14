@@ -184,7 +184,13 @@ const proxyPoolSettings = object({
   proxy_url: scalar('string'),
   auth_configured: scalar('boolean'),
   source: scalar('string'),
+  collector_interval: scalar('string'),
+  concurrency: scalar('number'),
+  expected_qty: scalar('number'),
   max_latency: scalar('string'),
+  proxy_ttl: scalar('string'),
+  validation_status: scalar('number'),
+  validation_url: scalar('string'),
 })
 
 const runtimeSummary = object({

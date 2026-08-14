@@ -56,12 +56,12 @@ function applySettings(next: ProxyPoolSettings): void {
   settings.value = next
   enabled.value = next.enabled
   upstreamUrl.value = ''
-  validationUrl.value = next.validation_url
-  validationStatus.value = next.validation_status
-  interval.value = next.collector_interval
-  proxyTTL.value = next.proxy_ttl
-  expectedQty.value = next.expected_qty
-  concurrency.value = next.concurrency
+	validationUrl.value = next.validation_url ?? ''
+	validationStatus.value = next.validation_status ?? 404
+	interval.value = next.collector_interval ?? '5s'
+	proxyTTL.value = next.proxy_ttl ?? '120s'
+	expectedQty.value = next.expected_qty ?? 2
+	concurrency.value = next.concurrency ?? 2
 	maxLatency.value = next.max_latency ?? ''
 }
 function sourceLabel(source?: ProxyPoolSettings['source']): string { return source === 'database' ? '数据库配置' : source === 'environment' ? '环境变量' : '未配置' }
@@ -70,7 +70,7 @@ function poolClass(): string { const status = statusData.value; return !status?.
 function formatTime(raw?: string): string { if (!raw) return '—'; const date = new Date(raw); return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString() }
 
 async function save(): Promise<void> {
-	const patch: ProxyPoolPatch = { enabled: enabled.value, validation_url: validationUrl.value.trim(), validation_status: validationStatus.value, interval: interval.value.trim(), proxy_ttl: proxyTTL.value.trim(), expected_qty: expectedQty.value, concurrency: concurrency.value, max_latency: (maxLatency.value ?? '').trim() }
+	const patch: ProxyPoolPatch = { enabled: enabled.value, validation_url: (validationUrl.value ?? '').trim(), validation_status: validationStatus.value ?? 404, interval: (interval.value ?? '5s').trim(), proxy_ttl: (proxyTTL.value ?? '120s').trim(), expected_qty: expectedQty.value ?? 2, concurrency: concurrency.value ?? 2, max_latency: (maxLatency.value ?? '').trim() }
   const upstream = upstreamUrl.value.trim()
   if (upstream) patch.upstream_url = upstream
   await savePatch(patch)
