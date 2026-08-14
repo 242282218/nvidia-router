@@ -12,9 +12,7 @@
 # Requires LITESTREAM_REPLICA_URL in the environment/.env and object-store
 # credentials exported to the shell before `up`.
 #
-# Before the first `up`, create a baseline snapshot so replication can start:
-#   docker compose exec app nvidia-router db backup /tmp/router-base.db
-#   docker compose -p nvidia-router cp app:/tmp/router-base.db ./router-base.db
+# The baseline command starts the replicate process and confirms its status.
 
 set -euo pipefail
 
@@ -46,12 +44,10 @@ log)
 	switch logs -f litestream "$@"
 	;;
 baseline)
-	# Creates a baseline snapshot on the object store via a one-shot room.
 	: "${LITESTREAM_REPLICA_URL:?LITESTREAM_REPLICA_URL must be set}"
-	echo "Generating baseline snapshot (this pauses nothing; uses app db backup)..."
-	switch --profile litestream run --rm litestream sh -c \
-		'/usr/bin/litestream restore -config /etc/litestream.yml -o /tmp/check.out /data/router.db 2>/dev/null || true'
-	echo "Baseline command finished. Verify with: litestream-manage.sh status"
+	echo "Starting Litestream replication baseline..."
+	switch up -d litestream
+	switch ps litestream
 	;;
 *)
 	echo "usage: $0 {up|down|status|log|baseline}" >&2

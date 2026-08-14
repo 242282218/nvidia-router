@@ -95,6 +95,9 @@ jobs:
           bash -n scripts/test/compose-acceptance.sh
           bash -n scripts/check-secrets.sh
           bash -n scripts/check-web-dist.sh
+          bash -n scripts/deploy/deploy-public.sh
+          bash -n scripts/deploy/rollback-public.sh
+          bash -n scripts/litestream-manage.sh
 
       - name: Run Live parser self-test
         timeout-minutes: 2

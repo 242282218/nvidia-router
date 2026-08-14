@@ -2,7 +2,7 @@ services:
   app:
     build:
       context: .
-    image: nvidia-router:local
+    image: "${NVIDIA_ROUTER_IMAGE:-nvidia-router:local}"
     restart: unless-stopped
     init: true
     ports:

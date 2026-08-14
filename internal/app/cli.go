@@ -18,6 +18,7 @@ import (
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/processlock"
 )
 
 const (
@@ -88,12 +89,12 @@ func runServe(ctx context.Context) error {
 }
 
 func runAdminPasswordReset(ctx context.Context, password string, stdout io.Writer) error {
-	db, err := openExistingRouterDatabase()
+	db, lock, err := openExistingRouterDatabase()
 	if err != nil {
 		return err
 	}
 	operationErr := adminauth.NewRepository(db, nil).ResetPassword(ctx, password)
-	if err := closeCLIData(db, operationErr); err != nil {
+	if err := closeCLIData(db, lock, operationErr); err != nil {
 		return fmt.Errorf("reset administrator password: %w", err)
 	}
 	if _, err := fmt.Fprintln(stdout, "Administrator password reset; all sessions revoked."); err != nil {
@@ -133,26 +134,23 @@ func runMasterKeyRotation(ctx context.Context, versionText, backupPath string, s
 	if same {
 		return errors.New("rotation backup output must differ from router database")
 	}
-	if err := ensureRouterDatabaseIdle(); err != nil {
-		return err
-	}
-	db, err := openExistingRouterDatabase()
+	db, lock, err := openExistingRouterDatabase()
 	if err != nil {
 		return err
 	}
 	if err := database.Backup(ctx, db, backupPath); err != nil {
-		return closeCLIData(db, fmt.Errorf("backup database before rotation: %w", err))
+		return closeCLIData(db, lock, fmt.Errorf("backup database before rotation: %w", err))
 	}
 	oldKeys, err := crypto.NewVersioned(currentVersion, oldMaster)
 	if err != nil {
-		return closeCLIData(db, fmt.Errorf("create current crypto key set: %w", err))
+		return closeCLIData(db, lock, fmt.Errorf("create current crypto key set: %w", err))
 	}
 	newKeys, err := crypto.NewVersioned(newVersion, newMaster)
 	if err != nil {
-		return closeCLIData(db, fmt.Errorf("create new crypto key set: %w", err))
+		return closeCLIData(db, lock, fmt.Errorf("create new crypto key set: %w", err))
 	}
 	result, operationErr := crypto.RotateDatabase(ctx, db, oldKeys, newKeys)
-	if err := closeCLIData(db, operationErr); err != nil {
+	if err := closeCLIData(db, lock, operationErr); err != nil {
 		return fmt.Errorf("rotate master key: %w", err)
 	}
 	if _, err := fmt.Fprintf(stdout, "Master key rotation completed: version %d; NVIDIA keys rotated %d; proxy secret rotated %t; legacy digests remaining %d.\n", newVersion, result.NVIDIAKeys, result.ProxyKey, result.LegacyDigests); err != nil {
@@ -175,24 +173,6 @@ func valueOrDefaultEnv(name, fallback string) string {
 // containers and Windows hosts. Rotating from a second process would let the
 // live server keep encrypting new rows with the old key version, leaving the
 // mixed-version data that rotation exists to avoid.
-func ensureRouterDatabaseIdle() error {
-	databasePath, err := routerDatabasePath()
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(databasePath + "-shm")
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect router database shared-memory file: %w", err)
-	}
-	if info.Size() > 0 {
-		return errors.New("detected an active writer; master key rotation must run with the service stopped")
-	}
-	return nil
-}
-
 func runDatabaseBackup(ctx context.Context, output string, stdout io.Writer) error {
 	databasePath, err := routerDatabasePath()
 	if err != nil {
@@ -205,12 +185,12 @@ func runDatabaseBackup(ctx context.Context, output string, stdout io.Writer) err
 	if same {
 		return errors.New("database backup output must differ from router database")
 	}
-	db, err := openExistingRouterDatabase()
+	db, lock, err := openExistingRouterDatabase()
 	if err != nil {
 		return err
 	}
 	operationErr := database.Backup(ctx, db, output)
-	if err := closeCLIData(db, operationErr); err != nil {
+	if err := closeCLIData(db, lock, operationErr); err != nil {
 		return fmt.Errorf("backup router database: %w", err)
 	}
 	if _, err := fmt.Fprintln(stdout, "Database backup completed."); err != nil {
@@ -219,23 +199,36 @@ func runDatabaseBackup(ctx context.Context, output string, stdout io.Writer) err
 	return nil
 }
 
-func openExistingRouterDatabase() (*sql.DB, error) {
+func openExistingRouterDatabase() (*sql.DB, *processlock.Lock, error) {
 	databasePath, err := routerDatabasePath()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	info, err := os.Stat(databasePath)
 	if err != nil {
-		return nil, fmt.Errorf("find router database: %w", err)
+		return nil, nil, fmt.Errorf("find router database: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("find router database: path is not a regular file")
+		return nil, nil, errors.New("find router database: path is not a regular file")
+	}
+	lock, err := processlock.TryLock(routerDatabaseLockPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire router database lock: %w", err)
 	}
 	db, err := database.Open(databasePath)
 	if err != nil {
-		return nil, fmt.Errorf("open router database: %w", err)
+		_ = lock.Close()
+		return nil, nil, fmt.Errorf("open router database: %w", err)
 	}
-	return db, nil
+	return db, lock, nil
+}
+
+func routerDatabaseLockPath() string {
+	dataDir := os.Getenv("NVIDIA_ROUTER_DATA_DIR")
+	if dataDir == "" {
+		dataDir = defaultCLIDataDir
+	}
+	return filepath.Join(dataDir, ".router.db.lock")
 }
 
 func routerDatabasePath() (string, error) {
@@ -276,9 +269,9 @@ func sameDatabaseFile(source, output string) (bool, error) {
 	return os.SameFile(sourceInfo, outputInfo), nil
 }
 
-func closeCLIData(db *sql.DB, operationErr error) error {
+func closeCLIData(db *sql.DB, lock *processlock.Lock, operationErr error) error {
 	if closeErr := db.Close(); closeErr != nil {
-		return errors.Join(operationErr, fmt.Errorf("close router database: %w", closeErr))
+		operationErr = errors.Join(operationErr, fmt.Errorf("close router database: %w", closeErr))
 	}
-	return operationErr
+	return errors.Join(operationErr, lock.Close())
 }

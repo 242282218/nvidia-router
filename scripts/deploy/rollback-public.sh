@@ -12,31 +12,38 @@ cd "$(dirname "$0")/../.."
 
 TAG="${1:?用法: rollback-public.sh <deploy-tag>}"
 COMPOSE_PROJECT="nvidia-router"
+export NVIDIA_ROUTER_IMAGE="${NVIDIA_ROUTER_IMAGE:-nvidia-router:$TAG}"
+
+compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-rollback.XXXXXX.json")"
+trap 'rm -f -- "$compose_config"' EXIT
+env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" \
+  docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" -f docker-compose.yml config --format json >"$compose_config"
 
 echo "==> 恢复数据卷"
 BACKUP_DIR="backups"
-LATEST=$(ls -1t "$BACKUP_DIR" | head -1)
-if [ -n "${LATEST:-}" ]; then
-  for name in nvr-data pool-data; do
-    if [ -f "$BACKUP_DIR/$LATEST/$name.tar.gz" ]; then
-      echo "  恢复 $name 从 $BACKUP_DIR/$LATEST"
-      docker run --rm -v "$name:/data" -v "$PWD/$BACKUP_DIR/$LATEST:/backup" alpine sh -c \
-        "rm -rf /data/* && tar xzf /backup/$name.tar.gz -C /data" || true
-    fi
-  done
+LATEST="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+if [[ -z "$LATEST" || ! -f "$LATEST/data.tar.gz" ]]; then
+  echo "error: no complete data backup found" >&2
+  exit 1
 fi
+data_volume="$(docker volume ls -q --filter label=com.docker.compose.project=$COMPOSE_PROJECT --filter label=com.docker.compose.volume=nvidia-router-data | head -n 1)"
+if [[ -z "$data_volume" ]]; then
+  echo "error: cannot derive the Compose data volume" >&2
+  exit 1
+fi
+echo "  restore data from $(basename "$LATEST")"
+docker run --rm -v "$data_volume:/data" -v "$PWD/$LATEST:/backup" alpine sh -c \
+  'rm -rf /data/* && tar xzf /backup/data.tar.gz -C /data'
 
 echo "==> 用镜像标签 $TAG 重启"
-env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME \
+env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" \
   docker compose \
     --project-directory "$PWD" \
     -p "$COMPOSE_PROJECT" \
     -f docker-compose.yml \
-    -f docker-compose.public.yml \
-    up -d --force-recreate
+    up -d --no-build --force-recreate
 
 echo "==> 验证"
 curl -fsS --max-time 5 http://127.0.0.1:3756/health/live && echo "  <- /health/live"
-curl -fsS --max-time 5 http://127.0.0.1:18081/healthz && echo "  <- pool /healthz"
 
 echo "回滚完成"

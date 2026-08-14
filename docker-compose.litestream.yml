@@ -9,10 +9,8 @@
 # itself is untouched (stays read_only, single writer) — SQLite's write path is
 # unaffected; only the sidecar reads the volume.
 #
-# Before enabling, take a baseline snapshot with:
-#   docker compose exec app nvidia-router db backup /data-backups
-#   (or `docker compose run --rm -v nvidia-router-data:/data ...`)
-# A fresh object store with no baseline cannot bootstrap replication.
+# The baseline command in scripts/litestream-manage.sh starts this replicate
+# service and confirms its state; it never restores over the live database.
 
 services:
   litestream:

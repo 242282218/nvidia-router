@@ -18,6 +18,7 @@ import (
 	"nvidia-router/internal/adminauth"
 	"nvidia-router/internal/crypto"
 	"nvidia-router/internal/database"
+	"nvidia-router/internal/processlock"
 )
 
 func TestCLIServeStopsWhenContextIsCancelled(t *testing.T) {
@@ -124,23 +125,20 @@ func TestCLIRotateMasterKeyRejectsActiveWriter(t *testing.T) {
 
 	backupPath := filepath.Join(t.TempDir(), "rotation-backup.db")
 
-	// A running server holds the database open, which keeps the WAL -shm
-	// sidecar alive; rotation must refuse instead of letting the live process
-	// keep writing old-version rows from a second process.
-	shmPath := filepath.Join(dataDir, "router.db-shm")
-	if err := os.WriteFile(shmPath, []byte("wal-index"), 0o600); err != nil {
-		t.Fatalf("write -shm sidecar: %v", err)
+	lock, err := processlock.TryLock(filepath.Join(dataDir, ".router.db.lock"))
+	if err != nil {
+		t.Fatalf("hold router database lock: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "active writer") {
+	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "already held") {
 		t.Fatalf("rotate with active writer error = %v, want refusal", err)
 	}
 	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rotation backup created despite active writer: %v", err)
 	}
 
-	if err := os.Remove(shmPath); err != nil {
-		t.Fatalf("remove -shm sidecar: %v", err)
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release router database lock: %v", err)
 	}
 	if err := runCLI([]string{"admin", "rotate-master-key", "--new-version", "2", "--backup", backupPath}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("rotate after service stop: %v", err)
@@ -275,6 +273,49 @@ func TestCLIBackupWritesConsistentDatabase(t *testing.T) {
 	if username != "admin" || accessName != "CLI client" {
 		t.Fatalf("CLI backup data = %q/%q", username, accessName)
 	}
+}
+
+func TestCLIOnlyAcceptsExplicitDatabaseBackupOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"db", "backup", filepath.Join(t.TempDir(), "backup.db")},
+		{"db", "backup", "--output"},
+		{"db", "restore", "--input", filepath.Join(t.TempDir(), "backup.db")},
+	} {
+		if err := runCLIContext(context.Background(), args, io.Discard, io.Discard); err == nil {
+			t.Fatalf("accepted unsupported CLI command shape: %v", args)
+		}
+	}
+}
+
+func TestDeploymentScriptsUseRuntimeImageAndSafeBaseline(t *testing.T) {
+	root := filepath.Join("..", "..")
+	deploy := readTask108Script(t, filepath.Join(root, "scripts", "deploy", "deploy-public.sh"))
+	rollback := readTask108Script(t, filepath.Join(root, "scripts", "deploy", "rollback-public.sh"))
+	litestream := readTask108Script(t, filepath.Join(root, "scripts", "litestream-manage.sh"))
+	if !strings.Contains(deploy, "NVIDIA_ROUTER_IMAGE") || !strings.Contains(deploy, "--no-build") {
+		t.Fatal("deploy script does not use the runtime image and --no-build")
+	}
+	if strings.Contains(deploy, "docker build") || strings.Contains(deploy, "nvr-data") {
+		t.Fatal("deploy script still builds locally or hard-codes the data volume")
+	}
+	if !strings.Contains(rollback, "NVIDIA_ROUTER_IMAGE") || !strings.Contains(rollback, "config --format json") {
+		t.Fatal("rollback script does not derive the configured image/volume")
+	}
+	if strings.Contains(rollback, "|| true") || strings.Contains(rollback, "18081") {
+		t.Fatal("rollback script still swallows errors or probes the removed pool port")
+	}
+	if strings.Contains(litestream, "restore") {
+		t.Fatal("Litestream baseline must not call restore")
+	}
+}
+
+func readTask108Script(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read script %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func TestCLIBackupRejectsRouterDatabaseAsOutput(t *testing.T) {

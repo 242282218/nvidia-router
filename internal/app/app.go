@@ -31,6 +31,7 @@ import (
 	"nvidia-router/internal/nvidiakey"
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
+	"nvidia-router/internal/processlock"
 	"nvidia-router/internal/providercredential"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
@@ -58,6 +59,7 @@ type App struct {
 
 	db               *sql.DB
 	dbReader         *sql.DB
+	dbLock           *processlock.Lock
 	handler          http.Handler
 	requestRecorder  *observability.BufferRecorder
 	healthChecker    *nvidiakey.HealthChecker
@@ -81,6 +83,23 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	resolved, err := resolveDependencies(dependencies)
 	if err != nil {
 		return nil, err
+	}
+	var dbLock *processlock.Lock
+	lockTransferred := false
+	if resolved.DB == nil {
+		if err := os.MkdirAll(resolved.Config.DataDir, 0o750); err != nil {
+			return nil, fmt.Errorf("create data directory: %w", err)
+		}
+		lockPath := filepath.Join(resolved.Config.DataDir, ".router.db.lock")
+		dbLock, err = processlock.TryLock(lockPath)
+		if err != nil {
+			return nil, fmt.Errorf("acquire router database lock: %w", err)
+		}
+		defer func() {
+			if !lockTransferred {
+				_ = dbLock.Close()
+			}
+		}()
 	}
 	db, reader, err := openDatabase(resolved)
 	if err != nil {
@@ -181,7 +200,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	observe := func(next http.Handler) http.Handler {
 		guarded := httpapi.DataMiddleware(accessKeys, next)
 		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded, requestEventSink)
-	}	// The embedding cache exact-matches repeat (model, input) requests so
+	} // The embedding cache exact-matches repeat (model, input) requests so
 	// identical vectors skip the upstream. It is in-memory and bounded; the max
 	// entry count is read once at startup from runtime settings.
 	embeddingCache := embedcache.New(settings.Snapshot().EmbeddingCacheMaxEntries)
@@ -207,7 +226,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	healthDone := make(chan struct{})
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	app := &App{
-		Dependencies: resolved, db: db, dbReader: reader, Pool: keyPool, RuntimeSettings: settings,
+		Dependencies: resolved, db: db, dbReader: reader, dbLock: dbLock, Pool: keyPool, RuntimeSettings: settings,
 		proxy: proxy, proxySettings: proxySettings, nvidiaClient: nvidiaClient,
 		requestRecorder: requestRecorder, healthChecker: healthChecker,
 
@@ -267,6 +286,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	}()
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.beginShutdown(0) })
 	app.Server.setRootContext(rootCtx)
+	lockTransferred = true
 	return app, nil
 }
 
@@ -416,6 +436,9 @@ func (a *App) Close() error {
 	a.beginShutdown(0)
 	a.close.Do(func() {
 		a.closeErr = a.finishShutdown()
+		if a.dbLock != nil {
+			a.closeErr = errors.Join(a.closeErr, a.dbLock.Close())
+		}
 	})
 	if a.closeErr != nil {
 		return fmt.Errorf("close router database: %w", a.closeErr)

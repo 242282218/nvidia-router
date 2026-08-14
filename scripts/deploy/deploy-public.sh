@@ -3,10 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 TAG="${1:-deploy-$(date +%Y%m%d-%H%M%S)}"
-if [[ "${1:-}" == "--no-build" ]]; then TAG="${2:-deploy}"; fi
-
-echo "==> build nvidia-router:$TAG"
-docker build -t "nvidia-router:$TAG" .
+export NVIDIA_ROUTER_IMAGE="${NVIDIA_ROUTER_IMAGE:-nvidia-router:$TAG}"
 
 if [[ ! -f .env ]]; then
   echo "error: .env is required; inject XApi credentials at runtime" >&2
@@ -16,17 +13,20 @@ fi
 echo "==> validate Compose configuration"
 compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-compose.XXXXXX.json")"
 trap 'rm -f -- "$compose_config"' EXIT
-env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose --project-directory "$PWD" -p nvidia-router -f docker-compose.yml -f docker-compose.public.yml config --format json >"$compose_config"
+env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose --project-directory "$PWD" -p nvidia-router -f docker-compose.yml config --format json >"$compose_config"
 
 echo "==> backup existing router data"
 backup_dir="backups/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup_dir"
-if docker volume inspect nvr-data >/dev/null 2>&1; then
-  docker run --rm -v nvr-data:/data -v "$PWD/$backup_dir:/backup" alpine tar czf "/backup/nvr-data.tar.gz" -C /data . || true
+data_volume="$(docker volume ls -q --filter label=com.docker.compose.project=nvidia-router --filter label=com.docker.compose.volume=nvidia-router-data | head -n 1)"
+if [[ -z "$data_volume" ]]; then
+  echo "error: cannot derive the Compose data volume" >&2
+  exit 1
 fi
+docker run --rm -v "$data_volume:/data:ro" -v "$PWD/$backup_dir:/backup" alpine tar czf "/backup/data.tar.gz" -C /data .
 
 echo "==> start single-container router"
-env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose --project-directory "$PWD" -p nvidia-router -f docker-compose.yml -f docker-compose.public.yml up -d --build
+env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" docker compose --project-directory "$PWD" -p nvidia-router -f docker-compose.yml up -d --no-build
 
 echo "==> verify liveness"
 sleep 5

@@ -24,6 +24,7 @@ import (
 	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/nvidiakey"
+	"nvidia-router/internal/processlock"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/xkproxy"
 )
@@ -54,6 +55,54 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestCloseWithInjectedDatabaseReleasesWithoutNilLockPanic(t *testing.T) {
+	db := openAppDatabase(t)
+	app, err := New(context.Background(), Dependencies{
+		Config: config.Config{InitialAdminPassword: testInitialAdminPassword, DataDir: t.TempDir(), MasterKey: [32]byte{1}},
+		DB:     db, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: clock.RealClock{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestNewInitializationFailureReleasesOwnedDatabaseLock(t *testing.T) {
+	dataDir := t.TempDir()
+	_, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			InitialAdminPassword: testInitialAdminPassword,
+			DataDir:              dataDir,
+			MasterKey:            [32]byte{1},
+			XKPool: &config.XKPoolConfig{
+				UpstreamURL:       "https://api.example.test/XApi?apikey=fixture",
+				UpstreamTimeout:   time.Second,
+				ValidationURL:     "https://validate.example.test",
+				ValidationStatus:  404,
+				ValidationTimeout: time.Second,
+				Interval:          10 * time.Second,
+				ProxyTTL:          time.Minute,
+				ExpectedQty:       1,
+				Concurrency:       1,
+			},
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Clock:  clock.RealClock{},
+	})
+	if err == nil {
+		t.Fatal("New succeeded with invalid pool quantity")
+	}
+	lock, err := processlock.TryLock(filepath.Join(dataDir, ".router.db.lock"))
+	if err != nil {
+		t.Fatalf("database lock remained held after failed New: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release recovered database lock: %v", err)
+	}
+}
+
 func TestNewWithBuiltInProxyPool(t *testing.T) {
 	// The built-in pool must wire through app construction: SettingsService gets
 	// the CollectorConfig, builds a pool-backed manager, and the Switcher reports
@@ -72,9 +121,9 @@ func TestNewWithBuiltInProxyPool(t *testing.T) {
 				ValidationURL:     "https://integrate.api.nvidia.com/v1",
 				ValidationStatus:  404,
 				ValidationTimeout: time.Second,
-				Interval:          time.Hour, // never fires in the test window
+				Interval:          10 * time.Second, // never fires in the test window
 				ProxyTTL:          time.Minute,
-				ExpectedQty:       1,
+				ExpectedQty:       2,
 				Concurrency:       1,
 			},
 		},
