@@ -275,7 +275,7 @@ def run_self_test():
     )
     try:
         inspect_generic_credentials(
-            b"PASS" + b"WORD = " + b"\"2003" + b"0610@ghl\"",
+            b"PASS" + b"WORD = " + b"\"test-only-secret-123456789\"",
             "fixture.sh",
         )
     except ScanFailure:
