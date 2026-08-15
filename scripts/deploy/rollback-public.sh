@@ -16,13 +16,15 @@ export NVIDIA_ROUTER_IMAGE="${NVIDIA_ROUTER_IMAGE:-nvidia-router:$TAG}"
 
 compose() {
   env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" \
-    docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" -f docker-compose.yml "$@"
+    docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" \
+      -f docker-compose.yml -f docker-compose.public.yml "$@"
 }
 
 compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-rollback.XXXXXX.json")"
 trap 'rm -f -- "$compose_config"' EXIT
 env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" \
-  docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" -f docker-compose.yml config --format json >"$compose_config"
+  docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" \
+    -f docker-compose.yml -f docker-compose.public.yml config --format json >"$compose_config"
 
 echo "==> verify image $NVIDIA_ROUTER_IMAGE"
 if ! docker image inspect "$NVIDIA_ROUTER_IMAGE" >/dev/null 2>&1; then
