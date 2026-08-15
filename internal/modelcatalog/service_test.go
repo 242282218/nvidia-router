@@ -47,6 +47,72 @@ func TestModelPatchRejectsOpenAICompatibleProvider(t *testing.T) {
 	}
 }
 
+func TestModelPatchRejectsEnablingExistingNonNVIDIAProvider(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "provider-enable-patch", UpstreamID: "vendor/provider-enable-patch", DisplayName: "Provider enable patch", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	if _, err := db.Exec("UPDATE models SET provider = ? WHERE id = ?", "openai_compatible", result.Models[0].ID); err != nil {
+		t.Fatalf("seed non-NVIDIA provider: %v", err)
+	}
+	enabled := true
+	if _, err := service.Patch(context.Background(), result.Models[0].ID, Patch{Enabled: &enabled}); !errors.Is(err, ErrInvalidModelSelection) {
+		t.Fatalf("Patch enabling non-NVIDIA model error = %v, want ErrInvalidModelSelection", err)
+	}
+	var storedEnabled int
+	if err := db.QueryRow("SELECT enabled FROM models WHERE id = ?", result.Models[0].ID).Scan(&storedEnabled); err != nil {
+		t.Fatalf("read model enabled state: %v", err)
+	}
+	if storedEnabled != 0 {
+		t.Fatalf("stored enabled state = %d, want 0", storedEnabled)
+	}
+}
+
+func TestSaveSelectionRejectsEnablingExistingNonNVIDIAProvider(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "provider-enable-selection", UpstreamID: "vendor/provider-enable-selection", DisplayName: "Provider enable selection", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	if _, err := db.Exec("UPDATE models SET provider = ? WHERE id = ?", "openai_compatible", result.Models[0].ID); err != nil {
+		t.Fatalf("seed non-NVIDIA provider: %v", err)
+	}
+	selection := Selection{
+		PublicID: "provider-enable-selection", UpstreamID: "vendor/provider-enable-selection", DisplayName: "Provider enable selection", Kind: KindChat, Enabled: true,
+	}
+	if err := service.SaveSelection(context.Background(), []Selection{selection}); !errors.Is(err, ErrInvalidModelSelection) {
+		t.Fatalf("SaveSelection enabling non-NVIDIA model error = %v, want ErrInvalidModelSelection", err)
+	}
+	var storedEnabled int
+	if err := db.QueryRow("SELECT enabled FROM models WHERE id = ?", result.Models[0].ID).Scan(&storedEnabled); err != nil {
+		t.Fatalf("read model enabled state: %v", err)
+	}
+	if storedEnabled != 0 {
+		t.Fatalf("stored enabled state = %d, want 0", storedEnabled)
+	}
+}
+
+func TestSetEnabledRejectsExistingNonNVIDIAProvider(t *testing.T) {
+	service, db, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "provider-enable-set", UpstreamID: "vendor/provider-enable-set", DisplayName: "Provider enable set", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	if _, err := db.Exec("UPDATE models SET provider = ? WHERE id = ?", "openai_compatible", result.Models[0].ID); err != nil {
+		t.Fatalf("seed non-NVIDIA provider: %v", err)
+	}
+	if err := service.SetEnabled(context.Background(), result.Models[0].ID, true); !errors.Is(err, ErrInvalidModelSelection) {
+		t.Fatalf("SetEnabled enabling non-NVIDIA model error = %v, want ErrInvalidModelSelection", err)
+	}
+}
+
 func TestPatchRejectsInvalidModelSelectionSentinel(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	result, err := service.SaveSelectionResult(context.Background(), []Selection{{

@@ -11,6 +11,8 @@ var (
 	ErrInvalidModelSelection = errors.New("invalid model selection")
 )
 
+const defaultModelProvider = "nvidia"
+
 type Kind string
 
 const (
@@ -115,4 +117,11 @@ func normalizeModelSelection(selection Selection) (Selection, error) {
 		return normalized, err
 	}
 	return Selection{}, fmt.Errorf("%w: %v", ErrInvalidModelSelection, err)
+}
+
+func validateEnabledProvider(provider string, enabled bool) error {
+	if enabled && provider != "" && provider != defaultModelProvider {
+		return fmt.Errorf("%w: only NVIDIA provider models can be enabled", ErrInvalidModelSelection)
+	}
+	return nil
 }

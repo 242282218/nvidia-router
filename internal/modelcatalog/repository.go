@@ -57,10 +57,14 @@ func (r *Repository) SaveSelectionsResult(ctx context.Context, selections []Sele
 }
 
 func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now time.Time) (Model, Kind, error) {
+	var previousProvider sql.NullString
 	var previousKind sql.NullString
 	var previousUpdatedAt sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT kind, updated_at FROM models WHERE public_id = ?`, selection.PublicID).Scan(&previousKind, &previousUpdatedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT provider, kind, updated_at FROM models WHERE public_id = ?`, selection.PublicID).Scan(&previousProvider, &previousKind, &previousUpdatedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Model{}, "", fmt.Errorf("load existing model revision %q: %w", selection.PublicID, err)
+	}
+	if err := validateEnabledProvider(previousProvider.String, selection.Enabled); err != nil {
+		return Model{}, "", fmt.Errorf("validate model provider %q: %w", selection.PublicID, err)
 	}
 	if previousKind.Valid && Kind(previousKind.String) != selection.Kind {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM nvidia_key_model_blocks WHERE model_id = (SELECT id FROM models WHERE public_id = ?)`, selection.PublicID); err != nil {
@@ -129,6 +133,10 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 	previousKind = model.Kind
 	selection := selectionFromModel(model)
 	applyPatch(&selection, patch)
+	provider := model.Provider
+	if patch.Provider != nil {
+		provider = *patch.Provider
+	}
 	if model.Kind != selection.Kind {
 		selection.CapabilityVerifiedAt = nil
 		if _, err := tx.ExecContext(ctx, "DELETE FROM nvidia_key_model_blocks WHERE model_id = ?", id); err != nil {
@@ -138,6 +146,9 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 	selection, err = normalizeModelSelection(selection)
 	if err != nil {
 		return Model{}, "", fmt.Errorf("validate model patch: %w", err)
+	}
+	if err := validateEnabledProvider(provider, selection.Enabled); err != nil {
+		return Model{}, "", fmt.Errorf("validate model patch provider: %w", err)
 	}
 	updatedAt := formatRevisionTime(now, model.updatedAt)
 	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_wire_format = ?, capability_verified_at = ?,
@@ -314,6 +325,9 @@ func (r *Repository) SetEnabled(ctx context.Context, id int64, enabled bool, now
 	if err != nil {
 		return fmt.Errorf("load model before setting enabled state: %w", err)
 	}
+	if err := validateEnabledProvider(model.Provider, enabled); err != nil {
+		return err
+	}
 	if enabled && requiresVerification(model.Kind) && model.CapabilityVerifiedAt == nil {
 		return ErrCapabilityUnverified
 	}
@@ -469,7 +483,7 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 	return blocks, nil
 }
 
-	const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, provider, enabled,
+const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, provider, enabled,
 		supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
 		capability_verified_at, created_at, updated_at,
 		stream_first_token_timeout_ms, stream_idle_timeout_ms,
@@ -517,7 +531,7 @@ func scanModel(row rowScanner) (Model, error) {
 		return Model{}, err
 	}
 	if model.Provider == "" {
-		model.Provider = "nvidia"
+		model.Provider = defaultModelProvider
 	}
 	model.Enabled = enabled == 1
 	model.SupportsVision = vision == 1
