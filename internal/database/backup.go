@@ -13,6 +13,9 @@ import (
 )
 
 func Backup(ctx context.Context, db *sql.DB, destination string) (returnErr error) {
+	if err := verifyBackupSource(ctx, db); err != nil {
+		return err
+	}
 	temporaryPath, destinationPath, err := createBackupFile(destination)
 	if err != nil {
 		return err
@@ -48,6 +51,20 @@ func Backup(ctx context.Context, db *sql.DB, destination string) (returnErr erro
 		}
 	}
 	published = true
+	return nil
+}
+
+func verifyBackupSource(ctx context.Context, db *sql.DB) error {
+	var result string
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
+		return fmt.Errorf("verify SQLite integrity: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("verify SQLite integrity: quick_check returned %q", result)
+	}
+	if err := VerifyMigrations(ctx, db); err != nil {
+		return fmt.Errorf("verify SQLite migrations: %w", err)
+	}
 	return nil
 }
 

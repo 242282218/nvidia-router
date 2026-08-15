@@ -442,7 +442,12 @@ func TestQueueFullAndTimeoutRetryAfterReflectConfiguredWait(t *testing.T) {
 	}
 
 	// The queued waiter times out with the same configured window.
-	result := receiveAcquire(t, queued)
+	var result acquireCallResult
+	select {
+	case result = <-queued:
+	case <-time.After(wait + time.Second):
+		t.Fatal("timed out waiting for Acquire")
+	}
 	if !errors.As(result.err, &publicError) {
 		t.Fatalf("queue_timeout error = %T %v", result.err, result.err)
 	}

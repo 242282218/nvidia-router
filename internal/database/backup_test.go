@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/ncruces/go-sqlite3/driver"
 )
 
 func TestBackupCopiesConsistentWALDatabase(t *testing.T) {
@@ -133,6 +136,66 @@ func TestBackupOverwritesExistingDestination(t *testing.T) {
 	}
 	if username != "renamed" {
 		t.Fatalf("overwritten backup username = %q, want latest source value", username)
+	}
+}
+
+func TestBackupRejectsMigrationLedgerMismatch(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(filepath.Join(root, "router.db"))
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.Exec("UPDATE schema_migrations SET checksum = 'tampered' WHERE version = 1"); err != nil {
+		t.Fatalf("tamper migration ledger: %v", err)
+	}
+
+	backupPath := filepath.Join(root, "backup.db")
+	if err := Backup(context.Background(), db, backupPath); err == nil {
+		t.Fatal("Backup accepted a database with a mismatched migration checksum")
+	}
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected backup destination stat error = %v, want not exist", err)
+	}
+}
+
+func TestBackupRejectsIntegrityFailure(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "router.db")
+	db, err := Open(sourcePath)
+	if err != nil {
+		t.Fatalf("Open source: %v", err)
+	}
+	defer func() {
+		if db != nil {
+			_ = db.Close()
+		}
+	}()
+
+	if _, err := db.Exec(`
+		PRAGMA writable_schema = ON;
+		UPDATE sqlite_master SET rootpage = 999999 WHERE type = 'table' AND name = 'admins';
+		PRAGMA writable_schema = OFF;
+	`); err != nil {
+		t.Fatalf("corrupt SQLite root page: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close corrupted source: %v", err)
+	}
+	db = nil
+	rawDSN := "file:" + url.PathEscape(sourcePath)
+	db, err = driver.Open(rawDSN, nil)
+	if err != nil {
+		t.Fatalf("open corrupted source: %v", err)
+	}
+
+	backupPath := filepath.Join(root, "backup.db")
+	if err := Backup(context.Background(), db, backupPath); err == nil {
+		t.Fatal("Backup accepted a database that fails SQLite integrity checks")
+	}
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected backup destination stat error = %v, want not exist", err)
 	}
 }
 

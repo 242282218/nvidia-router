@@ -314,7 +314,7 @@ func TestDeploymentScriptsUseRuntimeImageAndSafeBaseline(t *testing.T) {
 		t.Fatal("rollback script does not restore the CLI database backup")
 	}
 	stopIndex := strings.Index(rollback, "stop app")
-	restoreIndex := strings.Index(rollback, "rm -f /data/router.db")
+	restoreIndex := strings.Index(rollback, "mv \"$validated\" /data/router.db")
 	if stopIndex < 0 || restoreIndex < 0 || stopIndex > restoreIndex {
 		t.Fatal("rollback script restores the data volume before stopping app")
 	}
@@ -323,6 +323,36 @@ func TestDeploymentScriptsUseRuntimeImageAndSafeBaseline(t *testing.T) {
 	}
 	if !strings.Contains(rollback, "while IFS= read -r candidate") || !strings.Contains(rollback, "candidate/router.db") {
 		t.Fatal("rollback script does not search for the newest complete database backup")
+	}
+	if !strings.Contains(rollback, "current_image") || !strings.Contains(rollback, "docker inspect") {
+		t.Fatal("rollback script does not capture the running image for the previous snapshot")
+	}
+	if !strings.Contains(rollback, "db backup --output /data/.router.db.previous.db") {
+		t.Fatal("rollback script does not preserve the current database with the running image")
+	}
+	if !strings.Contains(rollback, ".router-db-rollback") || !strings.Contains(rollback, "validated.db") {
+		t.Fatal("rollback script does not validate the target database in an isolated directory")
+	}
+	validatedIndex := strings.Index(rollback, "validated.db")
+	replaceIndex := strings.Index(rollback, "mv \"$validated\" /data/router.db")
+	if validatedIndex < 0 || replaceIndex < 0 || validatedIndex > replaceIndex {
+		t.Fatal("rollback script replaces the live database before target-image validation")
+	}
+	quarantineIndex := strings.Index(rollback, "mv /data/router.db-wal \"$old_wal\"")
+	if quarantineIndex < 0 || quarantineIndex < replaceIndex {
+		t.Fatal("rollback script does not quarantine live WAL after replacing the database")
+	}
+	if !strings.Contains(rollback, "docker ps -aq") || !strings.Contains(rollback, ".Mounts") || !strings.Contains(rollback, "paused") {
+		t.Fatal("rollback script does not inspect all running containers for shared-volume consumers")
+	}
+	if !strings.Contains(rollback, "all_containers=\"$(docker ps -aq)\"") {
+		t.Fatal("rollback script does not fail closed when listing containers fails")
+	}
+	if !strings.Contains(rollback, "Mountpoint") || !strings.Contains(rollback, "old-wal") || !strings.Contains(rollback, "if ! mv /data/router.db-wal") {
+		t.Fatal("rollback script does not quarantine old SQLite sidecars after the atomic swap")
+	}
+	if !strings.Contains(rollback, "cleanup_failed") || !strings.Contains(rollback, "! rm -f") {
+		t.Fatal("rollback script does not make post-swap sidecar cleanup recoverable")
 	}
 	if strings.Contains(litestream, "restore") {
 		t.Fatal("Litestream baseline must not call restore")
