@@ -1,4 +1,7 @@
 :root {
+  /* All text/control pairs below are verified in docs/前端对比度配对表.md
+     (computed by scripts/calc_contrast.py). Changing any value requires
+     re-running the script and updating that table first. */
   color-scheme: dark;
   --color-canvas: #0b0d0f;
   --color-surface: #111416;
@@ -52,6 +55,27 @@
   --radius-control: 0.5rem;
   --radius-panel: 0.75rem;
   --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.45);
+  /* Scrim shared by modal overlay and the mobile drawer backdrop. A single
+     token so the two layers cannot drift apart again (they were 0.70/0.60). */
+  --color-overlay: rgba(0, 0, 0, 0.65);
+  /* Spacing scale (4px base). Group-internal gaps use the tight steps,
+     between-group spacing the loose ones — never one gap value everywhere
+     (design-aesthetics 构图与层级: 留白承担分组职责, at least 3 tiers). */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  /* Motion tiers mapped from the design-aesthetics duration ladder:
+     micro feedback 100-150ms, local swap 200-300ms, overlays 250-400ms. */
+  --duration-micro: 120ms;
+  --duration-local: 240ms;
+  --duration-overlay: 300ms;
+  /* Enter decelerates, exit accelerates and runs ~70% of the enter time
+     (design-aesthetics 交互动效 P0#3: asymmetric easing is mandatory). */
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 }
 
 * {
