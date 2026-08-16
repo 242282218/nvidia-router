@@ -1,9 +1,10 @@
 set -euo pipefail
 # Parameterized release prep: REL=target release dir, SRC=source tarball on the
-# remote host. Falls back to the 20260816 defaults for one-shot reuse.
+# remote host, OLD=running release dir whose .env/compose are carried over.
+# Falls back to the 20260816 defaults for one-shot reuse.
 REL="${REL:-/opt/nvidia-router-releases/20260816-no-capability-gate}"
 SRC="${SRC:-/tmp/nvr-src-20260816.tar.gz}"
-OLD=/opt/nvidia-router-releases/20260815-ui-alpha-fix
+OLD="${OLD:-/opt/nvidia-router-releases/20260815-ui-alpha-fix}"
 
 mkdir -p "$REL"
 tar -xzf "$SRC" -C "$REL"
