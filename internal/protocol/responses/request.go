@@ -832,7 +832,3 @@ func jsonRawString(value string) json.RawMessage {
 	encoded, _ := json.Marshal(value)
 	return encoded
 }
-
-func jsonRawFalse() json.RawMessage {
-	return json.RawMessage("false")
-}

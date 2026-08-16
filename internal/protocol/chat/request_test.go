@@ -311,13 +311,6 @@ func chatModel() modelcatalog.Model {
 	}
 }
 
-func reasoningModel() modelcatalog.Model {
-	model := chatModel()
-	model.SupportsReasoning = true
-	model.ReasoningWireFormat = "openai"
-	return model
-}
-
 func TestModelMappingPreservesNativeReasoningFields(t *testing.T) {
 	request, err := Parse([]byte(`{
 		"model":"nvidia/deepseek-ai/deepseek-v4-flash",
