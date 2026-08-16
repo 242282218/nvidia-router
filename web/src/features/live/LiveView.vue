@@ -190,7 +190,7 @@ function latencyColor(duration: number): string {
 
       <div
         v-if="errorMessage"
-        class="mt-4 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
+        class="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
         role="alert"
       >
         {{ errorMessage }}

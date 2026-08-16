@@ -17,17 +17,38 @@
   --color-text-subtle: #7d8994;
   --color-accent: #76b900;
   --color-accent-bright: #8bd31f;
+  --color-accent-background: var(--color-accent);
+  --color-accent-background-hover: var(--color-accent-bright);
+  --color-accent-text: var(--color-accent-bright);
   --color-accent-foreground: #081000;
   --color-success: #4ade80;
+  --color-success-text: var(--color-success);
+  --color-success-background: #6dd58c;
+  --color-success-foreground: #07140b;
   --color-warning: #fbbf24;
+  --color-warning-text: var(--color-warning);
+  --color-warning-background: #e0b354;
+  --color-warning-foreground: #201500;
   --color-danger: #f87171;
+  --color-danger-text: var(--color-danger);
+  --color-danger-background: #f2857c;
+  --color-danger-foreground: #240608;
   /* info/focus use a desaturated indigo, NOT Tailwind's default indigo-400
      (#a5b4fc) / blue-300 (#93c5fd): default hues read as an unmodified
      framework theme (design-aesthetics P0#1). #7c9cff / #8ea6ff keep the
      machine-readable "identifier/data" semantics of the indigo family while
      lowering saturation toward the neutral engineering-dark accent. */
   --color-info: #7c9cff;
+  --color-info-text: var(--color-info);
+  --color-info-background: #7c9cff;
+  --color-info-foreground: #0d1122;
   --color-focus: #8ea6ff;
+  --color-muted-background: #2a3036;
+  --color-muted-foreground: #edf1f2;
+  --color-muted-border: #646b7c;
+  --color-disabled-background: #1d2328;
+  --color-disabled-foreground: #a7b0b8;
+  --color-disabled-border: #646b7c;
   --radius-control: 0.5rem;
   --radius-panel: 0.75rem;
   --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.45);

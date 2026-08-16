@@ -148,7 +148,7 @@ function formatUSD(value: number): string {
 
       <div
         v-if="unpricedCount > 0"
-        class="mt-3 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning)]/10 px-3 py-2 text-xs text-[var(--color-warning)]"
+        class="mt-3 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-3 py-2 text-xs text-[var(--color-warning)]"
       >
         有 {{ unpricedCount }} 个模型未设置单价，可在「模型白名单」页补充后让成本估算更准确。
       </div>

@@ -56,13 +56,14 @@ describe('ProxyPoolView', () => {
 
     expect(wrapper.get('h1').text()).toContain('代理池')
     expect((wrapper.get('[data-testid="proxy-enabled"]').element as HTMLInputElement).checked).toBe(true)
-    expect(wrapper.find('[data-testid="proxy-upstream-url"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="proxy-upstream-summary"]').text()).toContain('由运行时 Secret 注入')
+    const upstreamInput = wrapper.get('[data-testid="proxy-upstream-url"]')
+    expect((upstreamInput.element as HTMLInputElement).type).toBe('password')
+    expect(wrapper.get('[data-testid="proxy-upstream-summary"]').text()).toContain('已配置')
     expect((wrapper.get('[data-testid="proxy-validation-url"]').element as HTMLInputElement).value).toBe('https://validate.example.test/health')
     expect((wrapper.get('[data-testid="proxy-validation-status"]').element as HTMLInputElement).value).toBe('204')
     expect((wrapper.get('[data-testid="proxy-concurrency"]').element as HTMLInputElement).value).toBe('4')
     expect((wrapper.get('[data-testid="proxy-max-latency"]').element as HTMLInputElement).value).toBe('2s')
-    expect(wrapper.get('#proxy-upstream-help').text()).toContain('管理端不可修改')
+    expect(wrapper.get('#proxy-upstream-help').text()).toContain('管理端可修改')
     expect(wrapper.text()).not.toContain('apikey=')
     expect(wrapper.text()).toContain('运行正常')
   })
@@ -73,6 +74,7 @@ describe('ProxyPoolView', () => {
 
     await wrapper.get('[data-testid="proxy-interval"]').setValue('10s')
     await wrapper.get('[data-testid="proxy-ttl"]').setValue('90s')
+    await wrapper.get('[data-testid="proxy-upstream-url"]').setValue('https://new.example.test/tools/XApi.ashx?apikey=fixture&sign=fixture')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -85,10 +87,11 @@ describe('ProxyPoolView', () => {
       expected_qty: 7,
       concurrency: 4,
       max_latency: '2s',
+      upstream_url: 'https://new.example.test/tools/XApi.ashx?apikey=fixture&sign=fixture',
     }), expect.any(AbortSignal))
     const updateMock = vi.mocked(proxyPoolApi.update)
     expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('auth_key')
-    expect(updateMock.mock.calls[0]?.[0]).not.toHaveProperty('upstream_url')
+    expect((wrapper.get('[data-testid="proxy-upstream-url"]').element as HTMLInputElement).value).toBe('')
     expect(wrapper.text()).toContain('配置已保存')
   })
 

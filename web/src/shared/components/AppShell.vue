@@ -94,7 +94,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 <template>
   <div class="min-h-screen bg-[var(--color-canvas)] text-[var(--color-text)]">
     <!-- Mobile header -->
-    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-canvas)]/95 px-4 backdrop-blur-md lg:hidden">
+    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_95%,transparent)] px-4 backdrop-blur-md lg:hidden">
       <button
         ref="menuButton"
         class="btn-ghost h-11 w-11 rounded-lg p-2"

@@ -278,11 +278,11 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
             <label
               v-for="candidate in candidates"
               :key="candidate.upstream_id"
-              class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm hover:bg-[var(--color-border)]/30 transition-colors cursor-pointer"
+              class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm hover:bg-[color-mix(in_srgb,var(--color-border)_30%,transparent)] transition-colors cursor-pointer"
             >
               <input
                 v-model="selectedCandidates[candidate.upstream_id]"
-                class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                 :data-testid="`candidate-${candidate.upstream_id}`"
                 type="checkbox"
               >

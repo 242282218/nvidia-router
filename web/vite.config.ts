@@ -62,12 +62,11 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
       rollupOptions: {
         output: {
-          // Use deterministic chunk names to ensure builds are reproducible
-          // across different environments (Windows vs CI Linux). Content-based
-          // hashing can vary due to line-ending or timestamp differences.
-          entryFileNames: 'assets/[name].js',
-          chunkFileNames: 'assets/[name].js',
-          assetFileNames: 'assets/[name].[ext]',
+          // Asset URLs must change when embedded CSS or JavaScript changes;
+          // the Go handler marks /assets/* immutable for one year.
+          entryFileNames: 'assets/[name]-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: 'assets/[name]-[hash][extname]',
         },
       },
     },

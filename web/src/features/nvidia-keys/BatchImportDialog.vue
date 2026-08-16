@@ -162,7 +162,7 @@ function testStatusClass(status: string): string {
             class="space-y-4"
             @submit.prevent="submit"
           >
-            <p class="rounded-lg border border-[var(--color-info)]/20 bg-[var(--color-info)]/5 px-3 py-2 text-xs text-[var(--color-info)]">
+            <p class="rounded-lg border border-[color-mix(in_srgb,var(--color-info)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-info)_5%,transparent)] px-3 py-2 text-xs text-[var(--color-info)]">
               导入完成后，如需验证上游可用性，请返回页面点击“顺序测活全部”。
             </p>
             <textarea
@@ -205,7 +205,7 @@ function testStatusClass(status: string): string {
             <div
               v-if="results.length"
               data-testid="batch-import-results"
-              class="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-sunken)]/40"
+              class="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)]"
             >
               <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
                 <div>
@@ -235,7 +235,7 @@ function testStatusClass(status: string): string {
                 </div>
               </div>
               <div
-                class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[var(--color-focus)]/40"
+              class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
                 tabindex="0"
                 aria-label="批量导入结果，可横向滚动"
               >

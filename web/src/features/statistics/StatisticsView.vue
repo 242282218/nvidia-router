@@ -468,7 +468,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         <p
           v-if="summaryStale"
           data-testid="monitoring-summary-stale"
-          class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[var(--color-warning)]/25 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]"
+          class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
           role="status"
         >
           <span>汇总自 {{ summaryStaleSince ? formatClock(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
@@ -484,7 +484,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         <p
           v-if="summaryError"
           data-testid="monitoring-summary-error"
-          class="mb-4 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)]"
+          class="mb-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
           {{ summaryError }}
@@ -727,7 +727,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
           <p
             v-if="logsError"
-            class="m-4 flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/10 p-4 text-sm text-[var(--color-danger)]"
+            class="m-4 flex flex-wrap items-center gap-3 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] p-4 text-sm text-[var(--color-danger)]"
             role="alert"
           >
             <span>{{ logsError }}</span>

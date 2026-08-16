@@ -114,7 +114,7 @@ function clearSensitiveState(): void {
             </h2>
           </div>
           <div class="p-6 space-y-4">
-            <div class="rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3">
+            <div class="rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3">
               <div class="flex items-start gap-2">
                 <svg
                   class="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]"

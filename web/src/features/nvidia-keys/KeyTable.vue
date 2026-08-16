@@ -36,7 +36,7 @@ function formatDate(value?: string): string {
     class="hidden overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
   >
     <div
-      class="overflow-x-auto focus-within:ring-2 focus-within:ring-[var(--color-focus)]/40"
+      class="overflow-x-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
       tabindex="0"
       aria-label="NVIDIA Key 表，可横向滚动"
     >

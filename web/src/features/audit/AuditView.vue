@@ -155,7 +155,7 @@ function parseDetail(raw: string | undefined): string {
 
       <p
         v-if="errorMessage"
-        class="mt-4 rounded-lg bg-[var(--color-danger)]/10 p-3 text-sm text-[var(--color-danger)]"
+        class="mt-4 rounded-lg bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] p-3 text-sm text-[var(--color-danger)]"
       >
         {{ errorMessage }}
       </p>
@@ -165,7 +165,7 @@ function parseDetail(raw: string | undefined): string {
              scrolls horizontally instead (mobile-friendly overflow pattern). -->
         <div class="overflow-x-auto">
           <table class="w-full min-w-[640px] text-left text-sm">
-            <thead class="border-b border-[var(--color-border)] bg-[var(--color-surface)]/60 text-xs uppercase tracking-wider text-[var(--color-text-subtle)]">
+            <thead class="border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-surface)_60%,transparent)] text-xs uppercase tracking-wider text-[var(--color-text-subtle)]">
               <tr>
                 <th class="px-4 py-3">
                   时间
@@ -205,13 +205,13 @@ function parseDetail(raw: string | undefined): string {
                 v-for="entry in items"
                 v-else
                 :key="entry.id"
-                class="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-surface)]/50"
+                class="border-b border-[var(--color-border)] last:border-0 hover:bg-[color-mix(in_srgb,var(--color-surface)_50%,transparent)]"
               >
                 <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
                   {{ formatDate(entry.created_at) }}
                 </td>
                 <td class="px-4 py-3">
-                  <span class="rounded bg-[var(--color-accent)]/10 px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
+                  <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
                     {{ entry.action }}
                   </span>
                 </td>

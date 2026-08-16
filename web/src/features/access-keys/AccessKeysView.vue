@@ -341,7 +341,7 @@ function keyState(key: AccessKey): { label: string; badge: string } {
               <tr
                 v-for="key in keys"
                 :key="key.id"
-                class="transition-colors hover:bg-[var(--color-border)]/30"
+                class="transition-colors hover:bg-[color-mix(in_srgb,var(--color-border)_30%,transparent)]"
               >
                 <td class="data-table-td font-medium text-[var(--color-text)]">
                   {{ key.name }}

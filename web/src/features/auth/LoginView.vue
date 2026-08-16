@@ -36,8 +36,8 @@ async function submit(): Promise<void> {
   <div class="flex min-h-screen items-center justify-center bg-[var(--color-canvas)] px-4">
     <!-- Ambient decoration -->
     <div class="fixed inset-0 overflow-hidden pointer-events-none">
-      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[var(--color-accent)]/5 blur-3xl" />
-      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[var(--color-info)]/5 blur-3xl" />
+      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[color-mix(in_srgb,var(--color-accent)_5%,transparent)] blur-3xl" />
+      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[color-mix(in_srgb,var(--color-info)_5%,transparent)] blur-3xl" />
     </div>
 
     <section class="relative w-full max-w-sm animate-fade-in">
@@ -63,7 +63,7 @@ async function submit(): Promise<void> {
       <!-- HTTP warning -->
       <div
         v-if="isPlainHttp"
-        class="mb-6 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3 text-sm text-[var(--color-warning)]"
+        class="mb-6 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3 text-sm text-[var(--color-warning)]"
         role="alert"
       >
         <div class="flex items-start gap-2">
@@ -123,7 +123,7 @@ async function submit(): Promise<void> {
           <Transition name="slide">
             <p
               v-if="formError"
-              class="rounded-lg bg-[var(--color-danger)]/5 border border-[var(--color-danger)]/20 px-3 py-2 text-sm text-[var(--color-danger)]"
+              class="rounded-lg bg-[color-mix(in_srgb,var(--color-danger)_5%,transparent)] border border-[color-mix(in_srgb,var(--color-danger)_20%,transparent)] px-3 py-2 text-sm text-[var(--color-danger)]"
               data-testid="form-error"
               role="alert"
             >
