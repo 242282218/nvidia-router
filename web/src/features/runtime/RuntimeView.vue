@@ -2,6 +2,10 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError } from '../../shared/api/client'
+import { formatDate } from '../../shared/format'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import Spinner from '../../shared/components/Spinner.vue'
+import { usePolling } from '../../shared/usePolling'
 import { runtimeApi } from './api'
 import SettingsForm from './SettingsForm.vue'
 import type { RuntimeSettings, RuntimeSummary } from './types'
@@ -21,22 +25,21 @@ let loadSequence = 0
 let disposed = false
 let loadController: globalThis.AbortController | null = null
 let saveController: globalThis.AbortController | null = null
-let summaryTimer: ReturnType<typeof globalThis.setInterval> | undefined
 
 onMounted(() => {
   void loadRuntime()
-  // The summary is transient (active requests, queue depth, cooldowns); refresh
-  // it on a light poll so a page left open does not go stale. Settings are only
-  // loaded on mount and after a save.
-  summaryTimer = globalThis.setInterval(() => void pollSummary(), 5_000)
 })
+
+// The summary is transient (active requests, queue depth, cooldowns); refresh
+// it on a light poll so a page left open does not go stale. Settings are only
+// loaded on mount and after a save. Polling pauses on hidden tabs.
+usePolling(() => pollSummary(), 5_000)
 
 onBeforeUnmount(() => {
   disposed = true
   loadSequence += 1
   loadController?.abort()
   saveController?.abort()
-  if (summaryTimer !== undefined) globalThis.clearInterval(summaryTimer)
 })
 
 // Background summary refresh: transient poll failures keep the last good
@@ -147,32 +150,16 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
     'retry_budget_ms',
   ].includes(value)
 }
-
-function formatDate(value?: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
-}
 </script>
 
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-info)]">
-            运维摘要
-          </p>
-          <h1 class="page-title mt-1">
-            运行状态
-          </h1>
-          <p class="page-subtitle">
-            查看 Key 池、当前请求和队列状态，并调整运行参数。
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        eyebrow="运维摘要"
+        title="运行状态"
+        subtitle="查看 Key 池、当前请求和队列状态，并调整运行参数。"
+      />
 
       <Transition name="slide">
         <p
@@ -194,28 +181,9 @@ function formatDate(value?: string): string {
 
       <div
         v-if="loading"
-        class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        class="card p-6"
       >
-        <svg
-          class="h-4 w-4 animate-spin"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
-        加载中…
+        <Spinner label="运行状态加载中…" />
       </div>
 
       <template v-else>
