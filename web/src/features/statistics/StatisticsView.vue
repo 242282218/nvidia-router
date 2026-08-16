@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import Spinner from '../../shared/components/Spinner.vue'
+import { usePolling } from '../../shared/usePolling'
 import CostPanel from './CostPanel.vue'
+import { formatAverageLatency, formatInteger, formatPercent, formatTokens } from './format'
+import MonitoringFilterForm from './MonitoringFilterForm.vue'
+import MonitoringLogsTable from './MonitoringLogsTable.vue'
 import MonitoringTrendChart from './MonitoringTrendChart.vue'
 import { statisticsApi } from './api'
 import type {
@@ -10,7 +16,6 @@ import type {
   MonitoringRange,
   MonitoringSeriesPoint,
   MonitoringSnapshot,
-  RequestLog,
   RequestLogsPage,
 } from './types'
 
@@ -21,15 +26,6 @@ const ranges: Array<{ value: MonitoringRange; label: string }> = [
 ]
 
 const range = ref<MonitoringRange>('24h')
-const filterFields = reactive({
-  search: '',
-  model_id: '',
-  endpoint: '',
-  outcome: '',
-  status: '',
-  access_key_id: '',
-  nvidia_key_id: '',
-})
 const appliedFilters = ref<MonitoringFilter>({})
 const snapshot = ref<MonitoringSnapshot | null>(null)
 const logs = ref<RequestLogsPage | null>(null)
@@ -40,9 +36,6 @@ const logsError = ref('')
 // screen but must be flagged as not-fresh instead of silently reading as live.
 const summaryStale = ref(false)
 const summaryStaleSince = ref<Date | null>(null)
-// filterError surfaces invalid numeric filter input (e.g. a non-positive ID)
-// instead of silently dropping it on the floor.
-const filterError = ref('')
 const page = ref(1)
 const pageSize = ref(50)
 const pageSizes = [50, 100, 200] as const
@@ -54,7 +47,6 @@ const summaryUpdatedAt = ref<Date | null>(null)
 let disposed = false
 let loadSequence = 0
 let loadController: globalThis.AbortController | null = null
-let summaryTimer: ReturnType<typeof globalThis.setInterval> | undefined
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
@@ -106,18 +98,25 @@ function jumpToPage(): void {
   void loadDashboard()
 }
 
+function selectPage(target: number): void {
+  if (target === page.value) return
+  page.value = target
+  void loadDashboard()
+}
+
 onMounted(() => {
   void loadDashboard()
-  // Trends change as requests land; a light poll keeps a long-open page fresh
-  // without disturbing the log pagination (which the full reload would reset).
-  summaryTimer = globalThis.setInterval(() => void pollSummary(), 30_000)
 })
+
+// Trends change as requests land; a light poll keeps a long-open page fresh
+// without disturbing the log pagination (which the full reload would reset).
+// Suspended while the tab is hidden.
+usePolling(() => pollSummary(), 30_000)
 
 onBeforeUnmount(() => {
   disposed = true
   loadSequence += 1
   loadController?.abort()
-  if (summaryTimer !== undefined) globalThis.clearInterval(summaryTimer)
 })
 
 // Background summary-only refresh: transient failures keep the last good data.
@@ -153,13 +152,9 @@ async function loadDashboard(): Promise<void> {
   loading.value = true
   summaryError.value = ''
   logsError.value = ''
-  // Only the first load clears the panels: a refresh (range/filter/page
-  // change) keeps the current content visible until the new data lands, so
-  // the page does not flash to an empty loading state and lose context.
-  if (snapshot.value === null && logs.value === null) {
-    snapshot.value = null
-    logs.value = null
-  }
+  // A refresh (range/filter/page change) keeps the current content visible
+  // until the new data lands, so the page does not flash to an empty loading
+  // state and lose context.
   await Promise.all([
     loadSummary(controller.signal, sequence),
     loadLogs(controller.signal, sequence),
@@ -201,58 +196,10 @@ function selectRange(next: MonitoringRange): void {
   void loadDashboard()
 }
 
-function submitFilters(): void {
-  const { filters, error } = collectFilters()
-  if (error) {
-    filterError.value = error
-    return
-  }
-  filterError.value = ''
+function applyFilters(filters: MonitoringFilter): void {
   appliedFilters.value = filters
   page.value = 1
   void loadDashboard()
-}
-
-function collectFilters(): { filters: MonitoringFilter; error?: string } {
-  const filters: MonitoringFilter = {}
-  addTextFilter(filters, 'search', filterFields.search)
-  addTextFilter(filters, 'model_id', filterFields.model_id)
-  addTextFilter(filters, 'endpoint', filterFields.endpoint)
-  if (filterFields.outcome === 'success' || filterFields.outcome === 'failure') filters.outcome = filterFields.outcome
-  const status = parsePositiveInteger(filterFields.status)
-  const accessKeyID = parsePositiveInteger(filterFields.access_key_id)
-  const nvidiaKeyID = parsePositiveInteger(filterFields.nvidia_key_id)
-  // Vue coerces type=number inputs to numbers at runtime; normalize before the
-  // emptiness checks below (audit: the old .trim() call crashed on numbers).
-  if (isNonEmptyNumeric(filterFields.status) && status === undefined) {
-    return { filters, error: 'HTTP 状态码必须是正整数（100-599）。' }
-  }
-  if (isNonEmptyNumeric(filterFields.access_key_id) && accessKeyID === undefined) {
-    return { filters, error: 'Access Key ID 必须是正整数。' }
-  }
-  if (isNonEmptyNumeric(filterFields.nvidia_key_id) && nvidiaKeyID === undefined) {
-    return { filters, error: 'NVIDIA Key ID 必须是正整数。' }
-  }
-  if (status !== undefined) filters.status = status
-  if (accessKeyID !== undefined) filters.access_key_id = accessKeyID
-  if (nvidiaKeyID !== undefined) filters.nvidia_key_id = nvidiaKeyID
-  return { filters }
-}
-
-function addTextFilter(filters: MonitoringFilter, key: 'search' | 'model_id' | 'endpoint', value: string): void {
-  const trimmed = value.trim()
-  if (trimmed) filters[key] = trimmed
-}
-
-function parsePositiveInteger(value: string | number): number | undefined {
-  const text = String(value).trim()
-  if (!text) return undefined
-  const parsed = Number(text)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
-}
-
-function isNonEmptyNumeric(value: string | number): boolean {
-  return String(value).trim() !== ''
 }
 
 function previousPage(): void {
@@ -265,37 +212,6 @@ function nextPage(): void {
   if (!logs.value?.has_more) return
   page.value += 1
   void loadDashboard()
-}
-
-function formatInteger(value: number): string {
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(value)
-}
-
-function formatPercent(value: number): string {
-  return `${value.toFixed(1)}%`
-}
-
-function formatLatency(value: number): string {
-  return `${value.toFixed(1)} ms`
-}
-
-function formatOptionalLatency(value: number | undefined): string {
-  return value === undefined ? '—' : formatLatency(value)
-}
-
-function formatTokens(value: number): string {
-  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
-}
-
-function outcomeLabel(item: RequestLog): string {
-  return item.outcome === 'success' ? '成功' : '失败'
 }
 
 function isMonitoringSnapshot(value: unknown): value is { data: MonitoringSnapshot } {
@@ -381,7 +297,7 @@ function isRequestLogsPage(value: unknown): value is { data: RequestLogsPage } {
     && value.data.items.every(isRequestLog)
 }
 
-function isRequestLog(value: unknown): value is RequestLog {
+function isRequestLog(value: unknown): value is import('./types').RequestLog {
   if (!isRecord(value)
     || typeof value.request_id !== 'string'
     || typeof value.endpoint !== 'string'
@@ -407,68 +323,59 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-info)]">
-            请求观测
-          </p>
-          <h1 class="page-title mt-1">
-            监控
-          </h1>
-          <p class="page-subtitle">
-            保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。
-          </p>
-          <p
-            v-if="summaryUpdatedAt"
-            class="mt-1 text-xs text-[var(--color-text-subtle)]"
+      <PageHeader
+        eyebrow="请求观测"
+        title="监控"
+        subtitle="保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。"
+      >
+        <template #actions>
+          <div
+            class="flex flex-wrap items-center gap-2"
+            role="group"
+            aria-label="监控时间范围"
           >
-            趋势每 30 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
-          </p>
-        </div>
-        <div
-          class="flex flex-wrap items-center gap-2"
-          role="group"
-          aria-label="监控时间范围"
-        >
-          <button
-            v-for="option in ranges"
-            :key="option.value"
-            :data-testid="`range-${option.value}`"
-            class="btn-secondary"
-            :class="range === option.value ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
-            type="button"
-            :aria-pressed="range === option.value"
-            @click="selectRange(option.value)"
-          >
-            {{ option.label }}
-          </button>
-          <button
-            class="btn-ghost"
-            type="button"
-            :disabled="loading"
-            @click="loadDashboard"
-          >
-            {{ loading ? '刷新中…' : '刷新' }}
-          </button>
-        </div>
-      </header>
+            <button
+              v-for="option in ranges"
+              :key="option.value"
+              :data-testid="`range-${option.value}`"
+              class="btn-secondary"
+              :class="range === option.value ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
+              type="button"
+              :aria-pressed="range === option.value"
+              @click="selectRange(option.value)"
+            >
+              {{ option.label }}
+            </button>
+            <button
+              class="btn-ghost"
+              type="button"
+              :disabled="loading"
+              @click="loadDashboard"
+            >
+              {{ loading ? '刷新中…' : '刷新' }}
+            </button>
+          </div>
+        </template>
+      </PageHeader>
+      <p
+        v-if="summaryUpdatedAt"
+        class="mt-1 text-xs text-[var(--color-text-subtle)]"
+      >
+        趋势每 30 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
+      </p>
 
       <div
         v-if="loading && !snapshot && !logs"
-        class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        class="card mt-5 p-6"
       >
-        <span
-          class="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]"
-          aria-hidden="true"
-        />
-        加载监控数据…
+        <Spinner label="加载监控数据…" />
       </div>
 
       <template v-else>
         <p
           v-if="summaryStale"
           data-testid="monitoring-summary-stale"
-          class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
+          class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
           role="status"
         >
           <span>汇总自 {{ summaryStaleSince ? formatClock(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
@@ -484,100 +391,111 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         <p
           v-if="summaryError"
           data-testid="monitoring-summary-error"
-          class="mb-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
+          class="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
           {{ summaryError }}
         </p>
 
-        <div
+        <section
           v-if="summary"
-          class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-10"
+          class="mt-4"
+          aria-labelledby="kpi-heading"
         >
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              请求数
-            </p>
-            <p class="mt-2 text-2xl font-semibold text-[var(--color-text)]">
-              {{ formatInteger(summary.request_count) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              成功率
-            </p>
-            <p class="mt-2 text-2xl font-semibold text-[var(--color-success)]">
-              {{ formatPercent(summary.success_rate) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              失败数
-            </p>
-            <p class="mt-2 text-2xl font-semibold text-[var(--color-danger)]">
-              {{ formatInteger(summary.failure_count) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              平均耗时
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-text)]">
-              {{ formatLatency(summary.average_duration_ms) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              首字节
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
-              {{ formatLatency(summary.average_first_byte_ms) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              TTFT P50
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
-              {{ formatOptionalLatency(summary.first_token_p50_ms) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              TTFT P95
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-info)]">
-              {{ formatOptionalLatency(summary.first_token_p95_ms) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              平均排队
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-text)]">
-              {{ formatLatency(summary.average_queue_ms) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              总尝试
-            </p>
-            <p class="mt-2 text-2xl font-semibold text-[var(--color-text)]">
-              {{ formatInteger(summary.total_attempts) }}
-            </p>
-          </article>
-          <article class="stat-card">
-            <p class="text-xs text-[var(--color-text-muted)]">
-              Token
-            </p>
-            <p class="mt-2 text-xl font-semibold text-[var(--color-text)]">
-              {{ formatTokens(summary.prompt_tokens + summary.completion_tokens) }}
-            </p>
-            <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
-              输入 {{ formatTokens(summary.prompt_tokens) }} · 输出 {{ formatTokens(summary.completion_tokens) }}
-            </p>
-          </article>
-        </div>
+          <p class="sr-only">
+            <span id="kpi-heading">关键指标</span>
+          </p>
+          <!-- One provenance line for the whole grid instead of one per card:
+               ten cards repeating "窗口 24 小时" is noise, not evidence. -->
+          <p class="mb-2 text-xs text-[var(--color-text-subtle)]">
+            口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
+          </p>
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-10">
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                请求数
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+                {{ formatInteger(summary.request_count) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                成功率
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-success)]">
+                {{ formatPercent(summary.success_rate) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                失败数
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-danger)]">
+                {{ formatInteger(summary.failure_count) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                平均耗时
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+                {{ formatAverageLatency(summary.average_duration_ms) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                首字节
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
+                {{ formatAverageLatency(summary.average_first_byte_ms) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                TTFT P50
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
+                {{ formatAverageLatency(summary.first_token_p50_ms) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                TTFT P95
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
+                {{ formatAverageLatency(summary.first_token_p95_ms) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                平均排队
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+                {{ formatAverageLatency(summary.average_queue_ms) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                总尝试
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+                {{ formatInteger(summary.total_attempts) }}
+              </p>
+            </article>
+            <article class="stat-card">
+              <p class="text-xs text-[var(--color-text-muted)]">
+                Token
+              </p>
+              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+                {{ formatTokens(summary.prompt_tokens + summary.completion_tokens) }}
+              </p>
+              <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
+                输入 {{ formatTokens(summary.prompt_tokens) }} · 输出 {{ formatTokens(summary.completion_tokens) }}
+              </p>
+            </article>
+          </div>
+        </section>
 
         <div class="mt-4 grid gap-4 xl:grid-cols-2">
           <MonitoringTrendChart
@@ -608,103 +526,10 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
         <CostPanel />
 
-        <form
-          data-testid="monitoring-filters"
-          class="card mt-4 grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4"
-          @submit.prevent="submitFilters"
-        >
-          <label class="sm:col-span-2">
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">关键词</span>
-            <input
-              v-model="filterFields.search"
-              data-testid="monitoring-search"
-              class="input-field mt-1"
-              type="search"
-              maxlength="128"
-              placeholder="请求 ID、模型、接口、错误码"
-            >
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">模型</span>
-            <input
-              v-model="filterFields.model_id"
-              class="input-field mt-1"
-              type="text"
-              maxlength="128"
-              placeholder="全部模型"
-            >
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">接口</span>
-            <input
-              v-model="filterFields.endpoint"
-              class="input-field mt-1"
-              type="text"
-              maxlength="128"
-              placeholder="全部接口"
-            >
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">结果状态</span>
-            <select
-              v-model="filterFields.outcome"
-              data-testid="monitoring-status"
-              class="input-field mt-1"
-            >
-              <option value="">全部状态</option>
-              <option value="success">成功</option>
-              <option value="failure">失败</option>
-            </select>
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">HTTP 状态码</span>
-            <input
-              v-model="filterFields.status"
-              data-testid="monitoring-status-code"
-              class="input-field mt-1"
-              type="number"
-              min="100"
-              max="599"
-              placeholder="全部"
-            >
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">Access Key ID</span>
-            <input
-              v-model="filterFields.access_key_id"
-              class="input-field mt-1"
-              type="number"
-              min="1"
-              placeholder="全部"
-            >
-          </label>
-          <label>
-            <span class="text-xs font-medium text-[var(--color-text-secondary)]">NVIDIA Key ID</span>
-            <input
-              v-model="filterFields.nvidia_key_id"
-              class="input-field mt-1"
-              type="number"
-              min="1"
-              placeholder="全部"
-            >
-          </label>
-          <div class="flex items-end justify-end sm:col-span-2 lg:col-span-4">
-            <button
-              class="btn-primary"
-              type="submit"
-            >
-              应用筛选
-            </button>
-          </div>
-          <p
-            v-if="filterError"
-            data-testid="monitoring-filter-error"
-            class="text-sm text-[var(--color-danger)] sm:col-span-2 lg:col-span-4"
-            role="alert"
-          >
-            {{ filterError }}
-          </p>
-        </form>
+        <MonitoringFilterForm
+          class="mt-4"
+          @apply="applyFilters"
+        />
 
         <section
           data-testid="monitoring-log-table"
@@ -725,301 +550,110 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             >{{ formatInteger(logs.total) }} 条</span>
           </div>
 
-          <p
-            v-if="logsError"
-            class="m-4 flex flex-wrap items-center gap-3 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] p-4 text-sm text-[var(--color-danger)]"
-            role="alert"
+          <MonitoringLogsTable
+            v-if="logs"
+            :logs="logs"
+            :logs-error="logsError"
+            :loading="loading"
+            @retry="loadDashboard"
+          />
+
+          <div
+            v-if="logs"
+            class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] px-4 py-3"
           >
-            <span>{{ logsError }}</span>
-            <button
-              class="btn-secondary rounded-lg px-3 py-1 text-xs"
-              type="button"
-              :disabled="loading"
-              @click="loadDashboard"
-            >
-              重试
-            </button>
-          </p>
-          <p
-            v-else-if="logs && logs.items.length === 0"
-            data-testid="monitoring-empty-logs"
-            class="p-6 text-center text-sm text-[var(--color-text-muted)]"
-          >
-            暂无请求记录
-          </p>
-          <template v-else-if="logs">
-            <div class="divide-y divide-[var(--color-border)] md:hidden">
-              <article
-                v-for="item in logs.items"
-                :key="`mobile-${item.request_id}`"
-                class="space-y-3 p-4"
+            <span class="text-xs text-[var(--color-text-muted)]">
+              共 {{ formatInteger(logs.total) }} 条 · 第 {{ logs.page }} / {{ totalPages }} 页
+            </span>
+            <div class="flex flex-wrap items-center gap-2">
+              <label class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+                每页
+                <select
+                  v-model="pageSize"
+                  class="input-field rounded-md px-2 py-1 text-xs"
+                  data-testid="monitoring-page-size"
+                  @change="changePageSize"
+                >
+                  <option
+                    v-for="size in pageSizes"
+                    :key="size"
+                    :value="size"
+                  >
+                    {{ size }}
+                  </option>
+                </select>
+              </label>
+              <button
+                class="btn-secondary"
+                type="button"
+                aria-label="上一页"
+                :disabled="page <= 1 || loading"
+                @click="previousPage"
               >
-                <div class="flex items-start justify-between gap-3">
-                  <div class="min-w-0">
-                    <p class="font-mono text-xs text-[var(--color-info)]">
-                      {{ item.request_id }}
-                    </p>
-                    <p class="mt-1 truncate text-xs text-[var(--color-text-muted)]">
-                      {{ formatDate(item.created_at) }}
-                    </p>
-                  </div>
-                  <span :class="item.outcome === 'success' ? 'badge-success' : 'badge-danger'">{{ outcomeLabel(item) }} · {{ item.http_status }}</span>
-                </div>
-                <p class="truncate text-sm text-[var(--color-text)]">
-                  {{ item.endpoint }}
-                </p>
-                <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      模型
-                    </dt><dd class="mt-1 truncate">
-                      {{ item.model_id ?? '—' }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      Key ID
-                    </dt><dd class="mt-1 truncate">
-                      NVIDIA {{ item.nvidia_key_id ?? '—' }} · Access {{ item.access_key_id ?? '—' }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      流式
-                    </dt><dd class="mt-1">
-                      {{ item.is_stream ? '是' : '否' }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      排队 / 首字节
-                    </dt><dd class="mt-1">
-                      {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      耗时
-                    </dt><dd class="mt-1">
-                      {{ formatLatency(item.duration_ms) }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      Token
-                    </dt><dd class="mt-1">
-                      {{ formatTokens((item.prompt_tokens ?? 0) + (item.completion_tokens ?? 0)) }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      重试
-                    </dt><dd class="mt-1">
-                      {{ item.attempt_count }}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt class="text-[var(--color-text-muted)]">
-                      错误码
-                    </dt><dd class="mt-1 truncate text-[var(--color-danger)]">
-                      {{ item.error_code ?? '—' }}
-                    </dd>
-                  </div>
-                  <div class="col-span-2">
-                    <dt class="text-[var(--color-text-muted)]">
-                      上游请求 ID
-                    </dt><dd class="mt-1 truncate font-mono">
-                      {{ item.upstream_request_id ?? '—' }}
-                    </dd>
-                  </div>
-                </dl>
-              </article>
-            </div>
-
-            <div
-              class="hidden overflow-x-auto md:block"
-              tabindex="0"
-              aria-label="请求明细表，可横向滚动"
-            >
-              <table class="data-table min-w-[1200px]">
-                <thead>
-                  <tr>
-                    <th class="data-table-th">
-                      时间
-                    </th>
-                    <th class="data-table-th">
-                      请求 ID
-                    </th>
-                    <th class="data-table-th">
-                      接口 / 模型
-                    </th>
-                    <th class="data-table-th">
-                      Key
-                    </th>
-                    <th class="data-table-th">
-                      状态
-                    </th>
-                    <th class="data-table-th">
-                      流式
-                    </th>
-                    <th class="data-table-th">
-                      排队 / 首字节
-                    </th>
-                    <th class="data-table-th">
-                      耗时
-                    </th>
-                    <th class="data-table-th">
-                      重试
-                    </th>
-                    <th class="data-table-th">
-                      Token
-                    </th>
-                    <th class="data-table-th">
-                      错误 / 上游 ID
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="item in logs.items"
-                    :key="item.request_id"
-                    class="transition-colors hover:bg-[var(--color-hover)]"
-                  >
-                    <td class="data-table-td whitespace-nowrap font-mono text-xs">
-                      {{ formatDate(item.created_at) }}
-                    </td>
-                    <td class="data-table-td font-mono text-xs text-[var(--color-info)]">
-                      {{ item.request_id }}
-                    </td>
-                    <td class="data-table-td">
-                      <span class="block">{{ item.endpoint }}</span>
-                      <span class="mt-1 block max-w-48 truncate font-mono text-xs text-[var(--color-text-muted)]">{{ item.model_id ?? '—' }}</span>
-                    </td>
-                    <td class="data-table-td text-xs">
-                      NVIDIA {{ item.nvidia_key_id ?? '—' }}<br>Access {{ item.access_key_id ?? '—' }}
-                    </td>
-                    <td class="data-table-td whitespace-nowrap">
-                      <span :class="item.outcome === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'">{{ outcomeLabel(item) }}</span>
-                      <span class="ml-1 font-mono text-xs">{{ item.http_status }}</span>
-                    </td>
-                    <td class="data-table-td">
-                      {{ item.is_stream ? '是' : '否' }}
-                    </td>
-                    <td class="data-table-td whitespace-nowrap font-mono text-xs">
-                      {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms
-                    </td>
-                    <td class="data-table-td whitespace-nowrap font-mono">
-                      {{ item.duration_ms }} ms
-                    </td>
-                    <td class="data-table-td font-mono">
-                      {{ item.attempt_count }}
-                    </td>
-                    <td class="data-table-td whitespace-nowrap font-mono text-xs">
-                      {{ formatTokens((item.prompt_tokens ?? 0) + (item.completion_tokens ?? 0)) }}
-                    </td>
-                    <td class="data-table-td max-w-56 truncate text-xs">
-                      <span class="block text-[var(--color-danger)]">{{ item.error_code ?? '—' }}</span>
-                      <span class="block truncate text-[var(--color-text-muted)]">{{ item.upstream_request_id ?? '—' }}</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] px-4 py-3">
-              <span class="text-xs text-[var(--color-text-muted)]">
-                共 {{ formatInteger(logs.total) }} 条 · 第 {{ logs.page }} / {{ totalPages }} 页
-              </span>
-              <div class="flex flex-wrap items-center gap-2">
-                <label class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
-                  每页
-                  <select
-                    v-model="pageSize"
-                    class="input-field rounded-md px-2 py-1 text-xs"
-                    data-testid="monitoring-page-size"
-                    @change="changePageSize"
-                  >
-                    <option
-                      v-for="size in pageSizes"
-                      :key="size"
-                      :value="size"
-                    >
-                      {{ size }}
-                    </option>
-                  </select>
-                </label>
+                上一页
+              </button>
+              <template v-for="(item, index) in pageNumbers">
                 <button
-                  class="btn-secondary"
+                  v-if="item !== 'ellipsis'"
+                  :key="item"
+                  :data-testid="`monitoring-page-${item}`"
+                  class="btn-secondary min-w-8 rounded-md px-2 py-1 text-xs"
+                  :class="item === page ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
                   type="button"
-                  aria-label="上一页"
-                  :disabled="page <= 1 || loading"
-                  @click="previousPage"
+                  :disabled="loading || item === page"
+                  :aria-current="item === page ? 'page' : undefined"
+                  @click="selectPage(item)"
                 >
-                  上一页
+                  {{ item }}
                 </button>
-                <template v-for="(item, index) in pageNumbers">
-                  <button
-                    v-if="item !== 'ellipsis'"
-                    :key="item"
-                    :data-testid="`monitoring-page-${item}`"
-                    class="btn-secondary min-w-8 rounded-md px-2 py-1 text-xs"
-                    :class="item === page ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
-                    type="button"
-                    :disabled="loading || item === page"
-                    :aria-current="item === page ? 'page' : undefined"
-                    @click="page = item; loadDashboard()"
-                  >
-                    {{ item }}
-                  </button>
-                  <span
-                    v-else
-                    :key="`ellipsis-${index}`"
-                    class="px-0.5 text-xs text-[var(--color-text-subtle)]"
-                    aria-hidden="true"
-                  >
-                    …
-                  </span>
-                </template>
+                <span
+                  v-else
+                  :key="`ellipsis-${index}`"
+                  class="px-0.5 text-xs text-[var(--color-text-subtle)]"
+                  aria-hidden="true"
+                >
+                  …
+                </span>
+              </template>
+              <button
+                v-if="logs.has_more"
+                data-testid="monitoring-next-page"
+                class="btn-secondary"
+                type="button"
+                aria-label="下一页"
+                :disabled="loading"
+                @click="nextPage"
+              >
+                下一页
+              </button>
+              <form
+                class="flex items-center gap-1.5"
+                @submit.prevent="jumpToPage"
+              >
+                <label
+                  class="sr-only"
+                  for="monitoring-jump-page"
+                >跳转到页码</label>
+                <input
+                  id="monitoring-jump-page"
+                  v-model="jumpTarget"
+                  data-testid="monitoring-jump-page"
+                  class="input-field w-14 rounded-md px-2 py-1 text-xs"
+                  type="number"
+                  min="1"
+                  :max="totalPages"
+                  placeholder="页码"
+                >
                 <button
-                  v-if="logs.has_more"
-                  data-testid="monitoring-next-page"
-                  class="btn-secondary"
-                  type="button"
-                  aria-label="下一页"
+                  class="btn-ghost rounded-md px-2 py-1 text-xs"
+                  type="submit"
                   :disabled="loading"
-                  @click="nextPage"
                 >
-                  下一页
+                  跳转
                 </button>
-                <form
-                  class="flex items-center gap-1.5"
-                  @submit.prevent="jumpToPage"
-                >
-                  <label
-                    class="sr-only"
-                    for="monitoring-jump-page"
-                  >跳转到页码</label>
-                  <input
-                    id="monitoring-jump-page"
-                    v-model="jumpTarget"
-                    data-testid="monitoring-jump-page"
-                    class="input-field w-14 rounded-md px-2 py-1 text-xs"
-                    type="number"
-                    min="1"
-                    :max="totalPages"
-                    placeholder="页码"
-                  >
-                  <button
-                    class="btn-ghost rounded-md px-2 py-1 text-xs"
-                    type="submit"
-                    :disabled="loading"
-                  >
-                    跳转
-                  </button>
-                </form>
-              </div>
+              </form>
             </div>
-          </template>
+          </div>
         </section>
       </template>
     </div>

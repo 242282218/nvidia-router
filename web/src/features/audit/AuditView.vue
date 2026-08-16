@@ -2,6 +2,9 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { formatDate } from '../../shared/format'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import Spinner from '../../shared/components/Spinner.vue'
 import { auditApi } from './api'
 import { AUDIT_ACTIONS, type AuditEntry } from './types'
 
@@ -83,13 +86,6 @@ function prevPage(): void {
   void load()
 }
 
-function formatDate(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
-}
-
 function parseDetail(raw: string | undefined): string {
   if (!raw) return ''
   try {
@@ -103,19 +99,22 @@ function parseDetail(raw: string | undefined): string {
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
-            安全管理
-          </p>
-          <h1 class="page-title mt-1">
-            审计日志
-          </h1>
-          <p class="page-subtitle">
-            记录所有管理操作与认证事件，用于事后追溯。
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        eyebrow="安全管理"
+        title="审计日志"
+        subtitle="记录所有管理操作与认证事件，用于事后追溯。"
+      >
+        <template #actions>
+          <button
+            class="btn-ghost"
+            type="button"
+            :disabled="loading"
+            @click="load"
+          >
+            {{ loading ? '刷新中…' : '刷新' }}
+          </button>
+        </template>
+      </PageHeader>
 
       <div class="card mt-5 p-4">
         <div class="flex flex-wrap items-center gap-3">
@@ -128,7 +127,7 @@ function parseDetail(raw: string | undefined): string {
           <select
             id="audit-action-filter"
             v-model="selectedAction"
-            class="input-field rounded-lg px-3 py-2 text-sm"
+            class="input-field w-auto"
             data-testid="audit-action-filter"
             @change="applyFilter"
           >
@@ -143,43 +142,66 @@ function parseDetail(raw: string | undefined): string {
               {{ action }}
             </option>
           </select>
-          <button
-            class="btn-ghost rounded-lg px-3 py-2 text-sm"
-            type="button"
-            @click="applyFilter"
-          >
-            刷新
-          </button>
         </div>
       </div>
 
-      <p
+      <div
         v-if="errorMessage"
-        class="mt-4 rounded-lg bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] p-3 text-sm text-[var(--color-danger)]"
+        class="card mt-4 flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+        role="alert"
       >
-        {{ errorMessage }}
-      </p>
+        <span>{{ errorMessage }}</span>
+        <button
+          class="btn-secondary"
+          type="button"
+          @click="load"
+        >
+          重新加载
+        </button>
+      </div>
 
-      <div class="card mt-4 overflow-hidden">
+      <div
+        v-else
+        class="card mt-4 overflow-hidden"
+        :aria-busy="loading"
+      >
         <!-- min-w keeps the table from squeezing on narrow screens; the wrapper
              scrolls horizontally instead (mobile-friendly overflow pattern). -->
         <div class="overflow-x-auto">
-          <table class="w-full min-w-[640px] text-left text-sm">
-            <thead class="border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-surface)_60%,transparent)] text-xs uppercase tracking-wider text-[var(--color-text-subtle)]">
+          <table class="data-table min-w-[640px]">
+            <caption class="sr-only">
+              审计日志，当前第 {{ page }} 页
+            </caption>
+            <thead>
               <tr>
-                <th class="px-4 py-3">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   时间
                 </th>
-                <th class="px-4 py-3">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   操作
                 </th>
-                <th class="px-4 py-3">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   目标
                 </th>
-                <th class="px-4 py-3">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   来源 IP
                 </th>
-                <th class="px-4 py-3">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   详情
                 </th>
               </tr>
@@ -187,35 +209,42 @@ function parseDetail(raw: string | undefined): string {
             <tbody>
               <tr v-if="loading && items.length === 0">
                 <td
-                  class="px-4 py-8 text-center text-[var(--color-text-muted)]"
+                  class="data-table-td"
                   colspan="5"
                 >
-                  加载中…
+                  <div class="flex justify-center py-4">
+                    <Spinner label="审计日志加载中…" />
+                  </div>
                 </td>
               </tr>
-              <tr v-else-if="!loading && items.length === 0">
+              <tr v-else-if="items.length === 0">
                 <td
-                  class="px-4 py-8 text-center text-[var(--color-text-muted)]"
+                  class="data-table-td text-center text-[var(--color-text-muted)]"
                   colspan="5"
                 >
-                  暂无审计记录{{ hasLoaded ? '' : '。' }}
+                  <template v-if="hasLoaded">
+                    暂无审计记录。可调整操作类型或刷新。
+                  </template>
+                  <template v-else>
+                    暂无审计记录
+                  </template>
                 </td>
               </tr>
               <tr
                 v-for="entry in items"
                 v-else
                 :key="entry.id"
-                class="border-b border-[var(--color-border)] last:border-0 hover:bg-[color-mix(in_srgb,var(--color-surface)_50%,transparent)]"
+                class="transition-colors hover:bg-[var(--color-hover)]"
               >
-                <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
-                  {{ formatDate(entry.created_at) }}
+                <td class="data-table-td font-mono text-xs">
+                  {{ formatDate(entry.created_at, { seconds: true }) }}
                 </td>
-                <td class="px-4 py-3">
-                  <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
+                <td class="data-table-td">
+                  <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 font-mono text-xs font-medium text-[var(--color-accent-text)]">
                     {{ entry.action }}
                   </span>
                 </td>
-                <td class="px-4 py-3 text-xs text-[var(--color-text-secondary)]">
+                <td class="data-table-td text-xs">
                   <template v-if="entry.target_id">
                     {{ entry.target_type }} #{{ entry.target_id }}
                   </template>
@@ -223,14 +252,14 @@ function parseDetail(raw: string | undefined): string {
                     {{ entry.target_type || '—' }}
                   </template>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs text-[var(--color-text-secondary)]">
+                <td class="data-table-td font-mono text-xs">
                   {{ entry.client_ip || '—' }}
                 </td>
-                <td class="max-w-[280px] truncate px-4 py-3 font-mono text-xs text-[var(--color-text-subtle)]">
+                <td class="data-table-td max-w-[280px]">
                   <span
                     :title="parseDetail(entry.detail) || undefined"
-                    class="block truncate"
-                  >{{ parseDetail(entry.detail) }}</span>
+                    class="block truncate font-mono text-xs text-[var(--color-text-subtle)]"
+                  >{{ parseDetail(entry.detail) || '—' }}</span>
                 </td>
               </tr>
             </tbody>
@@ -247,25 +276,32 @@ function parseDetail(raw: string | undefined): string {
             v-if="loading && items.length > 0"
             class="mr-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
           >
-            <span class="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-strong)] border-t-[var(--color-accent)]" />
-            加载中…
+            <Spinner
+              size="sm"
+              label="加载中…"
+            />
           </span>
           <button
-            class="btn-ghost rounded-lg px-3 py-1.5 disabled:opacity-40"
+            class="btn-ghost"
             type="button"
             :disabled="page <= 1 || loading"
+            aria-label="上一页"
             data-testid="audit-prev"
             @click="prevPage"
           >
             上一页
           </button>
-          <span class="font-mono text-xs">
+          <span
+            class="font-mono text-xs tabular-nums"
+            aria-live="polite"
+          >
             第 {{ page }} 页
           </span>
           <button
-            class="btn-ghost rounded-lg px-3 py-1.5 disabled:opacity-40"
+            class="btn-ghost"
             type="button"
             :disabled="!hasMore || loading"
+            aria-label="下一页"
             data-testid="audit-next"
             @click="nextPage"
           >

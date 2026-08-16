@@ -182,10 +182,16 @@ function formatValue(value: number): string {
           <table class="data-table">
             <thead>
               <tr>
-                <th class="data-table-th">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   时间
                 </th>
-                <th class="data-table-th">
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
                   {{ metricLabel }}
                 </th>
               </tr>
