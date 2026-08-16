@@ -80,7 +80,7 @@ function statusLabel(status: string): string {
           <article
             v-for="result in results"
             :key="result.id"
-          class="rounded-lg border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)] p-4"
+            class="rounded-lg border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)] p-4"
           >
             <div class="flex items-center justify-between mb-3">
               <span class="text-sm font-medium text-[var(--color-text)]">Key #{{ result.id }}</span>

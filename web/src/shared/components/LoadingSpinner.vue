@@ -1,14 +1,17 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // Single spinner implementation. Before this component the same SVG was
 // pasted in eight views alongside a second CSS-border variant — the two
 // styles disagreed on size, colour and role attributes.
-defineOptions({ name: 'Spinner' })
+defineOptions({ name: 'LoadingSpinner' })
 
 withDefaults(defineProps<{
   /** Announced to screen readers and shown next to the icon. */
   label?: string
   size?: 'sm' | 'md'
-}>(), { label: '加载中…', size: 'md' })
+  /** Icon-only mode for tight spots like button interiors; the label is
+   * still announced via aria-label. */
+  showLabel?: boolean
+}>(), { label: '加载中…', size: 'md', showLabel: true })
 </script>
 
 <template>
@@ -38,6 +41,6 @@ withDefaults(defineProps<{
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
       />
     </svg>
-    <span>{{ label }}</span>
+    <span v-if="showLabel">{{ label }}</span>
   </div>
 </template>

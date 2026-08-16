@@ -1,8 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { ApiError } from '../../shared/api/client'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { useSession } from './useSession'
 
 const router = useRouter()
@@ -84,12 +85,11 @@ async function submit(): Promise<void> {
         </div>
       </div>
 
-      <!-- Login card -->
-      <div class="card p-6 animate-slide-up">
-        <h2 class="text-base font-medium text-[var(--color-text)]">
-          管理员登录
-        </h2>
-        <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+      <!-- Login card. The single h1 (NVIDIA Router · 管理员登录) lives in the
+           logo block above; repeating it here left the page with two
+           "管理员登录" headings. -->
+      <div class="card animate-slide-up p-6">
+        <p class="text-sm text-[var(--color-text-muted)]">
           请输入凭据继续
         </p>
 
@@ -132,31 +132,17 @@ async function submit(): Promise<void> {
           </Transition>
 
           <button
-            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:border-[var(--color-border-strong)] disabled:bg-[var(--color-surface)] disabled:text-[var(--color-text-muted)]"
+            class="btn-primary w-full"
             :disabled="submitting"
             type="submit"
           >
             <span class="flex items-center justify-center gap-2">
-              <svg
+              <LoadingSpinner
                 v-if="submitting"
-                class="h-4 w-4 animate-spin"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                />
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                />
-              </svg>
+                :show-label="false"
+                label="登录中"
+                size="sm"
+              />
               {{ submitting ? '登录中…' : '登录' }}
             </span>
           </button>

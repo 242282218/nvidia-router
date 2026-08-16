@@ -20,6 +20,19 @@ export default tseslint.config(
     },
   },
   {
+    // The shared StatePanel/LoadingSpinner props are deliberately passed in
+    // camelCase: the kebab-case form (`error-testid`) failed to resolve onto
+    // the declared prop in the test runtime (reproduced in StatePanel.spec),
+    // while camelCase works in both vitest and the browser build. Hyphenating
+    // these would silently drop the data-testid wiring the e2e suite relies on.
+    files: ['**/*.vue'],
+    rules: {
+      'vue/attribute-hyphenation': ['error', 'always', {
+        ignore: ['loadingLabel', 'emptyLabel', 'emptyHint', 'retryLabel', 'errorTestId', 'retryTestId', 'showLabel'],
+      }],
+    },
+  },
+  {
     ignores: ['dist/**'],
   },
 )

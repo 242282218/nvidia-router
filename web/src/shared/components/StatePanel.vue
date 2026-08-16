@@ -1,5 +1,5 @@
-<script setup lang="ts">
-import Spinner from './Spinner.vue'
+﻿<script setup lang="ts">
+import LoadingSpinner from './LoadingSpinner.vue'
 
 // Unified loading / error / empty panel for page-level async data. The
 // pre-refactor codebase expressed these three states in three different
@@ -40,7 +40,7 @@ defineEmits<{ retry: [] }>()
       v-if="loading"
       class="card p-6"
     >
-      <Spinner :label="loadingLabel" />
+      <LoadingSpinner :label="loadingLabel" />
     </div>
     <div
       v-else-if="error"

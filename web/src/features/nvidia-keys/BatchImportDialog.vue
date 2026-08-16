@@ -116,6 +116,7 @@ function testStatusClass(status: string): string {
       class="modal-overlay"
       role="dialog"
       aria-modal="true"
+      aria-labelledby="batch-import-heading"
       @click.self="close"
     >
       <section
@@ -125,7 +126,10 @@ function testStatusClass(status: string): string {
         <!-- Header -->
         <div class="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] px-4 py-4 sm:px-6">
           <div class="min-w-0">
-            <h2 class="text-base font-semibold text-[var(--color-text)]">
+            <h2
+              id="batch-import-heading"
+              class="text-base font-semibold text-[var(--color-text)]"
+            >
               批量导入 NVIDIA Key
             </h2>
             <p class="mt-0.5 truncate text-sm text-[var(--color-text-muted)]">
@@ -235,23 +239,38 @@ function testStatusClass(status: string): string {
                 </div>
               </div>
               <div
-              class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
+                class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
                 tabindex="0"
                 aria-label="批量导入结果，可横向滚动"
               >
                 <table class="data-table min-w-[560px]">
+                  <caption class="sr-only">
+                    批量导入结果，共 {{ results.length }} 条
+                  </caption>
                   <thead class="sticky top-0 z-10">
                     <tr>
-                      <th class="data-table-th w-16">
+                      <th
+                        class="data-table-th w-16"
+                        scope="col"
+                      >
                         行
                       </th>
-                      <th class="data-table-th">
+                      <th
+                        class="data-table-th"
+                        scope="col"
+                      >
                         Key
                       </th>
-                      <th class="data-table-th w-32">
+                      <th
+                        class="data-table-th w-32"
+                        scope="col"
+                      >
                         状态
                       </th>
-                      <th class="data-table-th">
+                      <th
+                        class="data-table-th"
+                        scope="col"
+                      >
                         原因
                       </th>
                     </tr>
@@ -316,15 +335,8 @@ function testStatusClass(status: string): string {
           </Transition>
         </div>
 
-        <div class="flex shrink-0 justify-end border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 sm:px-6">
-          <button
-            class="btn-secondary min-h-10 rounded-lg px-4 py-2 text-sm"
-            type="button"
-            @click="close"
-          >
-            关闭
-          </button>
-        </div>
+        <!-- The close affordances are the fixed top-right button, the form's
+             cancel and Esc; a third identical footer button was redundant. -->
       </section>
     </div>
   </Transition>

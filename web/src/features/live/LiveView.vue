@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { isFiniteNumber, isRecord } from '../../shared/api/client'
+import { formatClock, formatLatency } from '../../shared/format'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { LiveRequestEvent } from './types'
 
 const events = ref<LiveRequestEvent[]>([])
@@ -119,22 +122,14 @@ function parseRequestEvent(raw: string): LiveRequestEvent | null {
   }
 }
 
-function statusBadge(status: number): string {
-  if (status >= 200 && status < 300) return 'badge-success'
-  if (status >= 400 && status < 500) return 'badge-warning'
-  return 'badge-danger'
-}
+// Newest-first view of the event feed. Computed so the reversed array is
+// cached per render instead of being rebuilt on every list update.
+const reversedEvents = computed(() => [...events.value].reverse())
 
-function formatTime(value: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
-function formatLatency(value: number | undefined): string {
-  return value === undefined ? '—' : `${value} ms`
+function statusBadge(status: number): { variant: 'success' | 'warning' | 'danger'; label: string } {
+  if (status >= 200 && status < 300) return { variant: 'success', label: String(status) }
+  if (status >= 400 && status < 500) return { variant: 'warning', label: String(status) }
+  return { variant: 'danger', label: String(status) }
 }
 
 function latencyColor(duration: number): string {
@@ -147,31 +142,18 @@ function latencyColor(duration: number): string {
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-info)]">
-            请求观测
-          </p>
-          <h1 class="page-title mt-1">
-            实时请求流
-          </h1>
-          <p class="page-subtitle">
-            通过 SSE 推送实时展示路由请求的元数据；仅保留最近 {{ maxEvents }} 条，最新在上、自动滚动。
-          </p>
-        </div>
-        <div class="flex items-center gap-3">
-          <span
-            class="inline-flex items-center gap-2 text-sm"
-            :class="connected ? 'text-[var(--color-success)]' : 'text-[var(--color-warning)]'"
-          >
-            <span
-              class="h-2 w-2 rounded-full"
-              :class="connected ? 'bg-[var(--color-success)] pulse-dot' : 'bg-[var(--color-warning)]'"
-            />
-            {{ connected ? '已连接' : '连接中…' }}
-          </span>
+      <PageHeader
+        eyebrow="请求观测"
+        title="实时请求流"
+        :subtitle="`通过 SSE 推送实时展示路由请求的元数据；仅保留最近 ${maxEvents} 条，最新在上、自动滚动。`"
+      >
+        <template #actions>
+          <StatusBadge
+            :variant="connected ? 'success' : 'warning'"
+            :label="connected ? '已连接' : '连接中…'"
+          />
           <button
-            class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
+            class="btn-ghost"
             type="button"
             :disabled="events.length === 0"
             @click="clearEvents"
@@ -179,14 +161,14 @@ function latencyColor(duration: number): string {
             清空
           </button>
           <button
-            class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
+            class="btn-ghost"
             type="button"
             @click="connect"
           >
             重连
           </button>
-        </div>
-      </header>
+        </template>
+      </PageHeader>
 
       <div
         v-if="errorMessage"
@@ -211,19 +193,20 @@ function latencyColor(duration: number): string {
             @scroll="onListScroll"
           >
             <li
-              v-for="event in [...events].reverse()"
+              v-for="event in reversedEvents"
               :key="event.request_id"
               class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm hover:bg-[var(--color-hover)]"
             >
               <span class="font-mono text-xs text-[var(--color-text-muted)]">
-                {{ formatTime(event.created_at) }}
+                {{ formatClock(event.created_at) }}
               </span>
               <code class="truncate font-mono text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
               <code class="truncate font-mono text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
-              <span
-                class="rounded px-2 py-0.5 text-xs font-medium"
-                :class="statusBadge(event.http_status)"
-              >{{ event.http_status }}</span>
+              <StatusBadge
+                :variant="statusBadge(event.http_status).variant"
+                :label="statusBadge(event.http_status).label"
+                :dot="false"
+              />
               <span
                 v-if="event.error_code"
                 class="truncate text-xs text-[var(--color-warning)]"

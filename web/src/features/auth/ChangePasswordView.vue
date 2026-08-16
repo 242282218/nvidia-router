@@ -1,8 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { ApiError } from '../../shared/api/client'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { useSession } from './useSession'
 
 const router = useRouter()
@@ -134,31 +135,17 @@ function validateNewPassword(password: string): string {
           </Transition>
 
           <button
-            class="btn-primary w-full rounded-lg px-4 py-2.5 text-sm disabled:cursor-not-allowed disabled:border-[var(--color-border-strong)] disabled:bg-[var(--color-surface)] disabled:text-[var(--color-text-muted)]"
+            class="btn-primary w-full"
             :disabled="submitting"
             type="submit"
           >
             <span class="flex items-center justify-center gap-2">
-              <svg
+              <LoadingSpinner
                 v-if="submitting"
-                class="h-4 w-4 animate-spin"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                />
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                />
-              </svg>
+                :show-label="false"
+                label="修改中"
+                size="sm"
+              />
               {{ submitting ? '修改中…' : '修改密码' }}
             </span>
           </button>

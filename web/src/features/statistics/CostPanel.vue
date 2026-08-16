@@ -1,7 +1,8 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { statisticsApi } from './api'
 import type { DailyModelCost } from './types'
 
@@ -110,9 +111,12 @@ function formatUSD(value: number): string {
 
     <div
       v-if="loading"
-      class="mt-3 text-sm text-[var(--color-text-muted)]"
+      class="mt-3"
     >
-      加载成本数据…
+      <LoadingSpinner
+        size="sm"
+        label="加载成本数据…"
+      />
     </div>
 
     <template v-else-if="costs.length">
@@ -155,15 +159,27 @@ function formatUSD(value: number): string {
 
       <div class="mt-4 overflow-x-auto">
         <table class="data-table min-w-[560px]">
+          <caption class="sr-only">
+            按模型聚合的 Token 用量与估算成本，近 30 天
+          </caption>
           <thead>
             <tr>
-              <th class="data-table-th">
+              <th
+                class="data-table-th"
+                scope="col"
+              >
                 模型
               </th>
-              <th class="data-table-th text-right">
+              <th
+                class="data-table-th text-right"
+                scope="col"
+              >
                 Token
               </th>
-              <th class="data-table-th text-right">
+              <th
+                class="data-table-th text-right"
+                scope="col"
+              >
                 估算成本
               </th>
             </tr>

@@ -1,10 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatLocalDateTime } from '../../shared/format'
 import PageHeader from '../../shared/components/PageHeader.vue'
-import Spinner from '../../shared/components/Spinner.vue'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import StatePanel from '../../shared/components/StatePanel.vue'
 import StatusBadge from '../../shared/components/StatusBadge.vue'
 import { usePolling } from '../../shared/usePolling'
@@ -517,7 +517,7 @@ async function refreshPool(): Promise<void> {
           v-if="statusLoading && statusData"
           class="border-t border-[var(--color-border)] px-5 py-3"
         >
-          <Spinner
+          <LoadingSpinner
             size="sm"
             label="刷新池状态…"
           />

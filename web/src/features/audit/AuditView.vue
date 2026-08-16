@@ -1,10 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatDate } from '../../shared/format'
 import PageHeader from '../../shared/components/PageHeader.vue'
-import Spinner from '../../shared/components/Spinner.vue'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { auditApi } from './api'
 import { AUDIT_ACTIONS, type AuditEntry } from './types'
 
@@ -213,7 +213,7 @@ function parseDetail(raw: string | undefined): string {
                   colspan="5"
                 >
                   <div class="flex justify-center py-4">
-                    <Spinner label="审计日志加载中…" />
+                    <LoadingSpinner label="审计日志加载中…" />
                   </div>
                 </td>
               </tr>
@@ -276,7 +276,7 @@ function parseDetail(raw: string | undefined): string {
             v-if="loading && items.length > 0"
             class="mr-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
           >
-            <Spinner
+            <LoadingSpinner
               size="sm"
               label="加载中…"
             />

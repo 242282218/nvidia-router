@@ -1,9 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import PageHeader from '../../shared/components/PageHeader.vue'
-import Spinner from '../../shared/components/Spinner.vue'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { usePolling } from '../../shared/usePolling'
 import CostPanel from './CostPanel.vue'
 import { formatAverageLatency, formatInteger, formatPercent, formatTokens } from './format'
@@ -368,7 +368,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         v-if="loading && !snapshot && !logs"
         class="card mt-5 p-6"
       >
-        <Spinner label="加载监控数据…" />
+        <LoadingSpinner label="加载监控数据…" />
       </div>
 
       <template v-else>

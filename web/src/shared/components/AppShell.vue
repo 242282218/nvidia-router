@@ -141,7 +141,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <Transition name="fade">
       <button
         v-if="sidebarOpen"
-        class="fixed inset-0 z-30 cursor-default bg-black/60 backdrop-blur-sm lg:hidden"
+        class="fixed inset-0 z-30 cursor-default bg-[var(--color-overlay)] backdrop-blur-sm lg:hidden"
         type="button"
         aria-label="关闭菜单"
         @click="sidebarOpen = false"
@@ -253,7 +253,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               stroke-linecap="round"
               stroke-linejoin="round"
               stroke-width="1.5"
-              d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"
+              d="M3.75 12h3.75l2.25-6 3 12 2.25-6h5.25"
             />
           </svg>
           <svg
@@ -356,9 +356,6 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           />
           管理端已登录。
         </div>
-        <p class="ml-auto hidden text-xs font-mono text-[var(--color-text-subtle)] lg:block">
-          {{ route.path }}
-        </p>
       </div>
       <RouterView />
     </main>

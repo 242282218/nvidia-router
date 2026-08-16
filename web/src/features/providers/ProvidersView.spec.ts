@@ -20,6 +20,7 @@ const provider = {
   display_suffix: 'cd',
   enabled: true,
   created_at: '2026-08-10T08:00:00Z',
+  updated_at: '2026-08-10T08:00:00Z',
 }
 
 beforeEach(() => {
@@ -87,7 +88,7 @@ describe('ProvidersView', () => {
   })
 
   it('toggles a provider and reports the outcome via toast', async () => {
-    vi.mocked(providersApi.setEnabled).mockResolvedValue({ data: { ...provider, enabled: false } })
+    vi.mocked(providersApi.setEnabled).mockResolvedValue({ id: 3, enabled: false })
     const wrapper = mount(ProvidersView)
     await flushPromises()
 

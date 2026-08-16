@@ -1,10 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError } from '../../shared/api/client'
 import { formatDate } from '../../shared/format'
 import PageHeader from '../../shared/components/PageHeader.vue'
-import Spinner from '../../shared/components/Spinner.vue'
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { usePolling } from '../../shared/usePolling'
 import { runtimeApi } from './api'
 import SettingsForm from './SettingsForm.vue'
@@ -183,7 +183,7 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
         v-if="loading"
         class="card p-6"
       >
-        <Spinner label="运行状态加载中…" />
+        <LoadingSpinner label="运行状态加载中…" />
       </div>
 
       <template v-else>
