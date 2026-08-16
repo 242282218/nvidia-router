@@ -36,6 +36,7 @@ func (c *Client) Chat(
 			return nil, safeError{"create NVIDIA chat request", err}
 		}
 		request = request.WithContext(ctx)
+		applyForwardedHeaders(request, ctx)
 		request.Body = io.NopCloser(bytes.NewReader(body))
 		request.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(body)), nil

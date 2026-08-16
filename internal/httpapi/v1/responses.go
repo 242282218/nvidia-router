@@ -72,7 +72,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	result, err := h.attempts.Run(applyModelTimeouts(request.Context(), model), model.ID, stream, h.execute(upstreamBody, id, model, stream))
+	result, err := h.attempts.Run(applyModelTimeouts(nvidia.WithForwardedHeaders(request.Context(), request.Header), model), model.ID, stream, h.execute(upstreamBody, id, model, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -89,6 +89,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 
+	copyResponseHeaders(writer.Header(), result.Response.Header)
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
 	_, _ = io.Copy(writer, result.Response.Body)

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -161,8 +162,9 @@ func TestParseExtractsToolRequirementsFromMessages(t *testing.T) {
 		if !request.Requirements().Tools {
 			t.Fatal("message tool protocol did not require tool capability")
 		}
-		_, err = request.MarshalFor(chatModel())
-		_ = requireRequestError(t, err, "model_capability_unsupported", "tools")
+		if _, err := request.MarshalFor(chatModel()); err != nil {
+			t.Fatalf("MarshalFor: %v", err)
+		}
 	}
 }
 
@@ -211,41 +213,50 @@ func TestParseRejectsAmbiguousKnownToolKeys(t *testing.T) {
 	}
 }
 
-func TestMarshalForRejectsUnsupportedModelCapabilities(t *testing.T) {
-	tests := []struct {
-		name    string
-		payload string
-		param   string
-	}{
-		{
-			name: "tools",
-			payload: `{"model":"public-model","messages":[{"role":"user","content":"x"}],` +
-				`"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
-			param: "tools",
-		},
-		{
-			name:    "reasoning",
-			payload: `{"model":"public-model","messages":[{"role":"user","content":"x"}],"reasoning_effort":"low"}`,
-			param:   "reasoning_effort",
-		},
+func TestMarshalForPreservesCapabilitiesForModelsWithoutLocalHints(t *testing.T) {
+	request, err := Parse([]byte(`{"model":"public-model","messages":[{"role":"user","content":"use the tool"}],"tools":[{"type":"function","function":{"name":"lookup"}}],"reasoning_effort":"low"}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request, err := Parse([]byte(tt.payload))
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			model := chatModel()
-			model.SupportsTools = false
-			model.SupportsReasoning = false
-			model.ReasoningWireFormat = "none"
-			_, err = request.MarshalFor(model)
-			_ = requireRequestError(t, err, "model_capability_unsupported", tt.param)
-		})
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	if !bytes.Contains(body, []byte(`"tools"`)) || !bytes.Contains(body, []byte(`"reasoning_effort"`)) {
+		t.Fatalf("capability fields were not preserved: %s", body)
 	}
 }
 
-func TestMarshalForNormalizesNativeThinkingToOpenAI(t *testing.T) {
+func TestMarshalForPassesCapabilitiesToUpstream(t *testing.T) {
+	request, err := Parse([]byte(`{
+		"model":"public-model",
+		"messages":[{"role":"user","content":"use the tool"}],
+		"tools":[{"type":"function","function":{"name":"lookup"}}],
+		"tool_choice":"auto",
+		"reasoning_effort":"high",
+		"thinking":{"type":"enabled","budget_tokens":8192}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("decode prepared body: %v", err)
+	}
+	if got := string(fields["model"]); got != `"vendor/model"` {
+		t.Fatalf("mapped model = %s", got)
+	}
+	for _, field := range []string{"tools", "tool_choice", "reasoning_effort", "thinking"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("capability field %q was not preserved", field)
+		}
+	}
+}
+func TestMarshalForPreservesNativeThinking(t *testing.T) {
 	request, err := Parse([]byte(`{
 		"model":"public-model",
 		"messages":[{"role":"user","content":"hello"}],
@@ -255,26 +266,26 @@ func TestMarshalForNormalizesNativeThinkingToOpenAI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	body, err := request.MarshalFor(reasoningModel())
+	body, err := request.MarshalFor(chatModel())
 	if err != nil {
 		t.Fatalf("MarshalFor: %v", err)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		t.Fatalf("decode body: %v", err)
+		t.Fatalf("decode prepared body: %v", err)
 	}
-	if _, exists := fields["thinking"]; exists {
-		t.Fatal("native thinking field was not removed")
+	if _, exists := fields["thinking"]; !exists {
+		t.Fatal("native thinking field was removed")
 	}
-	if got := string(fields["reasoning_effort"]); got != `"medium"` {
-		t.Fatalf("reasoning_effort = %s", got)
+	if _, exists := fields["reasoning_effort"]; exists {
+		t.Fatal("reasoning_effort was synthesized")
 	}
 	if got := string(fields["future_flag"]); got != `"kept"` {
 		t.Fatalf("future_flag = %s", got)
 	}
 }
 
-func TestMarshalForRejectsConflictingReasoningFields(t *testing.T) {
+func TestMarshalForPreservesConflictingReasoningFields(t *testing.T) {
 	request, err := Parse([]byte(`{
 		"model":"public-model",
 		"messages":[{"role":"user","content":"hello"}],
@@ -284,29 +295,12 @@ func TestMarshalForRejectsConflictingReasoningFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	_, err = request.MarshalFor(reasoningModel())
-	_ = requireRequestError(t, err, "conflicting_reasoning_parameters", "reasoning_effort")
-}
-
-func TestMarshalForRejectsDuplicateReasoningStringsEndingInNull(t *testing.T) {
-	tests := []struct {
-		name  string
-		field string
-		param string
-	}{
-		{name: "reasoning effort", field: `"reasoning":{"effort":"low","effort":null}`, param: "reasoning"},
-		{name: "thinking type", field: `"thinking":{"type":"enabled","type":null}`, param: "thinking"},
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			payload := []byte(`{"model":"public-model","messages":[{"role":"user","content":"x"}],` + tt.field + `}`)
-			request, err := Parse(payload)
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			_, err = request.MarshalFor(reasoningModel())
-			_ = requireRequestError(t, err, "invalid_parameter", tt.param)
-		})
+	if !bytes.Contains(body, []byte(`"reasoning_effort"`)) || !bytes.Contains(body, []byte(`"thinking"`)) {
+		t.Fatalf("reasoning fields were not preserved: %s", body)
 	}
 }
 
@@ -324,7 +318,7 @@ func reasoningModel() modelcatalog.Model {
 	return model
 }
 
-func TestDeepSeekV4FlashReasoningUsesOpenAIWireFormat(t *testing.T) {
+func TestModelMappingPreservesNativeReasoningFields(t *testing.T) {
 	request, err := Parse([]byte(`{
 		"model":"nvidia/deepseek-ai/deepseek-v4-flash",
 		"messages":[{"role":"user","content":"long task"}],
@@ -333,7 +327,7 @@ func TestDeepSeekV4FlashReasoningUsesOpenAIWireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	model := reasoningModel()
+	model := chatModel()
 	model.PublicID = "nvidia/deepseek-ai/deepseek-v4-flash"
 	model.UpstreamID = "deepseek-ai/deepseek-v4-flash"
 	body, err := request.MarshalFor(model)
@@ -342,13 +336,13 @@ func TestDeepSeekV4FlashReasoningUsesOpenAIWireFormat(t *testing.T) {
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		t.Fatalf("decode body: %v", err)
+		t.Fatalf("decode prepared body: %v", err)
 	}
 	if got := string(fields["model"]); got != `"deepseek-ai/deepseek-v4-flash"` {
 		t.Fatalf("upstream model = %s", got)
 	}
-	if got := string(fields["reasoning_effort"]); got != `"medium"` {
-		t.Fatalf("reasoning_effort = %s", got)
+	if _, exists := fields["thinking"]; !exists {
+		t.Fatal("native thinking field was removed")
 	}
 }
 

@@ -61,7 +61,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	observability.SetModel(request.Context(), parsed.PublicModelID(), parsed.Stream())
-	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
+	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), modelcatalog.Requirements{Kind: modelcatalog.KindChat})
 	if err != nil {
 		writeChatError(writer, modelError(err))
 		return
@@ -76,7 +76,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	// inside Attempt.Run uses the model's configured windows instead of the
 	// global defaults. Matters most for deepseek-v4-flash, whose TTFT on
 	// NVIDIA infrastructure routinely exceeds the fleet-wide default.
-	runCtx := applyModelTimeouts(request.Context(), model)
+	runCtx := applyModelTimeouts(nvidia.WithForwardedHeaders(request.Context(), request.Header), model)
 	result, err := h.attempts.Run(runCtx, model.ID, stream, h.execute(upstreamBody, stream))
 	if err != nil {
 		writeChatError(writer, err)
@@ -94,6 +94,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	copyResponseHeaders(writer.Header(), result.Response.Header)
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
 	_, _ = io.Copy(writer, result.Response.Body)

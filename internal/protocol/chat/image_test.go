@@ -139,13 +139,18 @@ func TestParseEnforcesTotalJSONLimit(t *testing.T) {
 	_ = requireRequestError(t, err, "request_too_large", "body")
 }
 
-func TestMarshalForRejectsImageOnNonVisionModel(t *testing.T) {
+func TestMarshalForwardsImageToModelWithoutLocalVisionHint(t *testing.T) {
 	request, err := Parse(imagePayload("https://example.com/image.png"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	_, err = request.MarshalFor(chatModel())
-	_ = requireRequestError(t, err, "model_capability_unsupported", "messages")
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	if !strings.Contains(string(body), "https://example.com/image.png") {
+		t.Fatal("image URL was not forwarded")
+	}
 }
 
 func TestParseValidatesImageContentShape(t *testing.T) {

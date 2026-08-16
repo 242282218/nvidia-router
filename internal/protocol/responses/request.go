@@ -11,18 +11,6 @@ import (
 
 const maxResponsesBytes = 32 << 20
 
-// validReasoningEfforts mirrors the chat path's allow-list (protocol/chat/rules.go)
-// so Responses callers cannot slip an unsupported effort value through to the
-// upstream without validation. Values are matched case-insensitively.
-var validReasoningEfforts = map[string]struct{}{
-	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {},
-}
-
-func isValidReasoningEffort(effort string) bool {
-	_, ok := validReasoningEfforts[strings.ToLower(strings.TrimSpace(effort))]
-	return ok
-}
-
 // ToChat converts a Responses API request body into an OpenAI Chat Completions
 // request body targeting the resolved upstream model. It owns the full mapping:
 // nothing from the Responses request is forwarded verbatim.
@@ -50,7 +38,7 @@ func ToChat(body []byte, model modelcatalog.Model) ([]byte, error) {
 	if modelID != model.PublicID {
 		return nil, invalidResponses("invalid_parameter", "model", "The model parameter does not match the resolved model.")
 	}
-	messages, requirements, err := convertInput(fields)
+	messages, _, err := convertInput(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -66,10 +54,6 @@ func ToChat(body []byte, model modelcatalog.Model) ([]byte, error) {
 	if len(messages) == 0 {
 		return nil, invalidResponses("missing_required_parameter", "input", "The input parameter is required.")
 	}
-	if requirements.vision && !model.SupportsVision {
-		return nil, unsupportedResponses("input", "Vision inputs are not supported.")
-	}
-
 	chat := map[string]json.RawMessage{}
 	encodedModel, _ := json.Marshal(model.UpstreamID)
 	chat["model"] = encodedModel
@@ -81,9 +65,6 @@ func ToChat(body []byte, model modelcatalog.Model) ([]byte, error) {
 	}
 	if err := mapToolChoice(fields, chat); err != nil {
 		return nil, err
-	}
-	if requirements.tools && !model.SupportsTools {
-		return nil, unsupportedResponses("tools", "The selected model does not support tools.")
 	}
 	if err := mapReasoning(fields, model, chat); err != nil {
 		return nil, err
@@ -347,45 +328,22 @@ func mapToolChoice(fields map[string]json.RawMessage, chat map[string]json.RawMe
 	return nil
 }
 
-func mapReasoning(fields map[string]json.RawMessage, model modelcatalog.Model, chat map[string]json.RawMessage) error {
-	raw, ok := fields["reasoning"]
-	if !ok {
-		// Allow passthrough of a native chat reasoning_effort request field
-		// too, but still gate it on the same capability check as the
-		// structured `reasoning` object so callers cannot bypass model
-		// gating by switching field names. Behaviour for OpenAI-native
-		// callers is unchanged when the model is enabled, and now refuses
-		// consistently when it is not.
-		if native, ok := fields["reasoning_effort"]; ok {
-			if !model.SupportsReasoning || model.ReasoningWireFormat != "openai" {
-				return unsupportedResponses("reasoning_effort", "The selected model does not support reasoning.")
-			}
-			// Validate the effort value the same way the chat path does so an
-			// unsupported string is rejected locally instead of silently passed
-			// through to the upstream (which may accept or choke on it
-			// arbitrarily).
-			var effort string
-			if err := json.Unmarshal(native, &effort); err != nil || !isValidReasoningEffort(effort) {
-				return invalidResponses("invalid_parameter", "reasoning_effort", "The reasoning_effort value is not supported.")
-			}
-			chat["reasoning_effort"] = native
-			return nil
+func mapReasoning(fields map[string]json.RawMessage, _ modelcatalog.Model, chat map[string]json.RawMessage) error {
+	if native, ok := fields["reasoning_effort"]; ok {
+		chat["reasoning_effort"] = native
+	}
+	if raw, ok := fields["reasoning"]; ok {
+		var reasoning struct {
+			Effort json.RawMessage `json:"effort"`
 		}
-		return nil
+		if err := json.Unmarshal(raw, &reasoning); err != nil || len(reasoning.Effort) == 0 {
+			return invalidResponses("invalid_parameter", "reasoning", "The reasoning parameter must include an effort.")
+		}
+		chat["reasoning_effort"] = reasoning.Effort
 	}
-	var reasoning struct {
-		Effort string `json:"effort"`
+	if raw, ok := fields["thinking"]; ok {
+		chat["thinking"] = raw
 	}
-	if err := json.Unmarshal(raw, &reasoning); err != nil || reasoning.Effort == "" {
-		return invalidResponses("invalid_parameter", "reasoning", "The reasoning parameter must include a supported effort.")
-	}
-	if !model.SupportsReasoning || model.ReasoningWireFormat != "openai" {
-		return unsupportedResponses("reasoning", "The selected model does not support reasoning.")
-	}
-	if !isValidReasoningEffort(reasoning.Effort) {
-		return invalidResponses("invalid_parameter", "reasoning", "The reasoning effort value is not supported.")
-	}
-	chat["reasoning_effort"] = jsonRawString(reasoning.Effort)
 	return nil
 }
 

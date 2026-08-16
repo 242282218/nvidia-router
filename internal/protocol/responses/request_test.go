@@ -191,48 +191,18 @@ func nonReasoningModel() modelcatalog.Model {
 	return m
 }
 
-// TestToChatRejectsReasoningEffortOnUnsupportedModel locks in the fix for the
-// audit finding that reasoning_effort bypassed the capability check that the
-// structured `reasoning` object honoured: both field shapes must refuse on a
-// model that does not advertise reasoning support.
-func TestToChatRejectsReasoningEffortOnUnsupportedModel(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-	}{
-		{name: "native reasoning_effort", body: `{"model":"public-chat","input":"hi","reasoning_effort":"high"}`},
-		{name: "structured reasoning", body: `{"model":"public-chat","input":"hi","reasoning":{"effort":"high"}}`},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := ToChat([]byte(tt.body), nonReasoningModel())
-			if err == nil {
-				t.Fatalf("expected error on non-reasoning model, got nil; body=%s", tt.body)
-			}
-			publicError, ok := err.(*apierror.Error)
-			if !ok {
-				t.Fatalf("expected *apierror.Error, got %T: %v", err, err)
-			}
-			if publicError.Code != "unsupported_responses_feature" {
-				t.Fatalf("code = %q, want unsupported_responses_feature; body=%s", publicError.Code, tt.body)
-			}
-			if publicError.Status != 400 {
-				t.Fatalf("status = %d, want 400", publicError.Status)
-			}
-		})
-	}
-}
-
-// TestToChatPassesReasoningEffortOnSupportedModel keeps the OpenAI-native path
-// working when the model advertises reasoning: callers sending reasoning_effort
-// directly should still see it forwarded to the upstream chat request.
-func TestToChatPassesReasoningEffortOnSupportedModel(t *testing.T) {
-	got, err := ToChat([]byte(`{"model":"public-chat","input":"hi","reasoning_effort":"high"}`), chatModel())
-	if err != nil {
-		t.Fatalf("ToChat: %v", err)
-	}
-	if !containsKey(t, got, "reasoning_effort") {
-		t.Fatalf("reasoning_effort not forwarded; got=%s", string(got))
+func TestToChatPassesReasoningWithoutLocalCapabilityGate(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"public-chat","input":"hi","reasoning_effort":"high"}`,
+		`{"model":"public-chat","input":"hi","reasoning":{"effort":"high"}}`,
+	} {
+		got, err := ToChat([]byte(body), nonReasoningModel())
+		if err != nil {
+			t.Fatalf("ToChat(%s): %v", body, err)
+		}
+		if !containsKey(t, got, "reasoning_effort") {
+			t.Fatalf("reasoning_effort not forwarded; got=%s", string(got))
+		}
 	}
 }
 
@@ -407,19 +377,17 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-func TestToChatRejectsUnsupportedReasoningEffortValues(t *testing.T) {
-	// Both the native reasoning_effort field and the structured reasoning object
-	// must reject an unsupported effort locally instead of passing it through to
-	// the upstream (audit P3-1: the chat path validates these, Responses did not).
-	mustFail(t, `{"model":"public-chat","input":"hi","reasoning_effort":"banana"}`, "invalid_parameter")
-	mustFail(t, `{"model":"public-chat","input":"hi","reasoning":{"effort":"banana"}}`, "invalid_parameter")
-	// Supported values still pass on a reasoning-capable model.
+func TestToChatPassesUnknownReasoningEffortValues(t *testing.T) {
 	for _, body := range []string{
-		`{"model":"public-chat","input":"hi","reasoning_effort":"high"}`,
-		`{"model":"public-chat","input":"hi","reasoning":{"effort":"low"}}`,
+		`{"model":"public-chat","input":"hi","reasoning_effort":"banana"}`,
+		`{"model":"public-chat","input":"hi","reasoning":{"effort":"vendor-native"}}`,
 	} {
-		if _, err := ToChat([]byte(body), chatModel()); err != nil {
+		got, err := ToChat([]byte(body), chatModel())
+		if err != nil {
 			t.Fatalf("ToChat(%s): %v", body, err)
+		}
+		if !containsKey(t, got, "reasoning_effort") {
+			t.Fatalf("reasoning_effort not forwarded; got=%s", string(got))
 		}
 	}
 }

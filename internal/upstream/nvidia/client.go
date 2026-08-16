@@ -46,6 +46,31 @@ const xkStickySessionHMACKeySize = 32
 
 type stickySessionKeyCtx struct{}
 
+type forwardedHeadersCtx struct{}
+
+var forwardedHeaderAllowlist = map[string]struct{}{
+	"OpenAI-Organization": {}, "OpenAI-Project": {},
+	"Traceparent": {}, "Tracestate": {}, "Baggage": {},
+}
+
+func WithForwardedHeaders(ctx context.Context, headers http.Header) context.Context {
+	copy := make(http.Header)
+	for name := range forwardedHeaderAllowlist {
+		if values := headers.Values(name); len(values) > 0 {
+			copy[name] = append([]string(nil), values...)
+		}
+	}
+	return context.WithValue(ctx, forwardedHeadersCtx{}, copy)
+}
+
+func applyForwardedHeaders(request *http.Request, ctx context.Context) {
+	if headers, ok := ctx.Value(forwardedHeadersCtx{}).(http.Header); ok {
+		for name, values := range headers {
+			request.Header[name] = append([]string(nil), values...)
+		}
+	}
+}
+
 // WithStickySession carries the NVIDIA key id that should pin the pool's exit for
 // this request. It is read in proxy mode only; direct mode ignores it. The label sent
 // on the outer CONNECT is derived from this id (see stickySessionLabel), so callers

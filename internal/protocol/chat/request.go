@@ -75,9 +75,6 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 		return nil, err
 	}
 	fields := cloneFields(r.fields)
-	if err := normalizeReasoning(fields); err != nil {
-		return nil, err
-	}
 	mappedModel, err := json.Marshal(model.UpstreamID)
 	if err != nil {
 		return nil, fmt.Errorf("marshal upstream model ID: %w", err)

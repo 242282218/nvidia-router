@@ -509,11 +509,8 @@ func TestDeepSeekV4FlashReasoningStreamThroughRouter(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("upstream requests = %d, want 1", len(requests))
 	}
-	if !strings.Contains(string(requests[0].Body), `"reasoning_effort":"medium"`) {
-		t.Fatalf("upstream body did not normalize native thinking: %s", requests[0].Body)
-	}
-	if strings.Contains(string(requests[0].Body), `"thinking"`) {
-		t.Fatalf("upstream body still carries native thinking field: %s", requests[0].Body)
+	if !strings.Contains(string(requests[0].Body), `"thinking"`) {
+		t.Fatalf("upstream body did not preserve native thinking: %s", requests[0].Body)
 	}
 }
 
@@ -1025,7 +1022,7 @@ func newTLSNVIDIAUpstream(t *testing.T) *tlsUpstreamFixture {
 				// reasoning model (normalized thinking -> reasoning_effort), emit a
 				// reasoning_content delta before the answer content so the proxy
 				// relay path is exercised end to end.
-				if bytes.Contains(body, []byte(`"reasoning_effort"`)) {
+				if bytes.Contains(body, []byte(`"thinking"`)) || bytes.Contains(body, []byte(`"reasoning_effort"`)) {
 					_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"proxied-reasoning\"}}]}\n\n")
 					if flusher, ok := writer.(http.Flusher); ok {
 						flusher.Flush()

@@ -435,7 +435,7 @@ func TestProxyUpstream529RetriesNextKeyWithoutTransportReplay(t *testing.T) {
 
 // TestProxyDeepSeekV4FlashReasoningStream proves the full DeepSeek v4-flash
 // long-task path through the proxy: the native `thinking` parameter is
-// normalized to the OpenAI reasoning wire format upstream, and the SSE
+// forwarded unchanged upstream, and the SSE
 // reasoning_content relay reaches the client over the CONNECT tunnel.
 func TestProxyDeepSeekV4FlashReasoningStream(t *testing.T) {
 	fixture := newProxyFixture(t)
@@ -471,11 +471,8 @@ func TestProxyDeepSeekV4FlashReasoningStream(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("TLS upstream requests = %d, want 1", len(requests))
 	}
-	if !strings.Contains(requests[0].Body, `"reasoning_effort":"medium"`) {
-		t.Fatalf("upstream body did not normalize native thinking: %s", requests[0].Body)
-	}
-	if strings.Contains(requests[0].Body, `"thinking"`) {
-		t.Fatalf("upstream body still carries native thinking field: %s", requests[0].Body)
+	if !strings.Contains(requests[0].Body, `"thinking"`) {
+		t.Fatalf("upstream body did not preserve native thinking: %s", requests[0].Body)
 	}
 }
 
