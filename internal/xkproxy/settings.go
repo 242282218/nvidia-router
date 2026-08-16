@@ -17,6 +17,7 @@ import (
 )
 
 const proxyPoolAuthKeyAAD = "proxy-pool-auth-key:v1"
+const proxyPoolUpstreamURLAAD = "proxy-pool-upstream-url:v1"
 const proxyPoolConfigPrefix = "xkcfg:v1:"
 const builtInProxyURLSentinel = "__built_in_xk_pool__"
 
@@ -114,13 +115,15 @@ type persistedPoolConfig struct {
 }
 
 type storedProxyConfig struct {
-	enabled    bool
-	proxyURL   string
-	poolConfig string
-	nonce      []byte
-	ciphertext []byte
-	version    int
-	keyVersion int
+	enabled               bool
+	proxyURL              string
+	poolConfig            string
+	nonce                 []byte
+	ciphertext            []byte
+	upstreamURLNonce      []byte
+	upstreamURLCiphertext []byte
+	version               int
+	keyVersion            int
 }
 
 func NewSettingsService(ctx context.Context, db *sql.DB, keys *crypto.KeySet, env EnvironmentConfig, poolCfg *CollectorConfig, base *http.Transport, logger *slog.Logger) (*SettingsService, error) {
@@ -260,16 +263,18 @@ func (s *SettingsService) loadCurrent(ctx context.Context) (proxyConfig, error) 
 	if stored == nil {
 		return s.environmentProxyConfig()
 	}
-	return s.databaseProxyConfig(*stored)
+	return s.databaseProxyConfig(ctx, *stored)
 }
 
 func (s *SettingsService) loadStored(ctx context.Context) (*storedProxyConfig, error) {
 	var enabled int
 	var stored storedProxyConfig
 	err := s.db.QueryRowContext(ctx, `
-		SELECT enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext, version, key_version
+		SELECT enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext,
+			upstream_url_nonce, upstream_url_ciphertext, version, key_version
 		FROM proxy_pool_settings WHERE id = 1`).Scan(
-		&enabled, &stored.proxyURL, &stored.poolConfig, &stored.nonce, &stored.ciphertext, &stored.version, &stored.keyVersion,
+		&enabled, &stored.proxyURL, &stored.poolConfig, &stored.nonce, &stored.ciphertext,
+		&stored.upstreamURLNonce, &stored.upstreamURLCiphertext, &stored.version, &stored.keyVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -284,31 +289,51 @@ func (s *SettingsService) loadStored(ctx context.Context) (*storedProxyConfig, e
 	return &stored, nil
 }
 
-func (s *SettingsService) databaseProxyConfig(stored storedProxyConfig) (proxyConfig, error) {
-	if s.poolCfg == nil && stored.proxyURL != "" && stored.proxyURL != builtInProxyURLSentinel {
+func (s *SettingsService) databaseProxyConfig(ctx context.Context, stored storedProxyConfig) (proxyConfig, error) {
+	isBuiltIn := s.poolCfg != nil || stored.proxyURL == builtInProxyURLSentinel || stored.poolConfig != "" || len(stored.upstreamURLNonce) > 0 || len(stored.upstreamURLCiphertext) > 0
+	if s.poolCfg != nil && stored.proxyURL != "" && stored.proxyURL != builtInProxyURLSentinel {
+		// Migrate the legacy external record to the runtime-configured built-in
+		// pool before the external URL can be rejected by the built-in boundary.
+		config := makeProxyConfig(stored.enabled, nil, "", SourceDatabase)
+		config.poolCfg = cloneCollectorConfig(s.poolCfg)
+		config = applyPoolSnapshot(config)
+		if err := s.persist(ctx, config); err != nil {
+			return proxyConfig{}, fmt.Errorf("migrate legacy proxy settings: %w", err)
+		}
+		return config, nil
+	}
+	if !isBuiltIn && stored.proxyURL != "" {
 		return proxyConfig{}, errors.New("load proxy settings: external proxy settings are unsupported; configure the built-in XApi pool")
 	}
-	if s.poolCfg != nil || stored.proxyURL == builtInProxyURLSentinel {
+	if isBuiltIn {
 		if stored.proxyURL != "" && stored.proxyURL != builtInProxyURLSentinel {
 			return proxyConfig{}, errors.New("load proxy settings: built-in mode contains an invalid fixed proxy URL")
 		}
-		if s.poolCfg == nil {
-			if stored.enabled {
-				return proxyConfig{}, errors.New("load proxy settings: enabled built-in pool requires runtime XApi configuration")
-			}
-			return makeProxyConfig(false, nil, "", SourceDatabase), nil
+		upstreamURL, err := s.decryptUpstreamURL(stored)
+		if err != nil {
+			return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
+		}
+		if upstreamURL == "" && s.poolCfg != nil {
+			upstreamURL = s.poolCfg.UpstreamURL
 		}
 		config := makeProxyConfig(stored.enabled, nil, "", SourceDatabase)
 		config.poolCfg = cloneCollectorConfig(s.poolCfg)
+		if config.poolCfg == nil {
+			config.poolCfg = defaultCollectorConfig()
+		}
+		config.poolCfg.UpstreamURL = upstreamURL
 		if len(stored.ciphertext) > 0 {
 			return proxyConfig{}, errors.New("load proxy settings: built-in pool contains persisted credential data")
 		}
 		if stored.poolConfig != "" {
-			poolConfig, err := collectorConfigFromPersisted(stored.poolConfig, s.poolCfg.UpstreamURL)
+			poolConfig, err := collectorConfigFromPersisted(stored.poolConfig, upstreamURL)
 			if err != nil {
 				return proxyConfig{}, fmt.Errorf("load proxy settings: %w", err)
 			}
 			config.poolCfg = poolConfig
+		}
+		if stored.enabled && strings.TrimSpace(config.poolCfg.UpstreamURL) == "" {
+			return proxyConfig{}, errors.New("load proxy settings: enabled built-in pool requires XApi upstream configuration")
 		}
 		return applyPoolSnapshot(config), nil
 	}
@@ -355,10 +380,26 @@ func (s *SettingsService) decryptAuthKey(keyVersion int, nonce, ciphertext []byt
 	return string(plaintext), nil
 }
 
-func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
-	if patch.UpstreamURL != nil {
-		return proxyConfig{}, invalidSettings("proxy pool upstream URL can only be configured at startup")
+func (s *SettingsService) decryptUpstreamURL(stored storedProxyConfig) (string, error) {
+	if len(stored.upstreamURLNonce) == 0 && len(stored.upstreamURLCiphertext) == 0 {
+		return "", nil
 	}
+	if len(stored.upstreamURLNonce) == 0 || len(stored.upstreamURLCiphertext) == 0 {
+		return "", errors.New("proxy upstream URL data is incomplete")
+	}
+	plaintext, err := s.keys.DecryptVersion(stored.keyVersion, stored.upstreamURLCiphertext, stored.upstreamURLNonce, proxyPoolUpstreamURLAAD)
+	if err != nil {
+		return "", fmt.Errorf("decrypt proxy upstream URL: %w", err)
+	}
+	defer crypto.Zero(plaintext)
+	upstreamURL := strings.TrimSpace(string(plaintext))
+	if _, err := parseUpstreamURL(upstreamURL); err != nil {
+		return "", errors.New("proxy upstream URL is invalid")
+	}
+	return upstreamURL, nil
+}
+
+func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
 	if strings.TrimSpace(patch.ProxyURL) != "" || strings.TrimSpace(patch.AuthKey) != "" {
 		return proxyConfig{}, invalidSettings("external proxy settings are unsupported; configure the built-in XApi pool")
 	}
@@ -367,7 +408,7 @@ func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
 	if patch.Enabled != nil {
 		nextEnabled = *patch.Enabled
 	}
-	if s.poolCfg != nil || current.poolCfg != nil {
+	if s.poolCfg != nil || current.poolCfg != nil || patch.UpstreamURL != nil || current.snapshot.Mode == "built-in" {
 		if strings.TrimSpace(patch.ProxyURL) != "" || strings.TrimSpace(patch.AuthKey) != "" || patch.ClearAuthKey {
 			return proxyConfig{}, invalidSettings("built-in mode does not accept fixed proxy credentials")
 		}
@@ -375,8 +416,17 @@ func (s *SettingsService) applyPatch(patch Patch) (proxyConfig, error) {
 		if poolConfig == nil {
 			poolConfig = cloneCollectorConfig(s.poolCfg)
 		}
+		if poolConfig == nil {
+			poolConfig = defaultCollectorConfig()
+		}
 		if err := applyPoolPatch(poolConfig, patch); err != nil {
 			return proxyConfig{}, err
+		}
+		if patch.UpstreamURL != nil && strings.TrimSpace(*patch.UpstreamURL) == "" && nextEnabled {
+			return proxyConfig{}, invalidSettings("clear upstream URL requires proxy pool to be disabled")
+		}
+		if nextEnabled && strings.TrimSpace(poolConfig.UpstreamURL) == "" {
+			return proxyConfig{}, invalidSettings("enabled built-in pool requires XApi upstream URL")
 		}
 		config := makeProxyConfig(nextEnabled, nil, "", SourceDatabase)
 		config.poolCfg = poolConfig
@@ -438,6 +488,7 @@ func (s *SettingsService) newManager(config proxyConfig) (*Manager, error) {
 
 func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error {
 	var nonce, ciphertext []byte
+	var upstreamURLNonce, upstreamURLCiphertext []byte
 	poolConfig := ""
 	if config.poolCfg != nil {
 		encoded, err := marshalPoolConfig(*config.poolCfg)
@@ -445,6 +496,21 @@ func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error
 			return err
 		}
 		poolConfig = encoded
+		if strings.TrimSpace(config.poolCfg.UpstreamURL) != "" {
+			upstreamURL := strings.TrimSpace(config.poolCfg.UpstreamURL)
+			if _, err := parseUpstreamURL(upstreamURL); err != nil {
+				return err
+			}
+			plaintext := []byte(upstreamURL)
+			defer crypto.Zero(plaintext)
+			var err error
+			upstreamURLCiphertext, upstreamURLNonce, err = s.keys.Encrypt(plaintext, proxyPoolUpstreamURLAAD)
+			if err != nil {
+				return fmt.Errorf("encrypt proxy upstream URL: %w", err)
+			}
+			defer crypto.Zero(upstreamURLNonce)
+			defer crypto.Zero(upstreamURLCiphertext)
+		}
 	} else if config.authKey != "" {
 		plaintext := []byte(config.authKey)
 		defer crypto.Zero(plaintext)
@@ -457,23 +523,27 @@ func (s *SettingsService) persist(ctx context.Context, config proxyConfig) error
 		defer crypto.Zero(ciphertext)
 	}
 	proxyURL := config.snapshot.ProxyURL
-	if config.poolCfg != nil && config.snapshot.Enabled {
+	if config.poolCfg != nil {
 		proxyURL = builtInProxyURLSentinel
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO proxy_pool_settings (
-			id, enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
-			) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?)
+			id, enabled, proxy_url, pool_config, auth_key_nonce, auth_key_ciphertext,
+			upstream_url_nonce, upstream_url_ciphertext, version, key_version, updated_at
+			) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 			enabled = excluded.enabled,
 			proxy_url = excluded.proxy_url,
 			auth_key_nonce = excluded.auth_key_nonce,
 			auth_key_ciphertext = excluded.auth_key_ciphertext,
+			upstream_url_nonce = excluded.upstream_url_nonce,
+			upstream_url_ciphertext = excluded.upstream_url_ciphertext,
 				pool_config = excluded.pool_config,
 				version = excluded.version,
 				key_version = excluded.key_version,
 				updated_at = excluded.updated_at`,
-		boolInt(config.snapshot.Enabled), proxyURL, poolConfig, nonce, ciphertext, s.keys.ActiveVersion(), proxyTimestamp())
+		boolInt(config.snapshot.Enabled), proxyURL, poolConfig, nonce, ciphertext,
+		upstreamURLNonce, upstreamURLCiphertext, s.keys.ActiveVersion(), proxyTimestamp())
 	if err != nil {
 		return fmt.Errorf("persist proxy settings: %w", err)
 	}
@@ -494,6 +564,10 @@ func validatePoolConfig(cfg CollectorConfig) error {
 	if strings.TrimSpace(cfg.UpstreamURL) == "" {
 		return errors.New("proxy pool: upstream URL is required")
 	}
+	return validatePoolSettings(cfg)
+}
+
+func validatePoolSettings(cfg CollectorConfig) error {
 	if strings.TrimSpace(cfg.ValidationURL) == "" {
 		return errors.New("proxy pool: validation URL is required")
 	}
@@ -543,6 +617,21 @@ func cloneEnvironmentConfig(config EnvironmentConfig) EnvironmentConfig {
 		clone.URL = &urlCopy
 	}
 	return clone
+}
+
+const defaultPoolValidationURL = "https://integrate.api.nvidia.com"
+
+func defaultCollectorConfig() *CollectorConfig {
+	return &CollectorConfig{
+		UpstreamTimeout:   4 * time.Second,
+		ValidationURL:     defaultPoolValidationURL,
+		ValidationStatus:  http.StatusNotFound,
+		ValidationTimeout: 5 * time.Second,
+		Interval:          5 * time.Second,
+		ProxyTTL:          120 * time.Second,
+		ExpectedQty:       2,
+		Concurrency:       2,
+	}
 }
 
 func (s *SettingsService) environmentProxyConfig() (proxyConfig, error) {
@@ -674,7 +763,12 @@ func collectorConfigFromPersistedValues(value persistedPoolConfig, upstreamURL s
 		}
 	}
 	config := &CollectorConfig{UpstreamURL: upstreamURL, ValidationURL: value.ValidationURL, ValidationStatus: value.ValidationStatus, UpstreamTimeout: upstreamTimeout, ValidationTimeout: validationTimeout, MaxLatency: maxLatency, Interval: interval, ProxyTTL: proxyTTL, ExpectedQty: value.ExpectedQty, Concurrency: value.Concurrency}
-	if err := validatePoolConfig(*config); err != nil {
+	if strings.TrimSpace(config.UpstreamURL) != "" {
+		if _, err := parseUpstreamURL(config.UpstreamURL); err != nil {
+			return nil, invalidSettings("upstream URL is invalid")
+		}
+	}
+	if err := validatePoolSettings(*config); err != nil {
 		return nil, invalidSettings(err.Error())
 	}
 	return config, nil
@@ -686,9 +780,17 @@ func applyPoolPatch(config *CollectorConfig, patch Patch) error {
 	}
 	if patch.UpstreamURL != nil {
 		config.UpstreamURL = strings.TrimSpace(*patch.UpstreamURL)
+		if config.UpstreamURL != "" {
+			if _, err := parseUpstreamURL(config.UpstreamURL); err != nil {
+				return err
+			}
+		}
 	}
 	if patch.ValidationURL != nil {
 		config.ValidationURL = strings.TrimSpace(*patch.ValidationURL)
+		if config.ValidationURL == "" {
+			config.ValidationURL = defaultPoolValidationURL
+		}
 	}
 	if patch.ValidationStatus != nil {
 		config.ValidationStatus = *patch.ValidationStatus
@@ -722,7 +824,22 @@ func applyPoolPatch(config *CollectorConfig, patch Patch) error {
 			}
 		}
 	}
-	return validatePoolConfig(*config)
+	return validatePoolSettings(*config)
+}
+
+func parseUpstreamURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", invalidSettings("XApi upstream URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+		return "", invalidSettings("XApi upstream URL must be an absolute HTTP or HTTPS URL without userinfo or fragment")
+	}
+	if parsed.RawQuery == "" {
+		return "", invalidSettings("XApi upstream URL must include provider query credentials")
+	}
+	return raw, nil
 }
 
 func parseProxyURL(raw string) (*url.URL, error) {

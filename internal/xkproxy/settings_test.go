@@ -291,7 +291,128 @@ func TestSettingsServicePoolModePersistsSafeSettingsAndUsesRuntimeXAPI(t *testin
 	}
 }
 
-func TestSettingsServiceRejectsRuntimeUpstreamURLPatch(t *testing.T) {
+func TestSettingsServicePersistsEncryptedUpstreamURLWithoutEnvironment(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	upstreamURL := "https://api.example.test/tools/XApi.ashx?apikey=fixture&sign=fixture"
+	disabled := false
+	updated, err := service.Update(context.Background(), Patch{Enabled: &disabled, UpstreamURL: &upstreamURL, ValidationURL: stringPointer("")})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Enabled || updated.Mode != "built-in" || !updated.UpstreamConfigured || updated.UpstreamEndpoint != "https://api.example.test/tools/XApi.ashx" || updated.ValidationURL != "https://integrate.api.nvidia.com" {
+		t.Fatalf("updated snapshot = %#v", updated)
+	}
+
+	var nonce, ciphertext []byte
+	var poolConfig string
+	if err := db.QueryRow("SELECT upstream_url_nonce, upstream_url_ciphertext, pool_config FROM proxy_pool_settings WHERE id = 1").Scan(&nonce, &ciphertext, &poolConfig); err != nil {
+		t.Fatalf("read encrypted upstream URL: %v", err)
+	}
+	if len(nonce) == 0 || len(ciphertext) == 0 {
+		t.Fatal("upstream URL was not encrypted")
+	}
+	if strings.Contains(string(ciphertext), "fixture") || strings.Contains(poolConfig, "api.example.test") {
+		t.Fatal("upstream URL was persisted in plaintext")
+	}
+
+	reloaded, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	t.Cleanup(reloaded.Close)
+	snapshot, err := reloaded.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("reloaded Snapshot: %v", err)
+	}
+	if snapshot.UpstreamEndpoint != updated.UpstreamEndpoint || !snapshot.UpstreamConfigured || snapshot.Enabled {
+		t.Fatalf("reloaded snapshot = %#v", snapshot)
+	}
+}
+
+func TestSettingsServiceRejectsInvalidUpstreamURLPatch(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	for _, test := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "missing query", url: "https://api.example.test/tools/XApi.ashx", want: "query"},
+		{name: "unsupported scheme", url: "ftp://api.example.test/tools/XApi.ashx?apikey=fixture", want: "HTTP"},
+		{name: "userinfo", url: "https://user:pass@api.example.test/tools/XApi.ashx?apikey=fixture", want: "userinfo"},
+		{name: "fragment", url: "https://api.example.test/tools/XApi.ashx?apikey=fixture#fragment", want: "fragment"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstreamURL := test.url
+			_, err := service.Update(context.Background(), Patch{UpstreamURL: &upstreamURL})
+			if err == nil || !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), "startup") {
+				t.Fatalf("Update error = %v, want safe %q validation", err, test.want)
+			}
+			if strings.Contains(err.Error(), "fixture") || strings.Contains(err.Error(), test.url) {
+				t.Fatal("validation error leaked upstream credentials")
+			}
+		})
+	}
+}
+
+func TestSettingsServiceClearsUpstreamURLOnlyWhenDisabled(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	upstreamURL := "https://api.example.test/tools/XApi.ashx?apikey=fixture"
+	disabled := false
+	if _, err := service.Update(context.Background(), Patch{Enabled: &disabled, UpstreamURL: &upstreamURL}); err != nil {
+		t.Fatalf("configure disabled pool: %v", err)
+	}
+	emptyURL := ""
+	enabled := true
+	if _, err := service.Update(context.Background(), Patch{Enabled: &enabled, UpstreamURL: &emptyURL}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("clear while enabled error = %v, want disabled validation", err)
+	}
+	cleared, err := service.Update(context.Background(), Patch{UpstreamURL: &emptyURL})
+	if err != nil {
+		t.Fatalf("clear upstream URL: %v", err)
+	}
+	if cleared.UpstreamConfigured || cleared.UpstreamEndpoint != "" {
+		t.Fatalf("cleared snapshot = %#v", cleared)
+	}
+	var nonce, ciphertext []byte
+	if err := db.QueryRow("SELECT upstream_url_nonce, upstream_url_ciphertext FROM proxy_pool_settings WHERE id = 1").Scan(&nonce, &ciphertext); err != nil {
+		t.Fatalf("read cleared upstream URL: %v", err)
+	}
+	if len(nonce) != 0 || len(ciphertext) != 0 {
+		t.Fatal("cleared upstream URL ciphertext remains")
+	}
+}
+
+func TestSettingsServiceUpdatesRuntimeUpstreamURLPatch(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {
 		t.Fatalf("database.Open: %v", err)
@@ -306,9 +427,14 @@ func TestSettingsServiceRejectsRuntimeUpstreamURLPatch(t *testing.T) {
 		t.Fatalf("NewSettingsService: %v", err)
 	}
 	t.Cleanup(service.Close)
-	upstreamURL := "http://127.0.0.1:2375/metadata"
-	if _, err := service.Update(context.Background(), Patch{UpstreamURL: &upstreamURL}); err == nil || !strings.Contains(err.Error(), "startup") {
-		t.Fatalf("runtime upstream URL patch error = %v, want startup-only validation", err)
+	upstreamURL := "https://new.example.test/tools/XApi.ashx?apikey=fixture"
+	disabled := false
+	updated, err := service.Update(context.Background(), Patch{Enabled: &disabled, UpstreamURL: &upstreamURL})
+	if err != nil {
+		t.Fatalf("runtime upstream URL patch: %v", err)
+	}
+	if updated.UpstreamEndpoint != "https://new.example.test/tools/XApi.ashx" || updated.Enabled {
+		t.Fatalf("updated snapshot = %#v", updated)
 	}
 }
 
@@ -456,7 +582,7 @@ func TestUpstreamClientFetchUsesConfiguredExpectedQty(t *testing.T) {
 	}
 }
 
-func TestSettingsServicePoolModeRequiresRuntimeXAPIWhenEnabled(t *testing.T) {
+func TestSettingsServicePoolModeLoadsPersistedXAPIWithoutRuntimeConfig(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {
 		t.Fatalf("database.Open: %v", err)
@@ -477,8 +603,17 @@ func TestSettingsServicePoolModeRequiresRuntimeXAPIWhenEnabled(t *testing.T) {
 	}
 	service.Close()
 
-	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil || !strings.Contains(err.Error(), "runtime XApi") {
-		t.Fatalf("reload without runtime XApi error = %v", err)
+	reloaded, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("reload without runtime XApi: %v", err)
+	}
+	t.Cleanup(reloaded.Close)
+	snapshot, err := reloaded.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("reloaded Snapshot: %v", err)
+	}
+	if !snapshot.Enabled || snapshot.Source != SourceDatabase || snapshot.UpstreamEndpoint != "https://provider.example/XApi" {
+		t.Fatalf("reloaded snapshot = %#v", snapshot)
 	}
 }
 
@@ -497,6 +632,46 @@ func TestSettingsServiceRejectsLegacyExternalDatabaseConfiguration(t *testing.T)
 	}
 	if _, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, nil, http.DefaultTransport.(*http.Transport), discardProxyLogger()); err == nil || !strings.Contains(err.Error(), "external proxy settings are unsupported") {
 		t.Fatalf("legacy external settings error = %v", err)
+	}
+}
+
+func TestSettingsServiceMigratesLegacyExternalDatabaseToBuiltInPool(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("database.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+		INSERT INTO proxy_pool_settings (
+			id, enabled, proxy_url, auth_key_nonce, auth_key_ciphertext, version, key_version, updated_at
+		) VALUES (1, 0, 'http://legacy-proxy:8080', x'01', x'02', 1, 1, '2026-08-14T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("insert legacy settings: %v", err)
+	}
+	poolCfg := &CollectorConfig{
+		UpstreamURL: "https://provider.example/XApi?apikey=fixture", ValidationURL: "https://integrate.api.nvidia.com/v1",
+		ValidationStatus: 404, UpstreamTimeout: time.Second, ValidationTimeout: time.Second,
+		Interval: 10 * time.Second, ProxyTTL: time.Minute, ExpectedQty: 2, Concurrency: 1,
+	}
+	service, err := NewSettingsService(context.Background(), db, testProxyKeySet(t, 1), EnvironmentConfig{}, poolCfg, http.DefaultTransport.(*http.Transport), discardProxyLogger())
+	if err != nil {
+		t.Fatalf("NewSettingsService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	snapshot, err := service.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snapshot.Enabled || snapshot.Mode != "built-in" || snapshot.Source != SourceDatabase || snapshot.ProxyURL != "" || snapshot.UpstreamEndpoint != "https://provider.example/XApi" {
+		t.Fatalf("migrated snapshot = %#v", snapshot)
+	}
+	var proxyURL string
+	var authCiphertext []byte
+	if err := db.QueryRow("SELECT proxy_url, auth_key_ciphertext FROM proxy_pool_settings WHERE id = 1").Scan(&proxyURL, &authCiphertext); err != nil {
+		t.Fatalf("read migrated settings: %v", err)
+	}
+	if proxyURL != builtInProxyURLSentinel || len(authCiphertext) != 0 {
+		t.Fatalf("migrated row = proxy %q auth ciphertext %d bytes", proxyURL, len(authCiphertext))
 	}
 }
 

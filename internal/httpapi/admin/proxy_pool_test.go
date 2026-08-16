@@ -68,8 +68,11 @@ func TestProxyPoolHandlerPreservesPatchFieldPresence(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPatch, "/admin/api/proxy-pool", strings.NewReader(`{"upstream_url":"http://127.0.0.1:2375/metadata"}`)))
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("runtime upstream URL status = %d, want 400", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("upstream URL status = %d, want 200", response.Code)
+	}
+	if service.patch.UpstreamURL == nil || *service.patch.UpstreamURL != "http://127.0.0.1:2375/metadata" {
+		t.Fatalf("upstream URL patch = %#v", service.patch)
 	}
 }
 
