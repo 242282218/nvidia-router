@@ -1,10 +1,32 @@
 # 项目约定
 
+## 强制部署环境
+
+本项目所有部署、真实联调、重启、回滚和线上状态检查，必须在以下国内环境执行：
+
+`D:\PROJECT_ZZZZZZZZZ\服务器管理\hangzhou2-2`
+
+执行前必须依次读取并遵守：
+
+1. `D:\PROJECT_ZZZZZZZZZ\服务器管理\AGENTS.md`
+2. `D:\PROJECT_ZZZZZZZZZ\服务器管理\hangzhou2-2\AGENTS.md`
+3. `D:\PROJECT_ZZZZZZZZZ\服务器管理\hangzhou2-2\memory.md`
+4. 本项目部署脚本、Compose 文件和部署说明
+
+远程连接必须使用目标目录提供的配置和主机别名：
+
+```powershell
+Set-Location 'D:\PROJECT_ZZZZZZZZZ\服务器管理\hangzhou2-2'
+ssh -F .\ssh_config_local hangzhou2-2
+```
+
+不得使用其他服务器目录或国外环境执行本项目部署和星空代理真实联调。部署前先检查远端服务、端口和数据库状态；每一步改动后必须验证健康检查、关键端口和业务接口。XApi 完整地址、provider 凭据、SSH 私钥及其他密钥只允许通过运行时 Secret 注入，不得写入 Git、规则文件、脚本、`memory.md`、日志或命令输出。
+
 ## 测试机信息
 
 ### 国内测试机（星空代理联调用，必选）
 
-星空代理池的上游 XApi 仅支持国内出口，代理池真实联调必须使用本机；`nvida反代` 只连接代理池的标准 HTTP 正向代理端口。
+星空代理池的上游 XApi 仅支持国内出口，代理真实联调必须使用本机；当前 `nvida反代` 单体内置 XApi 采集、验证、池管理和 CONNECT，不连接独立代理池服务。
 
 | 项 | 值 |
 |---|---|
@@ -15,7 +37,7 @@
 | 用途 | 星空代理池真实联调、NVIDIA 路由器容器部署、真实联调 |
 | 环境 | Ubuntu 24.04 (kernel 6.8), Docker 29.1.5, Python 3.12, 无 Go（用 Docker 构建） |
 
-代理池项目默认监听 `:8080`，代理认证使用用户名 `proxy` 和代理池 `PROXY_AUTH_KEY`。两个项目独立部署时，通过 Docker 网络或可达宿主机地址连接。
+完整 XApi 地址和 provider 凭据只注入 `nvida反代` 运行时环境，不写入 Git、数据库、日志或文档。
 
 ### 国外测试机（仅通用部署，不用于星空代理）
 
@@ -30,10 +52,8 @@
 
 ## 星空代理池联调要点
 
-- 先在 `D:\PROJECT_ZZZZZZZZZ\星空代理池` 启动代理池，并确认 `http://127.0.0.1:8080/healthz` 正常。
-- `nvida反代` 使用 `NVIDIA_ROUTER_XK_PROXY_URL` 连接代理池，使用 `NVIDIA_ROUTER_XK_PROXY_AUTH_KEY` 注入代理认证 Key；不再配置或调用 XApi 提取 URL。
-- 代理池的 XApi 订单凭据只注入代理池运行时环境；代理认证 Key 和 NVIDIA Key 只注入各自运行时环境，不写入 Git、日志或文档。
-- 真实联调必须确认代理池已健康、认证成功、CONNECT 链路经过代理池，且代理池未就绪时 `nvida反代` 不会静默直连。
+- 在国内测试机运行单体 `nvida反代`，通过运行时 Secret 注入 `NVIDIA_ROUTER_XK_UPSTREAM_URL`。
+- 真实联调必须确认 XApi 采集、代理验证、池内轮换和 CONNECT 链路成功；池未就绪时 `nvida反代` 不会静默直连。
 
 ## 连接方式
 

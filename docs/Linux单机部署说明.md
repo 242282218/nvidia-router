@@ -30,9 +30,8 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 ```dotenv
 NVIDIA_ROUTER_MASTER_KEY=替换为实际主密钥
 NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=替换为至少 12 个字符的随机密码
-# 星空代理池独立部署时填写其可达的 HTTP 正向代理地址
-# NVIDIA_ROUTER_XK_PROXY_URL=http://proxy-pool:8080
-# NVIDIA_ROUTER_XK_PROXY_AUTH_KEY=替换为星空代理池的 PROXY_AUTH_KEY
+# 内置采集器：可通过运行时 Secret Provider 注入，也可在管理端加密保存
+# NVIDIA_ROUTER_XK_UPSTREAM_URL=可选的运行时回退配置，不写入仓库
 # HTTPS 反向代理部署时启用以下配置
 # NVIDIA_ROUTER_ADMIN_SECURE_COOKIE=true
 # NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN=https://admin.example.com
@@ -41,7 +40,7 @@ NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=替换为至少 12 个字符的随机密码
 
 `.env` 只应由受信用户读取；不要将包含真实主密钥或密码的文件提交到 Git。Compose 还会使用以下固定值：容器监听 `0.0.0.0:3756`，数据目录 `/data`，临时目录 `/tmp`，宿主端口默认只绑定 `127.0.0.1:3756`。
 
-星空代理池是独立项目和独立服务。它负责上游 XApi、代理出口轮换、测活和过期处理；本项目只通过 `NVIDIA_ROUTER_XK_PROXY_URL` 连接其 `8080` 正向代理，并使用相同的 `PROXY_AUTH_KEY` 作为 `NVIDIA_ROUTER_XK_PROXY_AUTH_KEY`。代理地址非空但认证 Key 缺失时，路由器拒绝启动；代理池不可用时不会回退直连。管理员登录后也可在“代理池”页面保存配置，数据库配置优先于环境变量，认证 Key 使用主密钥加密保存。
+内置代理池在 `nvida反代` 单体进程内完成 XApi 采集、代理验证、TTL 管理、轮换和 CONNECT。XApi 完整地址可由运行时 Secret 注入，或由管理员页面提交后使用主密钥加密保存；日志和 API 响应只保留脱敏 endpoint。代理池未就绪时不会回退直连。
 
 ## 启动和首次登录
 
