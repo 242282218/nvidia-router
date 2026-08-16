@@ -111,6 +111,43 @@ func TestResponsesNonStreamText(t *testing.T) {
 	}
 }
 
+func TestResponsesNonstreamExecutionMarksSemanticCompletionAfterConversion(t *testing.T) {
+	body := &semanticMarkBody{ReadCloser: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))}
+	client := &semanticMarkProvider{response: &http.Response{StatusCode: http.StatusOK, Body: body}}
+	model := modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true}
+	response, err := NewResponses(nil, nil, client).execute([]byte(`{"model":"vendor/chat"}`), "resp_1", model, false)(
+		context.Background(), 1, nil, &router.CommitState{},
+	)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !body.completed {
+		t.Fatal("valid Responses conversion did not mark semantic completion")
+	}
+	_ = response.Body.Close()
+}
+
+func TestResponsesNonstreamEmptySemanticOutputReturnsRetryableFault(t *testing.T) {
+	client := &semanticMarkProvider{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":""}}]}`)),
+	}}
+	model := modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat}
+	response, err := NewResponses(nil, nil, client).execute([]byte(`{"model":"vendor/chat"}`), "resp_1", model, false)(
+		context.Background(), 1, nil, &router.CommitState{},
+	)
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
+	var classified fault.Fault
+	if !errors.As(err, &classified) {
+		t.Fatalf("execute error = %T %v, want fault.Fault", err, err)
+	}
+	if classified.HTTPStatus != http.StatusTooManyRequests || !classified.Retryable || classified.RetryAfter <= 0 {
+		t.Fatalf("classified = %#v, want retryable 429 with Retry-After", classified)
+	}
+}
+
 func TestResponsesRetriesProtocolFailureFromNonstreamConversion(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -310,6 +347,42 @@ func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
 	}
 }
 
+func TestResponsesEmitterRefreshesWriteDeadlineForEveryEvent(t *testing.T) {
+	writer := &deadlineRequiredResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	emitter := &responsesSSEEmitter{
+		encoder:      sse.NewEncoder(writer),
+		commit:       &router.CommitState{},
+		flusher:      writer,
+		writeTimeout: time.Second,
+	}
+	for _, event := range []responsesprotocol.EmittedEvent{
+		{Event: "response.created", Data: map[string]any{}},
+		{Event: "response.in_progress", Data: map[string]any{}},
+	} {
+		if err := emitter.Emit(event); err != nil {
+			t.Fatalf("Emit(%q): %v", event.Event, err)
+		}
+	}
+	if writer.writes < 2 {
+		t.Fatalf("SSE writes = %d, want at least 2", writer.writes)
+	}
+}
+
+func TestResponsesEmitterCommitSetsWriteDeadline(t *testing.T) {
+	writer := &deadlineRequiredResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	emitter := &responsesSSEEmitter{
+		commit:       &router.CommitState{},
+		flusher:      writer,
+		writeTimeout: time.Second,
+	}
+	if err := emitter.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if writer.headerWithoutDeadline {
+		t.Fatal("response headers were committed without a write deadline")
+	}
+}
+
 func TestResponsesStreamWriteDeadlineDisabledWithoutBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -324,6 +397,33 @@ type responseDeadlineWriter struct{ *httptest.ResponseRecorder }
 
 func (w *responseDeadlineWriter) SetWriteDeadline(time.Time) error {
 	return errors.New("write deadline unsupported")
+}
+
+type deadlineRequiredResponseWriter struct {
+	*httptest.ResponseRecorder
+	deadlineSet           bool
+	headerWithoutDeadline bool
+	writes                int
+}
+
+func (w *deadlineRequiredResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadlineSet = !deadline.IsZero()
+	return nil
+}
+
+func (w *deadlineRequiredResponseWriter) WriteHeader(status int) {
+	if !w.deadlineSet {
+		w.headerWithoutDeadline = true
+	}
+	w.ResponseRecorder.WriteHeader(status)
+}
+
+func (w *deadlineRequiredResponseWriter) Write(payload []byte) (int, error) {
+	if !w.deadlineSet {
+		return 0, errors.New("response write without deadline")
+	}
+	w.writes++
+	return w.ResponseRecorder.Write(payload)
 }
 
 func TestChatDeltaSourceJoinsMultilineEventData(t *testing.T) {
@@ -478,7 +578,7 @@ func TestResponsesRejectsMissingModel(t *testing.T) {
 	handler.ServeHTTP(response,
 		httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"x"}`)))
 
-	assertChatError(t, response, http.StatusBadRequest, "invalid_parameter")
+	assertChatError(t, response, http.StatusBadRequest, "missing_required_parameter")
 }
 
 func TestResponsesReturnsModelNotFound(t *testing.T) {

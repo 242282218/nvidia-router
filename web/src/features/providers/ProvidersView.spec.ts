@@ -40,6 +40,15 @@ describe('ProvidersView', () => {
     expect(wrapper.text()).not.toContain('secret-key-material')
   })
 
+  it('keeps unsupported providers read-only', async () => {
+    const wrapper = mount(ProvidersView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前运行时暂不支持非 NVIDIA 提供商')
+    expect(wrapper.get('[data-testid="open-create-provider"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="toggle-provider-3"]').attributes('disabled')).toBeDefined()
+  })
+
   it('shows the empty state with guidance when no providers exist', async () => {
     vi.mocked(providersApi.list).mockResolvedValue({ data: [] })
     const wrapper = mount(ProvidersView)
@@ -64,37 +73,13 @@ describe('ProvidersView', () => {
     expect(wrapper.text()).toContain('siliconflow')
   })
 
-  it('creates a provider through the dialog and requires a valid base URL', async () => {
-    vi.mocked(providersApi.create).mockResolvedValue({ data: { ...provider, id: 4 } })
+  it('does not expose create or toggle actions for unsupported providers', async () => {
     const wrapper = mount(ProvidersView)
     await flushPromises()
 
-    await wrapper.get('[data-testid="open-create-provider"]').trigger('click')
-    const dialog = wrapper.get('[role="dialog"]')
-    expect(dialog.attributes('aria-labelledby')).toBe('create-provider-heading')
-
-    await wrapper.get('[data-testid="provider-name"]').setValue('siliconflow')
-    await wrapper.get('[data-testid="provider-base-url"]').setValue('not-a-url')
-    await wrapper.get('[data-testid="provider-key"]').setValue('secret-key-material')
-    await wrapper.get('[data-testid="create-provider-form"]').trigger('submit')
-    await flushPromises()
+    expect(wrapper.get('[data-testid="open-create-provider"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="toggle-provider-3"]').attributes('disabled')).toBeDefined()
     expect(providersApi.create).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('Base URL 必须是有效的 HTTP 或 HTTPS 地址')
-
-    await wrapper.get('[data-testid="provider-base-url"]').setValue('https://api.siliconflow.cn/v1')
-    await wrapper.get('[data-testid="create-provider-form"]').trigger('submit')
-    await flushPromises()
-    expect(providersApi.create).toHaveBeenCalledWith('siliconflow', 'https://api.siliconflow.cn/v1', 'secret-key-material')
-  })
-
-  it('toggles a provider and reports the outcome via toast', async () => {
-    vi.mocked(providersApi.setEnabled).mockResolvedValue({ id: 3, enabled: false })
-    const wrapper = mount(ProvidersView)
-    await flushPromises()
-
-    await wrapper.get('[data-testid="toggle-provider-3"]').trigger('click')
-    await flushPromises()
-    // The fixture provider is enabled, so toggling requests disabled.
-    expect(providersApi.setEnabled).toHaveBeenCalledWith(3, false)
+    expect(providersApi.setEnabled).not.toHaveBeenCalled()
   })
 })

@@ -21,6 +21,7 @@ import (
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
+	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
@@ -84,6 +85,49 @@ func TestSpeechChatResponsesWriteDeadlineExpiredContextReturnsImmediately(t *tes
 	defer cancel()
 	if got := streamWriteDeadline(expired); got <= 0 || got > time.Millisecond {
 		t.Fatalf("expired write deadline = %s, want immediate positive deadline", got)
+	}
+}
+
+func TestChatNonstreamExecutionMarksSemanticCompletion(t *testing.T) {
+	body := &semanticMarkBody{ReadCloser: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))}
+	client := &semanticMarkProvider{response: &http.Response{StatusCode: http.StatusOK, Body: body}}
+	response, err := NewChat(nil, nil, client).execute([]byte(`{"model":"vendor/model"}`), false)(
+		context.Background(), 1, nil, &router.CommitState{},
+	)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !body.completed {
+		t.Fatal("valid non-stream response did not mark semantic completion")
+	}
+	_ = response.Body.Close()
+}
+
+func TestChatStreamEmptyDeltaBeforeDoneReturnsRetryableFault(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	response, err := NewChat(nil, nil, client).execute([]byte(`{}`), true)(
+		context.Background(), 1, []byte("upstream-secret"), &router.CommitState{},
+	)
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
+	var classified fault.Fault
+	if !errors.As(err, &classified) {
+		t.Fatalf("execute error = %T %v, want fault.Fault", err, err)
+	}
+	if classified.HTTPStatus != http.StatusTooManyRequests || !classified.Retryable || classified.RetryAfter <= 0 {
+		t.Fatalf("classified = %#v, want retryable 429 with Retry-After", classified)
 	}
 }
 
@@ -362,7 +406,7 @@ func TestChatRetriesProtocolFailureWithBackupKeyAndPreservesResponse(t *testing.
 		captured <- capturedRequest{header: request.Header.Clone(), body: body}
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Header.Get("Authorization") == "Bearer first-secret" {
-			_, _ = writer.Write([]byte(`{"id":"chat-1","choices":[]}`))
+			_, _ = writer.Write([]byte(`{"id":"chat-1","choices":[{"message":{"content":{"unexpected":true}}}]}`))
 			return
 		}
 		_, _ = writer.Write(responseBody)
@@ -579,3 +623,40 @@ type releaseTrackingLease struct {
 func (l *releaseTrackingLease) KeyID() int64 { return l.id }
 
 func (l *releaseTrackingLease) Release() { l.released = true }
+
+type semanticMarkBody struct {
+	io.ReadCloser
+	completed bool
+}
+
+func (b *semanticMarkBody) MarkComplete() { b.completed = true }
+
+type semanticMarkProvider struct {
+	response *http.Response
+}
+
+func (p *semanticMarkProvider) ID() string { return "test" }
+
+func (p *semanticMarkProvider) Models(context.Context, string) ([]string, error) {
+	return nil, errors.New("not used")
+}
+
+func (p *semanticMarkProvider) Chat(context.Context, runtimeconfig.Snapshot, string, []byte, bool) (*http.Response, error) {
+	return p.response, nil
+}
+
+func (p *semanticMarkProvider) Embeddings(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error) {
+	return nil, errors.New("not used")
+}
+
+func (p *semanticMarkProvider) AudioTranscriptionsReplay(context.Context, runtimeconfig.Snapshot, string, router.ReplayableBody, string) (*http.Response, error) {
+	return nil, errors.New("not used")
+}
+
+func (p *semanticMarkProvider) AudioSpeech(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error) {
+	return nil, errors.New("not used")
+}
+
+func (p *semanticMarkProvider) CapabilityHint(string) provider.CapabilityHint {
+	return provider.CapabilityHint{}
+}

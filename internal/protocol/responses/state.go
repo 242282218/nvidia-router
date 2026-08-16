@@ -48,7 +48,13 @@ var ErrStreamInterrupted = sentinel("upstream stream interrupted before [DONE]")
 // layer supplies the delta source and the emitter and decides how interruption
 // is mapped once Stream returns.
 func Stream(source ChatDeltaSource, emit Emitter, responseID, model string) (interrupted bool, err error) {
-	return newStreamState().Convert(source, emit, responseID, model)
+	return StreamWithConfig(source, emit, responseID, model, ResponseConfig{})
+}
+
+// StreamWithConfig is Stream with the request-owned Responses fields that must
+// be repeated on lifecycle and terminal response objects.
+func StreamWithConfig(source ChatDeltaSource, emit Emitter, responseID, model string, config ResponseConfig) (interrupted bool, err error) {
+	return newStreamStateWithConfig(config).Convert(source, emit, responseID, model)
 }
 
 // streamState tracks per-request structural progress for a single Responses
@@ -58,6 +64,7 @@ func Stream(source ChatDeltaSource, emit Emitter, responseID, model string) (int
 // arguments are forwarded as deltas and only retained up to their budgets.
 type streamState struct {
 	sequence int
+	config   ResponseConfig
 	// createdAt is captured once so every lifecycle event reports the same
 	// response creation time, as clients use it to order responses.
 	createdAt    int64
@@ -97,8 +104,13 @@ type toolItem struct {
 }
 
 func newStreamState() *streamState {
+	return newStreamStateWithConfig(ResponseConfig{})
+}
+
+func newStreamStateWithConfig(config ResponseConfig) *streamState {
 	return &streamState{
 		createdAt: time.Now().Unix(),
+		config:    config,
 		openTools: make(map[int]*toolItem),
 		text:      newBoundedBuilder(maxStreamTextBytes, ErrStreamTextTooLarge),
 		reasoning: newBoundedBuilder(maxStreamTextBytes, ErrStreamTextTooLarge),
@@ -118,9 +130,12 @@ func (s *streamState) nextSequence() int {
 // indistinguishable from an empty one.
 func (s *streamState) responseObject(responseID, model, status string) map[string]any {
 	response := map[string]any{
-		"object":     "response",
-		"created_at": s.createdAt,
-		"status":     status,
+		"object":      "response",
+		"created_at":  s.createdAt,
+		"status":      status,
+		"output":      []any{},
+		"output_text": "",
+		"usage":       nil,
 	}
 	if responseID != "" {
 		response["id"] = responseID
@@ -128,6 +143,7 @@ func (s *streamState) responseObject(responseID, model, status string) map[strin
 	if model != "" {
 		response["model"] = model
 	}
+	s.config.apply(response)
 	return response
 }
 
@@ -152,13 +168,13 @@ func (s *streamState) outputItems() []any {
 			summary = []any{map[string]any{"type": "summary_text", "text": text}}
 		}
 		slots[s.reasoningIndex] = map[string]any{
-			"id": s.reasoningID, "type": "reasoning", "summary": summary,
+			"id": s.reasoningID, "type": "reasoning", "status": "completed", "summary": summary,
 		}
 	}
 	if s.messageStarted && s.messageIndex < len(slots) {
 		content := []any{}
 		if text := s.text.string(); text != "" {
-			content = []any{map[string]any{"type": "output_text", "text": text}}
+			content = []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}}
 		}
 		slots[s.messageIndex] = map[string]any{
 			"id": s.messageID, "type": "message", "role": "assistant",
@@ -171,7 +187,7 @@ func (s *streamState) outputItems() []any {
 			continue
 		}
 		slots[tool.outputIndex] = map[string]any{
-			"type": "function_call", "id": tool.id, "call_id": tool.id,
+			"type": "function_call", "status": "completed", "id": tool.id, "call_id": tool.id,
 			"name": tool.name, "arguments": tool.arguments.string(),
 		}
 	}

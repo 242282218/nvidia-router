@@ -48,6 +48,14 @@ func Protocol(cause error) Fault {
 	}
 }
 
+func EmptyResponse(cause error) Fault {
+	return Fault{
+		HTTPStatus: http.StatusTooManyRequests, Scope: ScopeTransientCredential, Retryable: true,
+		RetryAfter: time.Second, PublicType: "rate_limit_error", PublicCode: "upstream_empty_response",
+		PublicMessage: "The upstream service returned no usable output. Please retry.", Cause: cause,
+	}
+}
+
 func (fault Fault) Error() string {
 	return fault.PublicMessage
 }

@@ -128,7 +128,7 @@ func (s *streamState) openMessage(emit Emitter, responseID string) error {
 	added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"output_index":    s.messageIndex,
-		"item":            map[string]any{"id": s.messageID, "type": "message", "role": "assistant"},
+		"item":            map[string]any{"id": s.messageID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
 	}}
 	if err := emit.Emit(added); err != nil {
 		return fmt.Errorf("emit output_item.added: %w", err)
@@ -138,7 +138,7 @@ func (s *streamState) openMessage(emit Emitter, responseID string) error {
 		"item_id":         s.messageID,
 		"output_index":    s.messageIndex,
 		"content_index":   0,
-		"part":            map[string]any{"type": "output_text"},
+		"part":            map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}},
 	}}
 	if err := emit.Emit(partAdded); err != nil {
 		return fmt.Errorf("emit content_part.added: %w", err)
@@ -159,7 +159,7 @@ func (s *streamState) emitReasoningDelta(text string, emit Emitter, responseID s
 		added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
 			"sequence_number": s.nextSequence(),
 			"output_index":    s.reasoningIndex,
-			"item":            map[string]any{"id": s.reasoningID, "type": "reasoning", "summary": []any{}},
+			"item":            map[string]any{"id": s.reasoningID, "type": "reasoning", "status": "in_progress", "summary": []any{}},
 		}}
 		if err := emit.Emit(added); err != nil {
 			return fmt.Errorf("emit reasoning output_item.added: %w", err)
@@ -173,8 +173,8 @@ func (s *streamState) emitReasoningDelta(text string, emit Emitter, responseID s
 		"sequence_number": s.nextSequence(),
 		"item_id":         s.reasoningID,
 		"output_index":    s.reasoningIndex,
-		"content_index":   0,
-		"delta":           map[string]any{"type": "summary_text", "text": text},
+		"summary_index":   0,
+		"delta":           text,
 	}
 	return emit.Emit(EmittedEvent{Event: "response.reasoning_summary_text.delta", Data: data})
 }
@@ -194,7 +194,7 @@ func (s *streamState) applyToolCall(call ChatToolCallDelta, emit Emitter, respon
 		added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
 			"sequence_number": s.nextSequence(),
 			"output_index":    s.itemIndex,
-			"item":            map[string]any{"type": "function_call", "id": id, "call_id": id, "name": call.Name},
+			"item":            map[string]any{"type": "function_call", "status": "in_progress", "id": id, "call_id": id, "name": call.Name, "arguments": ""},
 		}}
 		if err := emit.Emit(added); err != nil {
 			return fmt.Errorf("emit tool output_item.added: %w", err)
@@ -270,6 +270,7 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 		response := s.responseObject(responseID, model, status)
 		response["incomplete_details"] = map[string]any{"reason": reason}
 		response["output"] = s.outputItems()
+		response["output_text"] = s.text.string()
 		if usage := convertUsage(s.usage); usage != nil {
 			response["usage"] = usage
 		}
@@ -291,6 +292,7 @@ func (s *streamState) finalize(emit Emitter, responseID, model string, failed bo
 	// rather than replaying every delta, so an absent output reads as an empty
 	// response even when the deltas carried content.
 	response["output"] = s.outputItems()
+	response["output_text"] = s.text.string()
 	if !failed {
 		if usage := convertUsage(s.usage); usage != nil {
 			response["usage"] = usage
@@ -325,10 +327,7 @@ func (s *streamState) closeOpenMessage(emit Emitter) error {
 	if err := emit.Emit(textDone); err != nil {
 		return fmt.Errorf("emit output_text.done: %w", err)
 	}
-	part := map[string]any{"type": "output_text"}
-	if text != "" {
-		part["text"] = text
-	}
+	part := map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}
 	partDone := EmittedEvent{Event: "response.content_part.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"item_id":         s.messageID,
@@ -341,13 +340,13 @@ func (s *streamState) closeOpenMessage(emit Emitter) error {
 	}
 	content := []any{}
 	if text != "" {
-		content = []any{map[string]any{"type": "output_text", "text": text}}
+		content = []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}}
 	}
 	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"item_id":         s.messageID,
 		"output_index":    s.messageIndex,
-		"item":            map[string]any{"id": s.messageID, "type": "message", "role": "assistant", "content": content},
+		"item":            map[string]any{"id": s.messageID, "type": "message", "status": "completed", "role": "assistant", "content": content},
 	}}
 	if err := emit.Emit(itemDone); err != nil {
 		return fmt.Errorf("emit output_item.done: %w", err)
@@ -369,7 +368,7 @@ func (s *streamState) closeReasoningItem(emit Emitter) error {
 		"sequence_number": s.nextSequence(),
 		"item_id":         s.reasoningID,
 		"output_index":    s.reasoningIndex,
-		"content_index":   0,
+		"summary_index":   0,
 		"text":            summary,
 	}}
 	if err := emit.Emit(textDone); err != nil {
@@ -382,6 +381,7 @@ func (s *streamState) closeReasoningItem(emit Emitter) error {
 		"item": map[string]any{
 			"id":      s.reasoningID,
 			"type":    "reasoning",
+			"status":  "completed",
 			"summary": []any{map[string]any{"type": "summary_text", "text": summary}},
 		},
 	}}
@@ -397,6 +397,7 @@ func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
 		"sequence_number": s.nextSequence(),
 		"output_index":    tool.outputIndex,
 		"item_id":         tool.id,
+		"name":            tool.name,
 		"arguments":       arguments,
 	}}
 	if err := emit.Emit(argsDone); err != nil {
@@ -408,6 +409,7 @@ func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
 		"output_index":    tool.outputIndex,
 		"item": map[string]any{
 			"type":      "function_call",
+			"status":    "completed",
 			"id":        tool.id,
 			"call_id":   tool.id,
 			"name":      tool.name,

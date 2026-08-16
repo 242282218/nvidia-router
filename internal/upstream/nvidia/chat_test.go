@@ -168,15 +168,16 @@ func TestValidateNonstreamChatPreservesBodyAndExtractsMetadata(t *testing.T) {
 
 func TestValidateNonstreamChatRejectsMalformedSuccess(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
+		name      string
+		body      string
+		wantEmpty bool
 	}{
 		{name: "non JSON", body: "not-json private-body"},
 		{name: "array", body: `[]`},
 		{name: "missing choices", body: `{"id":"chat-1"}`},
-		{name: "empty choices", body: `{"choices":[]}`},
+		{name: "empty choices", body: `{"choices":[]}`, wantEmpty: true},
 		{name: "null first choice", body: `{"choices":[null]}`},
-		{name: "null choices", body: `{"choices":null}`},
+		{name: "null choices", body: `{"choices":null}`, wantEmpty: true},
 		{name: "non-array choices", body: `{"choices":"not-array"}`},
 	}
 	for _, test := range tests {
@@ -187,13 +188,28 @@ func TestValidateNonstreamChatRejectsMalformedSuccess(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(test.body)),
 			}
 			_, err := ValidateNonstreamChat(response)
-			if !errors.Is(err, ErrProtocol) {
-				t.Fatalf("error = %v, want ErrProtocol", err)
+			want := ErrProtocol
+			if test.wantEmpty {
+				want = ErrEmptyResponse
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("error = %v, want %v", err, want)
 			}
 			if strings.Contains(err.Error(), test.body) || strings.Contains(err.Error(), "private-body") {
 				t.Fatalf("protocol error exposed body: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateNonstreamChatRejectsSemanticallyEmptySuccess(t *testing.T) {
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":""}}]}`)),
+	}
+	if _, err := ValidateNonstreamChat(response); !errors.Is(err, ErrEmptyResponse) {
+		t.Fatalf("error = %v, want ErrEmptyResponse", err)
 	}
 }
 

@@ -36,8 +36,36 @@ func TestNonStreamCarriesCreatedAtAndOutputText(t *testing.T) {
 	if got := decoded["status"]; got != "completed" {
 		t.Fatalf("status = %#v, want completed", got)
 	}
-	if _, present := decoded["incomplete_details"]; present {
-		t.Fatalf("incomplete_details must be absent for a completed response: %#v", decoded["incomplete_details"])
+	if details, present := decoded["incomplete_details"]; !present || details != nil {
+		t.Fatalf("incomplete_details = %#v, want explicit null for a completed response", details)
+	}
+}
+
+func TestNonStreamCarriesCoreFieldsAndCompletedItemShapes(t *testing.T) {
+	decoded := decodeFromChat(t, `{"choices":[{"message":{"role":"assistant","content":"hello","tool_calls":[{"id":"fc_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`)
+	for _, field := range []string{"error", "incomplete_details", "instructions", "metadata", "parallel_tool_calls", "temperature", "tool_choice", "tools", "top_p"} {
+		if _, ok := decoded[field]; !ok {
+			t.Fatalf("response missing core field %q: %#v", field, decoded)
+		}
+	}
+	output, _ := decoded["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output = %#v, want tool and message items", output)
+	}
+	for _, raw := range output {
+		item, _ := raw.(map[string]any)
+		if item["status"] != "completed" {
+			t.Fatalf("output item status = %#v, want completed", item["status"])
+		}
+	}
+	message := output[1].(map[string]any)
+	content := message["content"].([]any)
+	part := content[0].(map[string]any)
+	if _, ok := part["annotations"]; !ok {
+		t.Fatalf("output text part missing annotations: %#v", part)
+	}
+	if _, ok := part["logprobs"]; !ok {
+		t.Fatalf("output text part missing logprobs: %#v", part)
 	}
 }
 

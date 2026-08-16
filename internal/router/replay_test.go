@@ -62,6 +62,21 @@ func TestReplayableBodyRejectsOversized(t *testing.T) {
 	}
 }
 
+func TestCaptureStreamedReplayRejectsReportedSizeMismatch(t *testing.T) {
+	body, _, err := CaptureStreamedReplay[string](t.TempDir(), func(writer io.Writer) (int64, string, error) {
+		if _, writeErr := io.WriteString(writer, "actual body"); writeErr != nil {
+			return 0, "", writeErr
+		}
+		return 0, "", nil
+	})
+	if body != nil {
+		_ = body.Close()
+	}
+	if err == nil {
+		t.Fatal("reported size mismatch was accepted")
+	}
+}
+
 func TestReplayableBodyCloseIsIdempotentAndCleansFile(t *testing.T) {
 	payload := make([]byte, replayMemoryThreshold+1)
 	tempDir := t.TempDir()

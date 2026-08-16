@@ -45,9 +45,8 @@ type settingsPatch struct {
 	NonstreamTotalTimeoutMS *int `json:"nonstream_total_timeout_ms"`
 	ShutdownGraceMS         *int `json:"shutdown_grace_ms"`
 	// FailoverStatusCodes is the operator-tunable failover spec (audit B4).
-	// nil keeps the persisted value; an explicit empty string is the legitimate
-	// "never fail over" sentinel — we let Validate pass it through and let the
-	// runtime layer fall back to the documented default set.
+	// nil keeps the persisted value; an explicit empty string selects the
+	// documented runtime default set.
 	FailoverStatusCodes       *string `json:"failover_status_codes"`
 	RequestLogRetentionDays   *int    `json:"request_log_retention_days"`
 	MaxAttemptsPerRequest     *int    `json:"max_attempts_per_request"`

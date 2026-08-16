@@ -422,9 +422,8 @@ func TestStreamReasoningMapsToSummary(t *testing.T) {
 	for _, e := range emit.events {
 		if e.Event == "response.reasoning_summary_text.delta" {
 			seenReasoningDelta = true
-			delta, _ := e.Data["delta"].(map[string]any)
-			if delta == nil || delta["type"] != "summary_text" || delta["text"] != "thinking" {
-				t.Fatalf("reasoning delta = %#v, want summary_text with text", delta)
+			if e.Data["delta"] != "thinking" || e.Data["summary_index"] != 0 {
+				t.Fatalf("reasoning delta = %#v, want string with summary_index", e.Data)
 			}
 		}
 	}
@@ -517,8 +516,8 @@ func TestStreamReasoningItemLifecycle(t *testing.T) {
 			}
 		case "response.reasoning_summary_text.delta":
 			deltaEvents++
-			if e.Data["item_id"] != reasoningID || e.Data["output_index"] != addedIndex || e.Data["content_index"] != 0 {
-				t.Fatalf("reasoning delta correlation = %#v, want item %q output %d content 0", e.Data, reasoningID, addedIndex)
+			if e.Data["item_id"] != reasoningID || e.Data["output_index"] != addedIndex || e.Data["summary_index"] != 0 {
+				t.Fatalf("reasoning delta correlation = %#v, want item %q output %d summary 0", e.Data, reasoningID, addedIndex)
 			}
 		case "response.output_item.done":
 			item, _ := e.Data["item"].(map[string]any)
@@ -545,6 +544,30 @@ func TestStreamReasoningItemLifecycle(t *testing.T) {
 		t.Fatalf("reasoning done summary = %q, want accumulated text", summary)
 	}
 	assertMonoSeq(t, emit.events)
+}
+
+func TestStreamReasoningDeltaUsesResponsesFieldShape(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{{Reasoning: "think"}, {FinishReason: "stop"}}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_shape", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	for _, event := range emit.events {
+		if event.Event != "response.reasoning_summary_text.delta" {
+			continue
+		}
+		if event.Data["delta"] != "think" {
+			t.Fatalf("reasoning delta = %#v, want string", event.Data["delta"])
+		}
+		if event.Data["summary_index"] != 0 {
+			t.Fatalf("reasoning summary_index = %#v, want 0", event.Data["summary_index"])
+		}
+		if _, ok := event.Data["content_index"]; ok {
+			t.Fatalf("reasoning delta still has content_index: %#v", event.Data)
+		}
+		return
+	}
+	t.Fatal("reasoning delta event was not emitted")
 }
 
 func TestStreamInterruptedBeforeFinishEmitsFailed(t *testing.T) {

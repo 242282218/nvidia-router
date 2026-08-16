@@ -89,11 +89,24 @@ func CaptureStreamedReplay[T any](tempDir string, produce func(writer io.Writer)
 		_ = os.Remove(file.Name())
 		return nil, zero, fmt.Errorf("close replay temp file: %w", err)
 	}
-	if written < 0 || written > maxReplayBytes {
+	if written < 0 {
 		_ = os.Remove(file.Name())
 		return nil, zero, fmt.Errorf("capture replayable body: %w", errBodyTooLarge)
 	}
-	return &fileReplayBody{path: file.Name(), size: written}, aux, nil
+	info, err := os.Stat(file.Name())
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("stat replay temp file: %w", err)
+	}
+	if info.Size() > maxReplayBytes {
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("capture replayable body: %w", errBodyTooLarge)
+	}
+	if info.Size() != written {
+		_ = os.Remove(file.Name())
+		return nil, zero, fmt.Errorf("capture replayable body: callback reported %d bytes, file contains %d", written, info.Size())
+	}
+	return &fileReplayBody{path: file.Name(), size: info.Size()}, aux, nil
 }
 
 // BodyTooLarge reports whether err is the sentinel returned for payloads that

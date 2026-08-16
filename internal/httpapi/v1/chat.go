@@ -3,9 +3,12 @@ package v1
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"nvidia-router/internal/apierror"
@@ -112,6 +115,9 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 		}
 		if stream {
 			if err := primeSSE(ctx, response); err != nil {
+				if errors.Is(err, sse.ErrNoSemanticData) {
+					return response, fault.EmptyResponse(err)
+				}
 				if errors.Is(err, sse.ErrEventTooLarge) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					// A 200 with an empty/non-SSE body is an upstream protocol
 					// defect, not a connection blip; classify it as Protocol so
@@ -124,11 +130,15 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)
 		if err != nil {
+			if errors.Is(err, nvidia.ErrEmptyResponse) {
+				return response, fault.EmptyResponse(err)
+			}
 			if errors.Is(err, nvidia.ErrProtocol) {
 				return response, fault.Protocol(err)
 			}
 			return response, err
 		}
+		markResponseComplete(response)
 		_ = response.Body.Close()
 		response.Body = io.NopCloser(bytes.NewReader(validated.Body))
 		response.ContentLength = int64(len(validated.Body))
@@ -318,7 +328,7 @@ func primeSSE(ctx context.Context, response *http.Response) error {
 		idle = budget.StreamIdleTimeout()
 	}
 	defer cancel()
-	if err := sse.Prime(primeCtx, response); err != nil {
+	if err := sse.PrimeUntil(primeCtx, response, semanticChatEvent); err != nil {
 		return err
 	}
 	// After the headers are committed a stalled upstream would pin the lease
@@ -326,4 +336,64 @@ func primeSSE(ctx context.Context, response *http.Response) error {
 	// ErrStreamIdle instead of blocking the decode loop indefinitely.
 	response.Body = sse.WithIdleTimeout(response.Body, idle)
 	return nil
+}
+
+func semanticChatEvent(event sse.Event) (bool, error) {
+	data := strings.TrimSpace(sse.JoinData(event.Data))
+	if data == "" {
+		return false, nil
+	}
+	if data == "[DONE]" {
+		return false, sse.ErrNoSemanticData
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content   json.RawMessage   `json:"content"`
+				Reasoning json.RawMessage   `json:"reasoning_content"`
+				ToolCalls []json.RawMessage `json:"tool_calls"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false, fmt.Errorf("decode upstream chat event: %w", err)
+	}
+	for _, choice := range chunk.Choices {
+		if hasSSETextValue(choice.Delta.Content) || hasSSETextValue(choice.Delta.Reasoning) || len(choice.Delta.ToolCalls) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasSSETextValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil {
+		return text != ""
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(trimmed, &parts) != nil {
+		return false
+	}
+	for _, part := range parts {
+		if part.Text != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func markResponseComplete(response *http.Response) {
+	if response == nil || response.Body == nil {
+		return
+	}
+	if marker, ok := response.Body.(interface{ MarkComplete() }); ok {
+		marker.MarkComplete()
+	}
 }

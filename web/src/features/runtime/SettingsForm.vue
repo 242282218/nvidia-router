@@ -221,7 +221,7 @@ function fieldError(param: SettingParam): string {
           :aria-invalid="Boolean(fieldError('failover_status_codes'))"
           @input="(e: Event) => { fields.failover_status_codes = (e.target as HTMLInputElement).value }"
         >
-        <span class="mt-1 block text-xs text-[var(--color-text-muted)]">使用逗号分隔状态码或范围；留空表示不自动切换。</span>
+        <span class="mt-1 block text-xs text-[var(--color-text-muted)]">使用逗号分隔状态码或范围；留空使用默认故障转移状态码。</span>
         <Transition name="fade">
           <span
             v-if="fieldError('failover_status_codes')"

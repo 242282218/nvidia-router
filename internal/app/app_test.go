@@ -372,7 +372,7 @@ func TestRunCLIHelpProcess(t *testing.T) {
 	want := "Usage:\n" +
 		"  nvidia-router [--help]\n" +
 		"  nvidia-router serve\n" +
-		"  nvidia-router admin reset-password --password <new>\n" +
+		"  nvidia-router admin reset-password  # read the new password from stdin\n" +
 		"  nvidia-router admin rotate-master-key --new-version <n> --backup <path>\n" +
 		"  nvidia-router db backup --output <path>\n"
 	if stdout != want {

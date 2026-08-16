@@ -182,6 +182,35 @@ func TestClientTruncatedSuccessDoesNotRecordProxySuccess(t *testing.T) {
 	_ = body.Close()
 }
 
+func TestNonstreamClientRequiresSemanticCompletion(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newConnectProxy(t)
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
+	descriptor := DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	response, err := client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 1000}, "same-key", []byte(`{"model":"vendor/model"}`), false)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	body, ok := response.Body.(*releaseBody)
+	if !ok {
+		t.Fatalf("response body type = %T, want *releaseBody", response.Body)
+	}
+	if !body.semanticRequired.Load() {
+		t.Fatal("non-stream response did not require semantic completion")
+	}
+	_ = response.Body.Close()
+}
+
 func TestReleaseBodyRequiresSemanticCompletion(t *testing.T) {
 	var completed atomic.Int32
 	var failures atomic.Int32
@@ -193,12 +222,30 @@ func TestReleaseBodyRequiresSemanticCompletion(t *testing.T) {
 	if completed.Load() != 0 {
 		t.Fatalf("completion callback count = %d, want 0 before semantic completion", completed.Load())
 	}
-	if failures.Load() != 1 {
-		t.Fatalf("failure callback count = %d, want 1 after semantic EOF", failures.Load())
+	if failures.Load() != 0 {
+		t.Fatalf("failure callback count = %d, want 0 before semantic decision", failures.Load())
 	}
 	body.MarkComplete()
-	if completed.Load() != 0 {
-		t.Fatalf("completion callback count = %d, want 0 after late semantic completion", completed.Load())
+	if completed.Load() != 1 {
+		t.Fatalf("completion callback count = %d, want 1 after semantic completion", completed.Load())
+	}
+	_ = body.Close()
+}
+
+func TestReleaseBodyAllowsSemanticCompletionAfterEOF(t *testing.T) {
+	var completed atomic.Int32
+	var failures atomic.Int32
+	body := newReleaseBody(io.NopCloser(strings.NewReader("complete")), func() {}, func() { completed.Add(1) }, func() { failures.Add(1) })
+	body.RequireSemanticCompletion()
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if failures.Load() != 0 {
+		t.Fatalf("failure callback count = %d, want 0 before semantic decision", failures.Load())
+	}
+	body.MarkComplete()
+	if completed.Load() != 1 {
+		t.Fatalf("completion callback count = %d, want 1 after semantic completion", completed.Load())
 	}
 	_ = body.Close()
 }
@@ -214,10 +261,13 @@ func TestReleaseBodySemanticRequirementAppliesBeforePrimingEOF(t *testing.T) {
 	if completed.Load() != 0 {
 		t.Fatalf("completion callback count = %d, want 0 for EOF without [DONE]", completed.Load())
 	}
-	if failures.Load() != 1 {
-		t.Fatalf("failure callback count = %d, want 1 for EOF without [DONE]", failures.Load())
+	if failures.Load() != 0 {
+		t.Fatalf("failure callback count = %d, want 0 before Close", failures.Load())
 	}
 	_ = body.Close()
+	if failures.Load() != 1 {
+		t.Fatalf("failure callback count = %d, want 1 after Close without [DONE]", failures.Load())
+	}
 }
 
 func TestReleaseBodyReportsReadFailureOnce(t *testing.T) {

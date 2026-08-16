@@ -147,6 +147,54 @@ func TestToChatMapsToolsAndToolChoiceAndReasoning(t *testing.T) {
 	}
 }
 
+func TestToChatAcceptsFlatResponsesFunctionTool(t *testing.T) {
+	body := `{"model":"public-chat","input":"x","tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object","properties":{"key":{"type":"string"}}},"strict":true}]}`
+	got, err := ToChat([]byte(body), chatModel())
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	var chat struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+				Strict      *bool           `json:"strict"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(got, &chat); err != nil {
+		t.Fatalf("decode Chat body: %v", err)
+	}
+	if len(chat.Tools) != 1 || chat.Tools[0].Type != "function" || chat.Tools[0].Function.Name != "lookup" || chat.Tools[0].Function.Description != "Look up a value" {
+		t.Fatalf("flat tool was not normalized: %#v", chat.Tools)
+	}
+	if chat.Tools[0].Function.Strict == nil || !*chat.Tools[0].Function.Strict || string(chat.Tools[0].Function.Parameters) != `{"type":"object","properties":{"key":{"type":"string"}}}` {
+		t.Fatalf("normalized function fields = %#v", chat.Tools[0].Function)
+	}
+}
+
+func TestToChatAcceptsDeveloperAndInstructionsWithoutInput(t *testing.T) {
+	body := `{"model":"public-chat","instructions":"follow this","input":[{"role":"developer","content":"be concise"}]}`
+	wantTranscript(t, body, []chatMessage{
+		{Role: "system", RolePresent: true, Content: "follow this", ContentPresent: true},
+		{Role: "developer", RolePresent: true, Content: "be concise", ContentPresent: true},
+	})
+
+	wantTranscript(t, `{"model":"public-chat","instructions":"system only"}`, []chatMessage{
+		{Role: "system", RolePresent: true, Content: "system only", ContentPresent: true},
+	})
+}
+
+func TestToChatRejectsObjectFunctionOutput(t *testing.T) {
+	mustFail(t, `{"model":"public-chat","input":[{"type":"function_call_output","call_id":"fc_1","output":{"value":"not a string"}}]}`, "invalid_parameter")
+}
+
+func TestToChatRejectsUnknownTopLevelField(t *testing.T) {
+	mustFail(t, `{"model":"public-chat","input":"x","future_generation_mode":"fast"}`, "invalid_parameter")
+}
+
 func TestToChatConvertsNamedToolChoiceShape(t *testing.T) {
 	body := `{"model":"public-chat","input":"x","tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":{"type":"function","name":"f"}}`
 	got, err := ToChat([]byte(body), chatModel())
@@ -172,7 +220,7 @@ func TestToChatConvertsNamedToolChoiceShape(t *testing.T) {
 }
 
 func TestToChatPassesThroughChatToolChoiceShape(t *testing.T) {
-	body := `{"model":"public-chat","input":"x","tool_choice":{"type":"function","function":{"name":"f"}}}`
+	body := `{"model":"public-chat","input":"x","tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":{"type":"function","function":{"name":"f"}}}`
 	got, err := ToChat([]byte(body), chatModel())
 	if err != nil {
 		t.Fatalf("ToChat: %v", err)
@@ -357,6 +405,71 @@ func TestToChatRejectsMalformedTextFormat(t *testing.T) {
 func TestToChatRejectsEmptyContentArray(t *testing.T) {
 	mustFail(t, `{"model":"public-chat","input":[{"role":"user","content":[]}]}`, "invalid_parameter")
 	mustFail(t, `{"model":"public-chat","input":[{"role":"user","content":[{"type":"input_text","text":""}]}]}`, "invalid_parameter")
+}
+
+func TestParseCarriesNormalizedResponseConfig(t *testing.T) {
+	body := `{"model":"public-chat","instructions":"be brief","input":"x","stream":true,"parallel_tool_calls":false,"temperature":0,"top_p":0.5,"tools":[{"type":"function","name":"lookup","description":"Look up","parameters":{"type":"object"},"strict":true}],"tool_choice":{"type":"function","name":"lookup"}}`
+	request, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if request.PublicModelID() != "public-chat" || !request.Stream() {
+		t.Fatalf("request identity = %q/%v", request.PublicModelID(), request.Stream())
+	}
+	config := request.ResponseConfig()
+	var tools []map[string]json.RawMessage
+	if err := json.Unmarshal(config.Tools, &tools); err != nil || len(tools) != 1 {
+		t.Fatalf("response tools = %s; err=%v", config.Tools, err)
+	}
+	if _, nested := tools[0]["function"]; nested || string(tools[0]["type"]) != `"function"` {
+		t.Fatalf("response tool was not flattened: %#v", tools[0])
+	}
+	var choice map[string]json.RawMessage
+	if err := json.Unmarshal(config.ToolChoice, &choice); err != nil || string(choice["name"]) != `"lookup"` {
+		t.Fatalf("response tool choice = %s; err=%v", config.ToolChoice, err)
+	}
+
+	chat, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(chat, &fields); err != nil {
+		t.Fatalf("decode Chat request: %v", err)
+	}
+	var streamOptions map[string]bool
+	if err := json.Unmarshal(fields["stream_options"], &streamOptions); err != nil || !streamOptions["include_usage"] {
+		t.Fatalf("stream_options = %s; err=%v", fields["stream_options"], err)
+	}
+	var chatTools []map[string]json.RawMessage
+	if err := json.Unmarshal(fields["tools"], &chatTools); err != nil || len(chatTools) != 1 {
+		t.Fatalf("Chat tools = %s; err=%v", fields["tools"], err)
+	}
+	if _, flatName := chatTools[0]["name"]; flatName {
+		t.Fatalf("Chat tool still has flat name: %#v", chatTools[0])
+	}
+}
+
+func TestParseAcceptsRouterReasoningOutputAsNoOp(t *testing.T) {
+	body := `{"model":"public-chat","input":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"hidden"}]},{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"fc_1","output":"ok"}]}`
+	request, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	chat, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	transcript, err := decodeTranscriptForTest(chat)
+	if err != nil {
+		t.Fatalf("decode transcript: %v", err)
+	}
+	if len(transcript.Messages) != 2 || transcript.Messages[0].Role != "assistant" || transcript.Messages[1].Role != "tool" {
+		t.Fatalf("replayed transcript = %#v", transcript.Messages)
+	}
+	if transcript.Messages[0].ToolCalls[0].ID != "fc_1" || transcript.Messages[1].ToolCallID != "fc_1" {
+		t.Fatalf("replayed tool linkage = %#v", transcript.Messages)
+	}
 }
 
 func containsKey(t *testing.T, payload []byte, key string) bool {

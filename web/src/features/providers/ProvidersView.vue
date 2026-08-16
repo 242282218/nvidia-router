@@ -130,12 +130,14 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
       <PageHeader
         eyebrow="运维管理"
         title="提供商（OpenAI 兼容）"
-        subtitle="配置除 NVIDIA 之外、使用 OpenAI 兼容协议的提供商（如 SiliconFlow）。NVIDIA Key 仍在其独立页面管理。"
+        subtitle="当前运行时仅支持 NVIDIA；其他提供商暂时只展示已保存的元数据。"
       >
         <template #actions>
           <button
             class="btn-primary"
             type="button"
+            disabled
+            title="当前运行时暂不支持非 NVIDIA 提供商"
             data-testid="open-create-provider"
             @click="dialogOpen = true"
           >
@@ -151,6 +153,10 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
           </button>
         </template>
       </PageHeader>
+
+      <div class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3 text-sm text-[var(--color-text-muted)]">
+        当前运行时暂不支持非 NVIDIA 提供商，新增和启用操作已禁用。
+      </div>
 
       <div class="card mt-5 overflow-hidden">
         <StatePanel
@@ -191,7 +197,8 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
               <button
                 class="btn-secondary"
                 type="button"
-                :disabled="busyId === provider.id"
+                disabled
+                title="当前运行时暂不支持非 NVIDIA 提供商"
                 :data-testid="`toggle-provider-${provider.id}`"
                 @click="toggle(provider)"
               >

@@ -307,7 +307,10 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	hasEnabled := false
 	hasUnblocked := false
 	hasReady := false
+	hasBusy := false
+	hasRateLimited := false
 	var earliestCooldown time.Time
+	var earliestRateLimit time.Duration
 
 	// When latency scheduling is off, the round-robin path below stays exactly
 	// as before. When on, gather every eligible ready key and run a weighted
@@ -345,20 +348,30 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 				continue
 			}
 		}
+		if retryAfter := state.requestRetryAfter(now); retryAfter > 0 {
+			hasRateLimited = true
+			if earliestRateLimit <= 0 || retryAfter < earliestRateLimit {
+				earliestRateLimit = retryAfter
+			}
+			continue
+		}
 		// Streaming and short requests draw from independent per-key quotas: a
 		// stream holds a streaming slot for its whole (possibly minute-long)
 		// lifetime instead of the single busy slot, so short requests on the
 		// same key are not stalled behind a slow generation (audit R4).
 		if stream {
 			if state.streamingBusy >= maxStreamingPerKey {
+				hasBusy = true
 				continue
 			}
 		} else {
 			if state.busy {
+				hasBusy = true
 				continue
 			}
 		}
 		if !latencyEnabled {
+			state.reserveRequest(now)
 			if stream {
 				state.streamingBusy++
 			} else {
@@ -390,6 +403,9 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	// Every ready key was busy/streaming-saturated; all were skipped above, so
 	// there is nothing to hand out.
 	if len(latencyCandidates) == 0 {
+		if hasRateLimited && !hasBusy {
+			return nil, unavailableState{reason: UnavailableRateLimited, retryAfter: earliestRateLimit}
+		}
 		return nil, unavailableState{reason: UnavailableBusy}
 	}
 	selected := p.weightedSelect(latencyCandidates, measuredLatency)
@@ -406,6 +422,7 @@ func (p *Pool) tryAcquireLocked(modelID int64, attempted map[int64]struct{}, str
 	} else {
 		selected.busy = true
 	}
+	selected.reserveRequest(now)
 	return &lease{
 		keyID:   selected.snapshot.ID,
 		release: func() { p.release(selected, stream) },

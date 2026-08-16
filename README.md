@@ -108,7 +108,7 @@ docker compose stop app
 ```text
 nvidia-router --help
 nvidia-router serve
-nvidia-router admin reset-password --password <new>
+nvidia-router admin reset-password  # read the new password from stdin
 nvidia-router admin rotate-master-key --new-version <n> --backup <path>
 nvidia-router db backup --output <path>
 ```
@@ -125,7 +125,9 @@ docker compose run --rm --no-deps -v "$(pwd)/backups:/data-backups" app db backu
 恢复前请阅读 [docs/备份与恢复说明.md](docs/备份与恢复说明.md)。每日自动备份与保留策略见 [docs/自动备份方案.md](docs/自动备份方案.md)。密码重置不会重新加密或删除 NVIDIA Key，但重置后会撤销全部管理员会话：
 
 ```bash
-docker compose run --rm --no-deps app admin reset-password --password '<new-password>'
+read -r -s new_password
+printf '%s\n' "$new_password" | docker compose run --rm --no-deps app admin reset-password
+unset new_password
 ```
 
 ## API 范围

@@ -51,18 +51,19 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	modelID, stream, err := parseResponsesHeader(payload)
+	parsed, err := responsesprotocol.Parse(payload)
 	if err != nil {
 		writeChatError(writer, err)
 		return
 	}
+	modelID, stream := parsed.PublicModelID(), parsed.Stream()
 	observability.SetModel(request.Context(), modelID, stream)
 	model, err := h.models.Resolve(request.Context(), modelID, chatModelRequirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
 		return
 	}
-	upstreamBody, err := responsesprotocol.ToChat(payload, model)
+	upstreamBody, err := parsed.MarshalFor(model)
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -72,7 +73,8 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	result, err := h.attempts.Run(applyModelTimeouts(nvidia.WithForwardedHeaders(request.Context(), request.Header), model), model.ID, stream, h.execute(upstreamBody, id, model, stream))
+	config := parsed.ResponseConfig()
+	result, err := h.attempts.Run(applyModelTimeouts(nvidia.WithForwardedHeaders(request.Context(), request.Header), model), model.ID, stream, h.executeWithConfig(upstreamBody, id, model, config, stream))
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -85,7 +87,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		if ctx == nil {
 			ctx = request.Context()
 		}
-		h.streamResponse(ctx, writer, result.Response, id, model.PublicID)
+		h.streamResponseWithConfig(ctx, writer, result.Response, id, model.PublicID, config)
 		return
 	}
 
@@ -96,6 +98,10 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 }
 
 func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.Model, stream bool) router.ExecuteFunc {
+	return h.executeWithConfig(body, responsesID, model, responsesprotocol.ResponseConfig{}, stream)
+}
+
+func (h *Responses) executeWithConfig(body []byte, responsesID string, model modelcatalog.Model, config responsesprotocol.ResponseConfig, stream bool) router.ExecuteFunc {
 	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
 		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
@@ -107,6 +113,9 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		}
 		if stream {
 			if err := primeSSE(ctx, response); err != nil {
+				if errors.Is(err, sse.ErrNoSemanticData) {
+					return response, fault.EmptyResponse(err)
+				}
 				if errors.Is(err, sse.ErrEventTooLarge) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					// A 200 with an empty/non-SSE body is an upstream protocol
 					// defect, not a connection blip; classify it as Protocol so
@@ -119,16 +128,21 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 		}
 		validated, err := nvidia.ValidateNonstreamChat(response)
 		if err != nil {
+			if errors.Is(err, nvidia.ErrEmptyResponse) {
+				return response, fault.EmptyResponse(err)
+			}
 			if errors.Is(err, nvidia.ErrProtocol) {
 				return response, fault.Protocol(err)
 			}
 			return response, err
 		}
-		_ = response.Body.Close()
-		converted, err := responsesprotocol.FromChat(validated.Body, responsesID, model)
+		converted, err := responsesprotocol.FromChatWithConfig(validated.Body, responsesID, model, config)
 		if err != nil {
+			_ = response.Body.Close()
 			return response, fault.Protocol(fmt.Errorf("convert NVIDIA chat response: %w", err))
 		}
+		markResponseComplete(response)
+		_ = response.Body.Close()
 		response.Body = io.NopCloser(bytes.NewReader(converted))
 		response.ContentLength = int64(len(converted))
 		return response, nil
@@ -140,6 +154,10 @@ func (h *Responses) execute(body []byte, responsesID string, model modelcatalog.
 // event commits the response so later upstream failures cannot trigger a key
 // switch; an interruption after commit emits a stable response.failed terminal.
 func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, responseID, model string) {
+	h.streamResponseWithConfig(ctx, writer, upstream, responseID, model, responsesprotocol.ResponseConfig{})
+}
+
+func (h *Responses) streamResponseWithConfig(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, responseID, model string, config responsesprotocol.ResponseConfig) {
 	commit := &router.CommitState{}
 	emitter := &responsesSSEEmitter{
 		encoder: sse.NewEncoder(commit.Wrap(writer)),
@@ -171,7 +189,7 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 		case <-cancelDone:
 		}
 	}()
-	interrupted, err := responsesprotocol.Stream(source, emitter, responseID, model)
+	interrupted, err := responsesprotocol.StreamWithConfig(source, emitter, responseID, model, config)
 	if err != nil {
 		// After commit the terminal is already written; before commit surface a
 		// public error since nothing has reached the client.
@@ -254,10 +272,10 @@ type responsesSSEEmitter struct {
 }
 
 func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
+	if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+		return err
+	}
 	if !e.header {
-		if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
-			return err
-		}
 		writeSSEHeaders(e.flusher)
 		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
 		e.header = true
@@ -303,6 +321,9 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 
 func (e *responsesSSEEmitter) Commit() error {
 	if !e.header {
+		if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+			return err
+		}
 		writeSSEHeaders(e.flusher)
 		e.header = true
 		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
@@ -317,37 +338,6 @@ func writeSSEHeaders(writer http.ResponseWriter) {
 	// Disable nginx-style reverse proxy buffering for SSE so chunks reach the
 	// client live (audit B6). Non-nginx proxies ignore the header.
 	writer.Header().Set("X-Accel-Buffering", "no")
-}
-
-// parseResponsesHeader extracts the model and stream fields in a single pass
-// over the request body so Resolve and the attempt runner know how to route
-// before ToChat re-validates the bound model. The previous split ran two
-// full-body json.Unmarshal calls ahead of ToChat's own parse, scanning 32 MiB
-// bodies three times.
-func parseResponsesHeader(body []byte) (modelID string, stream bool, err error) {
-	var header struct {
-		Model  string          `json:"model"`
-		Stream json.RawMessage `json:"stream"`
-	}
-	// A malformed body surfaces as the model error exactly as it did when
-	// extractResponsesModel ran first, so clients see one stable failure.
-	if unmarshalErr := json.Unmarshal(body, &header); unmarshalErr != nil || header.Model == "" {
-		return "", false, &apierror.Error{
-			Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_parameter",
-			Message: "The model parameter must be a non-empty string.",
-		}
-	}
-	if len(header.Stream) == 0 {
-		return header.Model, false, nil
-	}
-	var value bool
-	if err := json.Unmarshal(header.Stream, &value); err != nil {
-		return "", false, &apierror.Error{
-			Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_parameter",
-			Message: "The stream parameter must be a boolean.",
-		}
-	}
-	return header.Model, value, nil
 }
 
 func chatModelRequirements() modelcatalog.Requirements {

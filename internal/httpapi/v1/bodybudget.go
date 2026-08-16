@@ -212,6 +212,7 @@ func readChunkedBody(request *http.Request, limit int64, timeout time.Duration, 
 			return nil, bodyBusyError()
 		}
 		n, readErr := limited.Read(buf[:readLen])
+		lease.releaseReserved(int64(readLen - n))
 		if n > 0 {
 			out = append(out, buf[:n]...)
 		}

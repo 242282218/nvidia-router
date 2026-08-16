@@ -2,11 +2,13 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/keystate"
 	"nvidia-router/internal/runtimeconfig"
@@ -365,7 +367,10 @@ func TestLatencySchedulingPrefersFasterKey(t *testing.T) {
 	p.RecordLatency(2, 3000)
 
 	counts := map[int64]int{}
-	for range 1000 {
+	for request := 0; request < 1000; request++ {
+		// Keep this scheduler distribution test below the per-key request cap;
+		// rate limiting has its own boundary tests below.
+		p.clock = fakeClock{now: time.Unix(int64(request+1)*60, 0).UTC()}
 		lease, err := p.AcquireWithSnapshot(context.Background(), 100, map[int64]struct{}{}, runtimeconfig.Snapshot{LatencyRoutingEnabled: true}, false)
 		if err != nil {
 			t.Fatalf("latency acquire: %v", err)
@@ -441,5 +446,53 @@ func TestRecordLatencyIgnoresNonPositiveDurations(t *testing.T) {
 	state := p.keys[1]
 	if got, measured := state.latencyScore(); measured && got <= 0 {
 		t.Fatalf("key 1 latencyScore = %f, want positive EWMA", got)
+	}
+}
+
+func TestPoolLimitsOneKeyToThirtyRequestsPerMinute(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	p := New(testSettings{}, fakeClock{now: now})
+	p.LoadSnapshot(testKeys(1), nil)
+	for request := 0; request < 30; request++ {
+		lease := mustTryAcquire(t, p, 1, nil)
+		lease.Release()
+	}
+	if _, ok := p.tryAcquire(1, nil); ok {
+		t.Fatal("31st request acquired a lease inside the one-minute window")
+	}
+	p.clock = fakeClock{now: now.Add(59 * time.Second)}
+	if _, ok := p.tryAcquire(1, nil); ok {
+		t.Fatal("request acquired before the oldest request left the window")
+	}
+	p.clock = fakeClock{now: now.Add(time.Minute)}
+	lease := mustTryAcquire(t, p, 1, nil)
+	lease.Release()
+}
+
+func TestPoolRateLimitSkipsExhaustedKeyAndReturns429WhenAllExhausted(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	p := New(testSettings{}, fakeClock{now: now})
+	p.LoadSnapshot(testKeys(1), nil)
+	for request := 0; request < 30; request++ {
+		lease := mustTryAcquire(t, p, 1, nil)
+		lease.Release()
+	}
+	p.UpsertKey(keystate.KeySnapshot{ID: 2, Enabled: true})
+	lease, err := p.AcquireWithSnapshot(context.Background(), 1, nil, runtimeconfig.Snapshot{}, false)
+	if err != nil {
+		t.Fatalf("second key was not selected after first key exhausted: %v", err)
+	}
+	if lease.KeyID() != 2 {
+		t.Fatalf("selected key = %d, want 2", lease.KeyID())
+	}
+	lease.Release()
+	for request := 0; request < 29; request++ {
+		lease := mustTryAcquire(t, p, 1, nil)
+		lease.Release()
+	}
+	_, err = p.AcquireWithSnapshot(context.Background(), 1, nil, runtimeconfig.Snapshot{}, false)
+	var publicError *apierror.Error
+	if !errors.As(err, &publicError) || publicError.Status != 429 || publicError.RetryAfter <= 0 {
+		t.Fatalf("all keys rate-limit error = %#v, want 429 with Retry-After", err)
 	}
 }

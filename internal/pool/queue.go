@@ -38,6 +38,7 @@ const (
 	UnavailableCooling
 	UnavailableDisabled
 	UnavailableModelBlocked
+	UnavailableRateLimited
 )
 
 type unavailableState struct {
@@ -317,6 +318,9 @@ func (p *Pool) hasNonAttemptedReadyLocked(modelID int64, attempted map[int64]str
 		if state.snapshot.CooldownUntil != nil && now.Before(*state.snapshot.CooldownUntil) {
 			continue
 		}
+		if state.requestRetryAfter(now) > 0 {
+			continue
+		}
 		if _, alreadyAttempted := attempted[state.snapshot.ID]; alreadyAttempted {
 			continue
 		}
@@ -412,6 +416,11 @@ func unavailableError(unavailable unavailableState) error {
 		return &apierror.Error{
 			Status: http.StatusNotFound, Type: "invalid_request_error", Code: "model_not_available",
 			Message: "The model is not available for any upstream credential.",
+		}
+	case UnavailableRateLimited:
+		return &apierror.Error{
+			Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "nvidia_key_rate_limited",
+			Message: "All available NVIDIA credentials are rate limited.", RetryAfter: unavailable.retryAfter,
 		}
 	default:
 		return &apierror.Error{

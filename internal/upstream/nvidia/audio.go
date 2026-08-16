@@ -74,6 +74,7 @@ func (c *Client) AudioTranscriptionsReplay(
 	if err != nil {
 		return nil, safeError{"send NVIDIA audio transcriptions request", err}
 	}
+	requireNonstreamSemanticCompletion(response)
 	return response, nil
 }
 

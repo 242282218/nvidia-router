@@ -236,7 +236,7 @@ func newRuntimeBudgetTransport(t *testing.T) *runtimeBudgetTransport {
 			}
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
 	}))
 	t.Cleanup(upstream.Close)
 	base := http.DefaultTransport.(*http.Transport).Clone()

@@ -191,6 +191,7 @@ func (h *Audio) execute(body router.ReplayableBody, contentType, responseFormat 
 			}
 			return response, err
 		}
+		markResponseComplete(response)
 		_ = response.Body.Close()
 		response.Body = io.NopCloser(bytes.NewReader(validated.Body))
 		response.ContentLength = int64(len(validated.Body))

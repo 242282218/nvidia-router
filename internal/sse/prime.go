@@ -14,10 +14,18 @@ import (
 // event would otherwise grow the capture buffer without bound (checklist #13).
 const MaxCaptureBytes = MaxEventSize
 
+var ErrNoSemanticData = errors.New("SSE stream ended without semantic output")
+
 // Prime waits for one complete SSE event before the caller accepts an upstream
 // attempt. Every byte read by the decoder is replayed so the proxy sees the
 // original stream exactly once, including bytes buffered beyond the first event.
 func Prime(ctx context.Context, response *http.Response) error {
+	return PrimeUntil(ctx, response, func(event Event) (bool, error) {
+		return len(event.Data) > 0, nil
+	})
+}
+
+func PrimeUntil(ctx context.Context, response *http.Response, accept func(Event) (bool, error)) error {
 	if response == nil || response.Body == nil {
 		return io.ErrUnexpectedEOF
 	}
@@ -38,8 +46,17 @@ func Prime(ctx context.Context, response *http.Response) error {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
-			if err != nil || len(event.Data) > 0 {
+			if err != nil {
 				result <- err
+				return
+			}
+			accepted, acceptErr := accept(event)
+			if acceptErr != nil {
+				result <- acceptErr
+				return
+			}
+			if accepted {
+				result <- nil
 				return
 			}
 		}

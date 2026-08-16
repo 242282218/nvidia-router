@@ -118,11 +118,13 @@ docker compose run --rm --no-deps app --help
 
 ```bash
 docker compose stop app
-docker compose run --rm --no-deps app admin reset-password --password '<new-password>'
+read -r -s new_password
+printf '%s\n' "$new_password" | docker compose run --rm --no-deps app admin reset-password
+unset new_password
 docker compose up -d app
 ```
 
-密码重置会撤销全部管理员会话，不会删除或重新加密 NVIDIA Key。命令行中的密码可能进入 Shell history；生产操作应使用受控的秘密注入方式，并在完成后清理历史记录。
+密码重置会撤销全部管理员会话，不会删除或重新加密 NVIDIA Key。新密码只通过 stdin 注入，不进入命令参数。
 
 主密钥轮转必须停服执行。旧密钥由 `NVIDIA_ROUTER_MASTER_KEY` 提供，新密钥只由 `NVIDIA_ROUTER_NEW_MASTER_KEY` 提供，二者都不能写入命令参数、日志或仓库：
 

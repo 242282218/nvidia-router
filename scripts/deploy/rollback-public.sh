@@ -20,8 +20,110 @@ compose() {
       -f docker-compose.yml -f docker-compose.public.yml "$@"
 }
 
+compose_config=""
+app_stopped=0
+current_image=""
+data_volume=""
+database_swap_started=0
+
+restore_previous_database() {
+  if [[ -z "$data_volume" || -z "$current_image" ]]; then
+    return 1
+  fi
+  if ! docker run --rm -v "$data_volume:/data" alpine sh -c '
+    set -eu
+    source=/data/.router.db.previous.db
+    stage=/data/.router-db-recovery
+    test -s "$source"
+    if [ -e "$stage" ]; then
+      echo "error: database recovery staging directory already exists" >&2
+      exit 1
+    fi
+    mkdir "$stage"
+    cp "$source" "$stage/router.db"
+    chown 10001:10001 "$stage/router.db"
+    chmod 600 "$stage/router.db"
+  '; then
+    return 1
+  fi
+  if ! docker run --rm --user 10001:10001 \
+    -e NVIDIA_ROUTER_DATA_DIR=/data/.router-db-recovery \
+    -v "$data_volume:/data" "$current_image" \
+    db backup --output /data/.router-db-recovery/validated.db; then
+    return 1
+  fi
+  if ! docker run --rm -v "$data_volume:/data" alpine sh -c '
+    set -eu
+    stage=/data/.router-db-recovery
+    test -s "$stage/validated.db"
+    rm -f /data/router.db-wal /data/router.db-shm /data/router.db-journal /data/.router.db.lock
+    mv "$stage/validated.db" /data/router.db
+    chown 10001:10001 /data/router.db
+    chmod 600 /data/router.db
+    rm -f "$stage/router.db" "$stage/router.db-wal" "$stage/router.db-shm" "$stage/router.db-journal" "$stage/.router.db.lock"
+    rmdir "$stage"
+  '; then
+    return 1
+  fi
+}
+
+wait_for_health() {
+  for attempt in {1..30}; do
+    if curl -fsS --max-time 5 http://127.0.0.1:3756/health/live >/dev/null \
+      && curl -fsS --max-time 5 http://127.0.0.1:3756/health/ready >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+recover_on_exit() {
+  local status=$?
+  if [[ "$status" -ne 0 && "$app_stopped" -eq 1 ]]; then
+    echo "error: rollback failed; attempting to restore the running app" >&2
+    recovery_failed=0
+    if ! compose stop app >/dev/null 2>&1; then
+      recovery_failed=1
+      echo "error: failed to stop the app during rollback recovery" >&2
+    fi
+    recovery_litestream=""
+    if ! recovery_litestream="$(docker ps -q \
+      --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+      --filter "label=com.docker.compose.service=litestream" \
+      --filter status=running 2>/dev/null)"; then
+      recovery_failed=1
+      echo "error: failed to inspect the Litestream container during rollback recovery" >&2
+    fi
+    if [[ -n "$recovery_litestream" ]]; then
+      if ! docker stop "$recovery_litestream" >/dev/null 2>&1; then
+        recovery_failed=1
+        echo "error: failed to stop Litestream during rollback recovery" >&2
+      fi
+    fi
+    if [[ "$database_swap_started" -eq 1 ]] && ! restore_previous_database; then
+      recovery_failed=1
+      echo "error: failed to restore the previous database; app remains stopped" >&2
+    fi
+    if [[ "$recovery_failed" -eq 0 && -n "$current_image" ]]; then
+      if ! NVIDIA_ROUTER_IMAGE="$current_image" compose up -d --no-build --force-recreate; then
+        echo "error: failed to restore the previous app automatically" >&2
+      elif ! wait_for_health; then
+        echo "error: previous app started but did not become ready" >&2
+      fi
+    elif [[ "$recovery_failed" -eq 0 ]]; then
+      echo "error: previous app image is unavailable; app remains stopped" >&2
+    fi
+  fi
+  if [[ -n "$compose_config" ]]; then
+    rm -f -- "$compose_config"
+  fi
+  exit "$status"
+}
+
+trap recover_on_exit EXIT
+
 compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-rollback.XXXXXX.json")"
-trap 'rm -f -- "$compose_config"' EXIT
 env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME NVIDIA_ROUTER_IMAGE="$NVIDIA_ROUTER_IMAGE" \
   docker compose --project-directory "$PWD" -p "$COMPOSE_PROJECT" \
     -f docker-compose.yml -f docker-compose.public.yml config --format json >"$compose_config"
@@ -41,8 +143,12 @@ if [[ "$(docker inspect --format '{{.State.Running}}' "$app_container")" != "tru
   echo "error: app container is not running; refusing to create a previous database snapshot" >&2
   exit 1
 fi
-current_image="$(docker inspect --format '{{.Image}}' "$app_container")"
-if [[ -z "$current_image" ]] || ! docker image inspect "$current_image" >/dev/null 2>&1; then
+current_image="$(docker inspect --format '{{.Config.Image}}' "$app_container")"
+if [[ -z "$current_image" ]]; then
+  echo "error: running app image name is unavailable; refusing to restore the database" >&2
+  exit 1
+fi
+if ! docker image inspect "$current_image" >/dev/null 2>&1; then
   echo "error: running app image is not available; refusing to restore the database" >&2
   exit 1
 fi
@@ -65,6 +171,7 @@ if [[ -z "$data_volume" ]]; then
   echo "error: cannot derive the Compose data volume" >&2
   exit 1
 fi
+app_stopped=1
 compose stop app
 litestream_containers="$(docker ps -q \
   --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
@@ -134,6 +241,7 @@ docker run --rm --user 10001:10001 \
   -v "$data_volume:/data" "$NVIDIA_ROUTER_IMAGE" \
   db backup --output /data/.router-db-rollback/validated.db
 
+database_swap_started=1
 docker run --rm -v "$data_volume:/data" alpine sh -c \
   '
     set -eu
@@ -197,6 +305,11 @@ echo "==> 用镜像标签 $TAG 重启"
 compose up -d --no-build --force-recreate
 
 echo "==> 验证"
-curl -fsS --max-time 5 http://127.0.0.1:3756/health/live && echo "  <- /health/live"
+if ! wait_for_health; then
+  echo "error: rolled-back router did not become ready" >&2
+  exit 1
+fi
+app_stopped=0
+echo "  /health/live and /health/ready passed"
 
 echo "回滚完成"

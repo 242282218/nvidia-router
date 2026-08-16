@@ -11,8 +11,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 配置
-API_BASE="http://localhost:8080"
+API_BASE="${API_BASE:-http://127.0.0.1:3756}"
 ADMIN_BASE="${API_BASE}/admin/api"
+ADMIN_COOKIE="${NVIDIA_ROUTER_ADMIN_COOKIE:-}"
+ACCESS_KEY="${NVIDIA_ROUTER_LIVE_ACCESS_KEY:-}"
 
 # 测试计数
 TESTS_RUN=0
@@ -87,40 +89,72 @@ assert_http_status() {
     fi
 }
 
+admin_curl() {
+    curl -sS --max-time 10 \
+        --header @<(printf 'Origin: %s\n' "$API_BASE") \
+        --header @<(printf 'Cookie: nvr_admin_session=%s\n' "$ADMIN_COOKIE") \
+        "$@"
+}
+
+assert_access_http_status() {
+    local url="$1"
+    local expected_status="$2"
+    local message="${3:-Authenticated HTTP status check}"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    local actual_status
+    actual_status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 \
+        --header @<(printf 'Authorization: Bearer %s\n' "$ACCESS_KEY") "$url" || echo "000")
+
+    if [[ "$actual_status" == "$expected_status" ]]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        log_info "✓ $message (status: $actual_status)"
+        return 0
+    fi
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    log_error "✗ $message (expected: $expected_status, got: $actual_status)"
+    return 1
+}
+
 # 测试函数
 test_health_check() {
     log_info "=== 测试 1: 健康检查 ==="
-    assert_http_status "${API_BASE}/health" "200" "Health endpoint should return 200"
+    assert_http_status "${API_BASE}/health/live" "200" "Liveness endpoint should return 200"
+    assert_http_status "${API_BASE}/health/ready" "200" "Readiness endpoint should return 200"
 }
 
 test_proxy_pool_status() {
     log_info "=== 测试 2: 代理池状态查询 ==="
     local response
-    response=$(curl -s "${ADMIN_BASE}/proxy-pool")
-    assert_contains "$response" '"enabled"' "Response should contain enabled field"
-    assert_contains "$response" '"proxy_url"' "Response should contain proxy_url field"
+    response=$(admin_curl "${ADMIN_BASE}/proxy-pool/status")
+    assert_contains "$response" '"healthy_size"' "Response should contain healthy_size field"
+    assert_contains "$response" '"mode"' "Response should contain mode field"
 }
 
 test_models_endpoint() {
     log_info "=== 测试 3: Models 端点 ==="
-    assert_http_status "${API_BASE}/v1/models" "200" "Models endpoint should return 200"
+    assert_access_http_status "${API_BASE}/v1/models" "200" "Models endpoint should return 200"
 }
 
 test_monitoring() {
     log_info "=== 测试 4: 监控端点 ==="
     local response
-    response=$(curl -s "${ADMIN_BASE}/monitoring")
-    assert_contains "$response" '"stats"' "Monitoring should return stats"
+    response=$(admin_curl "${ADMIN_BASE}/monitoring/summary")
+    assert_contains "$response" '"summary"' "Monitoring should return summary"
 }
 
 # 主测试流程
 main() {
     log_info "开始代理池集成测试..."
+    if [[ -z "$ADMIN_COOKIE" || -z "$ACCESS_KEY" ]]; then
+        log_error "请通过 NVIDIA_ROUTER_ADMIN_COOKIE 和 NVIDIA_ROUTER_LIVE_ACCESS_KEY 注入运行时凭据"
+        exit 1
+    fi
     log_info "API Base: $API_BASE"
     echo ""
 
     # 检查服务是否运行
-    if ! curl -s -f "${API_BASE}/health" > /dev/null; then
+    if ! curl -s -f "${API_BASE}/health/live" > /dev/null; then
         log_error "服务未运行,请先启动服务: go run cmd/nvidia-router/main.go"
         exit 1
     fi

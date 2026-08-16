@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"errors"
@@ -27,7 +28,7 @@ const (
 	cliUsage          = "Usage:\n" +
 		"  nvidia-router [--help]\n" +
 		"  nvidia-router serve\n" +
-		"  nvidia-router admin reset-password --password <new>\n" +
+		"  nvidia-router admin reset-password  # read the new password from stdin\n" +
 		"  nvidia-router admin rotate-master-key --new-version <n> --backup <path>\n" +
 		"  nvidia-router db backup --output <path>\n"
 )
@@ -46,14 +47,26 @@ func runCLI(args []string, stdout, _ io.Writer) error {
 }
 
 func runCLIContext(ctx context.Context, args []string, stdout, _ io.Writer) error {
+	return runCLIContextWithInput(ctx, args, os.Stdin, stdout)
+}
+
+func runCLIWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return runCLIContextWithInput(context.Background(), args, stdin, stdout)
+}
+
+func runCLIContextWithInput(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 1 && args[0] == "--help" {
 		if _, err := fmt.Fprint(stdout, cliUsage); err != nil {
 			return fmt.Errorf("write usage: %w", err)
 		}
 		return nil
 	}
-	if len(args) == 4 && args[0] == "admin" && args[1] == "reset-password" && args[2] == "--password" {
-		return runAdminPasswordReset(ctx, args[3], stdout)
+	if len(args) == 2 && args[0] == "admin" && args[1] == "reset-password" {
+		password, err := readCLIPassword(stdin)
+		if err != nil {
+			return err
+		}
+		return runAdminPasswordReset(ctx, password, stdout)
 	}
 	if len(args) == 6 && args[0] == "admin" && args[1] == "rotate-master-key" && args[2] == "--new-version" && args[4] == "--backup" {
 		return runMasterKeyRotation(ctx, args[3], args[5], stdout)
@@ -75,6 +88,21 @@ func runCLIContext(ctx context.Context, args []string, stdout, _ io.Writer) erro
 		return fmt.Errorf("close initialized application: %w", err)
 	}
 	return nil
+}
+
+func readCLIPassword(input io.Reader) (string, error) {
+	if input == nil {
+		return "", errors.New("administrator password input is required on stdin")
+	}
+	line, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read administrator password from stdin: %w", err)
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if line == "" {
+		return "", errors.New("administrator password from stdin is empty")
+	}
+	return line, nil
 }
 
 func runServe(ctx context.Context) error {

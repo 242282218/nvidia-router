@@ -38,6 +38,7 @@ func (c *Client) Embeddings(
 	if err != nil {
 		return nil, safeError{"send NVIDIA embeddings request", err}
 	}
+	requireNonstreamSemanticCompletion(response)
 	return response, nil
 }
 

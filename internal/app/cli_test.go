@@ -66,9 +66,49 @@ func TestCLIResetPasswordHonorsCancelledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := runCLIContext(ctx, []string{"admin", "reset-password", "--password", "new CLI recovery password"}, io.Discard, io.Discard)
+	err := runCLIContextWithInput(ctx, []string{"admin", "reset-password"}, strings.NewReader("new CLI recovery password\n"), io.Discard)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled reset error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCLIResetPasswordReadsPasswordFromStdin(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NVIDIA_ROUTER_DATA_DIR", dataDir)
+	db := openCLIData(t, dataDir)
+	if err := adminauth.NewRepository(db, nil).EnsureAdmin(context.Background(), testInitialAdminPassword); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	closeCLIDatabase(t, db)
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	previousStdin := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = previousStdin
+		_ = reader.Close()
+	})
+	if _, err := writer.WriteString("new stdin recovery password\n"); err != nil {
+		t.Fatalf("write password: %v", err)
+	}
+	_ = writer.Close()
+
+	if err := runCLI([]string{"admin", "reset-password"}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runCLI reset-password: %v", err)
+	}
+
+	db = openCLIData(t, dataDir)
+	defer closeCLIDatabase(t, db)
+	var passwordHash string
+	if err := db.QueryRow("SELECT password_hash FROM admins WHERE id = 1").Scan(&passwordHash); err != nil {
+		t.Fatalf("read reset password hash: %v", err)
+	}
+	matched, err := adminauth.VerifyPassword("new stdin recovery password", passwordHash)
+	if err != nil || !matched {
+		t.Fatalf("stdin password verification = %t, %v", matched, err)
 	}
 }
 
@@ -209,7 +249,7 @@ func TestCLIResetPasswordRevokesSessionsWithoutChangingNVIDIASecrets(t *testing.
 
 	password := "new CLI recovery password"
 	var stdout, stderr bytes.Buffer
-	if err := runCLI([]string{"admin", "reset-password", "--password", password}, &stdout, &stderr); err != nil {
+	if err := runCLIWithInput([]string{"admin", "reset-password"}, strings.NewReader(password+"\n"), &stdout, &stderr); err != nil {
 		t.Fatalf("runCLI reset-password: %v", err)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), password) {
@@ -404,7 +444,7 @@ func TestCLIResetPasswordErrorDoesNotEchoPassword(t *testing.T) {
 	closeCLIDatabase(t, db)
 
 	password := "short-value"
-	err := runCLI([]string{"admin", "reset-password", "--password", password}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runCLIWithInput([]string{"admin", "reset-password"}, strings.NewReader(password+"\n"), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("runCLI accepted a short recovery password")
 	}

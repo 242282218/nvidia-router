@@ -61,7 +61,7 @@ func TestSettingsPATCHRejectsValuesOutsideDatabaseChecks(t *testing.T) {
 	// lock in the audit B4 §197 risk mitigation: a 200 token in the spec would
 	// re-roll every successful response (waste key quota), and an inverted
 	// range like "599-500" is a typo to reject at store time rather than
-	// silently treating the matcher as "never fail over".
+	// silently treating the matcher as the runtime default.
 	tests := []struct {
 		name string
 		body string

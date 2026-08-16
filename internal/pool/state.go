@@ -2,6 +2,7 @@ package pool
 
 import (
 	"math"
+	"time"
 
 	"nvidia-router/internal/keystate"
 )
@@ -16,6 +17,11 @@ const ewmaAlpha = 0.2
 // unmeasured and shares the default round-robin path.
 const latencyWarmupSamples = 3
 
+const (
+	keyRequestLimit  = 30
+	keyRequestWindow = time.Minute
+)
+
 type keyState struct {
 	snapshot      keystate.KeySnapshot
 	busy          bool
@@ -25,8 +31,9 @@ type keyState struct {
 	// latencyEWMA is an exponentially weighted moving average of successful
 	// attempt durations (ms). It drives latency-aware scheduling: keys with
 	// faster historical responses are preferred while their EWMA is fresher.
-	latencyEWMA float64
+	latencyEWMA    float64
 	latencySamples int
+	requestTimes   []time.Time
 }
 
 func newKeyState(snapshot keystate.KeySnapshot) *keyState {
@@ -75,6 +82,34 @@ func (s *keyState) latencyWeight(unmeasuredWeight float64) float64 {
 	// Scale ms to seconds and add 1 to keep the weight finite: a 100ms key gets
 	// 1/1.1 ≈ 0.91, a 3s key gets 1/4 = 0.25.
 	return 1.0 / (1.0 + score/1000.0)
+}
+
+func (s *keyState) reserveRequest(now time.Time) (time.Duration, bool) {
+	retryAfter := s.requestRetryAfter(now)
+	if retryAfter > 0 {
+		return retryAfter, false
+	}
+	s.requestTimes = append(s.requestTimes, now)
+	return 0, true
+}
+
+func (s *keyState) requestRetryAfter(now time.Time) time.Duration {
+	cutoff := now.Add(-keyRequestWindow)
+	kept := s.requestTimes[:0]
+	for _, requestAt := range s.requestTimes {
+		if requestAt.After(cutoff) {
+			kept = append(kept, requestAt)
+		}
+	}
+	s.requestTimes = kept
+	if len(s.requestTimes) < keyRequestLimit {
+		return 0
+	}
+	retryAfter := keyRequestWindow - now.Sub(s.requestTimes[0])
+	if retryAfter <= 0 {
+		return time.Nanosecond
+	}
+	return retryAfter
 }
 
 // unmeasuredLatencyWeight is the exploration weight for keys still warming up.

@@ -119,6 +119,7 @@ func newStickySessionKey() ([]byte, error) {
 }
 
 var ErrProtocol = errors.New("NVIDIA models protocol error")
+var ErrEmptyResponse = errors.New("NVIDIA chat response contained no usable output")
 
 type Client struct {
 	httpClient *http.Client
@@ -136,6 +137,15 @@ type Client struct {
 	closeOnce        sync.Once
 }
 type requestFactory func(context.Context) (*http.Request, error)
+
+func requireNonstreamSemanticCompletion(response *http.Response) {
+	if response == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return
+	}
+	if marker, ok := response.Body.(interface{ RequireSemanticCompletion() }); ok {
+		marker.RequireSemanticCompletion()
+	}
+}
 
 type ValidationState uint8
 
@@ -533,6 +543,7 @@ type releaseBody struct {
 	once             sync.Once
 	terminal         atomic.Uint32
 	semanticRequired atomic.Bool
+	semanticEOF      atomic.Bool
 }
 
 func newReleaseBody(body io.ReadCloser, release func(), onComplete func(), onFailure func()) *releaseBody {
@@ -543,7 +554,10 @@ func (b *releaseBody) Read(payload []byte) (int, error) {
 	read, err := b.ReadCloser.Read(payload)
 	if err == io.EOF {
 		if b.semanticRequired.Load() {
-			b.failTerminal()
+			// Non-stream validators need to inspect the complete body before
+			// deciding whether EOF is valid. Defer failure until Close so a
+			// successful validator can call MarkComplete after ReadAll.
+			b.semanticEOF.Store(true)
 		} else {
 			b.completeTerminal()
 		}
@@ -586,6 +600,9 @@ func (b *releaseBody) failTerminal() {
 }
 
 func (b *releaseBody) Close() error {
+	if b.semanticRequired.Load() && b.semanticEOF.Load() {
+		b.failTerminal()
+	}
 	err := b.ReadCloser.Close()
 	b.once.Do(b.release)
 	return err

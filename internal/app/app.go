@@ -202,7 +202,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		return observedHandler(requestRecorder, resolved.Clock, resolved.Logger, guarded, requestEventSink)
 	} // The embedding cache exact-matches repeat (model, input) requests so
 	// identical vectors skip the upstream. It is in-memory and bounded; the max
-	// entry count is read once at startup from runtime settings.
+	// entry count follows the runtime setting on each embedding request.
 	embeddingCache := embedcache.New(settings.Snapshot().EmbeddingCacheMaxEntries)
 	chat := observe(v1.NewChat(models, attempts, nvidiaClient))
 	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))

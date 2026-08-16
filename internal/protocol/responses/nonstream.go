@@ -14,6 +14,10 @@ import (
 // remaining Chat response fields are not forwarded because Responses semantics
 // are reconstructed, not relayed.
 func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]byte, error) {
+	return FromChatWithConfig(chatBody, responsesID, model, ResponseConfig{})
+}
+
+func FromChatWithConfig(chatBody []byte, responsesID string, model modelcatalog.Model, config ResponseConfig) ([]byte, error) {
 	if strings.TrimSpace(responsesID) == "" {
 		return nil, fmt.Errorf("convert chat to responses: response id is required")
 	}
@@ -31,7 +35,7 @@ func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]
 		return nil, fmt.Errorf("convert chat to responses: chat body has no choices")
 	}
 
-	output, err := buildOutputItems(chat.Choices[0].Message)
+	output, err := buildOutputItems(chat.Choices[0].Message, responsesID)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +53,7 @@ func FromChat(chatBody []byte, responsesID string, model modelcatalog.Model) ([]
 		// walking output see an empty result.
 		"output_text": outputText(output),
 	}
+	config.apply(response)
 	// incomplete_details is only meaningful for an incomplete response; the spec
 	// leaves it absent otherwise.
 	if reason, ok := incompleteReason(chat.Choices[0].FinishReason); ok {
@@ -86,7 +91,7 @@ type toolCallContent struct {
 
 type chatUsage = ChatUsage
 
-func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
+func buildOutputItems(message chatChoiceMessage, responsesID string) ([]map[string]any, error) {
 	output := make([]map[string]any, 0, 2+len(message.ToolCalls))
 	// Reasoning precedes tool calls and text in a Responses output, matching
 	// how thinking models emit chain-of-thought before the answer.
@@ -96,13 +101,14 @@ func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
 	}
 	if hasReasoning {
 		output = append(output, map[string]any{
-			"type":    "reasoning",
+			"id": reasoningItemID(responsesID), "type": "reasoning", "status": "completed",
 			"summary": []map[string]any{{"type": "summary_text", "text": reasoning}},
 		})
 	}
 	for _, call := range message.ToolCalls {
 		output = append(output, map[string]any{
 			"type":      "function_call",
+			"status":    "completed",
 			"id":        call.ID,
 			"call_id":   call.ID,
 			"name":      call.Function.Name,
@@ -115,10 +121,10 @@ func buildOutputItems(message chatChoiceMessage) ([]map[string]any, error) {
 	}
 	if hasText {
 		output = append(output, map[string]any{
-			"type": "message",
+			"id": messageItemID(responsesID), "type": "message", "status": "completed",
 			"role": "assistant",
 			"content": []map[string]any{
-				{"type": "output_text", "text": text},
+				{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}},
 			},
 		})
 	}

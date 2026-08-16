@@ -43,8 +43,8 @@ type Snapshot struct {
 	NonstreamTotalTimeoutMS int
 	ShutdownGraceMS         int
 	// FailoverStatusCodes is the operator-tunable spec driving router.Attempt's
-	// retry decision (audit B4). An empty string is the legacy sentinel: the
-	// router falls back to fault.DefaultFailoverStatusCodes.
+	// retry decision (audit B4). An empty string uses the documented default
+	// fault.DefaultFailoverStatusCodes set.
 	FailoverStatusCodes string
 	// RequestLogRetentionDays drives observability.CleanupWorker instead of the
 	// previously hardcoded 30-day constant (audit B5).
@@ -81,7 +81,7 @@ type Snapshot struct {
 	LatencyRoutingEnabled bool
 	// EmbeddingCacheEnabled gates the in-memory exact-match cache for
 	// /v1/embeddings. The cache is optional because it changes observable
-	// behaviour (identical inputs may get a cached vector without an upstream
+	// behaviour (identical requests may get a cached vector without an upstream
 	// call), so operators can disable it explicitly.
 	EmbeddingCacheEnabled bool
 	// EmbeddingCacheMaxEntries bounds the in-memory embedding cache. A bounded
@@ -183,10 +183,9 @@ func Validate(snapshot Snapshot) error {
 			return &ValidationError{Field: check.field, Min: check.min, Max: check.max, Value: check.value}
 		}
 	}
-	// An empty failover_status_codes is a legal operator choice ("never fail
-	// over"); we let fault.NewFailoverMatcher accept it. Any other string is
-	// validated by the parser so an admin typo surfaces here rather than at
-	// request time when a bad spec would silently turn off failover.
+	// An empty failover_status_codes uses the runtime default set. Any other
+	// string is validated by the parser so an admin typo surfaces here rather
+	// than at request time.
 	if strings.TrimSpace(snapshot.FailoverStatusCodes) != "" {
 		if _, err := fault.NewFailoverMatcher(snapshot.FailoverStatusCodes); err != nil {
 			return &ValidationError{Field: "failover_status_codes", StringValue: snapshot.FailoverStatusCodes, Cause: err}

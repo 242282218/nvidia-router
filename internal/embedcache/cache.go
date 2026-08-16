@@ -1,25 +1,33 @@
 // Package embedcache provides a bounded, in-memory exact-match cache for
-// embedding requests. It is deliberately deterministic (cache key = model +
-// input hash), so identical embeddings requests short-circuit the upstream
-// call. It never sees raw input text for storage: callers pass a pre-hashed
-// key, and the value is the validated embedding JSON the upstream produced.
+// embedding requests. It is deliberately deterministic (cache key = SHA-256 of
+// the normalized upstream request body), so identical embedding requests
+// short-circuit the upstream call. It never sees raw input text for storage:
+// callers pass a pre-hashed key, and the value is the validated embedding JSON.
 package embedcache
 
 import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 	"sync"
 )
 
+const (
+	defaultMaxEntries = 256
+	// maxCacheBytes keeps the cache bounded even when every response reaches
+	// the 32 MiB upstream validation limit.
+	maxCacheBytes = 64 << 20
+)
+
 // Cache is a goroutine-safe LRU keyed by a request fingerprint. It stores the
-// serialized embedding response body for exact-repeat inputs.
+// serialized embedding response body for exact-repeat requests.
 type Cache struct {
-	mu      sync.Mutex
-	max     int
-	entries map[string]*list.Element
-	lru     *list.List
+	mu       sync.Mutex
+	max      int
+	maxBytes int64
+	bytes    int64
+	entries  map[string]*list.Element
+	lru      *list.List
 }
 
 type entry struct {
@@ -30,12 +38,13 @@ type entry struct {
 // New returns a bounded LRU cache holding at most maxEntries responses.
 func New(maxEntries int) *Cache {
 	if maxEntries <= 0 {
-		maxEntries = 256
+		maxEntries = defaultMaxEntries
 	}
 	return &Cache{
-		max:     maxEntries,
-		entries: make(map[string]*list.Element, maxEntries),
-		lru:     list.New(),
+		max:      maxEntries,
+		maxBytes: maxCacheBytes,
+		entries:  make(map[string]*list.Element, maxEntries),
+		lru:      list.New(),
 	}
 }
 
@@ -57,21 +66,48 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 func (c *Cache) Put(key string, response []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	responseBytes := int64(len(response))
+	if responseBytes > c.maxBytes {
+		return
+	}
 	if element, ok := c.entries[key]; ok {
-		element.Value.(*entry).response = response
+		cached := element.Value.(*entry)
+		c.bytes += responseBytes - int64(len(cached.response))
+		cached.response = response
 		c.lru.MoveToFront(element)
+		c.evictLocked()
 		return
 	}
 	element := c.lru.PushFront(&entry{key: key, response: response})
 	c.entries[key] = element
-	for len(c.entries) > c.max {
+	c.bytes += responseBytes
+	c.evictLocked()
+}
+
+func (c *Cache) evictLocked() {
+	for len(c.entries) > c.max || c.bytes > c.maxBytes {
 		oldest := c.lru.Back()
 		if oldest == nil {
 			break
 		}
+		cached := oldest.Value.(*entry)
+		c.bytes -= int64(len(cached.response))
 		c.lru.Remove(oldest)
-		delete(c.entries, oldest.Value.(*entry).key)
+		delete(c.entries, cached.key)
 	}
+}
+
+// Resize changes the entry bound and immediately removes excess LRU entries.
+// The byte bound remains fixed so runtime setting changes cannot make the
+// process retain an unbounded response set.
+func (c *Cache) Resize(maxEntries int) {
+	if maxEntries <= 0 {
+		maxEntries = defaultMaxEntries
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.max = maxEntries
+	c.evictLocked()
 }
 
 // Len returns the current number of cached responses.
@@ -81,10 +117,17 @@ func (c *Cache) Len() int {
 	return len(c.entries)
 }
 
-// Fingerprint builds a deterministic, bounded cache key for a set of input
-// texts under a model. It hashes the concatenation so the key stays short
-// regardless of input size and never stores raw input text.
-func Fingerprint(model string, inputs []string) string {
-	hash := sha256.Sum256([]byte(model + "\x00" + strings.Join(inputs, "\x00")))
-	return model + ":" + hex.EncodeToString(hash[:])
+// Bytes returns the total serialized response size currently retained.
+func (c *Cache) Bytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
+}
+
+// Fingerprint builds a deterministic, bounded cache key from the complete
+// normalized upstream request body. Hashing the body keeps all response-
+// affecting fields in the key without storing raw input text.
+func Fingerprint(requestBody []byte) string {
+	hash := sha256.Sum256(requestBody)
+	return hex.EncodeToString(hash[:])
 }

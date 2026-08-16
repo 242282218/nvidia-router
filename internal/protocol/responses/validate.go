@@ -27,11 +27,28 @@ type topLevelCheck struct {
 }
 
 func rejectUnsupportedTopLevel(fields map[string]json.RawMessage) error {
+	allowed := map[string]struct{}{
+		"model": {}, "input": {}, "instructions": {}, "stream": {}, "tools": {}, "tool_choice": {},
+		"parallel_tool_calls": {}, "max_output_tokens": {}, "reasoning": {}, "reasoning_effort": {},
+		"text": {}, "temperature": {}, "top_p": {}, "user": {}, "store": {}, "background": {},
+		"previous_response_id": {}, "conversation": {}, "metadata": {}, "prompt": {}, "prompt_cache_key": {},
+		"prompt_cache_options": {}, "prompt_cache_retention": {}, "context_management": {}, "include": {},
+		"max_tool_calls": {}, "moderation": {}, "safety_identifier": {}, "service_tier": {}, "truncation": {},
+		"top_logprobs": {}, "stream_options": {}, "seed": {}, "stop": {}, "presence_penalty": {},
+		"frequency_penalty": {}, "thinking": {},
+	}
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return invalidResponses("invalid_parameter", name, "Unknown Responses parameter.")
+		}
+	}
 	checks := []topLevelCheck{
 		{reject: rejectStoreTrue},
 		{reject: rejectBackgroundAsync},
 		{reject: rejectPresentUserState},
 		{reject: rejectIncludeHosted},
+		{reject: rejectServiceTier},
+		{reject: rejectTruncation},
 	}
 	for _, check := range checks {
 		if err := check.reject(fields); err != nil {
@@ -43,52 +60,60 @@ func rejectUnsupportedTopLevel(fields map[string]json.RawMessage) error {
 
 func rejectStoreTrue(fields map[string]json.RawMessage) error {
 	raw, ok := fields["store"]
-	if !ok {
+	if !ok || isJSONNull(raw) {
 		return nil
 	}
-	var value *bool
-	if json.Unmarshal(raw, &value) != nil || value == nil {
+	var value bool
+	if json.Unmarshal(raw, &value) != nil {
 		return invalidResponses("invalid_parameter", "store", "The store parameter must be a boolean.")
 	}
-	if *value {
+	if value {
 		return unsupportedResponses("store", "Stored responses are not supported.")
 	}
 	return nil
 }
 
 func rejectPresentUserState(fields map[string]json.RawMessage) error {
-	if _, ok := fields["previous_response_id"]; ok {
-		return unsupportedResponses("previous_response_id", "Stateful response recovery is not supported.")
+	unsupported := map[string]string{
+		"previous_response_id":   "Stateful response recovery is not supported.",
+		"conversation":           "Stateful response recovery is not supported.",
+		"metadata":               "Response metadata persistence is not supported.",
+		"prompt":                 "Prompt templates are not supported.",
+		"prompt_cache_key":       "Prompt cache keys are not supported.",
+		"prompt_cache_options":   "Prompt cache options are not supported.",
+		"prompt_cache_retention": "Prompt cache retention is not supported.",
+		"context_management":     "Context management is not supported.",
+		"include":                "Hosted tool inclusion is not supported.",
+		"max_tool_calls":         "Maximum tool call limits are not supported.",
+		"moderation":             "Moderation controls are not supported.",
+		"safety_identifier":      "Safety identifiers are not supported.",
+		"top_logprobs":           "Top logprobs are not supported.",
 	}
-	if _, ok := fields["conversation"]; ok {
-		return unsupportedResponses("conversation", "Stateful response recovery is not supported.")
-	}
-	if _, ok := fields["metadata"]; ok {
-		return unsupportedResponses("metadata", "Response metadata persistence is not supported.")
-	}
-	if _, ok := fields["prompt_cache_key"]; ok {
-		return unsupportedResponses("prompt_cache_key", "Prompt cache keys are not supported.")
+	for name, message := range unsupported {
+		if raw, ok := fields[name]; ok && !isJSONNull(raw) {
+			return unsupportedResponses(name, message)
+		}
 	}
 	return nil
 }
 
 func rejectBackgroundAsync(fields map[string]json.RawMessage) error {
 	raw, ok := fields["background"]
-	if !ok {
+	if !ok || isJSONNull(raw) {
 		return nil
 	}
-	var value *bool
-	if json.Unmarshal(raw, &value) != nil || value == nil {
+	var value bool
+	if json.Unmarshal(raw, &value) != nil {
 		return invalidResponses("invalid_parameter", "background", "The background parameter must be a boolean.")
 	}
-	if *value {
+	if value {
 		return unsupportedResponses("background", "Background responses are not supported.")
 	}
 	return nil
 }
 
 func rejectIncludeHosted(fields map[string]json.RawMessage) error {
-	if _, ok := fields["include"]; ok {
+	if raw, ok := fields["include"]; ok && !isJSONNull(raw) {
 		return unsupportedResponses("include", "Hosted tool inclusion is not supported.")
 	}
 	return nil
@@ -99,16 +124,52 @@ func rejectHostedTools(fields map[string]json.RawMessage) error {
 	if !ok {
 		return nil
 	}
-	var tools []struct {
-		Type string          `json:"type"`
-		Name json.RawMessage `json:"name"`
-	}
+	var tools []map[string]json.RawMessage
 	if json.Unmarshal(raw, &tools) == nil {
 		for _, tool := range tools {
-			if tool.Type != "function" {
+			rawType, hasType := tool["type"]
+			if !hasType {
+				continue
+			}
+			var toolType string
+			if json.Unmarshal(rawType, &toolType) == nil && toolType != "function" {
 				return unsupportedResponses("tools", "Only function tools are supported.")
 			}
 		}
 	}
 	return nil
+}
+
+func rejectServiceTier(fields map[string]json.RawMessage) error {
+	raw, ok := fields["service_tier"]
+	if !ok || isJSONNull(raw) {
+		return nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return invalidResponses("invalid_parameter", "service_tier", "The service_tier parameter must be a string or null.")
+	}
+	if value != "auto" {
+		return unsupportedResponses("service_tier", "Only service_tier=auto is supported.")
+	}
+	return nil
+}
+
+func rejectTruncation(fields map[string]json.RawMessage) error {
+	raw, ok := fields["truncation"]
+	if !ok || isJSONNull(raw) {
+		return nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return invalidResponses("invalid_parameter", "truncation", "The truncation parameter must be a string or null.")
+	}
+	if value != "disabled" {
+		return unsupportedResponses("truncation", "Only truncation=disabled is supported.")
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
 }

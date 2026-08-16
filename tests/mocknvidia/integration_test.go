@@ -438,6 +438,7 @@ func TestQueueFullTimeoutAndSingleKeyConcurrency(t *testing.T) {
 func TestChatSSEPassthroughAndCommitBoundaries(t *testing.T) {
 	t.Run("non_json_and_duplicate_done", func(t *testing.T) {
 		upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
+			{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"},
 			{Data: ": vendor-comment\n\n"},
 			{Data: "event: vendor.extension\ndata: not-json\n\n"},
 			{Data: "data: [DONE]\n\n"},
@@ -458,7 +459,10 @@ func TestChatSSEPassthroughAndCommitBoundaries(t *testing.T) {
 
 	t.Run("interrupted_after_commit_does_not_retry", func(t *testing.T) {
 		upstream := mocknvidia.New(
-			mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{{Data: "data: partial-extension\n\n"}}},
+			mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
+				{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"},
+				{Data: "data: partial-extension\n\n"},
+			}},
 			mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{{Data: "data: must-not-run\n\n"}, {Data: "data: [DONE]\n\n"}}},
 		)
 		harness := newAppHarness(t, upstream, []string{"nvapi-commit-1", "nvapi-commit-2"})
@@ -517,7 +521,7 @@ func TestDeepSeekV4FlashReasoningStreamThroughRouter(t *testing.T) {
 func TestClientCancellationStopsCommittedStreamWithoutRetry(t *testing.T) {
 	upstream := mocknvidia.New(
 		mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{
-			{Data: "data: first-event\n\n"},
+			{Data: "data: {\"choices\":[{\"delta\":{\"content\":\"first-event\"}}]}\n\n"},
 			{Data: "data: late-event\n\n", Delay: 5 * time.Second},
 		}},
 		mocknvidia.Script{Status: http.StatusOK, SSE: []mocknvidia.SSEChunk{{Data: "data: must-not-run\n\n"}}},

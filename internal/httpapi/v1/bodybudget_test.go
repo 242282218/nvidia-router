@@ -124,6 +124,35 @@ func TestChunkedBodyReadSucceedsWhenBudgetAllows(t *testing.T) {
 	}
 }
 
+func TestChunkedBodyReadReleasesUnusedShortReadReservation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", http.NoBody)
+	request.ContentLength = -1
+	request.Body = &oneByteReadCloser{payload: []byte("x")}
+	limit := int64(bodyBudgetChunkSize)
+
+	before := inFlightBodyBytes.Load()
+	occupied := maxInFlightBodyBytes - before - chunkedReserveBytes - bodyBudgetChunkSize - 1
+	if occupied <= 0 {
+		t.Fatalf("test budget occupancy = %d, want positive", occupied)
+	}
+	inFlightBodyBytes.Add(occupied)
+	defer inFlightBodyBytes.Add(-occupied)
+
+	lease, err := acquireBodyLease(request, limit)
+	if err != nil {
+		t.Fatalf("acquire chunked lease: %v", err)
+	}
+	defer lease.Release()
+
+	read, err := readChunkedBody(request, limit, time.Second, lease)
+	if err != nil {
+		t.Fatalf("read short chunked body: %v", err)
+	}
+	if string(read) != "x" {
+		t.Fatalf("read body = %q, want %q", read, "x")
+	}
+}
+
 func TestChunkedBodyReadRejectsByteAfterLimitAndReleasesLease(t *testing.T) {
 	limit := bodyReadLimitForJSON()
 	chunked := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", io.MultiReader(

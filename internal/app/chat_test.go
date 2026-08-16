@@ -43,7 +43,7 @@ func TestChatAppEnforcesAuthenticationBodyLimitAndModelWhitelist(t *testing.T) {
 }
 
 func TestChatAppProxiesValidatedNonstreamJSON(t *testing.T) {
-	want := `{"id":"chat-1","choices":[{}],"future":{"kept":true}}`
+	want := `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}],"future":{"kept":true}}`
 	upstream := mocknvidia.New(mocknvidia.Script{Status: http.StatusOK, Body: want})
 	t.Cleanup(upstream.Close)
 	application, accessToken := newChatTestApp(t, upstream, []string{"upstream-key-1"}, true)
@@ -104,8 +104,8 @@ func TestChatAppSkipsFailedKeyOnFollowingRequest(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			upstream := mocknvidia.New(
 				test.failure,
-				mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{}],"attempt":2}`},
-				mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{}],"attempt":3}`},
+				mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"attempt":2}`},
+				mocknvidia.Script{Status: http.StatusOK, Body: `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"attempt":3}`},
 			)
 			t.Cleanup(upstream.Close)
 			application, accessToken := newChatTestApp(t, upstream, []string{"upstream-key-1", "upstream-key-2"}, true)

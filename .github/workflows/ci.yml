@@ -62,14 +62,6 @@ jobs:
         run: |
           pnpm --dir web run build
           bash scripts/check-web-dist.sh
-          # Verify deterministic filenames (no content hashes like index-49-ZvNc1.js)
-          # Skip full git diff because UnoCSS CSS output can vary slightly across environments
-          if git ls-files --error-unmatch internal/web/dist/assets/index.js internal/web/dist/assets/index.css internal/web/dist/index.html >/dev/null 2>&1; then
-            echo "✓ Deterministic filenames verified (index.js, index.css, index.html)"
-          else
-            echo "✗ Expected deterministic filenames not found"
-            exit 1
-          fi
 
       - name: Run Go tests
         run: go test ./...

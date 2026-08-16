@@ -47,6 +47,9 @@ func (c *Client) Chat(
 	if err != nil {
 		return nil, safeError{"send NVIDIA chat request", err}
 	}
+	if !stream {
+		requireNonstreamSemanticCompletion(response)
+	}
 	return response, nil
 }
 
@@ -176,14 +179,37 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 	if len(body) > MaxChatResponseBytes {
 		return ValidatedChatResponse{}, protocolError()
 	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return ValidatedChatResponse{}, emptyResponseError()
+	}
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
 		return ValidatedChatResponse{}, protocolError()
 	}
 	choices, exists := fields["choices"]
-	if !exists || !hasValidChatChoices(choices) {
+	if !exists {
 		return ValidatedChatResponse{}, protocolError()
+	}
+	items, valid := chatChoiceItems(choices)
+	if !valid {
+		return ValidatedChatResponse{}, protocolError()
+	}
+	if len(items) == 0 {
+		return ValidatedChatResponse{}, emptyResponseError()
+	}
+	for _, item := range items {
+		first := bytes.TrimSpace(item)
+		if len(first) == 0 || first[0] != '{' {
+			return ValidatedChatResponse{}, protocolError()
+		}
+	}
+	semantic, valid := hasSemanticChatChoices(items)
+	if !valid {
+		return ValidatedChatResponse{}, protocolError()
+	}
+	if !semantic {
+		return ValidatedChatResponse{}, emptyResponseError()
 	}
 
 	return ValidatedChatResponse{
@@ -191,13 +217,70 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 	}, nil
 }
 
-func hasValidChatChoices(value json.RawMessage) bool {
+func chatChoiceItems(value json.RawMessage) ([]json.RawMessage, bool) {
 	var items []json.RawMessage
-	if json.Unmarshal(value, &items) != nil || len(items) == 0 {
-		return false
+	if json.Unmarshal(value, &items) != nil {
+		return nil, false
 	}
-	first := bytes.TrimSpace(items[0])
-	return len(first) > 0 && first[0] == '{'
+	return items, true
+}
+
+func hasSemanticChatChoices(items []json.RawMessage) (bool, bool) {
+	semantic := false
+	for _, item := range items {
+		var choice map[string]json.RawMessage
+		if json.Unmarshal(item, &choice) != nil || choice == nil {
+			return false, false
+		}
+		messageValue, ok := choice["message"]
+		if !ok {
+			continue
+		}
+		var message map[string]json.RawMessage
+		if json.Unmarshal(messageValue, &message) != nil || message == nil {
+			return false, false
+		}
+		for _, field := range []string{"content", "reasoning_content"} {
+			if raw, ok := message[field]; ok {
+				present, valid := hasTextValue(raw)
+				if !valid {
+					return false, false
+				}
+				semantic = semantic || present
+			}
+		}
+		if raw, ok := message["tool_calls"]; ok {
+			var calls []json.RawMessage
+			if json.Unmarshal(raw, &calls) != nil {
+				return false, false
+			}
+			semantic = semantic || len(calls) > 0
+		}
+	}
+	return semantic, true
+}
+
+func hasTextValue(raw json.RawMessage) (bool, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false, true
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil {
+		return text != "", true
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(trimmed, &parts) != nil {
+		return false, false
+	}
+	for _, part := range parts {
+		if part.Text != "" {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 func isJSONArray(value json.RawMessage) bool {
@@ -207,6 +290,10 @@ func isJSONArray(value json.RawMessage) bool {
 
 func protocolError() error {
 	return safeError{"NVIDIA chat response was malformed", ErrProtocol}
+}
+
+func emptyResponseError() error {
+	return safeError{"NVIDIA chat response contained no usable output", ErrEmptyResponse}
 }
 
 type safeError struct {

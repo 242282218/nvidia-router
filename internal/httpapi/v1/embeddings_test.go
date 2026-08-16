@@ -1,4 +1,4 @@
-﻿package v1
+package v1
 
 import (
 	"context"
@@ -195,6 +195,57 @@ func TestEmbeddingsCacheHitsSecondRequest(t *testing.T) {
 	}
 	if upstreamCalls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1 (second request served from cache)", upstreamCalls.Load())
+	}
+}
+
+func TestEmbeddingsCacheSeparatesResponseAffectingFields(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"embedding":[0.1]}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Embedding.URL = upstream.URL + "/v1/embeddings"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 21, PublicID: publicID, UpstreamID: "vendor/embed", Kind: modelcatalog.KindEmbedding, Enabled: true}, nil
+	})
+	settings := &settableSettings{enabled: true, size: 10}
+	handler := NewEmbeddings(resolver, attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("upstream-secret"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	}), client, settings, embedcache.New(10))
+
+	for _, body := range []string{
+		`{"model":"public-embed","input":"same text","dimensions":256}`,
+		`{"model":"public-embed","input":"same text","dimensions":512}`,
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("request status = %d", response.Code)
+		}
+	}
+	if upstreamCalls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2 for different dimensions", upstreamCalls.Load())
+	}
+
+	// The admin setting is runtime-configurable; reducing the entry cap must
+	// evict the old LRU entry before the next cache lookup.
+	settings.size = 1
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(
+		`{"model":"public-embed","input":"same text","dimensions":256}`,
+	))
+	handler.ServeHTTP(response, request)
+	if upstreamCalls.Load() != 3 {
+		t.Fatalf("upstream calls after shrinking cache = %d, want 3", upstreamCalls.Load())
 	}
 }
 

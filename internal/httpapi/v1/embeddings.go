@@ -26,10 +26,10 @@ type Embeddings struct {
 	attempts AttemptRunner
 	client   provider.Provider
 	// cache is an optional exact-match embedding cache. When non-nil and the
-	// runtime setting is enabled, identical (model, input) requests bypass the
-	// upstream entirely.
-	cache     *embedcache.Cache
-	settings  runtimeconfig.Provider
+	// runtime setting is enabled, identical normalized upstream requests bypass
+	// the upstream entirely.
+	cache    *embedcache.Cache
+	settings runtimeconfig.Provider
 }
 
 func NewEmbeddings(models ModelResolver, attempts AttemptRunner, client provider.Provider, settings runtimeconfig.Provider, cache *embedcache.Cache) *Embeddings {
@@ -77,11 +77,15 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		writeChatError(writer, err)
 		return
 	}
-	// Exact-match cache: identical (model, input) requests short-circuit the
-	// upstream. The cache is off by default and bounded; a hit here is only
-	// valid for the exact resolved model so the key includes the upstream ID.
-	if h.cache != nil && h.settings.Snapshot().EmbeddingCacheEnabled {
-		if cached, ok := h.cache.Get(embedcache.Fingerprint(model.UpstreamID, parsed.Inputs())); ok {
+	// Exact-match cache: identical normalized upstream requests short-circuit
+	// the upstream. The cache is off by default and bounded; the mapped model
+	// remains part of the hashed request body.
+	cacheSettings := h.settings.Snapshot()
+	if h.cache != nil {
+		h.cache.Resize(cacheSettings.EmbeddingCacheMaxEntries)
+	}
+	if h.cache != nil && cacheSettings.EmbeddingCacheEnabled {
+		if cached, ok := h.cache.Get(embedcache.Fingerprint(upstreamBody)); ok {
 			writer.Header().Set("Content-Type", "application/json")
 			writer.Header().Set("X-Embedding-Cache", "HIT")
 			writer.WriteHeader(http.StatusOK)
@@ -112,7 +116,7 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	// Only cache 2xx responses: a cached error would wrongfully hide an upstream
 	// outage. The validated body (already parsed by execute) is safe to cache.
 	if h.cache != nil && h.settings.Snapshot().EmbeddingCacheEnabled {
-		h.cache.Put(embedcache.Fingerprint(model.UpstreamID, parsed.Inputs()), body)
+		h.cache.Put(embedcache.Fingerprint(upstreamBody), body)
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)
@@ -136,6 +140,7 @@ func (h *Embeddings) execute(body []byte) router.ExecuteFunc {
 			}
 			return response, err
 		}
+		markResponseComplete(response)
 		_ = response.Body.Close()
 		response.Body = io.NopCloser(bytes.NewReader(validated.Body))
 		response.ContentLength = int64(len(validated.Body))
