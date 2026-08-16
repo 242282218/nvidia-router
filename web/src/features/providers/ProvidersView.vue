@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import PageHeader from '../../shared/components/PageHeader.vue'
+import StatePanel from '../../shared/components/StatePanel.vue'
+import StatusBadge from '../../shared/components/StatusBadge.vue'
 import { useDialog } from '../../shared/useDialog'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
@@ -124,125 +127,79 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
-            提供商管理
-          </p>
-          <h1 class="page-title mt-1">
-            提供商（OpenAI 兼容）
-          </h1>
-          <p class="page-subtitle">
-            配置除 NVIDIA 之外、使用 OpenAI 兼容协议的提供商（如 SiliconFlow）。NVIDIA Key 仍在其独立页面管理。
-          </p>
-        </div>
-        <button
-          class="btn-primary rounded-lg px-4 py-2 text-sm"
-          type="button"
-          data-testid="open-create-provider"
-          @click="dialogOpen = true"
-        >
-          新增提供商
-        </button>
-        <button
-          class="btn-ghost rounded-lg px-3 py-1.5 text-sm"
-          type="button"
-          :disabled="loading"
-          @click="load"
-        >
-          {{ loading ? '刷新中…' : '刷新' }}
-        </button>
-      </header>
-
-      <Transition name="slide">
-        <p
-          v-if="errorMessage"
-          class="mb-4 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
-          role="alert"
-        >
-          <span>{{ errorMessage }}</span>
+      <PageHeader
+        eyebrow="运维管理"
+        title="提供商（OpenAI 兼容）"
+        subtitle="配置除 NVIDIA 之外、使用 OpenAI 兼容协议的提供商（如 SiliconFlow）。NVIDIA Key 仍在其独立页面管理。"
+      >
+        <template #actions>
           <button
-            class="btn-secondary rounded-lg px-3 py-1 text-xs"
+            class="btn-primary"
+            type="button"
+            data-testid="open-create-provider"
+            @click="dialogOpen = true"
+          >
+            新增提供商
+          </button>
+          <button
+            class="btn-ghost"
             type="button"
             :disabled="loading"
             @click="load"
           >
-            重试
+            {{ loading ? '刷新中…' : '刷新' }}
           </button>
-        </p>
-      </Transition>
+        </template>
+      </PageHeader>
 
       <div class="card mt-5 overflow-hidden">
-        <div
-          v-if="loading"
-          class="flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        <StatePanel
+          :loading="loading"
+          :error="errorMessage"
+          :empty="providers.length === 0"
+          loadingLabel="提供商列表加载中…"
+          emptyLabel="尚未配置 OpenAI 兼容提供商。"
+          emptyHint="NVIDIA 作为内置提供商始终可用，无需在此配置。"
+          @retry="load"
         >
-          <svg
-            class="h-4 w-4 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
+          <ul
+            class="divide-y divide-[var(--color-border)]"
+            aria-label="OpenAI 兼容提供商列表"
           >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
-          加载中…
-        </div>
-        <div
-          v-else-if="providers.length === 0"
-          class="p-8 text-center text-sm text-[var(--color-text-muted)]"
-        >
-          <p>尚未配置 OpenAI 兼容提供商。</p>
-          <p class="mt-1 text-xs">
-            NVIDIA 作为内置提供商始终可用，无需在此配置。
-          </p>
-        </div>
-        <ul
-          v-else
-          class="divide-y divide-[var(--color-border)]"
-        >
-          <li
-            v-for="provider in providers"
-            :key="provider.id"
-            class="flex flex-wrap items-center gap-3 px-4 py-3"
-          >
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <p class="font-mono text-sm font-medium text-[var(--color-text)]">
-                  {{ provider.name }}
-                </p>
-                <span :class="provider.enabled ? 'badge-success' : 'badge-muted'">
-                  {{ provider.enabled ? '启用' : '停用' }}
-                </span>
-              </div>
-              <p class="mt-0.5 truncate font-mono text-xs text-[var(--color-text-muted)]">
-                {{ provider.base_url }}
-              </p>
-              <p class="mt-0.5 font-mono text-xs text-[var(--color-text-subtle)]">
-                {{ provider.display_prefix }}…{{ provider.display_suffix }}
-              </p>
-            </div>
-            <button
-              class="btn-secondary rounded-md px-3 py-1 text-xs"
-              type="button"
-              :disabled="busyId === provider.id"
-              :data-testid="`toggle-provider-${provider.id}`"
-              @click="toggle(provider)"
+            <li
+              v-for="provider in providers"
+              :key="provider.id"
+              class="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--color-hover)]"
             >
-              {{ provider.enabled ? '停用' : '启用' }}
-            </button>
-          </li>
-        </ul>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <p class="font-mono text-sm font-medium text-[var(--color-text)]">
+                    {{ provider.name }}
+                  </p>
+                  <StatusBadge
+                    :variant="provider.enabled ? 'success' : 'muted'"
+                    :label="provider.enabled ? '启用' : '停用'"
+                  />
+                </div>
+                <p class="mt-0.5 truncate font-mono text-xs text-[var(--color-text-muted)]">
+                  {{ provider.base_url }}
+                </p>
+                <p class="mt-0.5 font-mono text-xs text-[var(--color-text-subtle)]">
+                  {{ provider.display_prefix }}…{{ provider.display_suffix }}
+                </p>
+              </div>
+              <button
+                class="btn-secondary"
+                type="button"
+                :disabled="busyId === provider.id"
+                :data-testid="`toggle-provider-${provider.id}`"
+                @click="toggle(provider)"
+              >
+                {{ provider.enabled ? '停用' : '启用' }}
+              </button>
+            </li>
+          </ul>
+        </StatePanel>
       </div>
 
       <div class="mt-4 text-xs text-[var(--color-text-muted)]">
@@ -256,6 +213,7 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
         class="modal-overlay"
         role="dialog"
         aria-modal="true"
+        aria-labelledby="create-provider-heading"
         @click.self="dialogOpen = false"
       >
         <section
@@ -263,7 +221,10 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
           class="modal-panel max-w-lg"
         >
           <div class="border-b border-[var(--color-border)] px-6 py-4">
-            <h2 class="text-base font-semibold text-[var(--color-text)]">
+            <h2
+              id="create-provider-heading"
+              class="text-base font-semibold text-[var(--color-text)]"
+            >
               新增 OpenAI 兼容提供商
             </h2>
           </div>
@@ -317,14 +278,14 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
               </Transition>
               <div class="flex justify-end gap-3">
                 <button
-                  class="btn-secondary rounded-lg px-4 py-2 text-sm"
+                  class="btn-secondary"
                   type="button"
                   @click="dialogOpen = false; resetCreateForm()"
                 >
                   取消
                 </button>
                 <button
-                  class="btn-primary rounded-lg px-4 py-2 text-sm"
+                  class="btn-primary"
                   type="submit"
                   :disabled="saving"
                   data-testid="create-provider-submit"
@@ -364,16 +325,5 @@ const enabledCount = computed(() => providers.value.filter((p) => p.enabled).len
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
-}
-.slide-enter-active {
-  transition: opacity 0.25s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.25s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.slide-leave-active {
-  transition: opacity 0.18s cubic-bezier(0.4, 0.0, 1, 1), transform 0.18s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
 }
 </style>
