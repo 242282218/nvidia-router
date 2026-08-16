@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { Model } from './types'
 
 defineProps<{ models: Model[]; busyId: number | null }>()
@@ -77,30 +78,54 @@ function capBadge(supported: boolean): string {
 <template>
   <div
     data-testid="model-table"
-    class="hidden overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
+    class="hidden overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
   >
     <table class="data-table">
+      <caption class="sr-only">
+        模型白名单，共 {{ models.length }} 条
+      </caption>
       <thead>
         <tr>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             模型
           </th>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             Kind
           </th>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             能力
           </th>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             单价 (USD /1M)
           </th>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             流式超时
           </th>
-          <th class="data-table-th">
+          <th
+            class="data-table-th"
+            scope="col"
+          >
             状态
           </th>
-          <th class="data-table-th text-right">
+          <th
+            class="data-table-th text-right"
+            scope="col"
+          >
             操作
           </th>
         </tr>
@@ -158,16 +183,16 @@ function capBadge(supported: boolean): string {
               </div>
               <div class="mt-1 flex items-center gap-2">
                 <button
-                  class="text-xs font-medium text-[var(--color-accent)] disabled:opacity-40"
+                  class="btn-primary px-2.5 py-1 text-xs"
                   type="button"
                   data-testid="model-save-price"
                   :disabled="busyId === model.id"
                   @click="submitPricingEdit(model)"
                 >
-                  保存
+                  {{ busyId === model.id ? '保存中…' : '保存' }}
                 </button>
                 <button
-                  class="text-xs text-[var(--color-text-muted)]"
+                  class="btn-ghost px-2.5 py-1 text-xs"
                   type="button"
                   @click="cancelPricingEdit"
                 >
@@ -177,12 +202,12 @@ function capBadge(supported: boolean): string {
             </div>
             <button
               v-else
-              class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent)]"
+              class="btn-ghost px-2 py-1 font-mono text-xs"
               type="button"
               data-testid="model-edit-price"
               @click="beginPricingEdit(model)"
             >
-              <span class="font-mono">{{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}</span>
+              {{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}
             </button>
           </td>
           <td class="data-table-td">
@@ -194,14 +219,10 @@ function capBadge(supported: boolean): string {
             </span>
           </td>
           <td class="data-table-td">
-            <span
-              v-if="model.enabled"
-              class="badge-success"
-            >启用</span>
-            <span
-              v-else
-              class="badge-muted"
-            >停用</span>
+            <StatusBadge
+              :variant="model.enabled ? 'success' : 'muted'"
+              :label="model.enabled ? '启用' : '停用'"
+            />
             <p
               v-if="model.capability_verified_at"
               class="mt-1 text-xs text-[var(--color-text-muted)]"
@@ -225,7 +246,7 @@ function capBadge(supported: boolean): string {
                 v-for="keyId in model.blocked_by_key_ids"
                 :key="keyId"
                 :data-testid="`model-table-unblock-${keyId}`"
-                class="block text-xs text-[var(--color-danger)] underline hover:opacity-75 disabled:opacity-40"
+                class="block text-xs text-[var(--color-danger)] underline hover:opacity-75 disabled:text-[var(--color-text-subtle)]"
                 type="button"
                 :disabled="busyId === model.id"
                 @click="emit('unblock', keyId, model)"
@@ -237,7 +258,7 @@ function capBadge(supported: boolean): string {
           <td class="data-table-td text-right">
             <button
               data-testid="model-enable"
-              class="btn-secondary rounded-md px-3 py-1 text-xs"
+              class="btn-secondary"
               type="button"
               :disabled="enablingIsBlocked(model) || busyId === model.id"
               @click="emit('toggle', model)"

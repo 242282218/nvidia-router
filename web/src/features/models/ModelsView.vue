@@ -2,6 +2,8 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import StatePanel from '../../shared/components/StatePanel.vue'
 import { toastError, toastSuccess } from '../../shared/toast'
 import { modelsApi } from './api'
 import ModelCards from './ModelCards.vue'
@@ -211,43 +213,39 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent)]">
-            运维管理
-          </p>
-          <h1 class="page-title mt-1">
-            模型白名单
-          </h1>
-          <p class="page-subtitle">
-            管理模型类型、能力标签和启用状态。
-          </p>
-        </div>
-        <button
-          class="btn-secondary rounded-lg px-4 py-2 text-sm"
-          data-testid="discover-models"
-          type="button"
-          :disabled="discovering"
-          @click="discover"
-        >
-          <span class="flex items-center gap-2">
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-            {{ discovering ? '发现中…' : '发现候选模型' }}
-          </span>
-        </button>
-      </header>
+      <PageHeader
+        eyebrow="运维管理"
+        title="模型白名单"
+        subtitle="管理模型类型、能力标签和启用状态。"
+      >
+        <template #actions>
+          <button
+            class="btn-secondary"
+            data-testid="discover-models"
+            type="button"
+            :disabled="discovering"
+            @click="discover"
+          >
+            <span class="flex items-center gap-2">
+              <svg
+                class="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              {{ discovering ? '发现中…' : '发现候选模型' }}
+            </span>
+          </button>
+        </template>
+      </PageHeader>
 
       <!-- Candidates section -->
       <Transition name="slide">
@@ -265,7 +263,7 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
               </p>
             </div>
             <button
-              class="btn-primary rounded-lg px-4 py-2 text-sm"
+              class="btn-primary"
               data-testid="save-candidates"
               type="button"
               :disabled="saving"
@@ -324,49 +322,14 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
 
       <!-- Model list -->
       <div class="mt-4">
-        <div
-          v-if="loading"
-          class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        <StatePanel
+          :loading="loading"
+          :error="loadError"
+          loadingLabel="模型列表加载中…"
+          errorTestId="models-load-error"
+          retryTestId="models-retry"
+          @retry="loadModels"
         >
-          <svg
-            class="h-4 w-4 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
-          加载中…
-        </div>
-        <div
-          v-else-if="loadError"
-          data-testid="models-load-error"
-          class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
-          role="alert"
-        >
-          <span>{{ loadError }}</span>
-          <button
-            data-testid="models-retry"
-            class="btn-secondary rounded-lg px-3 py-1.5 text-sm"
-            type="button"
-            :disabled="loading"
-            @click="loadModels"
-          >
-            {{ loading ? '重试中…' : '重新加载' }}
-          </button>
-        </div>
-        <template v-else>
           <ModelTable
             :models="models"
             :busy-id="busyId"
@@ -380,7 +343,7 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
             @toggle="toggleModel"
             @unblock="unblockModel"
           />
-        </template>
+        </StatePanel>
       </div>
     </div>
   </div>

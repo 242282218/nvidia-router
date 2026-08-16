@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { Model } from './types'
 
 defineProps<{ models: Model[]; busyId: number | null }>()
@@ -49,14 +50,10 @@ function capBadge(supported: boolean): string {
       </div>
 
       <div class="mt-3 flex items-center justify-between">
-        <span
-          v-if="model.enabled"
-          class="badge-success"
-        >启用</span>
-        <span
-          v-else
-          class="badge-muted"
-        >停用</span>
+        <StatusBadge
+          :variant="model.enabled ? 'success' : 'muted'"
+          :label="model.enabled ? '启用' : '停用'"
+        />
       </div>
 
       <p
@@ -83,7 +80,7 @@ function capBadge(supported: boolean): string {
           v-for="keyId in model.blocked_by_key_ids"
           :key="keyId"
           :data-testid="`model-unblock-${keyId}`"
-          class="block text-xs text-[var(--color-danger)] underline disabled:opacity-40"
+          class="block text-xs text-[var(--color-danger)] underline disabled:text-[var(--color-text-subtle)]"
           type="button"
           :disabled="busyId === model.id"
           @click="emit('unblock', keyId, model)"
@@ -94,7 +91,7 @@ function capBadge(supported: boolean): string {
 
       <button
         data-testid="model-card-toggle"
-        class="mt-4 btn-secondary w-full rounded-lg py-2 text-sm"
+        class="btn-secondary mt-4 w-full"
         type="button"
         :disabled="enablingIsBlocked(model) || busyId === model.id"
         @click="emit('toggle', model)"
@@ -104,7 +101,7 @@ function capBadge(supported: boolean): string {
     </article>
     <p
       v-if="models.length === 0"
-      class="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
+      class="rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
     >
       暂无模型白名单。
     </p>
