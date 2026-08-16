@@ -35,41 +35,43 @@ defineEmits<{ retry: [] }>()
 </script>
 
 <template>
-  <div
-    v-if="loading"
-    class="card p-6"
-  >
-    <Spinner :label="loadingLabel" />
-  </div>
-  <div
-    v-else-if="error"
-    :data-testid="errorTestId || undefined"
-    class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
-    role="alert"
-  >
-    <span>{{ error }}</span>
-    <button
-      :data-testid="retryTestId || undefined"
-      class="btn-secondary"
-      type="button"
-      @click="$emit('retry')"
+  <div>
+    <div
+      v-if="loading"
+      class="card p-6"
     >
-      {{ retryLabel }}
-    </button>
-  </div>
-  <div
-    v-else-if="empty"
-    class="card px-6 py-10 text-center"
-  >
-    <p class="text-sm text-[var(--color-text-secondary)]">
-      {{ emptyLabel }}
-    </p>
-    <p
-      v-if="emptyHint"
-      class="mt-1.5 text-xs text-[var(--color-text-muted)]"
+      <Spinner :label="loadingLabel" />
+    </div>
+    <div
+      v-else-if="error"
+      :data-testid="errorTestId || undefined"
+      class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+      role="alert"
     >
-      {{ emptyHint }}
-    </p>
+      <span>{{ error }}</span>
+      <button
+        :data-testid="retryTestId || undefined"
+        class="btn-secondary"
+        type="button"
+        @click="$emit('retry')"
+      >
+        {{ retryLabel }}
+      </button>
+    </div>
+    <div
+      v-else-if="empty"
+      class="card px-6 py-10 text-center"
+    >
+      <p class="text-sm text-[var(--color-text-secondary)]">
+        {{ emptyLabel }}
+      </p>
+      <p
+        v-if="emptyHint"
+        class="mt-1.5 text-xs text-[var(--color-text-muted)]"
+      >
+        {{ emptyHint }}
+      </p>
+    </div>
+    <slot v-else />
   </div>
-  <slot v-else />
 </template>

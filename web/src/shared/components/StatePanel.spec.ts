@@ -1,9 +1,20 @@
+import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import StatePanel from './StatePanel.vue'
 
 describe('StatePanel', () => {
+  it('accepts kebab-case test-id attrs the way templates pass them', () => {
+    const Host = defineComponent({
+      components: { StatePanel },
+      template: '<StatePanel error="失败。" errorTestId="host-error" retryTestId="host-retry" />',
+    })
+    const wrapper = mount(Host)
+    expect(wrapper.find('[data-testid="host-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="host-retry"]').exists()).toBe(true)
+  })
+
   it('renders the loading state with the given label and role=status', () => {
     const wrapper = mount(StatePanel, {
       props: { loading: true, loadingLabel: '加载 NVIDIA Key…' },
@@ -16,7 +27,7 @@ describe('StatePanel', () => {
     const wrapper = mount(StatePanel, {
       props: { error: '加载失败。', errorTestId: 'page-load-error', retryTestId: 'page-retry' },
     })
-    expect(wrapper.attributes('role')).toBe('alert')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('加载失败。')
     const retry = wrapper.find('[data-testid="page-retry"]')
     expect(retry.exists()).toBe(true)
