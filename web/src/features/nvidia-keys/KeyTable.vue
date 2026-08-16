@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import StatusBadge from '../../shared/components/StatusBadge.vue'
+import { formatDate, keyState } from './state'
 import type { NVIDIAKey } from './types'
 
 defineProps<{ keys: NVIDIAKey[]; busyId: number | null; confirmingId: number | null }>()
@@ -8,32 +10,12 @@ const emit = defineEmits<{
   test: [key: NVIDIAKey]
   remove: [key: NVIDIAKey]
 }>()
-
-function statusLabel(key: NVIDIAKey): string {
-  if (key.auth_invalid) return '认证失效'
-  if (key.cooldown_until) return key.cooldown_reason || '冷却中'
-  return key.enabled ? '启用' : '停用'
-}
-
-function statusBadgeClass(key: NVIDIAKey): string {
-  if (key.auth_invalid) return 'badge-danger'
-  if (key.cooldown_until) return 'badge-warning'
-  return key.enabled ? 'badge-success' : 'badge-muted'
-}
-
-function formatDate(value?: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
-}
 </script>
 
 <template>
   <div
     data-testid="key-table"
-    class="hidden overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
+    class="hidden overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
   >
     <div
       class="overflow-x-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
@@ -41,18 +23,33 @@ function formatDate(value?: string): string {
       aria-label="NVIDIA Key 表，可横向滚动"
     >
       <table class="data-table">
+        <caption class="sr-only">
+          NVIDIA Key 列表，共 {{ keys.length }} 条
+        </caption>
         <thead>
           <tr>
-            <th class="data-table-th">
+            <th
+              class="data-table-th"
+              scope="col"
+            >
               Key
             </th>
-            <th class="data-table-th">
+            <th
+              class="data-table-th"
+              scope="col"
+            >
               状态
             </th>
-            <th class="data-table-th">
+            <th
+              class="data-table-th"
+              scope="col"
+            >
               失败 / 最近错误
             </th>
-            <th class="data-table-th text-right">
+            <th
+              class="data-table-th text-right"
+              scope="col"
+            >
               操作
             </th>
           </tr>
@@ -68,7 +65,10 @@ function formatDate(value?: string): string {
               <span class="mt-1 block font-mono text-xs text-[var(--color-text-subtle)]">#{{ key.id }}</span>
             </td>
             <td class="data-table-td">
-              <span :class="statusBadgeClass(key)">{{ statusLabel(key) }}</span>
+              <StatusBadge
+                :variant="keyState(key).variant"
+                :label="keyState(key).label"
+              />
               <p
                 v-if="key.cooldown_until"
                 class="mt-2 text-xs text-[var(--color-text-muted)]"
@@ -95,7 +95,7 @@ function formatDate(value?: string): string {
               <div class="flex justify-end gap-1.5">
                 <button
                   :data-testid="`key-table-toggle-${key.id}`"
-                  class="btn-secondary min-h-10 rounded-md px-2.5 py-1 text-xs"
+                  class="btn-secondary"
                   type="button"
                   :disabled="busyId === key.id"
                   @click="emit('toggle', key)"
@@ -104,7 +104,7 @@ function formatDate(value?: string): string {
                 </button>
                 <button
                   :data-testid="`key-table-test-${key.id}`"
-                  class="btn-secondary min-h-10 rounded-md px-2.5 py-1 text-xs"
+                  class="btn-secondary"
                   type="button"
                   :disabled="busyId === key.id"
                   @click="emit('test', key)"
@@ -112,7 +112,7 @@ function formatDate(value?: string): string {
                   单测
                 </button>
                 <button
-                  class="btn-danger min-h-10 rounded-md px-2.5 py-1 text-xs"
+                  class="btn-danger"
                   type="button"
                   :disabled="busyId === key.id"
                   @click="emit('remove', key)"

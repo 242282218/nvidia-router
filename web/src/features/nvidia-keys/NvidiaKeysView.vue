@@ -2,6 +2,8 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
+import PageHeader from '../../shared/components/PageHeader.vue'
+import StatePanel from '../../shared/components/StatePanel.vue'
 import { toastError, toastInfo, toastSuccess } from '../../shared/toast'
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
@@ -204,23 +206,15 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
 <template>
   <div class="page-container animate-fade-in">
     <div class="content-wrapper">
-      <!-- Header -->
-      <header class="section-header">
-        <div>
-          <p class="text-xs font-medium uppercase tracking-wider text-[var(--color-accent)]">
-            运维管理
-          </p>
-          <h1 class="page-title mt-1">
-            NVIDIA Key
-          </h1>
-          <p class="page-subtitle">
-            管理上游凭据状态。页面只显示脱敏值，不保留 Key 明文。
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
+      <PageHeader
+        eyebrow="运维管理"
+        title="NVIDIA Key"
+        subtitle="管理上游凭据状态。页面只显示脱敏值，不保留 Key 明文。"
+      >
+        <template #actions>
           <button
             data-testid="open-batch-import"
-            class="btn-secondary rounded-lg px-4 py-2 text-sm"
+            class="btn-secondary"
             type="button"
             @click="batchOpen = true"
           >
@@ -230,6 +224,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
+                aria-hidden="true"
               >
                 <path
                   stroke-linecap="round"
@@ -243,7 +238,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           </button>
           <button
             data-testid="test-all-keys"
-            class="btn-primary rounded-lg px-4 py-2 text-sm"
+            class="btn-primary"
             type="button"
             :disabled="loading || testingAll"
             @click="testAll"
@@ -254,6 +249,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
+                aria-hidden="true"
               >
                 <path
                   stroke-linecap="round"
@@ -271,8 +267,8 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
               {{ testingAll ? '测活中…' : '顺序测活全部' }}
             </span>
           </button>
-        </div>
-      </header>
+        </template>
+      </PageHeader>
 
       <!-- Single import -->
       <div class="card p-5 animate-slide-up">
@@ -285,7 +281,12 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
           @submit.prevent="importOne"
         >
           <div class="relative min-w-0 flex-1">
+            <label
+              class="sr-only"
+              for="nvidia-key-input"
+            >NVIDIA Key</label>
             <input
+              id="nvidia-key-input"
               v-model="singleKey"
               class="input-field w-full pr-10 font-mono"
               name="nvidia-key"
@@ -296,7 +297,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
             >
           </div>
           <button
-            class="btn-primary rounded-lg px-5 py-2.5 text-sm whitespace-nowrap"
+            class="btn-primary whitespace-nowrap"
             type="submit"
             :disabled="submitting"
           >
@@ -345,49 +346,14 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
 
       <!-- Key list -->
       <div class="mt-4">
-        <div
-          v-if="loading"
-          class="card flex items-center gap-3 p-6 text-sm text-[var(--color-text-muted)]"
+        <StatePanel
+          :loading="loading"
+          :error="loadError"
+          loadingLabel="NVIDIA Key 加载中…"
+          errorTestId="nvidia-keys-load-error"
+          retryTestId="nvidia-keys-retry"
+          @retry="loadKeys"
         >
-          <svg
-            class="h-4 w-4 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
-          加载中…
-        </div>
-        <div
-          v-else-if="loadError"
-          data-testid="nvidia-keys-load-error"
-          class="card flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
-          role="alert"
-        >
-          <span>{{ loadError }}</span>
-          <button
-            data-testid="nvidia-keys-retry"
-            class="btn-secondary rounded-lg px-3 py-1.5 text-sm"
-            type="button"
-            :disabled="loading"
-            @click="loadKeys"
-          >
-            {{ loading ? '重试中…' : '重新加载' }}
-          </button>
-        </div>
-        <template v-else>
           <KeyTable
             :keys="keys"
             :busy-id="busyId"
@@ -404,7 +370,7 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
             @test="testKey"
             @remove="removeKey"
           />
-        </template>
+        </StatePanel>
       </div>
     </div>
 

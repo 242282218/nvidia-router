@@ -1,32 +1,15 @@
 <script setup lang="ts">
+import StatusBadge from '../../shared/components/StatusBadge.vue'
+import { formatDate, keyState } from './state'
 import type { NVIDIAKey } from './types'
 
 defineProps<{ keys: NVIDIAKey[]; busyId: number | null; confirmingId: number | null }>()
+
 const emit = defineEmits<{
   toggle: [key: NVIDIAKey]
   test: [key: NVIDIAKey]
   remove: [key: NVIDIAKey]
 }>()
-
-function statusLabel(key: NVIDIAKey): string {
-  if (key.auth_invalid) return '认证失效'
-  if (key.cooldown_until) return key.cooldown_reason || '冷却中'
-  return key.enabled ? '启用' : '停用'
-}
-
-function statusBadgeClass(key: NVIDIAKey): string {
-  if (key.auth_invalid) return 'badge-danger'
-  if (key.cooldown_until) return 'badge-warning'
-  return key.enabled ? 'badge-success' : 'badge-muted'
-}
-
-function formatDate(value?: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
-}
 </script>
 
 <template>
@@ -37,15 +20,16 @@ function formatDate(value?: string): string {
     <article
       v-for="key in keys"
       :key="key.id"
-      class="card-hover p-4 animate-slide-up"
+      class="card-hover animate-slide-up p-4"
     >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <code class="block truncate font-mono text-sm text-[var(--color-info)]">{{ key.masked }}</code>
-          <span
-            :class="statusBadgeClass(key)"
+          <StatusBadge
             class="mt-2 inline-flex"
-          >{{ statusLabel(key) }}</span>
+            :variant="keyState(key).variant"
+            :label="keyState(key).label"
+          />
         </div>
         <span class="shrink-0 font-mono text-xs text-[var(--color-text-muted)]">#{{ key.id }}</span>
       </div>
@@ -95,7 +79,7 @@ function formatDate(value?: string): string {
       <div class="mt-4 grid grid-cols-3 gap-2">
         <button
           data-testid="key-card-toggle"
-          class="btn-secondary min-h-11 rounded-lg py-2 text-xs"
+          class="btn-secondary"
           type="button"
           :disabled="busyId === key.id"
           @click="emit('toggle', key)"
@@ -104,7 +88,7 @@ function formatDate(value?: string): string {
         </button>
         <button
           data-testid="key-card-test"
-          class="btn-secondary min-h-11 rounded-lg py-2 text-xs"
+          class="btn-secondary"
           type="button"
           :disabled="busyId === key.id"
           @click="emit('test', key)"
@@ -113,7 +97,7 @@ function formatDate(value?: string): string {
         </button>
         <button
           data-testid="key-card-delete"
-          class="btn-danger min-h-11 rounded-lg py-2 text-xs"
+          class="btn-danger"
           type="button"
           :disabled="busyId === key.id"
           @click="emit('remove', key)"
@@ -124,7 +108,7 @@ function formatDate(value?: string): string {
     </article>
     <p
       v-if="keys.length === 0"
-      class="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
+      class="rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
     >
       暂无 NVIDIA Key。
     </p>
