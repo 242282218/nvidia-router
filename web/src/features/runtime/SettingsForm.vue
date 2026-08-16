@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 
+import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import type { RuntimeSettings } from './types'
 
 interface SettingsFields {
@@ -271,31 +272,17 @@ function fieldError(param: SettingParam): string {
 
     <div class="mt-5 flex justify-end">
       <button
-        class="btn-primary rounded-lg px-5 py-2.5 text-sm"
+        class="btn-primary"
         type="submit"
         :disabled="saving || !settings"
       >
         <span class="flex items-center gap-2">
-          <svg
+          <LoadingSpinner
             v-if="saving"
-            class="h-4 w-4 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
+            :show-label="false"
+            label="保存中"
+            size="sm"
+          />
           {{ saving ? '保存中…' : '保存设置' }}
         </span>
       </button>

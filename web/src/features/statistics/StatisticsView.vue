@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import PageHeader from '../../shared/components/PageHeader.vue'
 import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import { formatTimeOfDay } from '../../shared/format'
 import { usePolling } from '../../shared/usePolling'
 import CostPanel from './CostPanel.vue'
 import { formatAverageLatency, formatInteger, formatPercent, formatTokens } from './format'
@@ -136,11 +137,6 @@ async function pollSummary(): Promise<void> {
     if (!summaryStale.value) summaryStaleSince.value = new Date()
     summaryStale.value = true
   }
-}
-
-function formatClock(value: Date): string {
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
 }
 
 async function loadDashboard(): Promise<void> {
@@ -361,7 +357,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         v-if="summaryUpdatedAt"
         class="mt-1 text-xs text-[var(--color-text-subtle)]"
       >
-        趋势每 30 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
+        趋势每 30 秒自动刷新 · 更新于 {{ formatTimeOfDay(summaryUpdatedAt) }}
       </p>
 
       <div
@@ -378,7 +374,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
           role="status"
         >
-          <span>汇总自 {{ summaryStaleSince ? formatClock(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
+          <span>汇总自 {{ summaryStaleSince ? formatTimeOfDay(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
           <button
             class="btn-ghost underline"
             type="button"

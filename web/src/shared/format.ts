@@ -30,6 +30,15 @@ export function formatClock(value?: string): string {
   if (!value) return '—'
   const date = parseDate(value)
   if (!date) return '—'
+  return timeOfDay(date)
+}
+
+/** Local "HH:mm:ss" for a Date, e.g. freshness stamps ("更新于 18:03:22"). */
+export function formatTimeOfDay(date: Date): string {
+  return timeOfDay(date)
+}
+
+function timeOfDay(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 

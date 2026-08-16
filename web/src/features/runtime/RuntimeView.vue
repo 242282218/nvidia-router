@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError } from '../../shared/api/client'
-import { formatDate } from '../../shared/format'
+import { formatDate, formatTimeOfDay } from '../../shared/format'
 import PageHeader from '../../shared/components/PageHeader.vue'
 import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { usePolling } from '../../shared/usePolling'
@@ -54,11 +54,6 @@ async function pollSummary(): Promise<void> {
   } catch {
     // Keep the previous summary; the next poll retries.
   }
-}
-
-function formatClock(value: Date): string {
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
 }
 
 async function loadRuntime(): Promise<void> {
@@ -191,7 +186,7 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
           v-if="summaryUpdatedAt"
           class="mb-3 text-xs text-[var(--color-text-subtle)]"
         >
-          每 5 秒自动刷新 · 更新于 {{ formatClock(summaryUpdatedAt) }}
+          每 5 秒自动刷新 · 更新于 {{ formatTimeOfDay(summaryUpdatedAt) }}
         </p>
         <!-- Summary cards -->
         <div

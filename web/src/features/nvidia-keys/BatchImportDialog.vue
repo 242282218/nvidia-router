@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
 import { ApiError, isRecord } from '../../shared/api/client'
@@ -137,7 +137,7 @@ function testStatusClass(status: string): string {
             </p>
           </div>
           <button
-            class="btn-secondary inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm"
+            class="btn-secondary shrink-0"
             type="button"
             aria-label="关闭批量导入窗口"
             @click="close"
@@ -209,7 +209,7 @@ function testStatusClass(status: string): string {
             <div
               v-if="results.length"
               data-testid="batch-import-results"
-              class="mt-6 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)]"
+              class="mt-6 overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)]"
             >
               <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
                 <div>

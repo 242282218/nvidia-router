@@ -44,7 +44,7 @@ async function submit(): Promise<void> {
     <section class="relative w-full max-w-sm animate-fade-in">
       <!-- Logo -->
       <div class="mb-8 text-center">
-        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-accent)] text-lg font-bold text-[var(--color-accent-foreground)]">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)] bg-[var(--color-accent)] text-lg font-bold text-[var(--color-accent-foreground)]">
           N
         </div>
         <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">

@@ -55,7 +55,7 @@ function validateNewPassword(password: string): string {
 
     <section class="relative w-full max-w-sm animate-fade-in">
       <div class="mb-8 text-center">
-        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-warning)] text-lg font-bold text-[var(--color-canvas)]">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)] bg-[var(--color-warning)] text-lg font-bold text-[var(--color-canvas)]">
           !
         </div>
         <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">
