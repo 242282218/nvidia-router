@@ -585,6 +585,160 @@ func (f requestRecorderFunc) Record(ctx context.Context, record observability.Re
 	return f(ctx, record)
 }
 
+// TestChatNonstreamRecordsReasoningRequestAndResponse locks the non-stream
+// reasoning observability chain: the upstream body's reasoning_effort must be
+// recorded as reasoning_requested plus wire field names, and the response's
+// reasoning_content length must land in reasoning_chars.
+func TestChatNonstreamRecordsReasoningRequestAndResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"reasoning_content":"deep thought","content":"answer"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("stream-key"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	})
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, runner, client))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"public-model","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`,
+	))
+
+	handler.ServeHTTP(response, request)
+
+	if !recorded.ReasoningRequested {
+		t.Fatal("reasoning_requested = false, want true")
+	}
+	if recorded.ReasoningWireFields != "reasoning_effort" {
+		t.Fatalf("reasoning_wire_fields = %q, want reasoning_effort", recorded.ReasoningWireFields)
+	}
+	if !recorded.ReasoningPresent {
+		t.Fatal("reasoning_present = false, want true")
+	}
+	if recorded.ReasoningChars == nil || *recorded.ReasoningChars != 12 {
+		t.Fatalf("reasoning_chars = %#v, want 12", recorded.ReasoningChars)
+	}
+	if recorded.RouteMode != "direct" {
+		t.Fatalf("route_mode = %q, want direct", recorded.RouteMode)
+	}
+}
+
+// TestChatStreamRecordsStreamDoneAndReasoningChars locks the streaming path:
+// reasoning_content deltas must accumulate into reasoning_chars and a [DONE]
+// marker must set stream_done.
+func TestChatStreamRecordsStreamDoneAndReasoningChars(t *testing.T) {
+	sseBody := "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"chain\"}}]}\n\ndata: [DONE]\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(sseBody))
+	}))
+	t.Cleanup(upstream.Close)
+
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("stream-key"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	})
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, runner, client))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"public-model","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high","stream":true}`,
+	))
+
+	handler.ServeHTTP(response, request)
+
+	if !recorded.ReasoningRequested {
+		t.Fatal("reasoning_requested = false, want true")
+	}
+	if !recorded.ReasoningPresent {
+		t.Fatal("reasoning_present = false, want true")
+	}
+	if recorded.ReasoningChars == nil || *recorded.ReasoningChars != 5 {
+		t.Fatalf("reasoning_chars = %#v, want 5", recorded.ReasoningChars)
+	}
+	if !recorded.StreamDone {
+		t.Fatal("stream_done = false, want true after [DONE]")
+	}
+}
+
+// TestChatStreamWithoutReasoningStaysFalse ensures plain streams do not pay
+// reasoning sampling cost nor report reasoning fields, while stream_done is
+// still recorded.
+func TestChatStreamWithoutReasoningStaysFalse(t *testing.T) {
+	sseBody := "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(sseBody))
+	}))
+	t.Cleanup(upstream.Close)
+
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("stream-key"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	})
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, runner, client))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(validChatRequest(true)))
+
+	handler.ServeHTTP(response, request)
+
+	if recorded.ReasoningRequested {
+		t.Fatal("reasoning_requested = true, want false")
+	}
+	if recorded.ReasoningPresent {
+		t.Fatal("reasoning_present = true, want false")
+	}
+	if recorded.ReasoningChars != nil {
+		t.Fatalf("reasoning_chars = %#v, want nil", recorded.ReasoningChars)
+	}
+	if !recorded.StreamDone {
+		t.Fatal("stream_done = false, want true after [DONE]")
+	}
+}
+
 func assertChatError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	if response.Code != status {

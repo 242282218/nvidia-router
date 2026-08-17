@@ -203,6 +203,46 @@ func TestRepositoryListRequestLogsIncludesFirstToken(t *testing.T) {
 	}
 }
 
+func TestRepositoryListRequestLogsIncludesReasoningObservability(t *testing.T) {
+	db := openObservabilityDB(t)
+	repository := NewRepository(db)
+	reasoningChars := int64(95)
+	if err := repository.Record(context.Background(), RequestRecord{
+		RequestID: "log-reasoning", Endpoint: "/v1/chat/completions", ModelID: "model-a", HTTPStatus: http.StatusOK,
+		Outcome: OutcomeSuccess, IsStream: true, DurationMS: 100, AttemptCount: 1,
+		ReasoningRequested: true, ReasoningWireFields: "thinking",
+		ReasoningPresent: true, ReasoningChars: &reasoningChars, StreamDone: true, RouteMode: "direct",
+		CreatedAt: time.Date(2026, 8, 17, 3, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	query := RequestLogsQuery{MonitoringQuery: MonitoringQuery{
+		Range: MonitoringRange24Hours,
+		From:  time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC),
+		To:    time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
+	}, Page: 1, PageSize: 10}
+	page, err := repository.ListRequestLogs(context.Background(), query)
+	if err != nil {
+		t.Fatalf("ListRequestLogs: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("request logs = %d items, want 1", len(page.Items))
+	}
+	item := page.Items[0]
+	if !item.ReasoningRequested || !item.ReasoningPresent || !item.StreamDone {
+		t.Fatalf("reasoning booleans = requested %v present %v done %v, want true/true/true", item.ReasoningRequested, item.ReasoningPresent, item.StreamDone)
+	}
+	if item.ReasoningWireFields == nil || *item.ReasoningWireFields != "thinking" {
+		t.Fatalf("wire fields = %#v, want thinking", item.ReasoningWireFields)
+	}
+	if item.ReasoningChars == nil || *item.ReasoningChars != reasoningChars {
+		t.Fatalf("reasoning chars = %#v, want %d", item.ReasoningChars, reasoningChars)
+	}
+	if item.RouteMode == nil || *item.RouteMode != "direct" {
+		t.Fatalf("route mode = %#v, want direct", item.RouteMode)
+	}
+}
+
 func TestRepositoryListDailyStatsAveragesFirstToken(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)

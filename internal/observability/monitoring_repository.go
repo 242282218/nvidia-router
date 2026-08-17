@@ -133,7 +133,9 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 		SELECT request_id, endpoint, model_id, access_key_id, nvidia_key_id,
 		       http_status, outcome, error_code, is_stream, queue_ms,
 		       first_byte_ms, first_token_ms, duration_ms, attempt_count,
-		       prompt_tokens, completion_tokens, upstream_request_id, created_at
+		       prompt_tokens, completion_tokens, upstream_request_id, created_at,
+		       reasoning_requested, reasoning_wire_fields, reasoning_present,
+		       reasoning_chars, stream_done, route_mode
 		FROM request_logs
 		WHERE `+where+`
 		ORDER BY created_at DESC, request_id DESC
@@ -430,14 +432,16 @@ func normalizeRequestLogsPage(page, pageSize int) (int, int, error) {
 
 func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	var item RequestLog
-	var modelID, errorCode, upstreamRequestID sql.NullString
-	var accessKeyID, nvidiaKeyID, firstByteMS, firstTokenMS, promptTokens, completionTokens sql.NullInt64
-	var isStream int
+	var modelID, errorCode, upstreamRequestID, reasoningWireFields, routeMode sql.NullString
+	var accessKeyID, nvidiaKeyID, firstByteMS, firstTokenMS, promptTokens, completionTokens, reasoningChars sql.NullInt64
+	var isStream, reasoningRequested, reasoningPresent, streamDone int
 	if err := rows.Scan(
 		&item.RequestID, &item.Endpoint, &modelID, &accessKeyID, &nvidiaKeyID,
 		&item.HTTPStatus, &item.Outcome, &errorCode, &isStream, &item.QueueMS,
 		&firstByteMS, &firstTokenMS, &item.DurationMS, &item.AttemptCount, &promptTokens,
 		&completionTokens, &upstreamRequestID, &item.CreatedAt,
+		&reasoningRequested, &reasoningWireFields, &reasoningPresent, &reasoningChars,
+		&streamDone, &routeMode,
 	); err != nil {
 		return RequestLog{}, err
 	}
@@ -451,6 +455,12 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	item.PromptTokens = nullableInt64Pointer(promptTokens)
 	item.CompletionTokens = nullableInt64Pointer(completionTokens)
 	item.UpstreamRequestID = nullableStringPointer(upstreamRequestID)
+	item.ReasoningRequested = reasoningRequested != 0
+	item.ReasoningWireFields = nullableStringPointer(reasoningWireFields)
+	item.ReasoningPresent = reasoningPresent != 0
+	item.ReasoningChars = nullableInt64Pointer(reasoningChars)
+	item.StreamDone = streamDone != 0
+	item.RouteMode = nullableStringPointer(routeMode)
 	return item, nil
 }
 

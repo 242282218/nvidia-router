@@ -98,7 +98,15 @@ type RequestLog struct {
 	PromptTokens      *int64  `json:"prompt_tokens,omitempty"`
 	CompletionTokens  *int64  `json:"completion_tokens,omitempty"`
 	UpstreamRequestID *string `json:"upstream_request_id,omitempty"`
-	CreatedAt         string  `json:"created_at"`
+	// Reasoning observability exposes only booleans, field names and character
+	// counts; reasoning text is never stored or serialized.
+	ReasoningRequested  bool    `json:"reasoning_requested"`
+	ReasoningWireFields *string `json:"reasoning_wire_fields,omitempty"`
+	ReasoningPresent    bool    `json:"reasoning_present"`
+	ReasoningChars      *int64  `json:"reasoning_chars,omitempty"`
+	StreamDone          bool    `json:"stream_done"`
+	RouteMode           *string `json:"route_mode,omitempty"`
+	CreatedAt           string  `json:"created_at"`
 }
 
 type RequestLogsQuery struct {

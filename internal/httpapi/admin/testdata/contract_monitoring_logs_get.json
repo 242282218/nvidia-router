@@ -15,7 +15,10 @@
         "outcome": "success",
         "prompt_tokens": 100,
         "queue_ms": 13,
-        "request_id": "req-safe"
+        "reasoning_present": false,
+        "reasoning_requested": false,
+        "request_id": "req-safe",
+        "stream_done": false
       },
       {
         "attempt_count": 2,
@@ -26,7 +29,10 @@
         "is_stream": false,
         "outcome": "failure",
         "queue_ms": 0,
-        "request_id": "req-failed"
+        "reasoning_present": false,
+        "reasoning_requested": false,
+        "request_id": "req-failed",
+        "stream_done": false
       }
     ],
     "page": 1,

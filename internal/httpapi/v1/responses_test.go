@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"nvidia-router/internal/clock"
 	"nvidia-router/internal/fault"
 	"nvidia-router/internal/modelcatalog"
 	"nvidia-router/internal/observability"
@@ -442,6 +443,86 @@ func TestChatDeltaSourceJoinsMultilineEventData(t *testing.T) {
 	}
 	if _, err := source.Next(); !errors.Is(err, responsesprotocol.ErrStreamCompleted) {
 		t.Fatalf("terminal error = %v, want ErrStreamCompleted", err)
+	}
+}
+
+func TestChatDeltaSourceAccumulatesReasoningLength(t *testing.T) {
+	input := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"chain\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\",\"content\":\"ans\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	source := &chatDeltaSource{decoder: sse.NewDecoder(strings.NewReader(input))}
+
+	for {
+		if _, err := source.Next(); err != nil {
+			if errors.Is(err, responsesprotocol.ErrStreamCompleted) {
+				break
+			}
+			t.Fatalf("Next: %v", err)
+		}
+	}
+	if !source.reasoningPresent {
+		t.Fatal("reasoningPresent = false, want true")
+	}
+	// "chain" is 5 runes, "思考" is 2 runes -> 7 total.
+	if source.reasoningChars != 7 {
+		t.Fatalf("reasoningChars = %d, want 7", source.reasoningChars)
+	}
+}
+
+func TestResponsesNonstreamRecordsReasoning(t *testing.T) {
+	upstreamChat := []byte(`{"id":"c1","choices":[{"message":{"role":"assistant","reasoning_content":"deep reasoning","content":"hello"}}]}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(upstreamChat)
+	}))
+	t.Cleanup(upstream.Close)
+
+	descriptor := nvidia.DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := nvidia.NewClient(upstream.Client(), descriptor, testNVIDIASettings{}, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	runner := attemptRunnerFunc(func(ctx context.Context, _ int64, _ bool, execute router.ExecuteFunc) (router.AttemptResult, error) {
+		response, err := execute(ctx, 1, []byte("upstream-secret"), &router.CommitState{})
+		return router.AttemptResult{Response: response, Attempts: 1}, err
+	})
+	resolver := modelResolverFunc(func(_ context.Context, publicID string, req modelcatalog.Requirements) (modelcatalog.Model, error) {
+		if publicID != "public-chat" || req.Kind != modelcatalog.KindChat {
+			t.Fatalf("resolve = %q, %#v", publicID, req)
+		}
+		return modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewResponses(resolver, runner, client))
+	body := `{"model":"public-chat","input":"hi","reasoning":{"effort":"high"}}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !recorded.ReasoningRequested {
+		t.Fatal("reasoning_requested = false, want true")
+	}
+	// The Responses mapping turns reasoning.effort into upstream reasoning_effort.
+	if recorded.ReasoningWireFields != "reasoning_effort" {
+		t.Fatalf("reasoning_wire_fields = %q, want reasoning_effort", recorded.ReasoningWireFields)
+	}
+	if !recorded.ReasoningPresent {
+		t.Fatal("reasoning_present = false, want true")
+	}
+	if recorded.ReasoningChars == nil || *recorded.ReasoningChars != 14 {
+		t.Fatalf("reasoning_chars = %#v, want 14", recorded.ReasoningChars)
+	}
+	if recorded.RouteMode != "direct" {
+		t.Fatalf("route_mode = %q, want direct", recorded.RouteMode)
 	}
 }
 

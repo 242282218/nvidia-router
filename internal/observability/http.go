@@ -110,6 +110,9 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 			DurationMS:   source.Now().Sub(started).Milliseconds(), AttemptCount: metadata.AttemptCount,
 			PromptTokens: metadata.PromptTokens, CompletionTokens: metadata.CompletionTokens,
 			UpstreamRequestID: metadata.UpstreamRequestID, CreatedAt: started,
+			ReasoningRequested: metadata.ReasoningRequested, ReasoningWireFields: metadata.ReasoningWireFields,
+			ReasoningPresent: metadata.ReasoningPresent, ReasoningChars: metadata.ReasoningChars,
+			StreamDone: metadata.StreamDone, RouteMode: metadata.RouteMode,
 		}
 		if err := recorder.Record(context.WithoutCancel(ctx), record); err != nil {
 			logger.Error("record request metadata failed", "request_id", requestID, "error", err)

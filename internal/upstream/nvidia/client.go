@@ -310,11 +310,14 @@ func (c *Client) modelsRequest(ctx context.Context, token string) (*http.Respons
 func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, error) {
 	snapshot = c.effectiveSnapshot(snapshot)
 	if c.proxy == nil || !c.proxy.Configured() {
+		observability.SetRouteMode(ctx, "direct")
 		return c.doDirect(ctx, snapshot, build)
 	}
 	if !c.proxy.Enabled() {
+		observability.SetRouteMode(ctx, "built-in")
 		return nil, xkproxy.NewTransportError(errors.New("proxy is disabled"))
 	}
+	observability.SetRouteMode(ctx, "built-in")
 	response, _, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
 	if !retryable {
 		return response, err

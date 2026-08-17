@@ -34,7 +34,15 @@ type RequestRecord struct {
 	PromptTokens      *int64
 	CompletionTokens  *int64
 	UpstreamRequestID *string
-	CreatedAt         time.Time
+	// Reasoning observability carries only booleans, field names and character
+	// counts. Reasoning text, prompts and keys are never persisted.
+	ReasoningRequested  bool
+	ReasoningWireFields string
+	ReasoningPresent    bool
+	ReasoningChars      *int64
+	StreamDone          bool
+	RouteMode           string
+	CreatedAt           time.Time
 }
 
 type DailyStat struct {

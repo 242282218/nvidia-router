@@ -516,6 +516,34 @@ func TestDeepSeekV4FlashReasoningStreamThroughRouter(t *testing.T) {
 	if !strings.Contains(string(requests[0].Body), `"thinking"`) {
 		t.Fatalf("upstream body did not preserve native thinking: %s", requests[0].Body)
 	}
+
+	// The recorder buffers writes off the hot path; flush synchronously so the
+	// buffered row is visible to this query before the 30s flusher fires.
+	if err := harness.application.FlushObservability(context.Background()); err != nil {
+		t.Fatalf("flush observability: %v", err)
+	}
+	var reasoningRequested, reasoningPresent, streamDone int
+	var wireFields, routeMode sql.NullString
+	var reasoningChars sql.NullInt64
+	if err := harness.db.QueryRow(`
+		SELECT reasoning_requested, reasoning_wire_fields, reasoning_present,
+		       reasoning_chars, stream_done, route_mode
+		FROM request_logs ORDER BY created_at DESC, request_id DESC LIMIT 1`).
+		Scan(&reasoningRequested, &wireFields, &reasoningPresent, &reasoningChars, &streamDone, &routeMode); err != nil {
+		t.Fatalf("read reasoning observability from request_logs: %v", err)
+	}
+	if reasoningRequested != 1 || reasoningPresent != 1 || streamDone != 1 {
+		t.Fatalf("reasoning booleans = requested %d present %d done %d, want 1/1/1", reasoningRequested, reasoningPresent, streamDone)
+	}
+	if !wireFields.Valid || !strings.Contains(wireFields.String, "thinking") {
+		t.Fatalf("reasoning wire fields = %#v, want thinking", wireFields)
+	}
+	if !reasoningChars.Valid || reasoningChars.Int64 != 12 {
+		t.Fatalf("reasoning chars = %#v, want 12 (deep-thought)", reasoningChars)
+	}
+	if !routeMode.Valid || routeMode.String != "direct" {
+		t.Fatalf("route mode = %#v, want direct", routeMode)
+	}
 }
 
 func TestClientCancellationStopsCommittedStreamWithoutRetry(t *testing.T) {

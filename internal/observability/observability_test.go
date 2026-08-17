@@ -171,6 +171,70 @@ func TestRepositoryRecordStoresAndAggregatesFirstToken(t *testing.T) {
 	}
 }
 
+func TestRepositoryRecordStoresReasoningObservability(t *testing.T) {
+	db := openObservabilityDB(t)
+	reasoningChars := int64(340)
+	record := RequestRecord{
+		RequestID: "reasoning-obs", Endpoint: "/v1/chat/completions", HTTPStatus: http.StatusOK,
+		Outcome: OutcomeSuccess, IsStream: true, DurationMS: 300, AttemptCount: 1,
+		ReasoningRequested: true, ReasoningWireFields: "reasoning_effort,thinking",
+		ReasoningPresent: true, ReasoningChars: &reasoningChars, StreamDone: true,
+		RouteMode: "built-in", CreatedAt: time.Date(2026, 8, 17, 1, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var requested, present, done int
+	var wireFields, routeMode sql.NullString
+	var chars sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT reasoning_requested, reasoning_wire_fields, reasoning_present,
+		       reasoning_chars, stream_done, route_mode
+		FROM request_logs WHERE request_id = ?
+	`, record.RequestID).Scan(&requested, &wireFields, &present, &chars, &done, &routeMode); err != nil {
+		t.Fatalf("read reasoning observability: %v", err)
+	}
+	if requested != 1 || present != 1 || done != 1 {
+		t.Fatalf("reasoning booleans = requested %d present %d done %d, want 1/1/1", requested, present, done)
+	}
+	if !wireFields.Valid || wireFields.String != "reasoning_effort,thinking" {
+		t.Fatalf("wire fields = %#v, want reasoning_effort,thinking", wireFields)
+	}
+	if !chars.Valid || chars.Int64 != reasoningChars {
+		t.Fatalf("reasoning chars = %#v, want %d", chars, reasoningChars)
+	}
+	if !routeMode.Valid || routeMode.String != "built-in" {
+		t.Fatalf("route mode = %#v, want built-in", routeMode)
+	}
+}
+
+func TestRepositoryRecordStoresReasoningAbsentAsDefaults(t *testing.T) {
+	db := openObservabilityDB(t)
+	record := RequestRecord{
+		RequestID: "reasoning-absent", Endpoint: "/v1/chat/completions", HTTPStatus: http.StatusOK,
+		Outcome: OutcomeSuccess, DurationMS: 50, AttemptCount: 1, IsStream: false,
+		CreatedAt: time.Date(2026, 8, 17, 2, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var requested, present, done int
+	var wireFields, chars, routeMode any
+	if err := db.QueryRow(`
+		SELECT reasoning_requested, reasoning_wire_fields, reasoning_present,
+		       reasoning_chars, stream_done, route_mode
+		FROM request_logs WHERE request_id = ?
+	`, record.RequestID).Scan(&requested, &wireFields, &present, &chars, &done, &routeMode); err != nil {
+		t.Fatalf("read reasoning observability: %v", err)
+	}
+	if requested != 0 || present != 0 || done != 0 {
+		t.Fatalf("reasoning booleans = requested %d present %d done %d, want 0/0/0", requested, present, done)
+	}
+	if wireFields != nil || chars != nil || routeMode != nil {
+		t.Fatalf("optional reasoning fields should be NULL, got %v / %v / %v", wireFields, chars, routeMode)
+	}
+}
+
 func TestHTTPMiddlewareRecordsFirstTokenMSForStream(t *testing.T) {
 	recorder := &observabilityRecorder{}
 	handler := HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

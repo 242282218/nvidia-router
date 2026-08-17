@@ -74,6 +74,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
+	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
+	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	stream := parsed.Stream()
 	// Propagate per-model streaming timeout overrides so the budget builder
 	// inside Attempt.Run uses the model's configured windows instead of the
@@ -138,6 +140,9 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 			}
 			return response, err
 		}
+		if present, chars := observability.ReasoningContentFromBody(validated.Body); present {
+			observability.SetReasoningResponse(ctx, present, chars)
+		}
 		markResponseComplete(response)
 		_ = response.Body.Close()
 		response.Body = io.NopCloser(bytes.NewReader(validated.Body))
@@ -148,9 +153,16 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
 	commit := &router.CommitState{}
-	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, sse.ProxyOptions{
+	// Reasoning length sampling is gated on the request having asked for it;
+	// non-reasoning streams never pay per-event JSON parsing. The gate is read
+	// once so the snapshot mutex is not taken per SSE event.
+	trackReasoning := observability.ReasoningRequested(ctx)
+	var reasoningPresent bool
+	var reasoningChars int64
+	opts := sse.ProxyOptions{
 		CommitState: commit,
 		OnComplete: func() {
+			observability.SetStreamDone(ctx, true)
 			if marker, ok := upstream.Body.(interface{ MarkComplete() }); ok {
 				marker.MarkComplete()
 			}
@@ -163,7 +175,19 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		// consumer, so without this a stuck client pins the credential slot until
 		// the upstream closes (audit H6).
 		WriteIdleTimeout: streamWriteDeadline(ctx),
-	})
+	}
+	if trackReasoning {
+		// Accumulate reasoning_content character counts from the proxied deltas
+		// without ever retaining their text.
+		opts.OnData = func(data string) {
+			if present, chars := observability.ReasoningDeltaChars([]byte(data)); present {
+				reasoningPresent = true
+				reasoningChars += chars
+			}
+		}
+	}
+	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, opts)
+	observability.SetReasoningResponse(ctx, reasoningPresent, reasoningChars)
 	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
 		// Clean completion, an interrupted stream whose first byte already reached
 		// the client, or a write stall after commit (the client stopped reading and

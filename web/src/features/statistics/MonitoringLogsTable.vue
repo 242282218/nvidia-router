@@ -87,7 +87,7 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
             <dt class="text-[var(--color-text-muted)]">
               流式
             </dt><dd class="mt-1">
-              {{ item.is_stream ? '是' : '否' }}
+              {{ item.is_stream ? (item.stream_done ? '是 · [DONE]' : '是 · 未完成') : '否' }}
             </dd>
           </div>
           <div>
@@ -116,6 +116,22 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
               重试
             </dt><dd class="mt-1">
               {{ item.attempt_count }}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-[var(--color-text-muted)]">
+              路由
+            </dt><dd class="mt-1 truncate">
+              {{ item.route_mode ?? '—' }}
+            </dd>
+          </div>
+          <div class="col-span-2">
+            <dt class="text-[var(--color-text-muted)]">
+              思考
+            </dt><dd class="mt-1 truncate">
+              请求 {{ item.reasoning_requested ? '是' : '否' }} · 响应 {{ item.reasoning_present ? '是' : '否' }} · {{ item.reasoning_chars ?? '—' }} 字<template v-if="item.reasoning_wire_fields">
+                （{{ item.reasoning_wire_fields }}）
+              </template>
             </dd>
           </div>
           <div>
@@ -187,6 +203,12 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
               class="data-table-th"
               scope="col"
             >
+              思考 / 路由
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
+            >
               排队 / 首字节
             </th>
             <th
@@ -239,7 +261,11 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
               <span class="ml-1 font-mono text-xs">{{ item.http_status }}</span>
             </td>
             <td class="data-table-td">
-              {{ item.is_stream ? '是' : '否' }}
+              {{ item.is_stream ? (item.stream_done ? '是 · [DONE]' : '是 · 未完成') : '否' }}
+            </td>
+            <td class="data-table-td text-xs">
+              <span class="block whitespace-nowrap">请求 {{ item.reasoning_requested ? '是' : '否' }} · 响应 {{ item.reasoning_present ? '是' : '否' }} · {{ item.reasoning_chars ?? '—' }} 字</span>
+              <span class="mt-1 block max-w-44 truncate text-[var(--color-text-muted)]">{{ item.reasoning_wire_fields ?? '—' }} · {{ item.route_mode ?? '—' }}</span>
             </td>
             <td class="data-table-td font-mono text-xs whitespace-nowrap">
               {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms

@@ -31,6 +31,12 @@ type ProxyOptions struct {
 	// written and flushed to the client. It lets the streaming handler record
 	// time-to-first-token without coupling the proxy to observability.
 	OnFirstData func()
+	// OnData fires for every SSE data event, after it is flushed to the client,
+	// with the event's joined data payload. It runs on the proxy decode-loop
+	// goroutine and must not block; [DONE] is delivered through OnComplete, not
+	// here. Comment/pending events with no data frames never reach it. Streaming
+	// handlers use it for reasoning-length sampling.
+	OnData func(string)
 	// WriteIdleTimeout bounds how long a flush may stay blocked on the client's
 	// TCP receive buffer before the stream is torn down and the lease released.
 	// A slow/stalled consumer would otherwise pin the credential slot until the
@@ -178,6 +184,13 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			if opts.OnFirstData != nil {
 				opts.OnFirstData()
 			}
+		}
+
+		// Expose each flushed data payload to the caller. The hook is optional
+		// and runs after the flush so it never delays the stream. The terminal
+		// [DONE] marker is delivered through OnComplete, not here.
+		if opts.OnData != nil && !seenDone && len(event.Data) > 0 {
+			opts.OnData(JoinData(event.Data))
 		}
 
 		if seenDone {

@@ -78,6 +78,12 @@ const logs: RequestLogsPage = {
     prompt_tokens: 100,
     completion_tokens: 20,
     upstream_request_id: 'up-safe',
+    reasoning_requested: true,
+    reasoning_wire_fields: 'thinking',
+    reasoning_present: true,
+    reasoning_chars: 95,
+    stream_done: true,
+    route_mode: 'direct',
     created_at: '2026-08-03T03:00:00.000Z',
   }],
   page: 1,
@@ -109,7 +115,14 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('req-safe')
     expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('流式')
     expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('up-safe')
-    expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).not.toContain('response body')
+    // Reasoning observability renders across the mobile card and desktop table.
+    const logTable = wrapper.get('[data-testid="monitoring-log-table"]').text()
+    expect(logTable).toContain('思考')
+    expect(logTable).toContain('请求 是 · 响应 是 · 95 字')
+    expect(logTable).toContain('thinking')
+    expect(logTable).toContain('direct')
+    expect(logTable).toContain('是 · [DONE]')
+    expect(logTable).not.toContain('response body')
     expect(statisticsApi.getSummary).toHaveBeenCalledWith('24h', {}, expect.any(AbortSignal))
     expect(statisticsApi.getLogs).toHaveBeenCalledWith('24h', {}, 1, 50, expect.any(AbortSignal))
   })

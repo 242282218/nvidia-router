@@ -27,7 +27,15 @@ type RequestState struct {
 	// milliseconds, mirroring first_byte_ms.
 	FirstTokenAt       time.Time
 	firstTokenRecorded bool
-	UsageRecorder      func(*int64, *int64)
+	// Reasoning observability carries only booleans, field names and character
+	// counts; reasoning text is never retained.
+	ReasoningRequested  bool
+	ReasoningWireFields string
+	ReasoningPresent    bool
+	ReasoningChars      *int64
+	StreamDone          bool
+	RouteMode           string
+	UsageRecorder       func(*int64, *int64)
 }
 
 func WithRequestState(ctx context.Context) (context.Context, *RequestState) {
@@ -103,6 +111,49 @@ func SetErrorCode(ctx context.Context, code string) {
 	updateState(ctx, func(state *RequestState) { state.ErrorCode = stringPointer(code) })
 }
 
+// SetReasoningRequest records whether the upstream body requested reasoning and
+// which field names carried that request. Only field names, never their values,
+// are stored.
+func SetReasoningRequest(ctx context.Context, requested bool, wireFields string) {
+	updateState(ctx, func(state *RequestState) {
+		state.ReasoningRequested = requested
+		state.ReasoningWireFields = wireFields
+	})
+}
+
+// SetReasoningResponse records whether the upstream response carried reasoning
+// and its character count. Reasoning text is never retained; chars is only set
+// when reasoning is present.
+func SetReasoningResponse(ctx context.Context, present bool, chars int64) {
+	updateState(ctx, func(state *RequestState) {
+		state.ReasoningPresent = present
+		if present {
+			state.ReasoningChars = int64Pointer(chars)
+		} else {
+			state.ReasoningChars = nil
+		}
+	})
+}
+
+func SetStreamDone(ctx context.Context, done bool) {
+	updateState(ctx, func(state *RequestState) { state.StreamDone = done })
+}
+
+func SetRouteMode(ctx context.Context, mode string) {
+	updateState(ctx, func(state *RequestState) { state.RouteMode = mode })
+}
+
+// ReasoningRequested reports whether the current request asked for reasoning. It
+// is a snapshot read so streaming handlers can gate per-event parsing once.
+func ReasoningRequested(ctx context.Context) bool {
+	state, ok := ctx.Value(requestStateKey{}).(*RequestState)
+	if !ok {
+		return false
+	}
+	snapshot := state.Snapshot()
+	return snapshot.ReasoningRequested
+}
+
 func SetUsage(ctx context.Context, prompt, completion *int64) {
 	updateState(ctx, func(state *RequestState) {
 		state.PromptTokens = prompt
@@ -146,6 +197,9 @@ func (s *RequestState) Snapshot() RequestState {
 		AttemptCount: s.AttemptCount, PromptTokens: s.PromptTokens,
 		CompletionTokens: s.CompletionTokens, UpstreamRequestID: s.UpstreamRequestID,
 		FirstTokenAt: s.FirstTokenAt,
+		ReasoningRequested: s.ReasoningRequested, ReasoningWireFields: s.ReasoningWireFields,
+		ReasoningPresent: s.ReasoningPresent, ReasoningChars: s.ReasoningChars,
+		StreamDone: s.StreamDone, RouteMode: s.RouteMode,
 	}
 }
 

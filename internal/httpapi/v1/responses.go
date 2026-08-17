@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+	"unicode/utf8"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/fault"
@@ -68,6 +69,8 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
+	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
+	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	id, err := responsesprotocol.NewResponseID()
 	if err != nil {
 		writeChatError(writer, err)
@@ -136,6 +139,9 @@ func (h *Responses) executeWithConfig(body []byte, responsesID string, model mod
 			}
 			return response, err
 		}
+		if present, chars := observability.ReasoningContentFromBody(validated.Body); present {
+			observability.SetReasoningResponse(ctx, present, chars)
+		}
 		converted, err := responsesprotocol.FromChatWithConfig(validated.Body, responsesID, model, config)
 		if err != nil {
 			_ = response.Body.Close()
@@ -165,6 +171,7 @@ func (h *Responses) streamResponseWithConfig(ctx context.Context, writer http.Re
 		flusher: writer,
 		header:  false,
 		onComplete: func() {
+			observability.SetStreamDone(ctx, true)
 			if marker, ok := upstream.Body.(interface{ MarkComplete() }); ok {
 				marker.MarkComplete()
 			}
@@ -190,6 +197,9 @@ func (h *Responses) streamResponseWithConfig(ctx context.Context, writer http.Re
 		}
 	}()
 	interrupted, err := responsesprotocol.StreamWithConfig(source, emitter, responseID, model, config)
+	// Reasoning presence/length were accumulated by the source across all deltas;
+	// the state machine drives it to completion on both success and fault paths.
+	observability.SetReasoningResponse(ctx, source.reasoningPresent, source.reasoningChars)
 	if err != nil {
 		// After commit the terminal is already written; before commit surface a
 		// public error since nothing has reached the client.
@@ -219,10 +229,15 @@ func (h *Responses) streamResponseWithConfig(ctx context.Context, writer http.Re
 // chatDeltaSource adapts the upstream SSE decoder to the state machine's
 // ChatDeltaSource by decoding each event's data payload with ParseChatDelta.
 // The terminal [DONE] marker is reported as end-of-stream so the state machine
-// finalises.
+// finalises. It also accumulates reasoning_content character counts for
+// observability without retaining reasoning text.
 type chatDeltaSource struct {
 	decoder *sse.Decoder
 	done    bool
+	// reasoningPresent / reasoningChars accumulate across deltas; only the
+	// lengths are kept, never the reasoning text itself.
+	reasoningPresent bool
+	reasoningChars   int64
 }
 
 func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
@@ -247,6 +262,10 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 				// distinct from EOF/interruption, and ignore duplicate markers.
 				c.done = true
 				return responsesprotocol.ChatDelta{}, responsesprotocol.ErrStreamCompleted
+			}
+			if delta.Reasoning != "" {
+				c.reasoningPresent = true
+				c.reasoningChars += int64(utf8.RuneCountInString(delta.Reasoning))
 			}
 			return delta, nil
 		}
