@@ -14,6 +14,7 @@ export interface ModelsApi {
   save(models: SaveSelection[]): Promise<{ saved: number }>
   patch(id: number, patch: ModelPatch): Promise<Model>
   unblock(keyId: number, modelId: number): Promise<Model>
+  delete(id: number): Promise<void>
 }
 
 export const modelsApi: ModelsApi = {
@@ -31,6 +32,9 @@ export const modelsApi: ModelsApi = {
   },
   unblock(keyId, modelId) {
     return apiRequest(`/admin/api/key-model-blocks/${keyId}/${modelId}`, { method: 'DELETE' })
+  },
+  delete(id) {
+    return apiRequest(`/admin/api/models/${id}`, { method: 'DELETE' })
   },
 }
 

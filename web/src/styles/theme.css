@@ -1,79 +1,66 @@
 :root {
   /* All text/control pairs below are verified in docs/前端对比度配对表.md
      (computed by scripts/calc_contrast.py). Changing any value requires
-     re-running the script and updating that table first. */
-  color-scheme: dark;
-  --color-canvas: #0b0d0f;
-  --color-surface: #111416;
-  --color-elevated: #171b1f;
-  --color-sunken: #07090b;
-  --color-hover: #1d2328;
-  --color-active: #142019;
-  --color-border: rgba(226, 232, 240, 0.1);
-  --color-border-strong: rgba(226, 232, 240, 0.4);
-  --color-text: #edf1f2;
-  --color-text-secondary: #a7b0b8;
-  --color-text-muted: #7f8a94;
-  /* #7d8994 keeps a visibly "subtle" step below secondary while lifting the
-     elevated-surface contrast from 4.35:1 to 4.85:1 (design-aesthetics: normal
-     text must clear 4.5:1 on every surface it renders on, including modals). */
-  --color-text-subtle: #7d8994;
-  --color-accent: #76b900;
-  --color-accent-bright: #8bd31f;
+     re-running the script and updating that table first.
+     Theme: Minimal Product (Light) from design-aesthetics knowledge base. */
+  color-scheme: light;
+  --color-canvas: #ffffff;
+  --color-surface: #fafafa;
+  --color-elevated: #ffffff;
+  --color-sunken: #fafafa;
+  --color-hover: #f4f4f5;
+  --color-active: #e4e4e7;
+  --color-border: #e4e4e7;
+  --color-border-strong: #8b8b93;
+  --color-text: #09090b;
+  --color-text-secondary: #3f3f46;
+  --color-text-muted: #52525b;
+  --color-text-subtle: #71717a;
+  --color-accent: #18181b;
+  --color-accent-bright: #18181b;
   --color-accent-background: var(--color-accent);
-  --color-accent-background-hover: var(--color-accent-bright);
-  --color-accent-text: var(--color-accent-bright);
-  --color-accent-foreground: #081000;
-  --color-success: #4ade80;
+  --color-accent-background-hover: #000000;
+  --color-accent-text: var(--color-accent);
+  --color-accent-foreground: #ffffff;
+  --color-success: #146c2e;
   --color-success-text: var(--color-success);
-  --color-success-background: #6dd58c;
-  --color-success-foreground: #07140b;
-  --color-warning: #fbbf24;
+  --color-success-background: color-mix(in srgb, #146c2e 10%, #ffffff);
+  --color-success-foreground: #146c2e;
+  --color-warning: #7a4e00;
   --color-warning-text: var(--color-warning);
-  --color-warning-background: #e0b354;
-  --color-warning-foreground: #201500;
-  --color-danger: #f87171;
+  --color-warning-background: color-mix(in srgb, #7a4e00 10%, #ffffff);
+  --color-warning-foreground: #7a4e00;
+  --color-danger: #b3261e;
   --color-danger-text: var(--color-danger);
-  --color-danger-background: #f2857c;
-  --color-danger-foreground: #240608;
-  /* info/focus use a desaturated indigo, NOT Tailwind's default indigo-400
-     (#a5b4fc) / blue-300 (#93c5fd): default hues read as an unmodified
-     framework theme (design-aesthetics P0#1). #7c9cff / #8ea6ff keep the
-     machine-readable "identifier/data" semantics of the indigo family while
-     lowering saturation toward the neutral engineering-dark accent. */
-  --color-info: #7c9cff;
+  --color-danger-background: color-mix(in srgb, #b3261e 10%, #ffffff);
+  --color-danger-foreground: #b3261e;
+  --color-info: #3d5aa0;
   --color-info-text: var(--color-info);
-  --color-info-background: #7c9cff;
-  --color-info-foreground: #0d1122;
-  --color-focus: #8ea6ff;
-  --color-muted-background: #2a3036;
-  --color-muted-foreground: #edf1f2;
-  --color-muted-border: #646b7c;
-  --color-disabled-background: #1d2328;
-  --color-disabled-foreground: #a7b0b8;
-  --color-disabled-border: #646b7c;
-  --radius-control: 0.5rem;
-  --radius-panel: 0.75rem;
-  --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.45);
-  /* Scrim shared by modal overlay and the mobile drawer backdrop. A single
-     token so the two layers cannot drift apart again (they were 0.70/0.60). */
-  --color-overlay: rgba(0, 0, 0, 0.65);
-  /* Spacing scale (4px base). Group-internal gaps use the tight steps,
-     between-group spacing the loose ones — never one gap value everywhere
-     (design-aesthetics 构图与层级: 留白承担分组职责, at least 3 tiers). */
+  --color-info-background: color-mix(in srgb, #3d5aa0 10%, #ffffff);
+  --color-info-foreground: #3d5aa0;
+  --color-focus: #18181b;
+  --color-muted-background: #f4f4f5;
+  --color-muted-foreground: #52525b;
+  --color-muted-border: #d4d4d8;
+  --color-disabled-background: #f4f4f5;
+  --color-disabled-foreground: #71717a;
+  --color-disabled-border: #d4d4d8;
+  /* Brand color (NVIDIA Green) is isolated to logo/brand badges only */
+  --color-brand: #76b900;
+  --color-brand-foreground: #081000;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --color-overlay: rgba(0, 0, 0, 0.4);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-  /* Motion tiers mapped from the design-aesthetics duration ladder:
-     micro feedback 100-150ms, local swap 200-300ms, overlays 250-400ms. */
   --duration-micro: 120ms;
   --duration-local: 240ms;
   --duration-overlay: 300ms;
-  /* Enter decelerates, exit accelerates and runs ~70% of the enter time
-     (design-aesthetics 交互动效 P0#3: asymmetric easing is mandatory). */
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 }
@@ -85,13 +72,13 @@
 
 *, *::before, *::after {
   scrollbar-width: thin;
-  scrollbar-color: rgba(167, 176, 184, 0.22) transparent;
+  scrollbar-color: rgba(82, 82, 91, 0.28) transparent;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(167, 176, 184, 0.22); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(167, 176, 184, 0.38); }
+::-webkit-scrollbar-thumb { background: rgba(82, 82, 91, 0.28); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(82, 82, 91, 0.45); }
 
 html,
 body,
@@ -138,7 +125,7 @@ select:focus-visible {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
   color: var(--color-text);
 }
 

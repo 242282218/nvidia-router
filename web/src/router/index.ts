@@ -5,14 +5,11 @@ import { watch } from 'vue'
 import ChangePasswordView from '../features/auth/ChangePasswordView.vue'
 import LoginView from '../features/auth/LoginView.vue'
 import AccessKeysView from '../features/access-keys/AccessKeysView.vue'
-import AuditView from '../features/audit/AuditView.vue'
-import LiveView from '../features/live/LiveView.vue'
 import ModelsView from '../features/models/ModelsView.vue'
 import ProvidersView from '../features/providers/ProvidersView.vue'
 import NvidiaKeysView from '../features/nvidia-keys/NvidiaKeysView.vue'
-import RuntimeView from '../features/runtime/RuntimeView.vue'
-import StatisticsView from '../features/statistics/StatisticsView.vue'
 import ProxyPoolView from '../features/proxy/ProxyPoolView.vue'
+import ObservabilityView from '../features/observability/ObservabilityView.vue'
 import type { SessionStore } from '../features/auth/useSession'
 import AppShell from '../shared/components/AppShell.vue'
 
@@ -37,11 +34,12 @@ export function createAppRouter(
           { component: ProvidersView, path: 'providers', meta: { title: '提供商' } },
           { component: ModelsView, path: 'models', meta: { title: '模型白名单' } },
           { component: AccessKeysView, path: 'access-keys', meta: { title: 'Access Key' } },
-          { component: RuntimeView, path: 'runtime', meta: { title: '运行状态' } },
-          { component: StatisticsView, path: 'statistics', meta: { title: '监控' } },
-          { component: LiveView, path: 'live', meta: { title: '实时' } },
           { component: ProxyPoolView, path: 'proxy-pool', meta: { title: '代理池' } },
-          { component: AuditView, path: 'audit', meta: { title: '审计日志' } },
+          { component: ObservabilityView, path: 'system', meta: { title: '系统与观测' } },
+          { path: 'runtime', redirect: '/system?tab=runtime' },
+          { path: 'statistics', redirect: '/system?tab=statistics' },
+          { path: 'live', redirect: '/system?tab=live' },
+          { path: 'audit', redirect: '/system?tab=audit' },
           { component: NotFoundView, path: ':pathMatch(.*)*', meta: { title: '页面不存在' } },
         ],
       },

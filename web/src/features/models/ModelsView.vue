@@ -18,6 +18,7 @@ const loadError = ref('')
 const discovering = ref(false)
 const saving = ref(false)
 const busyId = ref<number | null>(null)
+const confirmingId = ref<number | null>(null)
 const errorMessage = ref('')
 const candidateMessage = ref('')
 let loadSequence = 0
@@ -208,6 +209,31 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
     if (!disposed) busyId.value = null
   }
 }
+
+async function deleteModel(model: Model): Promise<void> {
+  if (busyId.value === model.id) return
+  if (confirmingId.value === model.id) {
+    confirmingId.value = null
+    busyId.value = model.id
+    try {
+      await modelsApi.delete(model.id)
+      if (disposed) return
+      models.value = models.value.filter((item) => item.id !== model.id)
+      toastSuccess(`模型「${model.display_name}」已从白名单中删除。`)
+    } catch (error) {
+      if (disposed) return
+      errorMessage.value = error instanceof ApiError ? error.message : '删除模型失败。'
+      toastError(errorMessage.value)
+    } finally {
+      if (!disposed) busyId.value = null
+    }
+    return
+  }
+  confirmingId.value = model.id
+  globalThis.setTimeout(() => {
+    if (confirmingId.value === model.id) confirmingId.value = null
+  }, 3000)
+}
 </script>
 
 <template>
@@ -333,15 +359,19 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
           <ModelTable
             :models="models"
             :busy-id="busyId"
+            :confirming-id="confirmingId"
             @toggle="toggleModel"
             @unblock="unblockModel"
             @save-pricing="savePricing"
+            @delete="deleteModel"
           />
           <ModelCards
             :models="models"
             :busy-id="busyId"
+            :confirming-id="confirmingId"
             @toggle="toggleModel"
             @unblock="unblockModel"
+            @delete="deleteModel"
           />
         </StatePanel>
       </div>

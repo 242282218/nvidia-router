@@ -16,18 +16,28 @@ import (
 )
 
 type fakeModels struct {
-	candidates  []modelcatalog.Candidate
-	models      []modelcatalog.Model
-	saved       []modelcatalog.Selection
-	saveResult  *modelcatalog.MutationResult
-	discoverKey int64
-	cleared     [2]int64
-	patchErr    error
-	saveErr     error
-	listErr     error
-	discoverErr error
-	verifyErr   error
-	listCalls   int
+	candidates   []modelcatalog.Candidate
+	models       []modelcatalog.Model
+	saved        []modelcatalog.Selection
+	saveResult   *modelcatalog.MutationResult
+	discoverKey  int64
+	cleared      [2]int64
+	deleteCalled int64
+	deleteErr    error
+	patchErr     error
+	saveErr      error
+	listErr      error
+	discoverErr  error
+	verifyErr    error
+	listCalls    int
+}
+
+func (f *fakeModels) DeleteModel(_ context.Context, id int64) error {
+	f.deleteCalled = id
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return nil
 }
 
 func (f *fakeModels) DiscoverCandidates(_ context.Context, keyID int64) ([]modelcatalog.Candidate, error) {
@@ -366,5 +376,25 @@ func TestModelCandidatesReportsMissingKeyWithoutSecret(t *testing.T) {
 	response := performAdminRequest(handler, http.MethodGet, "/admin/api/models/candidates", "")
 	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "no key") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestModelAPIDeletesModelAndSyncsState(t *testing.T) {
+	models := &fakeModels{models: []modelcatalog.Model{{ID: 9, PublicID: "test-model"}}}
+	syncer := &modelSyncFake{}
+	handler := NewModels(models, fakeCandidateKeys{}, syncer)
+
+	response := performAdminRequest(handler, http.MethodDelete, "/admin/api/models/9", "")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete model status=%d body=%s", response.Code, response.Body.String())
+	}
+	if models.deleteCalled != 9 {
+		t.Fatalf("expected delete called with id 9, got %d", models.deleteCalled)
+	}
+	if syncer.enabled[9] != false {
+		t.Fatalf("expected model 9 disabled in sync, got %v", syncer.enabled[9])
+	}
+	if !containsInt64(syncer.clearedModels, 9) {
+		t.Fatalf("expected model 9 blocks cleared in sync, got %v", syncer.clearedModels)
 	}
 }

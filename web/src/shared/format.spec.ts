@@ -1,19 +1,33 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatClock, formatDate, formatLatency, formatLocalDateTime } from './format'
+import { formatClock, formatDate, formatLatency, formatLocalDateTime, formatTimeOfDay } from './format'
 
 describe('formatDate', () => {
-  it('formats a UTC timestamp without seconds by default', () => {
-    expect(formatDate('2026-08-16T09:05:07Z')).toBe('2026/08/16 09:05')
+  it('formats a timestamp in Shanghai timezone (UTC+8) without seconds by default', () => {
+    expect(formatDate('2026-08-16T09:05:07Z')).toBe('2026/08/16 17:05')
   })
 
-  it('appends seconds when requested', () => {
-    expect(formatDate('2026-08-16T09:05:07Z', { seconds: true })).toBe('2026/08/16 09:05:07')
+  it('appends seconds when requested in Shanghai timezone', () => {
+    expect(formatDate('2026-08-16T09:05:07Z', { seconds: true })).toBe('2026/08/16 17:05:07')
+  })
+
+  it('handles SQLite UTC timestamps with space separator', () => {
+    expect(formatDate('2026-08-16 09:05:07', { seconds: true })).toBe('2026/08/16 17:05:07')
+  })
+
+  it('crosses midnight into the next day when UTC+8 wraps', () => {
+    expect(formatDate('2026-08-16T20:00:00Z')).toBe('2026/08/17 04:00')
+  })
+
+  it('formats Date object in Shanghai timezone', () => {
+    const d = new Date('2026-08-16T09:05:07Z')
+    expect(formatDate(d)).toBe('2026/08/16 17:05')
   })
 
   it('returns an em dash for missing values instead of pretending zero', () => {
     expect(formatDate()).toBe('—')
     expect(formatDate('')).toBe('—')
+    expect(formatDate(undefined)).toBe('—')
   })
 
   it('returns the raw input when it cannot be parsed', () => {
@@ -22,11 +36,13 @@ describe('formatDate', () => {
 })
 
 describe('formatClock', () => {
-  it('formats the local clock with seconds', () => {
+  it('formats the Shanghai clock with seconds', () => {
     const input = '2026-08-16T09:05:07Z'
-    const expected = new Date(input)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    expect(formatClock(input)).toBe(`${pad(expected.getHours())}:${pad(expected.getMinutes())}:${pad(expected.getSeconds())}`)
+    expect(formatClock(input)).toBe('17:05:07')
+  })
+
+  it('formats SQLite timestamp in Shanghai clock', () => {
+    expect(formatClock('2026-08-16 09:05:07')).toBe('17:05:07')
   })
 
   it('returns an em dash for missing or unparsable values', () => {
@@ -35,13 +51,21 @@ describe('formatClock', () => {
   })
 })
 
+describe('formatTimeOfDay', () => {
+  it('formats Date object in Shanghai HH:mm:ss', () => {
+    const d = new Date('2026-08-16T09:05:07Z')
+    expect(formatTimeOfDay(d)).toBe('17:05:07')
+  })
+})
+
 describe('formatLocalDateTime', () => {
-  it('formats local date and time', () => {
+  it('formats date and time in Shanghai timezone', () => {
     const input = '2026-08-16T09:05:07Z'
-    const date = new Date(input)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    const expected = `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-    expect(formatLocalDateTime(input)).toBe(expected)
+    expect(formatLocalDateTime(input)).toBe('2026/08/16 17:05:07')
+  })
+
+  it('formats SQLite timestamp in Shanghai timezone', () => {
+    expect(formatLocalDateTime('2026-08-16 09:05:07')).toBe('2026/08/16 17:05:07')
   })
 
   it('returns an em dash for missing or unparsable values', () => {

@@ -14,6 +14,7 @@ type fakeAccessKeys struct {
 	keys            []accesskey.Key
 	created         accesskey.CreatedKey
 	revoked         int64
+	deleted         int64
 	policyCalled    bool
 	policyID        int64
 	policyRPM       int
@@ -30,6 +31,7 @@ func (f *fakeAccessKeys) Create(context.Context, string) (accesskey.CreatedKey, 
 	return f.created, nil
 }
 func (f *fakeAccessKeys) Revoke(_ context.Context, id int64) error { f.revoked = id; return nil }
+func (f *fakeAccessKeys) Delete(_ context.Context, id int64) error { f.deleted = id; return nil }
 func (f *fakeAccessKeys) UpdatePolicy(_ context.Context, id int64, expiresAt *time.Time, rpm, tpm, _ int, tokenBudget *int64) error {
 	f.policyCalled, f.policyID, f.policyRPM, f.policyTPM, f.policyExpiry = true, id, rpm, tpm, expiresAt
 	f.policyBudgetNil = tokenBudget == nil
@@ -53,8 +55,12 @@ func TestAccessKeyAPIShowsPlaintextOnlyOnCreate(t *testing.T) {
 		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = performAdminRequest(handler, http.MethodDelete, "/admin/api/access-keys/3", "")
+	if response.Code != http.StatusNoContent || service.deleted != 3 {
+		t.Fatalf("delete status=%d deleted=%d", response.Code, service.deleted)
+	}
+	response = performAdminRequest(handler, http.MethodPost, "/admin/api/access-keys/3/revoke", "")
 	if response.Code != http.StatusNoContent || service.revoked != 3 {
-		t.Fatalf("delete status=%d revoked=%d", response.Code, service.revoked)
+		t.Fatalf("revoke status=%d revoked=%d", response.Code, service.revoked)
 	}
 	response = performAdminRequest(handler, http.MethodGet, "/admin/api/access-keys", "")
 	if strings.Contains(response.Body.String(), plaintext) {

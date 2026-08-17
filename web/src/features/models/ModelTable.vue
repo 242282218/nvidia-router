@@ -4,11 +4,12 @@ import { ref } from 'vue'
 import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null }>()
+defineProps<{ models: Model[]; busyId: number | null; confirmingId?: number | null }>()
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
   savePricing: [model: Model, inputUsd: number, outputUsd: number]
+  delete: [model: Model]
 }>()
 
 // editingPricing tracks the row currently in price-edit mode; raw inputs start
@@ -256,15 +257,26 @@ function capBadge(supported: boolean): string {
             </div>
           </td>
           <td class="data-table-td text-right">
-            <button
-              data-testid="model-enable"
-              class="btn-secondary"
-              type="button"
-              :disabled="enablingIsBlocked(model) || busyId === model.id"
-              @click="emit('toggle', model)"
-            >
-              {{ model.enabled ? '停用' : '启用' }}
-            </button>
+            <div class="flex justify-end gap-1.5">
+              <button
+                data-testid="model-enable"
+                class="btn-secondary"
+                type="button"
+                :disabled="enablingIsBlocked(model) || busyId === model.id"
+                @click="emit('toggle', model)"
+              >
+                {{ model.enabled ? '停用' : '启用' }}
+              </button>
+              <button
+                :data-testid="`model-delete-${model.id}`"
+                class="btn-danger"
+                type="button"
+                :disabled="busyId === model.id"
+                @click="emit('delete', model)"
+              >
+                {{ confirmingId === model.id ? '确认删除？' : '删除' }}
+              </button>
+            </div>
           </td>
         </tr>
         <tr v-if="models.length === 0">

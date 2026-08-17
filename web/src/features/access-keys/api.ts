@@ -6,6 +6,7 @@ export interface AccessKeysApi {
   create(name: string): Promise<CreatedAccessKey>
   updatePolicy(id: number, policy: AccessKeyPolicy): Promise<void>
   revoke(id: number): Promise<void>
+  delete(id: number): Promise<void>
 }
 
 export const accessKeysApi: AccessKeysApi = {
@@ -19,6 +20,9 @@ export const accessKeysApi: AccessKeysApi = {
     return apiRequest(`/admin/api/access-keys/${id}`, { method: 'PATCH', body: policy })
   },
   revoke(id) {
+    return apiRequest(`/admin/api/access-keys/${id}/revoke`, { method: 'POST' })
+  },
+  delete(id) {
     return apiRequest(`/admin/api/access-keys/${id}`, { method: 'DELETE' })
   },
 }

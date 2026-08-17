@@ -8,6 +8,8 @@ import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
 import { auditApi } from './api'
 import { AUDIT_ACTIONS, type AuditEntry } from './types'
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
 const items = ref<AuditEntry[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -97,9 +99,10 @@ function parseDetail(raw: string | undefined): string {
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
-    <div class="content-wrapper">
+  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+    <div :class="embedded ? '' : 'content-wrapper'">
       <PageHeader
+        v-if="!embedded"
         eyebrow="安全管理"
         title="审计日志"
         subtitle="记录所有管理操作与认证事件，用于事后追溯。"
@@ -116,7 +119,50 @@ function parseDetail(raw: string | undefined): string {
         </template>
       </PageHeader>
 
-      <div class="card mt-5 p-4">
+      <!-- Embedded toolbar -->
+      <div
+        v-if="embedded"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+      >
+        <div class="flex items-center gap-2">
+          <label
+            class="text-xs text-[var(--color-text-muted)]"
+            for="audit-action-filter-embedded"
+          >
+            筛选操作:
+          </label>
+          <select
+            id="audit-action-filter-embedded"
+            v-model="selectedAction"
+            class="input-field w-auto py-1 text-xs"
+            @change="applyFilter"
+          >
+            <option value="">
+              全部操作类型
+            </option>
+            <option
+              v-for="action in AUDIT_ACTIONS"
+              :key="action"
+              :value="action"
+            >
+              {{ action }}
+            </option>
+          </select>
+        </div>
+        <button
+          class="btn-ghost px-2.5 py-1 text-xs"
+          type="button"
+          :disabled="loading"
+          @click="load"
+        >
+          {{ loading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
+
+      <div
+        v-if="!embedded"
+        class="card mt-5 p-4"
+      >
         <div class="flex flex-wrap items-center gap-3">
           <label
             class="text-sm text-[var(--color-text-secondary)]"

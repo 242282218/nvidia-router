@@ -2,10 +2,11 @@
 import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null }>()
+defineProps<{ models: Model[]; busyId: number | null; confirmingId?: number | null }>()
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
+  delete: [model: Model]
 }>()
 
 function audioNeedsVerification(model: Model): boolean {
@@ -89,15 +90,26 @@ function capBadge(supported: boolean): string {
         </button>
       </div>
 
-      <button
-        data-testid="model-card-toggle"
-        class="btn-secondary mt-4 w-full"
-        type="button"
-        :disabled="enablingIsBlocked(model) || busyId === model.id"
-        @click="emit('toggle', model)"
-      >
-        {{ model.enabled ? '停用' : '启用' }}
-      </button>
+      <div class="mt-4 flex gap-2">
+        <button
+          data-testid="model-card-toggle"
+          class="btn-secondary flex-1"
+          type="button"
+          :disabled="enablingIsBlocked(model) || busyId === model.id"
+          @click="emit('toggle', model)"
+        >
+          {{ model.enabled ? '停用' : '启用' }}
+        </button>
+        <button
+          :data-testid="`model-card-delete-${model.id}`"
+          class="btn-danger"
+          type="button"
+          :disabled="busyId === model.id"
+          @click="emit('delete', model)"
+        >
+          {{ confirmingId === model.id ? '确认删除？' : '删除' }}
+        </button>
+      </div>
     </article>
     <p
       v-if="models.length === 0"

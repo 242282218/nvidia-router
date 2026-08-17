@@ -10,6 +10,8 @@ import { runtimeApi } from './api'
 import SettingsForm from './SettingsForm.vue'
 import type { RuntimeSettings, RuntimeSummary } from './types'
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
 const summary = ref<RuntimeSummary | null>(null)
 const settings = ref<RuntimeSettings | null>(null)
 const loading = ref(false)
@@ -148,9 +150,10 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
-    <div class="content-wrapper">
+  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+    <div :class="embedded ? '' : 'content-wrapper'">
       <PageHeader
+        v-if="!embedded"
         eyebrow="运维摘要"
         title="运行状态"
         subtitle="查看 Key 池、当前请求和队列状态，并调整运行参数。"

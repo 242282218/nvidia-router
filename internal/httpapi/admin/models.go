@@ -19,6 +19,7 @@ type modelManager interface {
 	List(context.Context) ([]modelcatalog.Model, error)
 	PatchResult(context.Context, int64, modelcatalog.Patch) (modelcatalog.Model, modelcatalog.Kind, error)
 	VerifyAndUnblock(context.Context, int64, int64) (modelcatalog.Model, error)
+	DeleteModel(context.Context, int64) error
 }
 
 type modelVerificationDTO struct {
@@ -100,6 +101,8 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.unblock(writer, request)
 	case strings.HasPrefix(request.URL.Path, "/admin/api/models/") && request.Method == http.MethodPatch:
 		h.patch(writer, request)
+	case strings.HasPrefix(request.URL.Path, "/admin/api/models/") && request.Method == http.MethodDelete:
+		h.delete(writer, request)
 	case strings.HasPrefix(request.URL.Path, "/admin/api/models/") && request.Method == http.MethodPost:
 		h.verify(writer, request)
 
@@ -219,6 +222,22 @@ func (h *Models) patch(writer http.ResponseWriter, request *http.Request) {
 		h.sync.ClearModelBlocks(model.ID)
 	}
 	writeJSON(writer, http.StatusOK, toModelDTO(model))
+}
+func (h *Models) delete(writer http.ResponseWriter, request *http.Request) {
+	id, action, ok := parseIDRoute(request.URL.Path, "/admin/api/models/")
+	if !ok || action != "" {
+		http.NotFound(writer, request)
+		return
+	}
+	h.mutationMu.Lock()
+	defer h.mutationMu.Unlock()
+	if err := h.service.DeleteModel(request.Context(), id); err != nil {
+		h.writeModelError(writer, err)
+		return
+	}
+	h.sync.SetModelEnabled(id, false)
+	h.sync.ClearModelBlocks(id)
+	writer.WriteHeader(http.StatusNoContent)
 }
 func (h *Models) unblock(writer http.ResponseWriter, request *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/admin/api/key-model-blocks/"), "/")

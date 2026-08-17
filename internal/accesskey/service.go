@@ -238,6 +238,23 @@ func (s *Service) Revoke(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if err := s.repository.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete access key: %w", err)
+	}
+	s.cache.invalidate()
+	s.usageMu.Lock()
+	delete(s.lastRecorded, id)
+	delete(s.pending, id)
+	s.usageMu.Unlock()
+	s.consumedWriteMu.Lock()
+	delete(s.lastConsumed, id)
+	delete(s.pendingConsumed, id)
+	s.consumedWriteMu.Unlock()
+	s.limiter.remove(id)
+	return nil
+}
+
 func (s *Service) RecordUse(ctx context.Context, id int64) {
 	now := s.clock.Now().UTC().Truncate(time.Second)
 	s.usageMu.Lock()

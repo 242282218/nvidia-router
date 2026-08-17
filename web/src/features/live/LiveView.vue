@@ -7,6 +7,8 @@ import PageHeader from '../../shared/components/PageHeader.vue'
 import StatusBadge from '../../shared/components/StatusBadge.vue'
 import type { LiveRequestEvent } from './types'
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
 const events = ref<LiveRequestEvent[]>([])
 const connected = ref(false)
 const errorMessage = ref('')
@@ -140,9 +142,10 @@ function latencyColor(duration: number): string {
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
-    <div class="content-wrapper">
+  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+    <div :class="embedded ? '' : 'content-wrapper'">
       <PageHeader
+        v-if="!embedded"
         eyebrow="请求观测"
         title="实时请求流"
         :subtitle="`通过 SSE 推送实时展示路由请求的元数据；仅保留最近 ${maxEvents} 条，最新在上、自动滚动。`"
@@ -169,6 +172,38 @@ function latencyColor(duration: number): string {
           </button>
         </template>
       </PageHeader>
+
+      <!-- Embedded toolbar -->
+      <div
+        v-if="embedded"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+      >
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-[var(--color-text-muted)]">连接状态:</span>
+          <StatusBadge
+            :variant="connected ? 'success' : 'warning'"
+            :label="connected ? '实时接收中' : '连接中…'"
+          />
+          <span class="text-xs text-[var(--color-text-subtle)]">已缓冲 {{ events.length }} / {{ maxEvents }} 条</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-ghost px-2.5 py-1 text-xs"
+            type="button"
+            :disabled="events.length === 0"
+            @click="clearEvents"
+          >
+            清空
+          </button>
+          <button
+            class="btn-secondary px-2.5 py-1 text-xs"
+            type="button"
+            @click="connect"
+          >
+            重连
+          </button>
+        </div>
+      </div>
 
       <div
         v-if="errorMessage"

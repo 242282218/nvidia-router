@@ -3,11 +3,17 @@ import StatusBadge from '../../shared/components/StatusBadge.vue'
 import { budgetUsagePercent, formatKeyValue, formatTokens, keyState } from './state'
 import type { AccessKey } from './types'
 
-defineProps<{ keys: AccessKey[]; busyId: number | null; confirmingId: number | null }>()
+defineProps<{
+  keys: AccessKey[]
+  busyId: number | null
+  confirmingRevokeId?: number | null
+  confirmingDeleteId?: number | null
+}>()
 
 const emit = defineEmits<{
   edit: [key: AccessKey]
   revoke: [key: AccessKey]
+  delete: [key: AccessKey]
 }>()
 </script>
 
@@ -133,13 +139,23 @@ const emit = defineEmits<{
                 编辑策略
               </button>
               <button
+                v-if="!key.revoked_at"
                 :data-testid="`revoke-access-key-${key.id}`"
-                class="btn-danger"
+                class="btn-ghost"
                 type="button"
-                :disabled="Boolean(key.revoked_at) || busyId === key.id"
+                :disabled="busyId === key.id"
                 @click="emit('revoke', key)"
               >
-                {{ confirmingId === key.id ? '确认撤销？' : '撤销' }}
+                {{ confirmingRevokeId === key.id ? '确认撤销？' : '撤销' }}
+              </button>
+              <button
+                :data-testid="`delete-access-key-${key.id}`"
+                class="btn-danger"
+                type="button"
+                :disabled="busyId === key.id"
+                @click="emit('delete', key)"
+              >
+                {{ confirmingDeleteId === key.id ? '确认删除？' : '删除' }}
               </button>
             </div>
           </td>

@@ -13,6 +13,7 @@ vi.mock('./api', () => ({
     create: vi.fn(),
     updatePolicy: vi.fn(),
     revoke: vi.fn(),
+    delete: vi.fn(),
   },
 }))
 
@@ -42,6 +43,7 @@ beforeEach(() => {
   clearToasts()
   vi.mocked(accessKeysApi.list).mockResolvedValue({ data: [listedKey] })
   vi.mocked(accessKeysApi.revoke).mockResolvedValue(undefined)
+  vi.mocked(accessKeysApi.delete).mockResolvedValue(undefined)
 })
 
 describe('AccessKeysView', () => {
@@ -313,7 +315,7 @@ describe('AccessKeysView', () => {
     expect(wrapper.text()).toContain('家庭电脑')
     expect(wrapper.text()).toContain('nvr_abcd')
     expect(wrapper.text()).toContain('2026/07/30')
-    expect(wrapper.text()).toContain('09:30')
+    expect(wrapper.text()).toContain('17:30')
 
     const revoke = wrapper.get('[data-testid="revoke-access-key-4"]')
     // First click arms the confirmation; nothing is revoked yet.
@@ -375,5 +377,23 @@ describe('AccessKeysView', () => {
     expect(wrapper.get('[data-testid="access-key-rpm-error"]').text()).toContain('0-100000')
     expect(wrapper.get('[data-testid="access-key-max-concurrent-error"]').text()).toContain('0-10000')
     expect(accessKeysApi.updatePolicy).not.toHaveBeenCalled()
+  })
+
+  it('requires two-step confirmation to delete an access key and removes it from the list', async () => {
+    const wrapper = mount(AccessKeysView)
+    await flushPromises()
+
+    const deleteBtn = wrapper.get('[data-testid="delete-access-key-4"]')
+    // First click arms confirmation
+    await deleteBtn.trigger('click')
+    expect(accessKeysApi.delete).not.toHaveBeenCalled()
+    expect(deleteBtn.text()).toContain('确认删除')
+
+    // Second click performs deletion
+    await deleteBtn.trigger('click')
+    await flushPromises()
+
+    expect(accessKeysApi.delete).toHaveBeenCalledWith(4)
+    expect(wrapper.text()).not.toContain('家庭电脑')
   })
 })

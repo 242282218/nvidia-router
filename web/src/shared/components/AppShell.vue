@@ -55,20 +55,25 @@ const navItems = [
   { path: '/providers', label: '提供商', icon: 'provider', testId: 'nav-providers' },
   { path: '/models', label: '模型白名单', icon: 'model', testId: 'nav-models' },
   { path: '/access-keys', label: 'Access Key', icon: 'access', testId: 'nav-access-keys' },
-  { path: '/runtime', label: '运行状态', icon: 'runtime', testId: 'nav-runtime' },
-  { path: '/statistics', label: '监控', icon: 'stats', testId: 'nav-statistics' },
-  { path: '/live', label: '实时', icon: 'live', testId: 'nav-live' },
   { path: '/proxy-pool', label: '代理池', icon: 'proxy', testId: 'nav-proxy-pool' },
-  { path: '/audit', label: '审计日志', icon: 'audit', testId: 'nav-audit' },
+  { path: '/system', label: '系统与观测', icon: 'system', testId: 'nav-system' },
 ] as const
 
-const currentLabel = computed(() => navItems.find((item) => item.path === route.path)?.label ?? 'NVIDIA Key')
+const currentLabel = computed(() => {
+  if (route.path === '/system' || route.path === '/runtime' || route.path === '/statistics' || route.path === '/live' || route.path === '/audit') {
+    return '系统与观测'
+  }
+  return navItems.find((item) => item.path === route.path)?.label ?? 'NVIDIA Key'
+})
 
 watch(() => route.path, () => {
   sidebarOpen.value = false
 })
 
 function isActive(path: string): boolean {
+  if (path === '/system') {
+    return route.path === '/system' || route.path === '/runtime' || route.path === '/statistics' || route.path === '/live' || route.path === '/audit'
+  }
   return route.path === path || (path === '/nvidia-keys' && route.path === '/')
 }
 
@@ -158,7 +163,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       aria-label="管理侧栏"
     >
       <div class="flex h-16 items-center gap-3 border-b border-[var(--color-border)] px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-accent)] text-sm font-bold text-[var(--color-accent-foreground)]">
+        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)]">
           N
         </div>
         <div class="min-w-0">
@@ -242,21 +247,6 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
             />
           </svg>
           <svg
-            v-else-if="item.icon === 'runtime'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M3.75 12h3.75l2.25-6 3 12 2.25-6h5.25"
-            />
-          </svg>
-          <svg
             v-else-if="item.icon === 'proxy'"
             class="h-4 w-4 shrink-0"
             fill="none"
@@ -272,37 +262,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
             />
           </svg>
           <svg
-            v-else-if="item.icon === 'live'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
-            />
-          </svg>
-          <svg
-            v-else-if="item.icon === 'audit'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
-            />
-          </svg>
-          <svg
-            v-else
+            v-else-if="item.icon === 'system'"
             class="h-4 w-4 shrink-0"
             fill="none"
             stroke="currentColor"

@@ -51,6 +51,34 @@ describe('CostPanel', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
 
+  it('switches time range and reloads cost statistics', async () => {
+    const wrapper = mount(CostPanel)
+    await flushPromises()
+    expect(statisticsApi.getCosts).toHaveBeenCalledWith(30)
+
+    await wrapper.get('[data-testid="cost-range-7"]').trigger('click')
+    await flushPromises()
+    expect(statisticsApi.getCosts).toHaveBeenCalledWith(7)
+
+    await wrapper.get('[data-testid="cost-range-90"]').trigger('click')
+    await flushPromises()
+    expect(statisticsApi.getCosts).toHaveBeenCalledWith(90)
+  })
+
+  it('toggles currency display mode between BOTH, USD, and CNY', async () => {
+    const wrapper = mount(CostPanel)
+    await flushPromises()
+
+    const toggle = wrapper.get('[data-testid="cost-currency-toggle"]')
+    expect(toggle.text()).toContain('双币')
+
+    await toggle.trigger('click')
+    expect(toggle.text()).toContain('人民币')
+
+    await toggle.trigger('click')
+    expect(toggle.text()).toContain('美元')
+  })
+
   it('shows an error alert on a failed request', async () => {
     vi.mocked(statisticsApi.getCosts).mockRejectedValue(new Error('upstream unavailable'))
     const wrapper = mount(CostPanel)

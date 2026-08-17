@@ -14,6 +14,7 @@ type accessKeyManager interface {
 	List(context.Context) ([]accesskey.Key, error)
 	Create(context.Context, string) (accesskey.CreatedKey, error)
 	Revoke(context.Context, int64) error
+	Delete(context.Context, int64) error
 	UpdatePolicy(context.Context, int64, *time.Time, int, int, int, *int64) error
 }
 
@@ -59,7 +60,23 @@ func (h *AccessKeys) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	if action == "" && request.Method == http.MethodDelete {
+		if err := h.service.Delete(request.Context(), id); err != nil {
+			if errors.Is(err, accesskey.ErrAccessKeyNotFound) {
+				writeAdminError(writer, http.StatusNotFound, "access_key_not_found", "The access key was not found.", err)
+				return
+			}
+			writeInternalError(writer, err)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if action == "revoke" && request.Method == http.MethodPost {
 		if err := h.service.Revoke(request.Context(), id); err != nil {
+			if errors.Is(err, accesskey.ErrAccessKeyNotFound) {
+				writeAdminError(writer, http.StatusNotFound, "access_key_not_found", "The access key was not found.", err)
+				return
+			}
 			writeInternalError(writer, err)
 			return
 		}

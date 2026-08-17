@@ -20,6 +20,8 @@ import type {
   RequestLogsPage,
 } from './types'
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+
 const ranges: Array<{ value: MonitoringRange; label: string }> = [
   { value: '24h', label: '24 小时' },
   { value: '7d', label: '7 天' },
@@ -317,9 +319,10 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
-    <div class="content-wrapper">
+  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+    <div :class="embedded ? '' : 'content-wrapper'">
       <PageHeader
+        v-if="!embedded"
         eyebrow="请求观测"
         title="监控"
         subtitle="保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。"
@@ -353,6 +356,42 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           </div>
         </template>
       </PageHeader>
+
+      <!-- Embedded toolbar -->
+      <div
+        v-if="embedded"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+      >
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-[var(--color-text-muted)]">统计窗口:</span>
+          <div
+            class="flex rounded-[var(--radius-control)] border border-[var(--color-border)] p-0.5 bg-[var(--color-sunken)]"
+            role="group"
+            aria-label="监控时间范围"
+          >
+            <button
+              v-for="option in ranges"
+              :key="option.value"
+              :data-testid="`range-${option.value}`"
+              class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
+              :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-sm' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+              type="button"
+              :aria-pressed="range === option.value"
+              @click="selectRange(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+        <button
+          class="btn-ghost px-2.5 py-1 text-xs"
+          type="button"
+          :disabled="loading"
+          @click="loadDashboard"
+        >
+          {{ loading ? '刷新中…' : '刷新' }}
+        </button>
+      </div>
       <p
         v-if="summaryUpdatedAt"
         class="mt-1 text-xs text-[var(--color-text-subtle)]"

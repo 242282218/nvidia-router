@@ -132,8 +132,9 @@ test.describe('management resources', () => {
     await expect(page.getByTestId('created-access-key')).toBeVisible()
     await page.getByTestId('close-created-access-key').click()
 
-    await page.getByTestId('nav-audit').click()
-    await expect(page).toHaveURL(/\/admin\/audit$/)
+    await page.getByTestId('nav-system').click()
+    await page.getByTestId('tab-audit').click()
+    await expect(page).toHaveURL(/\/admin\/system\?tab=audit$/)
     // Check for access_keys.create in the audit log table (not the filter dropdown)
     await expect(page.locator('table').getByText('access_keys.create').first()).toBeVisible()
   })

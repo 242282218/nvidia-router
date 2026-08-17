@@ -12,6 +12,7 @@ vi.mock('./api', () => ({
     save: vi.fn(),
     patch: vi.fn(),
     unblock: vi.fn(),
+    delete: vi.fn(),
   },
 }))
 
@@ -359,5 +360,25 @@ describe('ModelsView', () => {
 
     expect(modelsApi.patch).toHaveBeenCalledWith(3, { input_usd_per_mtok: 0.14, output_usd_per_mtok: 0.28 })
     expect(wrapper.text()).toContain('$0.14')
+  })
+
+  it('requires two-step confirmation to delete a model and removes it from the list', async () => {
+    vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 8, display_name: 'To Delete' })] })
+    vi.mocked(modelsApi.delete).mockResolvedValue(undefined)
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    const deleteBtn = wrapper.get('[data-testid="model-delete-8"]')
+    // First click arms confirmation
+    await deleteBtn.trigger('click')
+    expect(modelsApi.delete).not.toHaveBeenCalled()
+    expect(deleteBtn.text()).toContain('确认删除')
+
+    // Second click performs delete
+    await deleteBtn.trigger('click')
+    await flushPromises()
+
+    expect(modelsApi.delete).toHaveBeenCalledWith(8)
+    expect(wrapper.text()).not.toContain('To Delete')
   })
 })

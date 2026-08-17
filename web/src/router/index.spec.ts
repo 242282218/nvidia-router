@@ -199,9 +199,8 @@ describe('application router integration', () => {
     ['nav-nvidia-keys', '/nvidia-keys', 'NVIDIA Key'],
     ['nav-models', '/models', '模型白名单'],
     ['nav-access-keys', '/access-keys', 'Access Key'],
-    ['nav-runtime', '/runtime', '运行状态'],
-    ['nav-statistics', '/statistics', '监控'],
     ['nav-proxy-pool', '/proxy-pool', '代理池'],
+    ['nav-system', '/system', '系统与观测'],
   ])('navigates from AppShell through %s', async (testId, expectedPath, expectedHeading) => {
     const session = createSession({ kind: 'authenticated', mustChangePassword: false })
     const router = createAppRouter(session, createMemoryHistory('/admin/'))
@@ -240,8 +239,13 @@ describe('management routes', () => {
     expect(paths).toContain('/nvidia-keys')
     expect(paths).toContain('/models')
     expect(paths).toContain('/access-keys')
-    expect(paths).toContain('/runtime')
-    expect(paths).toContain('/statistics')
     expect(paths).toContain('/proxy-pool')
+    expect(paths).toContain('/system')
+  })
+
+  it('redirects old observability routes to unified /system with appropriate query', async () => {
+    const { router } = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/runtime')
+    expect(router.currentRoute.value.path).toBe('/system')
+    expect(router.currentRoute.value.query.tab).toBe('runtime')
   })
 })

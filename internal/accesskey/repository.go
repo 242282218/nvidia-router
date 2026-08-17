@@ -133,6 +133,21 @@ func (r *Repository) Revoke(ctx context.Context, id int64, now time.Time) error 
 	return nil
 }
 
+func (r *Repository) Delete(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM access_keys WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete access key: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read deleted access key count: %w", err)
+	}
+	if changed == 0 {
+		return ErrAccessKeyNotFound
+	}
+	return nil
+}
+
 func (r *Repository) UpdateLastUsed(ctx context.Context, id int64, usedAt time.Time, minimumInterval time.Duration) error {
 	threshold := usedAt.Add(-minimumInterval)
 	if _, err := r.db.ExecContext(ctx, `

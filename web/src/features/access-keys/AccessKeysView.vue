@@ -19,7 +19,8 @@ const dialogOpen = ref(false)
 const editDialogOpen = ref(false)
 const editingKey = ref<AccessKey | null>(null)
 const busyId = ref<number | null>(null)
-const confirmingId = ref<number | null>(null)
+const confirmingRevokeId = ref<number | null>(null)
+const confirmingDeleteId = ref<number | null>(null)
 let loadSequence = 0
 let disposed = false
 
@@ -84,10 +85,8 @@ function openEditPolicy(key: AccessKey): void {
 
 async function revokeKey(key: AccessKey): Promise<void> {
   if (busyId.value === key.id) return
-  // Two-step destructive confirmation, matching the NVIDIA Key page instead of
-  // the native window.confirm (which is visually detached from the app chrome).
-  if (confirmingId.value === key.id) {
-    confirmingId.value = null
+  if (confirmingRevokeId.value === key.id) {
+    confirmingRevokeId.value = null
     busyId.value = key.id
     try {
       await accessKeysApi.revoke(key.id)
@@ -102,9 +101,33 @@ async function revokeKey(key: AccessKey): Promise<void> {
     }
     return
   }
-  confirmingId.value = key.id
+  confirmingRevokeId.value = key.id
   globalThis.setTimeout(() => {
-    if (confirmingId.value === key.id) confirmingId.value = null
+    if (confirmingRevokeId.value === key.id) confirmingRevokeId.value = null
+  }, 3000)
+}
+
+async function deleteKey(key: AccessKey): Promise<void> {
+  if (busyId.value === key.id) return
+  if (confirmingDeleteId.value === key.id) {
+    confirmingDeleteId.value = null
+    busyId.value = key.id
+    try {
+      await accessKeysApi.delete(key.id)
+      if (disposed) return
+      keys.value = keys.value.filter((item) => item.id !== key.id)
+      toastSuccess(`Access Key「${key.name}」已删除。`)
+    } catch (error) {
+      if (disposed) return
+      toastError(errorMessage(error, 'Access Key 删除失败。'))
+    } finally {
+      if (!disposed) busyId.value = null
+    }
+    return
+  }
+  confirmingDeleteId.value = key.id
+  globalThis.setTimeout(() => {
+    if (confirmingDeleteId.value === key.id) confirmingDeleteId.value = null
   }, 3000)
 }
 </script>
@@ -160,16 +183,20 @@ async function revokeKey(key: AccessKey): Promise<void> {
           <AccessKeyCards
             :keys="keys"
             :busy-id="busyId"
-            :confirming-id="confirmingId"
+            :confirming-revoke-id="confirmingRevokeId"
+            :confirming-delete-id="confirmingDeleteId"
             @edit="openEditPolicy"
             @revoke="revokeKey"
+            @delete="deleteKey"
           />
           <AccessKeyTable
             :keys="keys"
             :busy-id="busyId"
-            :confirming-id="confirmingId"
+            :confirming-revoke-id="confirmingRevokeId"
+            :confirming-delete-id="confirmingDeleteId"
             @edit="openEditPolicy"
             @revoke="revokeKey"
+            @delete="deleteKey"
           />
         </StatePanel>
       </div>

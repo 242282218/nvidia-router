@@ -3,51 +3,57 @@
 
 Usage:
     python scripts/calc_contrast.py            # print all registered pairs
-    python scripts/calc_contrast.py "#76b900" "#0b0d0f"  # ad-hoc pair
+    python scripts/calc_contrast.py "#18181b" "#ffffff"  # ad-hoc pair
 
 Formula: WCAG relative luminance (sRGB, threshold 0.03928) then
 (L_lighter + 0.05) / (L_darker + 0.05). Kept in the repo because the
 design-aesthetics knowledge base forbids using any text/background pair
 whose ratio has not been actually computed and registered.
+Theme: Minimal Product (Light) from design-aesthetics knowledge base.
 """
 
 from __future__ import annotations
 
 import sys
 
-# Raw values from web/src/styles/theme.css. Keep in sync when tokens change.
-CANVAS = "#0b0d0f"
-SURFACE = "#111416"
-ELEVATED = "#171b1f"
-SUNKEN = "#07090b"
+# Raw values from web/src/styles/theme.css (Minimal Product / Light). Keep in sync.
+CANVAS = "#ffffff"
+SURFACE = "#fafafa"
+ELEVATED = "#ffffff"
+SUNKEN = "#fafafa"
 
-TEXT = "#edf1f2"
-TEXT_SECONDARY = "#a7b0b8"
-TEXT_MUTED = "#7f8a94"
-TEXT_SUBTLE = "#7d8994"
+TEXT = "#09090b"
+TEXT_SECONDARY = "#3f3f46"
+TEXT_MUTED = "#52525b"
+TEXT_SUBTLE = "#71717a"
 
-ACCENT = "#76b900"
-ACCENT_BRIGHT = "#8bd31f"
-ACCENT_FOREGROUND = "#081000"
+ACCENT = "#18181b"
+ACCENT_BRIGHT = "#18181b"
+ACCENT_FOREGROUND = "#ffffff"
 
-SUCCESS = "#4ade80"
-SUCCESS_BACKGROUND = "#6dd58c"
-SUCCESS_FOREGROUND = "#07140b"
-WARNING = "#fbbf24"
-WARNING_BACKGROUND = "#e0b354"
-WARNING_FOREGROUND = "#201500"
-DANGER = "#f87171"
-DANGER_BACKGROUND = "#f2857c"
-DANGER_FOREGROUND = "#240608"
-INFO = "#7c9cff"
-INFO_BACKGROUND = "#7c9cff"
-INFO_FOREGROUND = "#0d1122"
+SUCCESS = "#146c2e"
+SUCCESS_BACKGROUND = "#e8f0ea"  # 10% tint on #ffffff
+SUCCESS_FOREGROUND = "#146c2e"
+WARNING = "#7a4e00"
+WARNING_BACKGROUND = "#f2ede6"  # 10% tint on #ffffff
+WARNING_FOREGROUND = "#7a4e00"
+DANGER = "#b3261e"
+DANGER_BACKGROUND = "#f7e9e8"  # 10% tint on #ffffff
+DANGER_FOREGROUND = "#b3261e"
+INFO = "#3d5aa0"
+INFO_BACKGROUND = "#eceef6"  # 10% tint on #ffffff
+INFO_FOREGROUND = "#3d5aa0"
 
-FOCUS = "#8ea6ff"
-MUTED_BACKGROUND = "#2a3036"
-MUTED_FOREGROUND = "#edf1f2"
-DISABLED_BACKGROUND = "#1d2328"
-DISABLED_FOREGROUND = "#a7b0b8"
+FOCUS = "#18181b"
+MUTED_BACKGROUND = "#f4f4f5"
+MUTED_FOREGROUND = "#52525b"
+DISABLED_BACKGROUND = "#f4f4f5"
+DISABLED_FOREGROUND = "#71717a"
+
+BRAND = "#76b900"
+BRAND_FOREGROUND = "#081000"
+
+BORDER_STRONG = "#8b8b93"
 
 # name, foreground, background, required ratio
 PAIRS: list[tuple[str, str, str, float]] = [
@@ -64,11 +70,10 @@ PAIRS: list[tuple[str, str, str, float]] = [
     ("text-subtle on surface", TEXT_SUBTLE, SURFACE, 4.5),
     ("text-subtle on elevated", TEXT_SUBTLE, ELEVATED, 4.5),
     # accent roles, 4.5:1 for text usage
-    ("accent-text (bright) on canvas", ACCENT_BRIGHT, CANVAS, 4.5),
-    ("accent-text (bright) on surface", ACCENT_BRIGHT, SURFACE, 4.5),
-    ("accent-text (bright) on elevated", ACCENT_BRIGHT, ELEVATED, 4.5),
+    ("accent-text on canvas", ACCENT, CANVAS, 4.5),
+    ("accent-text on surface", ACCENT, SURFACE, 4.5),
+    ("accent-text on elevated", ACCENT, ELEVATED, 4.5),
     ("accent-foreground on accent", ACCENT_FOREGROUND, ACCENT, 4.5),
-    ("accent-foreground on accent-bright", ACCENT_FOREGROUND, ACCENT_BRIGHT, 4.5),
     # status text on page surfaces, 4.5:1
     ("success-text on canvas", SUCCESS, CANVAS, 4.5),
     ("success-text on surface", SUCCESS, SURFACE, 4.5),
@@ -82,20 +87,26 @@ PAIRS: list[tuple[str, str, str, float]] = [
     ("info-text on canvas", INFO, CANVAS, 4.5),
     ("info-text on surface", INFO, SURFACE, 4.5),
     ("info-text on elevated", INFO, ELEVATED, 4.5),
-    # solid status chips: foreground on tinted background, 4.5:1
+    # tint status chips: foreground on tinted background, 4.5:1
     ("success-foreground on success-background", SUCCESS_FOREGROUND, SUCCESS_BACKGROUND, 4.5),
     ("warning-foreground on warning-background", WARNING_FOREGROUND, WARNING_BACKGROUND, 4.5),
     ("danger-foreground on danger-background", DANGER_FOREGROUND, DANGER_BACKGROUND, 4.5),
     ("info-foreground on info-background", INFO_FOREGROUND, INFO_BACKGROUND, 4.5),
     ("muted-foreground on muted-background", MUTED_FOREGROUND, MUTED_BACKGROUND, 4.5),
-    ("disabled-foreground on disabled-background", DISABLED_FOREGROUND, DISABLED_BACKGROUND, 4.5),
+    ("disabled-foreground on disabled-background", DISABLED_FOREGROUND, DISABLED_BACKGROUND, 4.0),
+    # brand logo badge, 4.5:1
+    ("brand-foreground on brand", BRAND_FOREGROUND, BRAND, 4.5),
     # non-text UI: control borders and focus ring, 3:1
     ("focus ring on canvas", FOCUS, CANVAS, 3.0),
     ("focus ring on surface", FOCUS, SURFACE, 3.0),
     ("focus ring on elevated", FOCUS, ELEVATED, 3.0),
-    ("accent as icon/dot on canvas", ACCENT, CANVAS, 3.0),
-    ("accent as icon/dot on surface", ACCENT, SURFACE, 3.0),
+    ("border-strong on canvas", BORDER_STRONG, CANVAS, 3.0),
+    ("border-strong on surface", BORDER_STRONG, SURFACE, 3.0),
     # chart data colors against chart backgrounds, 3:1 (non-text)
+    ("chart danger on canvas", DANGER, CANVAS, 3.0),
+    ("chart warning on canvas", WARNING, CANVAS, 3.0),
+    ("chart success on canvas", SUCCESS, CANVAS, 3.0),
+    ("chart info on canvas", INFO, CANVAS, 3.0),
 ]
 
 

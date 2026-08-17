@@ -24,6 +24,9 @@ log_*.txt
 
 # One-off remote diagnostics may contain runtime-only connection details.
 # Reusable product checks stay as tracked shell/Go/TypeScript tests.
+__pycache__/
+*.pyc
+/scripts/test/remote_*.py
 /scripts/test/collector_chat.py
 /scripts/test/deploy_round5.py
 /scripts/test/diag_port.py

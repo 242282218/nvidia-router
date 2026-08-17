@@ -3,11 +3,17 @@ import StatusBadge from '../../shared/components/StatusBadge.vue'
 import { budgetUsagePercent, formatKeyValue, formatTokens, keyState } from './state'
 import type { AccessKey } from './types'
 
-defineProps<{ keys: AccessKey[]; busyId: number | null; confirmingId: number | null }>()
+defineProps<{
+  keys: AccessKey[]
+  busyId: number | null
+  confirmingRevokeId?: number | null
+  confirmingDeleteId?: number | null
+}>()
 
 const emit = defineEmits<{
   edit: [key: AccessKey]
   revoke: [key: AccessKey]
+  delete: [key: AccessKey]
 }>()
 </script>
 
@@ -58,7 +64,7 @@ const emit = defineEmits<{
           <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}（{{ budgetUsagePercent(key) }}%）</span>
         </div>
       </div>
-      <div class="mt-4 flex gap-2">
+      <div class="mt-4 flex flex-wrap gap-2">
         <button
           :data-testid="`mobile-edit-access-key-policy-${key.id}`"
           class="btn-secondary flex-1"
@@ -69,13 +75,23 @@ const emit = defineEmits<{
           编辑策略
         </button>
         <button
+          v-if="!key.revoked_at"
           :data-testid="`mobile-revoke-access-key-${key.id}`"
-          class="btn-danger flex-1"
+          class="btn-ghost flex-1"
           type="button"
-          :disabled="Boolean(key.revoked_at) || busyId === key.id"
+          :disabled="busyId === key.id"
           @click="emit('revoke', key)"
         >
-          {{ confirmingId === key.id ? '确认撤销？' : '撤销' }}
+          {{ confirmingRevokeId === key.id ? '确认撤销？' : '撤销' }}
+        </button>
+        <button
+          :data-testid="`mobile-delete-access-key-${key.id}`"
+          class="btn-danger flex-1"
+          type="button"
+          :disabled="busyId === key.id"
+          @click="emit('delete', key)"
+        >
+          {{ confirmingDeleteId === key.id ? '确认删除？' : '删除' }}
         </button>
       </div>
     </article>

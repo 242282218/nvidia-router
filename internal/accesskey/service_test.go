@@ -190,6 +190,47 @@ func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
 	}
 }
 
+func TestDeleteDropsUsageTrackingEntriesAndDeletesRow(t *testing.T) {
+	service, db := newTestService(t, filepath.Join(t.TempDir(), "router.db"))
+	created, err := service.Create(context.Background(), "to-delete")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	service.usageMu.Lock()
+	service.lastRecorded[created.Key.ID] = time.Now()
+	service.pending[created.Key.ID] = struct{}{}
+	service.usageMu.Unlock()
+	service.limiter.mu.Lock()
+	service.limiter.buckets[created.Key.ID] = &limitBucket{windowStart: time.Now(), rpmCount: 3}
+	service.limiter.mu.Unlock()
+
+	if err := service.Delete(context.Background(), created.Key.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	service.usageMu.Lock()
+	defer service.usageMu.Unlock()
+	if _, ok := service.lastRecorded[created.Key.ID]; ok {
+		t.Fatal("Delete left a lastRecorded entry")
+	}
+	if _, ok := service.pending[created.Key.ID]; ok {
+		t.Fatal("Delete left a pending entry")
+	}
+	service.limiter.mu.Lock()
+	defer service.limiter.mu.Unlock()
+	if _, ok := service.limiter.buckets[created.Key.ID]; ok {
+		t.Fatal("Delete left a rate-limit bucket")
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM access_keys WHERE id = ?", created.Key.ID).Scan(&count); err != nil {
+		t.Fatalf("QueryRow: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 rows for deleted key, got %d", count)
+	}
+}
+
 func newTestService(t *testing.T, path string) (*Service, *sql.DB) {
 	t.Helper()
 	return newTestServiceWithClock(t, path, newManualClock(time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)))
