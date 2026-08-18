@@ -44,27 +44,37 @@ type Models struct {
 }
 
 type candidateDTO struct {
-	UpstreamID          string            `json:"upstream_id"`
-	DisplayName         string            `json:"display_name"`
-	Kind                modelcatalog.Kind `json:"kind"`
-	SupportsVision      bool              `json:"supports_vision"`
-	SupportsTools       bool              `json:"supports_tools"`
-	SupportsReasoning   bool              `json:"supports_reasoning"`
-	ReasoningWireFormat string            `json:"reasoning_wire_format"`
+	UpstreamID              string            `json:"upstream_id"`
+	DisplayName             string            `json:"display_name"`
+	Kind                    modelcatalog.Kind `json:"kind"`
+	SupportsVision          bool              `json:"supports_vision"`
+	SupportsTools           bool              `json:"supports_tools"`
+	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
+	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
+	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
+	ReasoningMaxBudget      int               `json:"reasoning_max_budget,omitempty"`
+	ReasoningZeroAllowed    bool              `json:"reasoning_zero_allowed,omitempty"`
+	ReasoningDynamicAllowed bool              `json:"reasoning_dynamic_allowed,omitempty"`
 }
 type modelDTO struct {
-	ID                   int64             `json:"id"`
-	PublicID             string            `json:"public_id"`
-	UpstreamID           string            `json:"upstream_id"`
-	DisplayName          string            `json:"display_name"`
-	Kind                 modelcatalog.Kind `json:"kind"`
-	Provider             string            `json:"provider"`
-	Enabled              bool              `json:"enabled"`
-	SupportsVision       bool              `json:"supports_vision"`
-	SupportsTools        bool              `json:"supports_tools"`
-	SupportsReasoning    bool              `json:"supports_reasoning"`
-	ReasoningWireFormat  string            `json:"reasoning_wire_format"`
-	CapabilityVerifiedAt *time.Time        `json:"capability_verified_at,omitempty"`
+	ID                      int64             `json:"id"`
+	PublicID                string            `json:"public_id"`
+	UpstreamID              string            `json:"upstream_id"`
+	DisplayName             string            `json:"display_name"`
+	Kind                    modelcatalog.Kind `json:"kind"`
+	Provider                string            `json:"provider"`
+	Enabled                 bool              `json:"enabled"`
+	SupportsVision          bool              `json:"supports_vision"`
+	SupportsTools           bool              `json:"supports_tools"`
+	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
+	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
+	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
+	ReasoningMaxBudget      int               `json:"reasoning_max_budget,omitempty"`
+	ReasoningZeroAllowed    bool              `json:"reasoning_zero_allowed,omitempty"`
+	ReasoningDynamicAllowed bool              `json:"reasoning_dynamic_allowed,omitempty"`
+	CapabilityVerifiedAt    *time.Time        `json:"capability_verified_at,omitempty"`
 	// StreamFirstTokenTimeoutMS / StreamIdleTimeoutMS are per-model overrides of
 	// the global streaming windows; nil means "use the global setting".
 	StreamFirstTokenTimeoutMS *int     `json:"stream_first_token_timeout_ms,omitempty"`
@@ -74,15 +84,20 @@ type modelDTO struct {
 	BlockedByKeyIDs           []int64  `json:"blocked_by_key_ids"`
 }
 type selectionDTO struct {
-	PublicID            string            `json:"public_id"`
-	UpstreamID          string            `json:"upstream_id"`
-	DisplayName         string            `json:"display_name"`
-	Kind                modelcatalog.Kind `json:"kind"`
-	Enabled             bool              `json:"enabled"`
-	SupportsVision      bool              `json:"supports_vision"`
-	SupportsTools       bool              `json:"supports_tools"`
-	SupportsReasoning   bool              `json:"supports_reasoning"`
-	ReasoningWireFormat string            `json:"reasoning_wire_format"`
+	PublicID                string            `json:"public_id"`
+	UpstreamID              string            `json:"upstream_id"`
+	DisplayName             string            `json:"display_name"`
+	Kind                    modelcatalog.Kind `json:"kind"`
+	Enabled                 bool              `json:"enabled"`
+	SupportsVision          bool              `json:"supports_vision"`
+	SupportsTools           bool              `json:"supports_tools"`
+	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
+	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
+	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
+	ReasoningMaxBudget      int               `json:"reasoning_max_budget,omitempty"`
+	ReasoningZeroAllowed    bool              `json:"reasoning_zero_allowed,omitempty"`
+	ReasoningDynamicAllowed bool              `json:"reasoning_dynamic_allowed,omitempty"`
 }
 
 func NewModels(service modelManager, keys candidateKeySource, syncer modelStateSync) *Models {
@@ -281,7 +296,14 @@ func (h *Models) writeModelError(writer http.ResponseWriter, err error) {
 	}
 }
 func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
-	return candidateDTO{v.UpstreamID, v.DisplayName, v.Kind, v.SupportsVision, v.SupportsTools, v.SupportsReasoning, v.ReasoningWireFormat}
+	return candidateDTO{
+		UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind,
+		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools,
+		SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat,
+		ReasoningLevels: v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget,
+		ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed,
+		ReasoningDynamicAllowed: v.ReasoningDynamicAllowed,
+	}
 }
 func toModelDTO(v modelcatalog.Model) modelDTO {
 	provider := v.Provider
@@ -289,25 +311,30 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		provider = "nvidia"
 	}
 	return modelDTO{
-		ID:                   v.ID,
-		PublicID:             v.PublicID,
-		UpstreamID:           v.UpstreamID,
-		DisplayName:          v.DisplayName,
-		Kind:                 v.Kind,
-		Provider:             provider,
-		Enabled:              v.Enabled,
-		SupportsVision:       v.SupportsVision,
-		SupportsTools:        v.SupportsTools,
-		SupportsReasoning:    v.SupportsReasoning,
-		ReasoningWireFormat:  v.ReasoningWireFormat,
-		CapabilityVerifiedAt: v.CapabilityVerifiedAt,
+		ID:                        v.ID,
+		PublicID:                  v.PublicID,
+		UpstreamID:                v.UpstreamID,
+		DisplayName:               v.DisplayName,
+		Kind:                      v.Kind,
+		Provider:                  provider,
+		Enabled:                   v.Enabled,
+		SupportsVision:            v.SupportsVision,
+		SupportsTools:             v.SupportsTools,
+		SupportsReasoning:         v.SupportsReasoning,
+		ReasoningWireFormat:       v.ReasoningWireFormat,
+		ReasoningLevels:           v.ReasoningLevels,
+		ReasoningMinBudget:        v.ReasoningMinBudget,
+		ReasoningMaxBudget:        v.ReasoningMaxBudget,
+		ReasoningZeroAllowed:      v.ReasoningZeroAllowed,
+		ReasoningDynamicAllowed:   v.ReasoningDynamicAllowed,
+		CapabilityVerifiedAt:      v.CapabilityVerifiedAt,
 		StreamFirstTokenTimeoutMS: v.StreamFirstTokenTimeoutMS,
 		StreamIdleTimeoutMS:       v.StreamIdleTimeoutMS,
-		InputUSDPerMTok:      v.InputUSDPerMTok,
-		OutputUSDPerMTok:     v.OutputUSDPerMTok,
-		BlockedByKeyIDs:      v.BlockedByKeyIDs,
+		InputUSDPerMTok:           v.InputUSDPerMTok,
+		OutputUSDPerMTok:          v.OutputUSDPerMTok,
+		BlockedByKeyIDs:           v.BlockedByKeyIDs,
 	}
 }
 func (v selectionDTO) selection() modelcatalog.Selection {
-	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat}
+	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat, ReasoningLevels: v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget, ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed, ReasoningDynamicAllowed: v.ReasoningDynamicAllowed}
 }

@@ -29,13 +29,15 @@ type RequestState struct {
 	firstTokenRecorded bool
 	// Reasoning observability carries only booleans, field names and character
 	// counts; reasoning text is never retained.
-	ReasoningRequested  bool
-	ReasoningWireFields string
-	ReasoningPresent    bool
-	ReasoningChars      *int64
-	StreamDone          bool
-	RouteMode           string
-	UsageRecorder       func(*int64, *int64)
+	ReasoningRequested      bool
+	ReasoningWireFields     string
+	ReasoningRequestedLevel string
+	ReasoningEffectiveLevel string
+	ReasoningPresent        bool
+	ReasoningChars          *int64
+	StreamDone              bool
+	RouteMode               string
+	UsageRecorder           func(*int64, *int64)
 }
 
 func WithRequestState(ctx context.Context) (context.Context, *RequestState) {
@@ -121,6 +123,15 @@ func SetReasoningRequest(ctx context.Context, requested bool, wireFields string)
 	})
 }
 
+func SetReasoningLevels(ctx context.Context, requested, effective string) {
+	requested = safeReasoningLevel(requested)
+	effective = safeReasoningLevel(effective)
+	updateState(ctx, func(state *RequestState) {
+		state.ReasoningRequestedLevel = requested
+		state.ReasoningEffectiveLevel = effective
+	})
+}
+
 // SetReasoningResponse records whether the upstream response carried reasoning
 // and its character count. Reasoning text is never retained; chars is only set
 // when reasoning is present.
@@ -196,11 +207,20 @@ func (s *RequestState) Snapshot() RequestState {
 		ErrorCode: s.ErrorCode, IsStream: s.IsStream, QueueMS: s.QueueMS,
 		AttemptCount: s.AttemptCount, PromptTokens: s.PromptTokens,
 		CompletionTokens: s.CompletionTokens, UpstreamRequestID: s.UpstreamRequestID,
-		FirstTokenAt: s.FirstTokenAt,
+		FirstTokenAt:       s.FirstTokenAt,
 		ReasoningRequested: s.ReasoningRequested, ReasoningWireFields: s.ReasoningWireFields,
+		ReasoningRequestedLevel: s.ReasoningRequestedLevel, ReasoningEffectiveLevel: s.ReasoningEffectiveLevel,
 		ReasoningPresent: s.ReasoningPresent, ReasoningChars: s.ReasoningChars,
 		StreamDone: s.StreamDone, RouteMode: s.RouteMode,
 	}
+}
+
+func safeReasoningLevel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	return value
 }
 
 func updateState(ctx context.Context, update func(*RequestState)) {

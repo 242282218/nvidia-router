@@ -112,6 +112,35 @@ func TestResponsesNonStreamText(t *testing.T) {
 	}
 }
 
+func TestResponsesPassesParsedCapabilityRequirementsToModelResolver(t *testing.T) {
+	var resolved modelcatalog.Requirements
+	resolver := modelResolverFunc(func(_ context.Context, _ string, requirements modelcatalog.Requirements) (modelcatalog.Model, error) {
+		resolved = requirements
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat,
+			Enabled: true, SupportsTools: true, SupportsReasoning: true, ReasoningWireFormat: "openai",
+		}, nil
+	})
+	called := false
+	runner := attemptRunnerFunc(func(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error) {
+		called = true
+		return router.AttemptResult{Response: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"id":"resp_1","object":"response","status":"completed"}`))}}, nil
+	})
+	handler := NewResponses(resolver, runner, nil)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"public-chat","input":"use lookup","tools":[{"type":"function","name":"lookup"}],"reasoning":{"effort":"low"}}`))
+
+	handler.ServeHTTP(response, request)
+
+	want := modelcatalog.Requirements{Kind: modelcatalog.KindChat, Tools: true, Reasoning: true}
+	if resolved != want {
+		t.Fatalf("resolved requirements = %+v, want %+v", resolved, want)
+	}
+	if !called || response.Code != http.StatusOK {
+		t.Fatalf("provider path called=%v status=%d body=%s", called, response.Code, response.Body.String())
+	}
+}
+
 func TestResponsesNonstreamExecutionMarksSemanticCompletionAfterConversion(t *testing.T) {
 	body := &semanticMarkBody{ReadCloser: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))}
 	client := &semanticMarkProvider{response: &http.Response{StatusCode: http.StatusOK, Body: body}}
@@ -491,7 +520,11 @@ func TestResponsesNonstreamRecordsReasoning(t *testing.T) {
 		if publicID != "public-chat" || req.Kind != modelcatalog.KindChat {
 			t.Fatalf("resolve = %q, %#v", publicID, req)
 		}
-		return modelcatalog.Model{ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true}, nil
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat, Enabled: true,
+			SupportsReasoning: true, ReasoningWireFormat: "openai", ReasoningLevels: []string{"low", "medium"},
+			ReasoningMaxBudget: 8192, ReasoningDynamicAllowed: false,
+		}, nil
 	})
 	var recorded observability.RequestRecord
 	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
@@ -514,6 +547,12 @@ func TestResponsesNonstreamRecordsReasoning(t *testing.T) {
 	// The Responses mapping turns reasoning.effort into upstream reasoning_effort.
 	if recorded.ReasoningWireFields != "reasoning_effort" {
 		t.Fatalf("reasoning_wire_fields = %q, want reasoning_effort", recorded.ReasoningWireFields)
+	}
+	if recorded.ReasoningRequestedLevel != "high" {
+		t.Fatalf("reasoning_requested_level = %q, want high", recorded.ReasoningRequestedLevel)
+	}
+	if recorded.ReasoningEffectiveLevel != "medium" {
+		t.Fatalf("reasoning_effective_level = %q, want medium", recorded.ReasoningEffectiveLevel)
 	}
 	if !recorded.ReasoningPresent {
 		t.Fatal("reasoning_present = false, want true")

@@ -15,9 +15,15 @@ func TestDeveloperRoleAccepted(t *testing.T) {
 }
 
 func TestUnknownRoleStillRejected(t *testing.T) {
-	for _, role := range []string{"", "System", "root", "function"} {
+	for _, role := range []string{"", "System", "root"} {
 		if _, ok := validRoles[role]; ok {
 			t.Fatalf("role %q should not be accepted", role)
 		}
+	}
+}
+
+func TestLegacyFunctionRoleAcceptedForCompatibility(t *testing.T) {
+	if _, ok := validRoles["function"]; !ok {
+		t.Fatal("legacy function role should be accepted and normalized")
 	}
 }

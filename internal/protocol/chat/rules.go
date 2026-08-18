@@ -2,9 +2,11 @@ package chat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"nvidia-router/internal/apierror"
+	"nvidia-router/internal/compat"
 	"nvidia-router/internal/modelcatalog"
 )
 
@@ -31,15 +33,6 @@ func validateModel(request Request, model modelcatalog.Model) error {
 	return nil
 }
 
-func hasReasoning(fields map[string]json.RawMessage) bool {
-	for _, name := range []string{"reasoning_effort", "reasoning", "thinking"} {
-		if _, ok := fields[name]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func invalidRequest(code, param, message string) *apierror.Error {
 	var parameter *string
 	if param != "" {
@@ -48,4 +41,23 @@ func invalidRequest(code, param, message string) *apierror.Error {
 	return &apierror.Error{
 		Status: 400, Type: "invalid_request_error", Code: code, Message: message, Param: parameter,
 	}
+}
+
+func compatRequestError(err error) error {
+	var validation *compat.ValidationError
+	if errors.As(err, &validation) {
+		return invalidRequest(validation.Code, validation.Param, validation.Message)
+	}
+	return invalidRequest("invalid_parameter", "", err.Error())
+}
+
+func reasoningModelError(err error) error {
+	if errors.Is(err, compat.ErrReasoningUnsupported) {
+		param := "reasoning"
+		return &apierror.Error{
+			Status: 501, Type: "invalid_request_error", Code: "model_capability_unsupported",
+			Message: "The selected model does not support the requested reasoning mode.", Param: &param, Cause: err,
+		}
+	}
+	return compatRequestError(err)
 }

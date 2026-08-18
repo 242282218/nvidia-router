@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"nvidia-router/internal/compat"
 )
 
 // ParseChatDelta decodes a single Chat Completions streaming chunk's data
@@ -24,10 +26,12 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 		Usage   *ChatUsage `json:"usage"`
 		Choices []struct {
 			Delta struct {
-				Role      string              `json:"role"`
-				Content   json.RawMessage     `json:"content"`
-				Reasoning json.RawMessage     `json:"reasoning_content"`
-				ToolCalls []chatChunkToolCall `json:"tool_calls"`
+				Role           string              `json:"role"`
+				Content        json.RawMessage     `json:"content"`
+				Reasoning      json.RawMessage     `json:"reasoning_content"`
+				ReasoningAlias json.RawMessage     `json:"reasoning"`
+				Thinking       json.RawMessage     `json:"thinking"`
+				ToolCalls      []chatChunkToolCall `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason json.RawMessage `json:"finish_reason"`
 		} `json:"choices"`
@@ -40,15 +44,22 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 		choice := chunk.Choices[0]
 		parsed.Content = decodeStringField(choice.Delta.Content)
 		reasoning := decodeStringField(choice.Delta.Reasoning)
+		if reasoning == "" {
+			reasoning = decodeStringField(choice.Delta.ReasoningAlias)
+		}
+		if reasoning == "" {
+			reasoning = decodeStringField(choice.Delta.Thinking)
+		}
 		if reasoning != "" {
 			parsed.Reasoning = reasoning
 		}
 		for _, call := range choice.Delta.ToolCalls {
+			arguments := decodeToolArguments(call.Function.Arguments)
 			parsed.ToolCalls = append(parsed.ToolCalls, ChatToolCallDelta{
 				Index:     call.Index,
 				ID:        call.ID,
 				Name:      call.Function.Name,
-				Arguments: call.Function.Arguments,
+				Arguments: arguments,
 			})
 		}
 		parsed.FinishReason = decodeStringField(choice.FinishReason)
@@ -68,9 +79,24 @@ type chatChunkToolCall struct {
 	Index    int    `json:"index"`
 	ID       string `json:"id"`
 	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	} `json:"function"`
+}
+
+func decodeToolArguments(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	arguments, err := compat.NormalizeArguments(raw, "tool_call.arguments")
+	if err != nil {
+		return string(raw)
+	}
+	return arguments
 }
 
 // decodeStringField returns the string value of a JSON field that may be a

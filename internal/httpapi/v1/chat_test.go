@@ -24,6 +24,7 @@ import (
 	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
+	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
 )
@@ -190,6 +191,35 @@ func TestChatReturnsModelNotFound(t *testing.T) {
 	assertChatError(t, response, http.StatusNotFound, "model_not_found")
 }
 
+func TestChatPassesParsedCapabilityRequirementsToModelResolver(t *testing.T) {
+	var resolved modelcatalog.Requirements
+	resolver := modelResolverFunc(func(_ context.Context, _ string, requirements modelcatalog.Requirements) (modelcatalog.Model, error) {
+		resolved = requirements
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-model", UpstreamID: "vendor/model", Kind: modelcatalog.KindChat,
+			Enabled: true, SupportsTools: true, SupportsReasoning: true, ReasoningWireFormat: "openai",
+		}, nil
+	})
+	called := false
+	runner := attemptRunnerFunc(func(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error) {
+		called = true
+		return router.AttemptResult{Response: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}}, nil
+	})
+	handler := NewChat(resolver, runner, nil)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"public-model","messages":[{"role":"user","content":"use lookup"}],"tools":[{"type":"function","function":{"name":"lookup"}}],"reasoning_effort":"low"}`))
+
+	handler.ServeHTTP(response, request)
+
+	want := modelcatalog.Requirements{Kind: modelcatalog.KindChat, Tools: true, Reasoning: true}
+	if resolved != want {
+		t.Fatalf("resolved requirements = %+v, want %+v", resolved, want)
+	}
+	if !called || response.Code != http.StatusOK {
+		t.Fatalf("provider path called=%v status=%d body=%s", called, response.Code, response.Body.String())
+	}
+}
+
 func TestWriteChatErrorMapsProxyFailureToBadGateway(t *testing.T) {
 	response := httptest.NewRecorder()
 
@@ -239,6 +269,18 @@ func TestChatStreamForwardsSSEEvents(t *testing.T) {
 	}
 	if got := response.Header().Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("X-Accel-Buffering = %q, want %q (audit B6: nginx must not buffer SSE)", got, "no")
+	}
+}
+
+func TestSemanticChatEventAcceptsReasoningAliases(t *testing.T) {
+	for _, data := range []string{
+		`{"choices":[{"delta":{"reasoning":"step"}}]}`,
+		`{"choices":[{"delta":{"thinking":"step"}}]}`,
+	} {
+		accepted, err := semanticChatEvent(sse.Event{Data: []string{data}})
+		if err != nil || !accepted {
+			t.Fatalf("semanticChatEvent(%s) = %v/%v, want true/nil", data, accepted, err)
+		}
 	}
 }
 
@@ -607,7 +649,11 @@ func TestChatNonstreamRecordsReasoningRequestAndResponse(t *testing.T) {
 		return router.AttemptResult{Response: response, Attempts: 1}, err
 	})
 	resolver := modelResolverFunc(func(_ context.Context, publicID string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
-		return modelcatalog.Model{ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true}, nil
+		return modelcatalog.Model{
+			ID: 3, PublicID: publicID, UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true,
+			SupportsReasoning: true, ReasoningWireFormat: "openai", ReasoningLevels: []string{"low", "medium"},
+			ReasoningMaxBudget: 8192, ReasoningDynamicAllowed: false,
+		}, nil
 	})
 	var recorded observability.RequestRecord
 	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
@@ -627,6 +673,12 @@ func TestChatNonstreamRecordsReasoningRequestAndResponse(t *testing.T) {
 	}
 	if recorded.ReasoningWireFields != "reasoning_effort" {
 		t.Fatalf("reasoning_wire_fields = %q, want reasoning_effort", recorded.ReasoningWireFields)
+	}
+	if recorded.ReasoningRequestedLevel != "high" {
+		t.Fatalf("reasoning_requested_level = %q, want high", recorded.ReasoningRequestedLevel)
+	}
+	if recorded.ReasoningEffectiveLevel != "medium" {
+		t.Fatalf("reasoning_effective_level = %q, want medium", recorded.ReasoningEffectiveLevel)
 	}
 	if !recorded.ReasoningPresent {
 		t.Fatal("reasoning_present = false, want true")

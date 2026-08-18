@@ -4,10 +4,10 @@ import "testing"
 
 func TestReasoningFieldsFromBodyReportsRequestedAndWireNames(t *testing.T) {
 	cases := []struct {
-		name     string
-		body     string
+		name      string
+		body      string
 		requested bool
-		fields   string
+		fields    string
 	}{
 		{"no reasoning fields", `{"model":"m","messages":[{"role":"user","content":"hi"}]}`, false, ""},
 		{"single reasoning_effort", `{"reasoning_effort":"high","model":"m"}`, true, "reasoning_effort"},
@@ -33,6 +33,29 @@ func TestReasoningFieldsFromBodyHandlesInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestReasoningLevelFromBodyNormalizesAliases(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		level string
+		ok    bool
+	}{
+		{"openai effort alias", `{"reasoning_effort":"HIGH","private_reasoning":"do not retain"}`, "high", true},
+		{"thinking budget", `{"thinking":{"type":"enabled","budget_tokens":8192}}`, "medium", true},
+		{"responses reasoning object", `{"reasoning":{"effort":"low"}}`, "low", true},
+		{"no reasoning", `{"model":"m"}`, "", false},
+		{"invalid json", `not json`, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			level, ok := ReasoningLevelFromBody([]byte(tc.body))
+			if level != tc.level || ok != tc.ok {
+				t.Fatalf("ReasoningLevelFromBody = %q/%v, want %q/%v", level, ok, tc.level, tc.ok)
+			}
+		})
+	}
+}
+
 func TestReasoningContentFromBodyCountsCharacters(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -44,6 +67,8 @@ func TestReasoningContentFromBodyCountsCharacters(t *testing.T) {
 		{"empty reasoning", `{"choices":[{"message":{"reasoning_content":"","content":"ok"}}]}`, false, 0},
 		{"null reasoning", `{"choices":[{"message":{"reasoning_content":null}}]}`, false, 0},
 		{"ascii reasoning", `{"choices":[{"message":{"reasoning_content":"deep-thought"}}]}`, true, 12},
+		{"reasoning alias", `{"choices":[{"message":{"reasoning":"deep"}}]}`, true, 4},
+		{"thinking alias", `{"choices":[{"message":{"thinking":"思考"}}]}`, true, 2},
 		{"multi-byte runes counted not bytes", `{"choices":[{"message":{"reasoning_content":"思考abc"}}]}`, true, 5},
 		{"multiple choices summed", `{"choices":[{"message":{"reasoning_content":"ab"}},{"message":{"reasoning_content":"cd"}}]}`, true, 4},
 	}
@@ -66,6 +91,8 @@ func TestReasoningDeltaCharsParsesStreamChunk(t *testing.T) {
 	}{
 		{"no reasoning delta", `{"choices":[{"delta":{"content":"hi"}}]}`, false, 0},
 		{"reasoning delta", `{"choices":[{"delta":{"reasoning_content":"chain"}}]}`, true, 5},
+		{"reasoning alias delta", `{"choices":[{"delta":{"reasoning":"chain"}}]}`, true, 5},
+		{"thinking alias delta", `{"choices":[{"delta":{"thinking":"思考"}}]}`, true, 2},
 		{"null reasoning delta", `{"choices":[{"delta":{"reasoning_content":null}}]}`, false, 0},
 		{"multiple choices summed", `{"choices":[{"delta":{"reasoning_content":"a"}},{"delta":{"reasoning_content":"bc"}}]}`, true, 3},
 	}

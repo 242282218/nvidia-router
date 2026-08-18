@@ -111,6 +111,7 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 			PromptTokens: metadata.PromptTokens, CompletionTokens: metadata.CompletionTokens,
 			UpstreamRequestID: metadata.UpstreamRequestID, CreatedAt: started,
 			ReasoningRequested: metadata.ReasoningRequested, ReasoningWireFields: metadata.ReasoningWireFields,
+			ReasoningRequestedLevel: metadata.ReasoningRequestedLevel, ReasoningEffectiveLevel: metadata.ReasoningEffectiveLevel,
 			ReasoningPresent: metadata.ReasoningPresent, ReasoningChars: metadata.ReasoningChars,
 			StreamDone: metadata.StreamDone, RouteMode: metadata.RouteMode,
 		}

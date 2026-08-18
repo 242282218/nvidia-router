@@ -312,12 +312,23 @@ func (s *Service) DeleteModel(ctx context.Context, id int64) error {
 
 func candidateFromHint(modelID string, hint nvidia.CapabilityHint) Candidate {
 	return Candidate{
-		UpstreamID:          modelID,
-		DisplayName:         modelID,
-		Kind:                Kind(hint.Kind),
-		SupportsVision:      hint.SupportsVision,
-		SupportsTools:       hint.SupportsTools,
-		SupportsReasoning:   hint.SupportsReasoning,
-		ReasoningWireFormat: string(hint.ReasoningWireFormat),
+		UpstreamID:              modelID,
+		DisplayName:             modelID,
+		Kind:                    Kind(hint.Kind),
+		SupportsVision:          hint.SupportsVision,
+		SupportsTools:           hint.SupportsTools,
+		SupportsReasoning:       hint.SupportsReasoning,
+		ReasoningWireFormat:     string(hint.ReasoningWireFormat),
+		ReasoningLevels:         defaultReasoningLevelsForCandidate(hint.SupportsReasoning),
+		ReasoningMaxBudget:      128000,
+		ReasoningZeroAllowed:    hint.SupportsReasoning,
+		ReasoningDynamicAllowed: hint.SupportsReasoning,
 	}
+}
+
+func defaultReasoningLevelsForCandidate(supported bool) []string {
+	if !supported {
+		return nil
+	}
+	return defaultReasoningLevels()
 }

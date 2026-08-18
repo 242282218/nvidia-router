@@ -198,8 +198,9 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 			first_byte_ms, first_token_ms, duration_ms, attempt_count,
 			prompt_tokens, completion_tokens, upstream_request_id, created_at,
 			reasoning_requested, reasoning_wire_fields, reasoning_present,
-			reasoning_chars, stream_done, route_mode
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reasoning_chars, stream_done, route_mode,
+			reasoning_requested_level, reasoning_effective_level
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.RequestID, record.Endpoint, nullableString(record.ModelID), record.AccessKeyID, record.NVIDIAKeyID,
 		record.HTTPStatus, record.Outcome, record.ErrorCode, boolInt(record.IsStream), record.QueueMS,
@@ -207,6 +208,7 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 		record.PromptTokens, record.CompletionTokens, record.UpstreamRequestID, formatTime(record.CreatedAt),
 		boolInt(record.ReasoningRequested), nullableString(record.ReasoningWireFields), boolInt(record.ReasoningPresent),
 		record.ReasoningChars, boolInt(record.StreamDone), nullableString(record.RouteMode),
+		nullableString(record.ReasoningRequestedLevel), nullableString(record.ReasoningEffectiveLevel),
 	)
 	if err != nil {
 		return fmt.Errorf("insert request log: %w", err)

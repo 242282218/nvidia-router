@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"nvidia-router/internal/compat"
 	"nvidia-router/internal/modelcatalog"
 )
 
@@ -77,6 +78,8 @@ type chatChoiceMessage struct {
 	Role             string          `json:"role"`
 	Content          json.RawMessage `json:"content"`
 	ReasoningContent json.RawMessage `json:"reasoning_content"`
+	Reasoning        json.RawMessage `json:"reasoning"`
+	Thinking         json.RawMessage `json:"thinking"`
 	ToolCalls        []struct {
 		ID       string          `json:"id"`
 		Type     string          `json:"type"`
@@ -85,17 +88,46 @@ type chatChoiceMessage struct {
 }
 
 type toolCallContent struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type chatUsage = ChatUsage
+
+func extractReasoning(message chatChoiceMessage) (string, bool, error) {
+	var result string
+	found := false
+	for _, item := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "reasoning_content", raw: message.ReasoningContent},
+		{name: "reasoning", raw: message.Reasoning},
+		{name: "thinking", raw: message.Thinking},
+	} {
+		if len(item.raw) == 0 || string(item.raw) == "null" {
+			continue
+		}
+		text, present, err := extractText(item.raw, item.name)
+		if err != nil {
+			return "", false, err
+		}
+		if !present {
+			continue
+		}
+		if found && result != text {
+			return "", false, fmt.Errorf("convert chat to responses: reasoning aliases disagree")
+		}
+		result, found = text, true
+	}
+	return result, found, nil
+}
 
 func buildOutputItems(message chatChoiceMessage, responsesID string) ([]map[string]any, error) {
 	output := make([]map[string]any, 0, 2+len(message.ToolCalls))
 	// Reasoning precedes tool calls and text in a Responses output, matching
 	// how thinking models emit chain-of-thought before the answer.
-	reasoning, hasReasoning, err := extractText(message.ReasoningContent, "reasoning_content")
+	reasoning, hasReasoning, err := extractReasoning(message)
 	if err != nil {
 		return nil, err
 	}
@@ -105,14 +137,22 @@ func buildOutputItems(message chatChoiceMessage, responsesID string) ([]map[stri
 			"summary": []map[string]any{{"type": "summary_text", "text": reasoning}},
 		})
 	}
-	for _, call := range message.ToolCalls {
+	for index, call := range message.ToolCalls {
+		id := call.ID
+		if strings.TrimSpace(id) == "" {
+			id = fmt.Sprintf("call_%d", index)
+		}
+		arguments, err := compat.NormalizeArguments(call.Function.Arguments, fmt.Sprintf("tool_calls[%d].function.arguments", index))
+		if err != nil {
+			return nil, fmt.Errorf("convert chat to responses: %w", err)
+		}
 		output = append(output, map[string]any{
 			"type":      "function_call",
 			"status":    "completed",
-			"id":        call.ID,
-			"call_id":   call.ID,
+			"id":        id,
+			"call_id":   id,
 			"name":      call.Function.Name,
-			"arguments": call.Function.Arguments,
+			"arguments": arguments,
 		})
 	}
 	text, hasText, err := extractText(message.Content, "content")

@@ -100,13 +100,15 @@ type RequestLog struct {
 	UpstreamRequestID *string `json:"upstream_request_id,omitempty"`
 	// Reasoning observability exposes only booleans, field names and character
 	// counts; reasoning text is never stored or serialized.
-	ReasoningRequested  bool    `json:"reasoning_requested"`
-	ReasoningWireFields *string `json:"reasoning_wire_fields,omitempty"`
-	ReasoningPresent    bool    `json:"reasoning_present"`
-	ReasoningChars      *int64  `json:"reasoning_chars,omitempty"`
-	StreamDone          bool    `json:"stream_done"`
-	RouteMode           *string `json:"route_mode,omitempty"`
-	CreatedAt           string  `json:"created_at"`
+	ReasoningRequested      bool    `json:"reasoning_requested"`
+	ReasoningWireFields     *string `json:"reasoning_wire_fields,omitempty"`
+	ReasoningRequestedLevel *string `json:"reasoning_requested_level,omitempty"`
+	ReasoningEffectiveLevel *string `json:"reasoning_effective_level,omitempty"`
+	ReasoningPresent        bool    `json:"reasoning_present"`
+	ReasoningChars          *int64  `json:"reasoning_chars,omitempty"`
+	StreamDone              bool    `json:"stream_done"`
+	RouteMode               *string `json:"route_mode,omitempty"`
+	CreatedAt               string  `json:"created_at"`
 }
 
 type RequestLogsQuery struct {

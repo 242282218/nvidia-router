@@ -187,8 +187,10 @@ func TestToChatAcceptsDeveloperAndInstructionsWithoutInput(t *testing.T) {
 	})
 }
 
-func TestToChatRejectsObjectFunctionOutput(t *testing.T) {
-	mustFail(t, `{"model":"public-chat","input":[{"type":"function_call_output","call_id":"fc_1","output":{"value":"not a string"}}]}`, "invalid_parameter")
+func TestToChatPreservesObjectFunctionOutputAsJSON(t *testing.T) {
+	wantTranscript(t, `{"model":"public-chat","input":[{"type":"function_call_output","call_id":"fc_1","output":{"value":"not a string"}}]}`, []chatMessage{
+		{Role: "tool", RolePresent: true, ToolCallID: "fc_1", ToolCallIDPresent: true, Content: `{"value":"not a string"}`, ContentPresent: true},
+	})
 }
 
 func TestToChatRejectsUnknownTopLevelField(t *testing.T) {

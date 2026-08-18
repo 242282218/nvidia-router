@@ -51,7 +51,7 @@ type responsesInputItem struct {
 	Role      string          `json:"role,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	Name      string          `json:"name,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 	CallID    string          `json:"call_id,omitempty"`
 	Output    json.RawMessage `json:"output,omitempty"`
 }

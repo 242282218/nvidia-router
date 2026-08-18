@@ -64,7 +64,9 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	observability.SetModel(request.Context(), parsed.PublicModelID(), parsed.Stream())
-	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), modelcatalog.Requirements{Kind: modelcatalog.KindChat})
+	requestedReasoningLevel, _ := observability.ReasoningLevelFromBody(payload)
+	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
+	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
 		return
@@ -74,6 +76,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
+	effectiveReasoningLevel, _ := observability.ReasoningLevelFromBody(upstreamBody)
+	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
 	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	stream := parsed.Stream()
@@ -373,9 +377,11 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Content   json.RawMessage   `json:"content"`
-				Reasoning json.RawMessage   `json:"reasoning_content"`
-				ToolCalls []json.RawMessage `json:"tool_calls"`
+				Content        json.RawMessage   `json:"content"`
+				Reasoning      json.RawMessage   `json:"reasoning_content"`
+				ReasoningAlias json.RawMessage   `json:"reasoning"`
+				Thinking       json.RawMessage   `json:"thinking"`
+				ToolCalls      []json.RawMessage `json:"tool_calls"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
@@ -383,7 +389,8 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 		return false, fmt.Errorf("decode upstream chat event: %w", err)
 	}
 	for _, choice := range chunk.Choices {
-		if hasSSETextValue(choice.Delta.Content) || hasSSETextValue(choice.Delta.Reasoning) || len(choice.Delta.ToolCalls) > 0 {
+		if hasSSETextValue(choice.Delta.Content) || hasSSETextValue(choice.Delta.Reasoning) ||
+			hasSSETextValue(choice.Delta.ReasoningAlias) || hasSSETextValue(choice.Delta.Thinking) || len(choice.Delta.ToolCalls) > 0 {
 			return true, nil
 		}
 	}

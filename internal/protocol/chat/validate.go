@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"nvidia-router/internal/apierror"
+	"nvidia-router/internal/compat"
 )
 
 var validRoles = map[string]struct{}{
@@ -14,6 +15,7 @@ var validRoles = map[string]struct{}{
 	"user":      {},
 	"assistant": {},
 	"tool":      {},
+	"function":  {},
 }
 
 func validateMessages(fields map[string]json.RawMessage) (bool, bool, error) {
@@ -78,7 +80,7 @@ func validateMessage(message parsedMessage, index int) (bool, bool, error) {
 	if err != nil {
 		return false, false, err
 	}
-	requiresTools := message.role.value == "tool" ||
+	requiresTools := message.role.value == "tool" || message.role.value == "function" ||
 		message.role.value == "assistant" && message.toolCalls.present && message.toolCalls.length > 0
 	return vision, requiresTools, nil
 }
@@ -99,6 +101,13 @@ func validateTools(fields map[string]json.RawMessage) (bool, error) {
 	raw, ok := fields["tools"]
 	if !ok {
 		return false, nil
+	}
+	if isFlatToolList(raw) {
+		definitions, err := compat.NormalizeTools(raw, compat.ToolFormatChat, "tools")
+		if err != nil {
+			return false, compatRequestError(err)
+		}
+		return len(definitions) > 0, nil
 	}
 	scanner := newJSONScanner(raw)
 	opened, err := consumeJSONOpening(scanner, '[')
@@ -246,6 +255,13 @@ func validateToolChoice(fields map[string]json.RawMessage) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	if isFlatToolChoice(raw) {
+		choice, err := compat.NormalizeToolChoice(raw, nil, "tool_choice")
+		if err != nil {
+			return false, compatRequestError(err)
+		}
+		return choice.Mode == "function", nil
+	}
 	var value string
 	if json.Unmarshal(raw, &value) == nil {
 		if value == "none" {
@@ -270,4 +286,29 @@ func validNamedToolChoice(choice parsedTool) bool {
 	return choice.valid && !choice.typeAlias && choice.toolType.valid && choice.toolType.value == "function" &&
 		!choice.functionAlias && choice.function.valid && !choice.function.nameAlias &&
 		choice.function.name.valid && choice.function.name.value != ""
+}
+
+func isFlatToolList(raw json.RawMessage) bool {
+	var items []map[string]json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || items == nil {
+		return false
+	}
+	for _, item := range items {
+		if _, hasFunction := item["function"]; !hasFunction {
+			if _, hasName := item["name"]; hasName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isFlatToolChoice(raw json.RawMessage) bool {
+	var choice map[string]json.RawMessage
+	if json.Unmarshal(raw, &choice) != nil || choice == nil {
+		return false
+	}
+	_, hasFunction := choice["function"]
+	_, hasName := choice["name"]
+	return !hasFunction && hasName
 }

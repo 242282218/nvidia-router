@@ -208,6 +208,32 @@ func TestRepositoryRecordStoresReasoningObservability(t *testing.T) {
 	}
 }
 
+func TestRepositoryRecordStoresReasoningLevels(t *testing.T) {
+	db := openObservabilityDB(t)
+	record := RequestRecord{
+		RequestID: "reasoning-levels", Endpoint: "/v1/chat/completions", HTTPStatus: http.StatusOK,
+		Outcome: OutcomeSuccess, DurationMS: 80, AttemptCount: 1,
+		ReasoningRequestedLevel: "high", ReasoningEffectiveLevel: "medium",
+		CreatedAt: time.Date(2026, 8, 18, 1, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var requested, effective sql.NullString
+	if err := db.QueryRow(`
+		SELECT reasoning_requested_level, reasoning_effective_level
+		FROM request_logs WHERE request_id = ?
+	`, record.RequestID).Scan(&requested, &effective); err != nil {
+		t.Fatalf("read reasoning levels: %v", err)
+	}
+	if !requested.Valid || requested.String != record.ReasoningRequestedLevel {
+		t.Fatalf("requested level = %#v, want %q", requested, record.ReasoningRequestedLevel)
+	}
+	if !effective.Valid || effective.String != record.ReasoningEffectiveLevel {
+		t.Fatalf("effective level = %#v, want %q", effective, record.ReasoningEffectiveLevel)
+	}
+}
+
 func TestRepositoryRecordStoresReasoningAbsentAsDefaults(t *testing.T) {
 	db := openObservabilityDB(t)
 	record := RequestRecord{

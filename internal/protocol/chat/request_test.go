@@ -234,7 +234,7 @@ func TestMarshalForPassesCapabilitiesToUpstream(t *testing.T) {
 		"tools":[{"type":"function","function":{"name":"lookup"}}],
 		"tool_choice":"auto",
 		"reasoning_effort":"high",
-		"thinking":{"type":"enabled","budget_tokens":8192}
+		"thinking":{"type":"enabled","budget_tokens":24576}
 	}`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -286,21 +286,14 @@ func TestMarshalForPreservesNativeThinking(t *testing.T) {
 }
 
 func TestMarshalForPreservesConflictingReasoningFields(t *testing.T) {
-	request, err := Parse([]byte(`{
+	_, err := Parse([]byte(`{
 		"model":"public-model",
 		"messages":[{"role":"user","content":"hello"}],
 		"reasoning_effort":"low",
 		"thinking":{"type":"enabled","budget_tokens":24576}
 	}`))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	body, err := request.MarshalFor(chatModel())
-	if err != nil {
-		t.Fatalf("MarshalFor: %v", err)
-	}
-	if !bytes.Contains(body, []byte(`"reasoning_effort"`)) || !bytes.Contains(body, []byte(`"thinking"`)) {
-		t.Fatalf("reasoning fields were not preserved: %s", body)
+	if err == nil {
+		t.Fatal("Parse unexpectedly accepted conflicting reasoning aliases")
 	}
 }
 

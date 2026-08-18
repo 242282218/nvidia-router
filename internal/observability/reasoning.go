@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
+
+	"nvidia-router/internal/compat"
 )
 
 // reasoningWireFieldOrder is the fixed order in which reasoning field names are
@@ -32,6 +34,20 @@ func ReasoningFieldsFromBody(body []byte) (requested bool, wireFields string) {
 	return true, strings.Join(names, ",")
 }
 
+// ReasoningLevelFromBody extracts only the normalized reasoning level from a
+// request body. It deliberately discards all reasoning values and text.
+func ReasoningLevelFromBody(body []byte) (string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return "", false
+	}
+	spec, err := compat.ParseReasoning(fields)
+	if err != nil || !spec.Requested || spec.Level == "" {
+		return "", false
+	}
+	return string(spec.Level), true
+}
+
 // ReasoningContentFromBody reports whether a non-stream chat body carries
 // assistant reasoning_content and its total character count (runes). Only the
 // length is returned; the reasoning text itself is never retained.
@@ -39,7 +55,9 @@ func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 	var chat struct {
 		Choices []struct {
 			Message struct {
-				Reasoning json.RawMessage `json:"reasoning_content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				Thinking         json.RawMessage `json:"thinking"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -47,7 +65,7 @@ func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 		return false, 0
 	}
 	for _, choice := range chat.Choices {
-		length, ok := reasoningContentLength(choice.Message.Reasoning)
+		length, ok := firstReasoningLength(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking)
 		if !ok {
 			continue
 		}
@@ -64,7 +82,9 @@ func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Reasoning json.RawMessage `json:"reasoning_content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				Thinking         json.RawMessage `json:"thinking"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
@@ -72,7 +92,7 @@ func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
 		return false, 0
 	}
 	for _, choice := range chunk.Choices {
-		length, ok := reasoningContentLength(choice.Delta.Reasoning)
+		length, ok := firstReasoningLength(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.Thinking)
 		if !ok {
 			continue
 		}
@@ -80,6 +100,15 @@ func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
 		present = true
 	}
 	return present, chars
+}
+
+func firstReasoningLength(values ...json.RawMessage) (int64, bool) {
+	for _, value := range values {
+		if length, ok := reasoningContentLength(value); ok {
+			return length, true
+		}
+	}
+	return 0, false
 }
 
 // reasoningContentLength returns the rune count of a reasoning_content field

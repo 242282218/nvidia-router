@@ -59,7 +59,9 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 	modelID, stream := parsed.PublicModelID(), parsed.Stream()
 	observability.SetModel(request.Context(), modelID, stream)
-	model, err := h.models.Resolve(request.Context(), modelID, chatModelRequirements())
+	requestedReasoningLevel, _ := observability.ReasoningLevelFromBody(payload)
+	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
+	model, err := h.models.Resolve(request.Context(), modelID, parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
 		return
@@ -69,6 +71,8 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
+	effectiveReasoningLevel, _ := observability.ReasoningLevelFromBody(upstreamBody)
+	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
 	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	id, err := responsesprotocol.NewResponseID()
@@ -357,8 +361,4 @@ func writeSSEHeaders(writer http.ResponseWriter) {
 	// Disable nginx-style reverse proxy buffering for SSE so chunks reach the
 	// client live (audit B6). Non-nginx proxies ignore the header.
 	writer.Header().Set("X-Accel-Buffering", "no")
-}
-
-func chatModelRequirements() modelcatalog.Requirements {
-	return modelcatalog.Requirements{Kind: modelcatalog.KindChat}
 }

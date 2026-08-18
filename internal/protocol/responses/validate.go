@@ -2,8 +2,10 @@ package responses
 
 import (
 	"encoding/json"
+	"errors"
 
 	"nvidia-router/internal/apierror"
+	"nvidia-router/internal/compat"
 )
 
 // Four Responses statuses share the same public rejection code so clients see a
@@ -20,6 +22,21 @@ func invalidResponses(code, param, message string) error {
 	return &apierror.Error{
 		Status: 400, Type: "invalid_request_error", Code: code, Message: message, Param: parameter,
 	}
+}
+
+func compatRequestError(err error) error {
+	var validation *compat.ValidationError
+	if errors.As(err, &validation) {
+		return invalidResponses(validation.Code, validation.Param, validation.Message)
+	}
+	return invalidResponses("invalid_parameter", "", err.Error())
+}
+
+func reasoningResponseModelError(err error) error {
+	if errors.Is(err, compat.ErrReasoningUnsupported) {
+		return invalidResponses("model_capability_unsupported", "reasoning", "The selected model does not support the requested reasoning mode.")
+	}
+	return compatRequestError(err)
 }
 
 type topLevelCheck struct {

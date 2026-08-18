@@ -21,16 +21,75 @@ func normalizeSelection(selection Selection) (Selection, error) {
 	if !validKind(selection.Kind) {
 		return Selection{}, fmt.Errorf("unsupported model kind %q", selection.Kind)
 	}
-	if selection.ReasoningWireFormat == "" {
-		selection.ReasoningWireFormat = "none"
-	}
-	if selection.SupportsReasoning != (selection.ReasoningWireFormat == "openai") {
-		return Selection{}, errors.New("reasoning capability and wire format disagree")
+	if err := normalizeReasoningProfile(&selection); err != nil {
+		return Selection{}, err
 	}
 	if selection.Enabled && requiresVerification(selection.Kind) && selection.CapabilityVerifiedAt == nil {
 		return Selection{}, ErrCapabilityUnverified
 	}
 	return selection, nil
+}
+
+func normalizeReasoningProfile(selection *Selection) error {
+	if selection.ReasoningWireFormat == "" {
+		if selection.SupportsReasoning {
+			selection.ReasoningWireFormat = "openai"
+		} else {
+			selection.ReasoningWireFormat = "none"
+		}
+	}
+	if selection.ReasoningWireFormat == "chain_of_thought" {
+		selection.ReasoningWireFormat = "thinking"
+	}
+	switch selection.ReasoningWireFormat {
+	case "none":
+		if selection.SupportsReasoning {
+			return errors.New("reasoning capability and wire format disagree")
+		}
+	case "openai", "thinking":
+		if !selection.SupportsReasoning {
+			return errors.New("reasoning wire format requires reasoning support")
+		}
+	default:
+		return fmt.Errorf("unsupported reasoning wire format %q", selection.ReasoningWireFormat)
+	}
+	if selection.ReasoningMinBudget < 0 || selection.ReasoningMaxBudget < 0 {
+		return errors.New("reasoning budgets must be non-negative")
+	}
+	if selection.ReasoningMaxBudget == 0 {
+		selection.ReasoningMaxBudget = 128000
+	}
+	if selection.ReasoningMinBudget > selection.ReasoningMaxBudget {
+		return errors.New("reasoning minimum budget exceeds maximum budget")
+	}
+	hasProfile := len(selection.ReasoningLevels) > 0 || selection.ReasoningMinBudget > 0 || selection.ReasoningMaxBudget != 128000 || selection.ReasoningZeroAllowed || selection.ReasoningDynamicAllowed
+	if selection.SupportsReasoning && !hasProfile {
+		selection.ReasoningLevels = defaultReasoningLevels()
+		selection.ReasoningZeroAllowed = true
+		selection.ReasoningDynamicAllowed = true
+	}
+	if !selection.SupportsReasoning && len(selection.ReasoningLevels) == 0 {
+		selection.ReasoningLevels = []string{"none"}
+	}
+	for _, level := range selection.ReasoningLevels {
+		if !validReasoningLevel(level) {
+			return fmt.Errorf("unsupported reasoning level %q", level)
+		}
+	}
+	return nil
+}
+
+func defaultReasoningLevels() []string {
+	return []string{"none", "auto", "minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
+func validReasoningLevel(level string) bool {
+	switch level {
+	case "none", "auto", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateRequirements(model Model, requirements Requirements) error {

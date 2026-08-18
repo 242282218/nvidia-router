@@ -2,10 +2,12 @@ package responses
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"nvidia-router/internal/compat"
 	"nvidia-router/internal/modelcatalog"
 )
 
@@ -21,6 +23,11 @@ type Request struct {
 	messages      []chatMessage
 	chatFields    map[string]json.RawMessage
 	config        ResponseConfig
+	requirements  modelcatalog.Requirements
+	tools         []compat.ToolDefinition
+	toolChoice    compat.ToolChoice
+	toolChoiceSet bool
+	reasoning     compat.ReasoningSpec
 }
 
 // Parse validates and normalizes a Responses request before model resolution.
@@ -48,7 +55,7 @@ func Parse(body []byte) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	messages, _, err := convertInput(fields)
+	messages, inputReq, err := convertInput(fields)
 	if err != nil {
 		return Request{}, err
 	}
@@ -78,8 +85,23 @@ func Parse(body []byte) (Request, error) {
 	if err := mapParallelToolCalls(fields, chat, len(toolNames) > 0); err != nil {
 		return Request{}, err
 	}
-	if err := mapReasoning(fields, modelcatalog.Model{}, chat); err != nil {
+	if err := mapReasoning(fields, chat); err != nil {
 		return Request{}, err
+	}
+	normalizedTools, err := compat.NormalizeTools(fields["tools"], compat.ToolFormatResponses, "tools")
+	if err != nil {
+		return Request{}, compatRequestError(err)
+	}
+	normalizedChoice, err := compat.NormalizeToolChoice(fields["tool_choice"], toolNames, "tool_choice")
+	if err != nil {
+		return Request{}, compatRequestError(err)
+	}
+	reasoning, err := compat.ParseReasoning(fields)
+	if err != nil {
+		if errors.Is(err, compat.ErrAmbiguousReasoning) {
+			return Request{}, invalidResponses("invalid_parameter", "reasoning", "Reasoning aliases must describe the same level and budget.")
+		}
+		return Request{}, compatRequestError(err)
 	}
 	if err := mapMaxOutputTokens(fields, chat); err != nil {
 		return Request{}, err
@@ -104,12 +126,22 @@ func Parse(body []byte) (Request, error) {
 		messages:      messages,
 		chatFields:    chat,
 		config:        config,
+		requirements: modelcatalog.Requirements{
+			Kind:      modelcatalog.KindChat,
+			Vision:    inputReq.vision,
+			Tools:     inputReq.tools || len(normalizedTools) > 0 || normalizedChoice.Mode == "function" || normalizedChoice.Mode == "required",
+			Reasoning: reasoning.Requested,
+		},
+		tools: normalizedTools, toolChoice: normalizedChoice,
+		toolChoiceSet: len(fields["tool_choice"]) > 0 && !isJSONNull(fields["tool_choice"]), reasoning: reasoning,
 	}, nil
 }
 
 func (r Request) PublicModelID() string { return r.publicModelID }
 
 func (r Request) Stream() bool { return r.stream }
+
+func (r Request) Requirements() modelcatalog.Requirements { return r.requirements }
 
 func (r Request) ResponseConfig() ResponseConfig { return r.config }
 
@@ -125,6 +157,29 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	chat := make(map[string]json.RawMessage, len(r.chatFields)+2)
 	for name, raw := range r.chatFields {
 		chat[name] = cloneRaw(raw)
+	}
+	if len(r.tools) > 0 {
+		encodedTools, err := compat.MarshalTools(r.tools, compat.ToolFormatChat)
+		if err != nil {
+			return nil, fmt.Errorf("marshal normalized Responses tools: %w", err)
+		}
+		chat["tools"] = encodedTools
+	}
+	if r.toolChoiceSet {
+		encodedChoice, err := compat.MarshalToolChoice(r.toolChoice)
+		if err != nil {
+			return nil, fmt.Errorf("marshal normalized Responses tool choice: %w", err)
+		}
+		chat["tool_choice"] = encodedChoice
+	}
+	if r.reasoning.Requested && model.SupportsReasoning {
+		decision, err := compat.ResolveReasoning(r.reasoning, model.ReasoningProfile())
+		if err != nil {
+			return nil, reasoningResponseModelError(err)
+		}
+		if err := compat.ApplyReasoning(chat, decision, model.ReasoningProfile()); err != nil {
+			return nil, reasoningResponseModelError(err)
+		}
 	}
 	encodedModel, _ := json.Marshal(model.UpstreamID)
 	chat["model"] = encodedModel
@@ -305,10 +360,11 @@ func convertFunctionCallItem(parsed responsesInputItem, index int) (chatMessage,
 	if parsed.CallID == "" || parsed.Name == "" {
 		return chatMessage{}, false, false, invalidResponses("invalid_parameter", param, "Function call entries require a name and call_id.")
 	}
-	if parsed.Arguments == "" {
-		parsed.Arguments = "{}"
+	arguments, err := compat.NormalizeArguments(parsed.Arguments, param+".arguments")
+	if err != nil {
+		return chatMessage{}, false, false, compatRequestError(err)
 	}
-	call := chatToolCall{Index: 0, ID: parsed.CallID, Type: "function", Function: chatFunction{Name: parsed.Name, Arguments: parsed.Arguments}}
+	call := chatToolCall{Index: 0, ID: parsed.CallID, Type: "function", Function: chatFunction{Name: parsed.Name, Arguments: arguments}}
 	return chatMessage{Role: "assistant", RolePresent: true, ToolCalls: []chatToolCall{call}}, true, false, nil
 }
 
@@ -328,30 +384,11 @@ func normaliseFunctionOutput(raw json.RawMessage, param string) (string, error) 
 	if len(raw) == 0 {
 		return "", invalidResponses("missing_required_parameter", param, "Function call output entries require output.")
 	}
-	var asString string
-	if json.Unmarshal(raw, &asString) == nil {
-		return asString, nil
+	text, err := compat.FlattenToolOutput(raw, param)
+	if err != nil {
+		return "", compatRequestError(err)
 	}
-	var parts []map[string]json.RawMessage
-	if json.Unmarshal(raw, &parts) == nil {
-		var text strings.Builder
-		for index, part := range parts {
-			var kind string
-			if rawType, ok := part["type"]; ok {
-				_ = json.Unmarshal(rawType, &kind)
-			}
-			if kind != "input_text" && kind != "text" && kind != "output_text" {
-				return "", unsupportedResponses(fmt.Sprintf("%s[%d]", param, index), "Only text function outputs are supported.")
-			}
-			var value string
-			if rawText, ok := part["text"]; !ok || json.Unmarshal(rawText, &value) != nil {
-				return "", invalidResponses("invalid_parameter", fmt.Sprintf("%s[%d].text", param, index), "Function output text parts require a string text field.")
-			}
-			text.WriteString(value)
-		}
-		return text.String(), nil
-	}
-	return "", invalidResponses("invalid_parameter", param, "Function call output must be a string or text parts.")
+	return text, nil
 }
 
 // mapTools forwards the function tool array re-encoded as Chat function tools.
@@ -610,27 +647,27 @@ func mapParallelToolCalls(fields map[string]json.RawMessage, chat map[string]jso
 	return nil
 }
 
-func mapReasoning(fields map[string]json.RawMessage, _ modelcatalog.Model, chat map[string]json.RawMessage) error {
-	if native, ok := fields["reasoning_effort"]; ok {
-		if !isJSONNull(native) {
-			chat["reasoning_effort"] = native
-		}
+func mapReasoning(fields map[string]json.RawMessage, chat map[string]json.RawMessage) error {
+	if native, ok := fields["reasoning_effort"]; ok && !isJSONNull(native) {
+		chat["reasoning_effort"] = native
 	}
-	if raw, ok := fields["reasoning"]; ok {
-		if !isJSONNull(raw) {
-			var reasoning struct {
-				Effort json.RawMessage `json:"effort"`
-			}
-			if err := json.Unmarshal(raw, &reasoning); err != nil || len(reasoning.Effort) == 0 {
-				return invalidResponses("invalid_parameter", "reasoning", "The reasoning parameter must include an effort.")
-			}
+	if raw, ok := fields["reasoning"]; ok && !isJSONNull(raw) {
+		var reasoning struct {
+			Effort json.RawMessage `json:"effort"`
+		}
+		if json.Unmarshal(raw, &reasoning) == nil && len(reasoning.Effort) > 0 {
 			chat["reasoning_effort"] = reasoning.Effort
+		} else {
+			var value string
+			if json.Unmarshal(raw, &value) == nil {
+				chat["reasoning_effort"] = raw
+			} else {
+				chat["reasoning"] = raw
+			}
 		}
 	}
-	if raw, ok := fields["thinking"]; ok {
-		if !isJSONNull(raw) {
-			chat["thinking"] = raw
-		}
+	if raw, ok := fields["thinking"]; ok && !isJSONNull(raw) {
+		chat["thinking"] = raw
 	}
 	return nil
 }
