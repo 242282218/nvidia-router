@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 
+import UiButton from '../../shared/ui/UiButton.vue'
 import type { MonitoringFilter } from './types'
 
 // Draft filter inputs live here so switching range or reloading never wipes
@@ -79,46 +80,62 @@ function isNonEmptyNumeric(value: string | number): boolean {
 <template>
   <form
     data-testid="monitoring-filters"
-    class="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4"
+    class="card grid gap-x-4 gap-y-3 p-5 sm:grid-cols-2 lg:grid-cols-4"
     @submit.prevent="submit"
   >
-    <label class="sm:col-span-2">
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">关键词</span>
+    <div class="sm:col-span-2">
+      <label
+        class="field-label text-xs"
+        for="monitoring-search-input"
+      >关键词</label>
       <input
+        id="monitoring-search-input"
         v-model="fields.search"
         data-testid="monitoring-search"
-        class="input-field mt-1"
+        class="input-field"
         type="search"
         maxlength="128"
         placeholder="请求 ID、模型、接口、错误码"
       >
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">模型</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-model-input"
+      >模型</label>
       <input
+        id="monitoring-model-input"
         v-model="fields.model_id"
-        class="input-field mt-1"
+        class="input-field"
         type="text"
         maxlength="128"
         placeholder="全部模型"
       >
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">接口</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-endpoint-input"
+      >接口</label>
       <input
+        id="monitoring-endpoint-input"
         v-model="fields.endpoint"
-        class="input-field mt-1"
+        class="input-field"
         type="text"
         maxlength="128"
         placeholder="全部接口"
       >
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">结果状态</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-status-select"
+      >结果状态</label>
       <select
+        id="monitoring-status-select"
         v-model="fields.outcome"
         data-testid="monitoring-status"
-        class="input-field mt-1"
+        class="input-field"
       >
         <option value="">
           全部状态
@@ -130,46 +147,59 @@ function isNonEmptyNumeric(value: string | number): boolean {
           失败
         </option>
       </select>
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">HTTP 状态码</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-status-code-input"
+      >HTTP 状态码</label>
       <input
+        id="monitoring-status-code-input"
         v-model="fields.status"
         data-testid="monitoring-status-code"
-        class="input-field mt-1"
+        class="input-field"
         type="number"
         min="100"
         max="599"
         placeholder="全部"
       >
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">Access Key ID</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-access-key-input"
+      >Access Key ID</label>
       <input
+        id="monitoring-access-key-input"
         v-model="fields.access_key_id"
-        class="input-field mt-1"
+        class="input-field"
         type="number"
         min="1"
         placeholder="全部"
       >
-    </label>
-    <label>
-      <span class="text-xs font-medium text-[var(--color-text-secondary)]">NVIDIA Key ID</span>
+    </div>
+    <div>
+      <label
+        class="field-label text-xs"
+        for="monitoring-nvidia-key-input"
+      >NVIDIA Key ID</label>
       <input
+        id="monitoring-nvidia-key-input"
         v-model="fields.nvidia_key_id"
-        class="input-field mt-1"
+        class="input-field"
         type="number"
         min="1"
         placeholder="全部"
       >
-    </label>
+    </div>
     <div class="flex items-end justify-end sm:col-span-2 lg:col-span-4">
-      <button
-        class="btn-primary"
+      <UiButton
+        variant="primary"
         type="submit"
+        icon="filter"
       >
         应用筛选
-      </button>
+      </UiButton>
     </div>
     <p
       v-if="error"

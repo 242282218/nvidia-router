@@ -1,10 +1,12 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatDate } from '../../shared/format'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiSelect from '../../shared/ui/UiSelect.vue'
+import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import { auditApi } from './api'
 import { AUDIT_ACTIONS, type AuditEntry } from './types'
 
@@ -99,42 +101,44 @@ function parseDetail(raw: string | undefined): string {
 </script>
 
 <template>
-  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+  <div :class="embedded ? '' : 'page-container'">
     <div :class="embedded ? '' : 'content-wrapper'">
-      <PageHeader
+      <UiPageHeader
         v-if="!embedded"
-        eyebrow="安全管理"
+        eyebrow="系统观测"
         title="审计日志"
         subtitle="记录所有管理操作与认证事件，用于事后追溯。"
       >
         <template #actions>
-          <button
-            class="btn-ghost"
-            type="button"
-            :disabled="loading"
+          <UiButton
+            variant="ghost"
+            :loading="loading"
+            loading-label="刷新中…"
+            icon="refresh"
             @click="load"
           >
-            {{ loading ? '刷新中…' : '刷新' }}
-          </button>
+            刷新
+          </UiButton>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
       <!-- Embedded toolbar -->
       <div
         v-if="embedded"
-        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] pb-3"
       >
         <div class="flex items-center gap-2">
           <label
             class="text-xs text-[var(--color-text-muted)]"
             for="audit-action-filter-embedded"
           >
-            筛选操作:
+            筛选操作
           </label>
-          <select
+          <UiSelect
             id="audit-action-filter-embedded"
             v-model="selectedAction"
-            class="input-field w-auto py-1 text-xs"
+            class="w-44"
+            aria-label="筛选操作类型"
             @change="applyFilter"
           >
             <option value="">
@@ -147,16 +151,18 @@ function parseDetail(raw: string | undefined): string {
             >
               {{ action }}
             </option>
-          </select>
+          </UiSelect>
         </div>
-        <button
-          class="btn-ghost px-2.5 py-1 text-xs"
-          type="button"
-          :disabled="loading"
+        <UiButton
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          loading-label="刷新中…"
+          icon="refresh"
           @click="load"
         >
-          {{ loading ? '刷新中…' : '刷新' }}
-        </button>
+          刷新
+        </UiButton>
       </div>
 
       <div
@@ -170,10 +176,10 @@ function parseDetail(raw: string | undefined): string {
           >
             操作类型
           </label>
-          <select
+          <UiSelect
             id="audit-action-filter"
             v-model="selectedAction"
-            class="input-field w-auto"
+            class="w-52"
             data-testid="audit-action-filter"
             @change="applyFilter"
           >
@@ -187,23 +193,24 @@ function parseDetail(raw: string | undefined): string {
             >
               {{ action }}
             </option>
-          </select>
+          </UiSelect>
         </div>
       </div>
 
       <div
         v-if="errorMessage"
-        class="card mt-4 flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-[var(--color-danger)]"
+        class="card mt-4 flex flex-wrap items-center justify-between gap-3 p-5 text-sm text-[var(--color-danger)]"
         role="alert"
       >
         <span>{{ errorMessage }}</span>
-        <button
-          class="btn-secondary"
-          type="button"
+        <UiButton
+          variant="secondary"
+          size="sm"
+          icon="refresh"
           @click="load"
         >
           重新加载
-        </button>
+        </UiButton>
       </div>
 
       <div
@@ -211,9 +218,17 @@ function parseDetail(raw: string | undefined): string {
         class="card mt-4 overflow-hidden"
         :aria-busy="loading"
       >
+        <UiSkeleton
+          v-if="loading && items.length === 0"
+          variant="table"
+          :lines="6"
+        />
         <!-- min-w keeps the table from squeezing on narrow screens; the wrapper
              scrolls horizontally instead (mobile-friendly overflow pattern). -->
-        <div class="overflow-x-auto">
+        <div
+          v-else
+          class="overflow-x-auto"
+        >
           <table class="data-table min-w-[640px]">
             <caption class="sr-only">
               审计日志，当前第 {{ page }} 页
@@ -253,17 +268,7 @@ function parseDetail(raw: string | undefined): string {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="loading && items.length === 0">
-                <td
-                  class="data-table-td"
-                  colspan="5"
-                >
-                  <div class="flex justify-center py-4">
-                    <LoadingSpinner label="审计日志加载中…" />
-                  </div>
-                </td>
-              </tr>
-              <tr v-else-if="items.length === 0">
+              <tr v-if="items.length === 0">
                 <td
                   class="data-table-td text-center text-[var(--color-text-muted)]"
                   colspan="5"
@@ -280,13 +285,13 @@ function parseDetail(raw: string | undefined): string {
                 v-for="entry in items"
                 v-else
                 :key="entry.id"
-                class="transition-colors hover:bg-[var(--color-hover)]"
+                class="data-table-row"
               >
-                <td class="data-table-td font-mono text-xs">
+                <td class="data-table-td font-mono-data text-xs">
                   {{ formatDate(entry.created_at, { seconds: true }) }}
                 </td>
                 <td class="data-table-td">
-                  <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 font-mono text-xs font-medium text-[var(--color-accent-text)]">
+                  <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 font-mono-data text-xs font-medium text-[var(--color-accent-text)]">
                     {{ entry.action }}
                   </span>
                 </td>
@@ -298,13 +303,13 @@ function parseDetail(raw: string | undefined): string {
                     {{ entry.target_type || '—' }}
                   </template>
                 </td>
-                <td class="data-table-td font-mono text-xs">
+                <td class="data-table-td font-mono-data text-xs">
                   {{ entry.client_ip || '—' }}
                 </td>
                 <td class="data-table-td max-w-[280px]">
                   <span
                     :title="parseDetail(entry.detail) || undefined"
-                    class="block truncate font-mono text-xs text-[var(--color-text-subtle)]"
+                    class="block truncate font-mono-data text-xs text-[var(--color-text-subtle)]"
                   >{{ parseDetail(entry.detail) || '—' }}</span>
                 </td>
               </tr>
@@ -321,38 +326,39 @@ function parseDetail(raw: string | undefined): string {
           <span
             v-if="loading && items.length > 0"
             class="mr-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
+            role="status"
           >
-            <LoadingSpinner
-              size="sm"
-              label="加载中…"
-            />
+            <span
+              class="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-info)]"
+              aria-hidden="true"
+            />加载中…
           </span>
-          <button
-            class="btn-ghost"
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
             :disabled="page <= 1 || loading"
             aria-label="上一页"
             data-testid="audit-prev"
             @click="prevPage"
           >
             上一页
-          </button>
+          </UiButton>
           <span
-            class="font-mono text-xs tabular-nums"
+            class="font-mono-data text-xs"
             aria-live="polite"
           >
             第 {{ page }} 页
           </span>
-          <button
-            class="btn-ghost"
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
             :disabled="!hasMore || loading"
             aria-label="下一页"
             data-testid="audit-next"
             @click="nextPage"
           >
             下一页
-          </button>
+          </UiButton>
         </div>
       </div>
     </div>

@@ -95,7 +95,7 @@ describe('NvidiaKeysView', () => {
     request.resolve({ data: [makeKey()] })
     await flushPromises()
 
-    expect(state.keys).toEqual([])
+    expect(state.keys).toEqual(null)
     expect(state.loading).toBe(true)
   })
 
@@ -234,13 +234,12 @@ describe('NvidiaKeysView', () => {
     const wrapper = mount(NvidiaKeysView)
     await flushPromises()
 
-    // First click arms the inline two-step confirm; removal is not yet issued.
+    // First click opens the confirm dialog; removal is not yet issued.
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
-    expect(wrapper.get('[data-testid="key-card-delete"]').text()).toContain('确认删除')
     expect(nvidiaKeysApi.remove).not.toHaveBeenCalled()
 
-    // Second click performs the removal.
-    await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
+    // Confirming in the dialog performs the removal.
+    await wrapper.get('[data-testid="confirm-delete-key"]').trigger('click')
     await flushPromises()
     expect(nvidiaKeysApi.remove).toHaveBeenCalledWith(7)
   })
@@ -260,7 +259,7 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="key-card-test"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
-    await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-delete-key"]').trigger('click')
     await flushPromises()
 
     expect(nvidiaKeysApi.setEnabled).toHaveBeenCalledWith(8, false)

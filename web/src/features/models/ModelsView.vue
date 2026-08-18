@@ -1,61 +1,45 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import StatePanel from '../../shared/components/StatePanel.vue'
 import { toastError, toastSuccess } from '../../shared/toast'
+import { useAsyncData } from '../../shared/useAsyncData'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiCard from '../../shared/ui/UiCard.vue'
+import UiConfirmDialog from '../../shared/ui/UiConfirmDialog.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
 import { modelsApi } from './api'
 import ModelCards from './ModelCards.vue'
 import ModelTable from './ModelTable.vue'
 import type { Candidate, Model, SaveSelection } from './types'
 
-const models = ref<Model[]>([])
+const { data: models, loading, error: loadError, refresh: loadModels, isDisposed } = useAsyncData<Model[]>(
+  async () => {
+    const response: unknown = await modelsApi.list()
+    if (!isDataArrayResponse(response, isModel)) {
+      throw new TypeError('Invalid model list response.')
+    }
+    return response.data
+  },
+  { errorMessage: '模型列表加载失败。' },
+)
+
+const modelList = computed<Model[]>(() => models.value ?? [])
+
 const candidates = ref<Candidate[]>([])
 const selectedCandidates = ref<Record<string, boolean>>({})
-const loading = ref(false)
-const loadError = ref('')
 const discovering = ref(false)
 const saving = ref(false)
 const busyId = ref<number | null>(null)
-const confirmingId = ref<number | null>(null)
+const pendingDelete = ref<Model | null>(null)
+const deleting = ref(false)
 const errorMessage = ref('')
 const candidateMessage = ref('')
-let loadSequence = 0
-let disposed = false
 
 onMounted(() => {
   void loadModels()
 })
-
-onBeforeUnmount(() => {
-  disposed = true
-  loadSequence += 1
-})
-
-async function loadModels(): Promise<void> {
-  if (disposed) return
-  const sequence = ++loadSequence
-  loading.value = true
-  loadError.value = ''
-  try {
-    const response: unknown = await modelsApi.list()
-    if (disposed || sequence !== loadSequence) return
-    if (!isDataArrayResponse(response, isModel)) {
-      throw new TypeError('Invalid model list response.')
-    }
-    models.value = response.data
-    errorMessage.value = ''
-  } catch (error) {
-    if (disposed || sequence !== loadSequence) return
-    // A failed load must not read as "no models configured": the empty table
-    // would invite a pointless re-discovery. The error panel (not the
-    // action-error alert) carries the message.
-    loadError.value = error instanceof ApiError ? error.message : '模型列表加载失败。'
-  } finally {
-    if (!disposed && sequence === loadSequence) loading.value = false
-  }
-}
 
 function isModel(value: unknown): value is Model {
   return isRecord(value)
@@ -95,19 +79,19 @@ async function discover(): Promise<void> {
   errorMessage.value = ''
   try {
     const response: unknown = await modelsApi.candidates()
-    if (disposed) return
+    if (isDisposed()) return
     if (!isDataArrayResponse(response, isCandidate)) {
       throw new TypeError('Invalid model candidates response.')
     }
     candidates.value = response.data
-    const configured = new Set(models.value.map((model) => model.upstream_id))
+    const configured = new Set(modelList.value.map((model) => model.upstream_id))
     selectedCandidates.value = Object.fromEntries(candidates.value.map((candidate) => [candidate.upstream_id, configured.has(candidate.upstream_id)]))
     candidateMessage.value = `发现 ${candidates.value.length} 个候选模型。`
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     errorMessage.value = error instanceof ApiError ? error.message : '候选模型发现失败。'
   } finally {
-    if (!disposed) discovering.value = false
+    if (!isDisposed()) discovering.value = false
   }
 }
 
@@ -120,7 +104,7 @@ function selectionFor(candidate: Candidate): SaveSelection {
 }
 
 async function saveCandidates(): Promise<void> {
-  const configured = new Set(models.value.map((model) => model.upstream_id))
+  const configured = new Set(modelList.value.map((model) => model.upstream_id))
   const selected = candidates.value
     .filter((candidate) => selectedCandidates.value[candidate.upstream_id] && !configured.has(candidate.upstream_id))
     .map(selectionFor)
@@ -128,20 +112,20 @@ async function saveCandidates(): Promise<void> {
   errorMessage.value = ''
   try {
     await modelsApi.save(selected)
-    if (disposed) return
+    if (isDisposed()) return
     await loadModels()
-    if (disposed) return
+    if (isDisposed()) return
     // Re-sync the candidate checkboxes: models that were just saved are now
     // configured, so re-submitting would filter them out anyway; reflect that
     // state instead of leaving stale "new" selections that invite a no-op save.
-    const nextConfigured = new Set(models.value.map((model) => model.upstream_id))
+    const nextConfigured = new Set(modelList.value.map((model) => model.upstream_id))
     selectedCandidates.value = Object.fromEntries(candidates.value.map((candidate) => [candidate.upstream_id, nextConfigured.has(candidate.upstream_id)]))
     candidateMessage.value = `已保存 ${selected.length} 个模型。`
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     errorMessage.value = error instanceof ApiError ? error.message : '保存模型白名单失败。'
   } finally {
-    if (!disposed) saving.value = false
+    if (!isDisposed()) saving.value = false
   }
 }
 
@@ -150,18 +134,18 @@ async function toggleModel(model: Model): Promise<void> {
   errorMessage.value = ''
   try {
     const updated: unknown = await modelsApi.patch(model.id, { enabled: !model.enabled })
-    if (disposed) return
+    if (isDisposed()) return
     if (!isModel(updated)) {
       throw new TypeError('Invalid model patch response.')
     }
     replaceModel(updated)
     toastSuccess(`模型「${updated.display_name}」已${updated.enabled ? '启用' : '停用'}。`)
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     errorMessage.value = error instanceof ApiError ? error.message : '更新模型状态失败。'
     toastError(errorMessage.value)
   } finally {
-    if (!disposed) busyId.value = null
+    if (!isDisposed()) busyId.value = null
   }
 }
 
@@ -170,21 +154,21 @@ async function unblockModel(keyId: number, model: Model): Promise<void> {
   errorMessage.value = ''
   try {
     await modelsApi.unblock(keyId, model.id)
-    if (disposed) return
+    if (isDisposed()) return
     await loadModels()
     toastSuccess(`模型「${model.display_name}」已解除阻断。`)
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     errorMessage.value = error instanceof ApiError ? error.message : '模型 block 恢复失败。'
     toastError(errorMessage.value)
   } finally {
-    if (!disposed) busyId.value = null
+    if (!isDisposed()) busyId.value = null
   }
 }
 
 function replaceModel(updated: Model): void {
-  const index = models.value.findIndex((model) => model.id === updated.id)
-  if (index >= 0) models.value[index] = updated
+  const index = modelList.value.findIndex((model) => model.id === updated.id)
+  if (index >= 0 && models.value) models.value[index] = updated
 }
 
 async function savePricing(model: Model, inputUsd: number, outputUsd: number): Promise<void> {
@@ -195,114 +179,93 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
       input_usd_per_mtok: inputUsd,
       output_usd_per_mtok: outputUsd,
     })
-    if (disposed) return
+    if (isDisposed()) return
     if (!isModel(updated)) {
       throw new TypeError('Invalid model patch response.')
     }
     replaceModel(updated)
     toastSuccess(`模型「${updated.display_name}」单价已更新。`)
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     errorMessage.value = error instanceof ApiError ? error.message : '保存模型单价失败。'
     toastError(errorMessage.value)
   } finally {
-    if (!disposed) busyId.value = null
+    if (!isDisposed()) busyId.value = null
   }
 }
 
-async function deleteModel(model: Model): Promise<void> {
-  if (busyId.value === model.id) return
-  if (confirmingId.value === model.id) {
-    confirmingId.value = null
-    busyId.value = model.id
-    try {
-      await modelsApi.delete(model.id)
-      if (disposed) return
+async function confirmDelete(): Promise<void> {
+  const model = pendingDelete.value
+  if (!model || deleting.value) return
+  deleting.value = true
+  busyId.value = model.id
+  try {
+    await modelsApi.delete(model.id)
+    if (isDisposed()) return
+    pendingDelete.value = null
+    if (models.value) {
       models.value = models.value.filter((item) => item.id !== model.id)
-      toastSuccess(`模型「${model.display_name}」已从白名单中删除。`)
-    } catch (error) {
-      if (disposed) return
-      errorMessage.value = error instanceof ApiError ? error.message : '删除模型失败。'
-      toastError(errorMessage.value)
-    } finally {
-      if (!disposed) busyId.value = null
     }
-    return
+    toastSuccess(`模型「${model.display_name}」已从白名单中删除。`)
+  } catch (error) {
+    if (isDisposed()) return
+    errorMessage.value = error instanceof ApiError ? error.message : '删除模型失败。'
+    toastError(errorMessage.value)
+  } finally {
+    if (!isDisposed()) {
+      busyId.value = null
+      deleting.value = false
+    }
   }
-  confirmingId.value = model.id
-  globalThis.setTimeout(() => {
-    if (confirmingId.value === model.id) confirmingId.value = null
-  }, 3000)
 }
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
+  <div class="page-container">
     <div class="content-wrapper">
-      <PageHeader
-        eyebrow="运维管理"
+      <UiPageHeader
+        eyebrow="资源接入"
         title="模型白名单"
         subtitle="管理模型类型、能力标签和启用状态。"
       >
         <template #actions>
-          <button
-            class="btn-secondary"
+          <UiButton
             data-testid="discover-models"
-            type="button"
-            :disabled="discovering"
+            variant="secondary"
+            icon="search"
+            :loading="discovering"
+            loading-label="发现中…"
             @click="discover"
           >
-            <span class="flex items-center gap-2">
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                />
-              </svg>
-              {{ discovering ? '发现中…' : '发现候选模型' }}
-            </span>
-          </button>
+            发现候选模型
+          </UiButton>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
       <!-- Candidates section -->
       <Transition name="slide">
-        <section
+        <UiCard
           v-if="candidates.length"
-          class="card p-5 mb-5 animate-slide-up"
+          class="mb-5"
+          title="候选模型"
+          subtitle="从首个可用 NVIDIA Key 获取，勾选后保存白名单。"
         >
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 class="text-sm font-medium text-[var(--color-text)]">
-                候选模型
-              </h2>
-              <p class="mt-1 text-sm text-[var(--color-text-muted)]">
-                从首个可用 NVIDIA Key 获取，勾选后保存白名单。
-              </p>
-            </div>
-            <button
-              class="btn-primary"
+          <template #actions>
+            <UiButton
               data-testid="save-candidates"
-              type="button"
-              :disabled="saving"
+              variant="primary"
+              :loading="saving"
+              loading-label="保存中…"
               @click="saveCandidates"
             >
-              {{ saving ? '保存中…' : '保存选择' }}
-            </button>
-          </div>
-          <div class="mt-4 grid gap-2 sm:grid-cols-2">
+              保存选择
+            </UiButton>
+          </template>
+          <div class="grid gap-2 sm:grid-cols-2">
             <label
               v-for="candidate in candidates"
               :key="candidate.upstream_id"
-              class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm hover:bg-[color-mix(in_srgb,var(--color-border)_30%,transparent)] transition-colors cursor-pointer"
+              class="flex cursor-pointer items-start gap-3 rounded-[var(--radius-control)] border border-[var(--color-border)] p-3 text-sm transition-colors hover:bg-[var(--color-hover)]"
             >
               <input
                 v-model="selectedCandidates[candidate.upstream_id]"
@@ -312,19 +275,19 @@ async function deleteModel(model: Model): Promise<void> {
               >
               <span>
                 <span class="font-medium text-[var(--color-text)]">{{ candidate.display_name }}</span>
-                <span class="ml-2 badge-info">{{ candidate.kind }}</span>
-                <span class="mt-0.5 block font-mono text-xs text-[var(--color-text-muted)]">{{ candidate.upstream_id }}</span>
+                <span class="badge-info ml-2">{{ candidate.kind }}</span>
+                <span class="mt-0.5 block font-mono-data text-xs text-[var(--color-text-muted)]">{{ candidate.upstream_id }}</span>
               </span>
             </label>
           </div>
-        </section>
+        </UiCard>
       </Transition>
 
       <!-- Messages -->
       <Transition name="slide">
         <p
           v-if="candidateMessage"
-          class="mb-4 text-sm badge-success inline-flex px-3 py-1"
+          class="badge-success mb-4 inline-flex px-3 py-1 text-sm"
         >
           {{ candidateMessage }}
         </p>
@@ -341,41 +304,54 @@ async function deleteModel(model: Model): Promise<void> {
 
       <p
         data-testid="mobile-model-hint"
-        class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
+        class="panel-inset mb-4 px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
       >
         移动端可查看和切换模型状态；候选模型的批量选择等高级操作请在桌面端或上方完成。
       </p>
 
       <!-- Model list -->
-      <div class="mt-4">
-        <StatePanel
-          :loading="loading"
-          :error="loadError"
-          loadingLabel="模型列表加载中…"
-          errorTestId="models-load-error"
-          retryTestId="models-retry"
-          @retry="loadModels"
-        >
-          <ModelTable
-            :models="models"
-            :busy-id="busyId"
-            :confirming-id="confirmingId"
-            @toggle="toggleModel"
-            @unblock="unblockModel"
-            @save-pricing="savePricing"
-            @delete="deleteModel"
-          />
-          <ModelCards
-            :models="models"
-            :busy-id="busyId"
-            :confirming-id="confirmingId"
-            @toggle="toggleModel"
-            @unblock="unblockModel"
-            @delete="deleteModel"
-          />
-        </StatePanel>
-      </div>
+      <UiStatePanel
+        :loading="loading"
+        :error="loadError"
+        :empty="modelList.length === 0"
+        loadingLabel="模型列表加载中…"
+        skeleton="table"
+        emptyLabel="白名单暂无模型"
+        emptyHint="点击右上角「发现候选模型」从上游拉取可用模型并勾选保存。"
+        empty-icon="model"
+        errorTestId="models-load-error"
+        retryTestId="models-retry"
+        @retry="loadModels"
+      >
+        <ModelTable
+          :models="modelList"
+          :busy-id="busyId"
+          @toggle="toggleModel"
+          @unblock="unblockModel"
+          @save-pricing="savePricing"
+          @delete="pendingDelete = $event"
+        />
+        <ModelCards
+          :models="modelList"
+          :busy-id="busyId"
+          @toggle="toggleModel"
+          @unblock="unblockModel"
+          @delete="pendingDelete = $event"
+        />
+      </UiStatePanel>
     </div>
+
+    <UiConfirmDialog
+      :open="pendingDelete !== null"
+      title="删除模型"
+      :message="pendingDelete ? `将「${pendingDelete.display_name}」从白名单中删除。删除后客户端无法再按公开 ID 调用该模型。` : ''"
+      confirm-label="删除"
+      :busy="deleting"
+      confirm-test-id="confirm-delete-model"
+      cancel-test-id="cancel-delete-model"
+      @confirm="confirmDelete"
+      @cancel="pendingDelete = null"
+    />
   </div>
 </template>
 

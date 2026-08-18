@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import type { RuntimeSettings } from './types'
 
 interface SettingsFields {
@@ -150,12 +150,12 @@ function fieldError(param: SettingParam): string {
 <template>
   <form
     data-testid="runtime-settings-form"
-    class="card p-5"
+    class="card p-5 sm:p-6"
     novalidate
     @submit.prevent="submit"
   >
     <div>
-      <h2 class="text-sm font-medium text-[var(--color-text)]">
+      <h2 class="type-heading">
         运行设置
       </h2>
       <p class="mt-1 text-sm text-[var(--color-text-muted)]">
@@ -163,13 +163,15 @@ function fieldError(param: SettingParam): string {
       </p>
     </div>
 
-    <div class="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-      <label
+    <div class="mt-5 grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div
         v-for="(rule) in settingRules"
         :key="rule.param"
-        class="block text-sm font-medium text-[var(--color-text-secondary)]"
       >
-        <span>{{
+        <label
+          class="field-label"
+          :for="`setting-${rule.testId}`"
+        >{{
           rule.param === 'queue_capacity' ? '队列容量' :
           rule.param === 'queue_wait_timeout_ms' ? '队列等待（秒）' :
           rule.param === 'connect_timeout_ms' ? '连接超时（秒）' :
@@ -183,11 +185,12 @@ function fieldError(param: SettingParam): string {
           rule.param === 'stream_idle_timeout_ms' ? '流式空闲超时（秒）' :
           rule.param === 'embedding_cache_max_entries' ? '嵌入缓存上限（条）' :
           '单 Key 流式并发上限'
-        }}</span>
+        }}</label>
         <input
+          :id="`setting-${rule.testId}`"
           :value="fields[rule.field]"
           :data-testid="rule.testId"
-          class="input-field mt-1.5"
+          class="input-field"
           :min="rule.min / rule.multiplier"
           :max="rule.max / rule.multiplier"
           :step="rule.integerInput ? 1 : 'any'"
@@ -198,118 +201,86 @@ function fieldError(param: SettingParam): string {
         <span
           v-if="rule.hint"
           :data-testid="`hint-${rule.param}`"
-          class="mt-1 block text-xs text-[var(--color-text-muted)]"
+          class="mt-1.5 block text-xs text-[var(--color-text-muted)]"
         >{{ rule.hint }}</span>
-        <Transition name="fade">
-          <span
-            v-if="fieldError(rule.param)"
-            :data-testid="`error-${rule.param}`"
-            class="mt-1 block text-xs text-[var(--color-danger)]"
-            role="alert"
-          >{{ fieldError(rule.param) }}</span>
-        </Transition>
-      </label>
+        <span
+          v-if="fieldError(rule.param)"
+          :data-testid="`error-${rule.param}`"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldError(rule.param) }}</span>
+      </div>
 
-      <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-        <span>故障转移状态码</span>
+      <div>
+        <label
+          class="field-label"
+          for="setting-failover-status-codes"
+        >故障转移状态码</label>
         <input
+          id="setting-failover-status-codes"
           :value="fields.failover_status_codes"
           data-testid="failover-status-codes"
-          class="input-field mt-1.5"
+          class="input-field font-mono-data"
           type="text"
           placeholder="429,500-599"
           :aria-invalid="Boolean(fieldError('failover_status_codes'))"
           @input="(e: Event) => { fields.failover_status_codes = (e.target as HTMLInputElement).value }"
         >
-        <span class="mt-1 block text-xs text-[var(--color-text-muted)]">使用逗号分隔状态码或范围；留空使用默认故障转移状态码。</span>
-        <Transition name="fade">
-          <span
-            v-if="fieldError('failover_status_codes')"
-            data-testid="error-failover_status_codes"
-            class="mt-1 block text-xs text-[var(--color-danger)]"
-            role="alert"
-          >{{ fieldError('failover_status_codes') }}</span>
-        </Transition>
-      </label>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">使用逗号分隔状态码或范围；留空使用默认故障转移状态码。</span>
+        <span
+          v-if="fieldError('failover_status_codes')"
+          data-testid="error-failover_status_codes"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldError('failover_status_codes') }}</span>
+      </div>
 
-      <label class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm">
+      <label class="panel-inset flex cursor-pointer items-start gap-3 p-3 text-sm">
         <input
           v-model="fields.latency_routing_enabled"
           data-testid="latency-routing-enabled"
-          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)]"
+          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
           type="checkbox"
         >
         <span>
           <span class="font-medium text-[var(--color-text)]">质量感知调度</span>
-          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">按真实请求质量优先、请求延迟辅助选择出口；未充分采样的出口低频探索，关闭则恢复纯轮转。</span>
+          <span class="mt-0.5 block text-xs leading-relaxed text-[var(--color-text-muted)]">按真实请求质量优先、请求延迟辅助选择出口；未充分采样的出口低频探索，关闭则恢复纯轮转。</span>
         </span>
       </label>
 
-      <label class="flex items-start gap-3 rounded-lg border border-[var(--color-border)] p-3 text-sm">
+      <label class="panel-inset flex cursor-pointer items-start gap-3 p-3 text-sm">
         <input
           v-model="fields.embedding_cache_enabled"
           data-testid="embedding-cache-enabled"
-          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)]"
+          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
           type="checkbox"
         >
         <span>
           <span class="font-medium text-[var(--color-text)]">嵌入精确匹配缓存</span>
-          <span class="mt-0.5 block text-xs text-[var(--color-text-muted)]">对完全相同的嵌入输入直接返回缓存向量，跳过上游调用；命中不计入上游用量。</span>
+          <span class="mt-0.5 block text-xs leading-relaxed text-[var(--color-text-muted)]">对完全相同的嵌入输入直接返回缓存向量，跳过上游调用；命中不计入上游用量。</span>
         </span>
       </label>
     </div>
 
-    <Transition name="slide">
-      <p
-        v-if="formError"
-        data-testid="runtime-settings-error"
-        class="mt-3 text-sm text-[var(--color-danger)]"
-        role="alert"
-      >
-        {{ formError }}
-      </p>
-    </Transition>
+    <p
+      v-if="formError"
+      data-testid="runtime-settings-error"
+      class="mt-4 text-sm text-[var(--color-danger)]"
+      role="alert"
+    >
+      {{ formError }}
+    </p>
 
-    <div class="mt-5 flex justify-end">
-      <button
-        class="btn-primary"
+    <div class="mt-6 flex justify-end border-t border-[var(--color-border-subtle)] pt-5">
+      <UiButton
+        variant="primary"
         type="submit"
-        :disabled="saving || !settings"
+        :loading="saving"
+        loading-label="保存中…"
+        :disabled="!settings"
       >
-        <span class="flex items-center gap-2">
-          <LoadingSpinner
-            v-if="saving"
-            :show-label="false"
-            label="保存中"
-            size="sm"
-          />
-          {{ saving ? '保存中…' : '保存设置' }}
-        </span>
-      </button>
+        保存设置
+      </UiButton>
     </div>
   </form>
 </template>
-
-<style scoped>
-.fade-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.fade-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-.slide-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.slide-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>

@@ -16,19 +16,19 @@ from __future__ import annotations
 
 import sys
 
-# Raw values from web/src/styles/theme.css (Minimal Product / Light). Keep in sync.
-CANVAS = "#ffffff"
-SURFACE = "#fafafa"
+# Raw values from web/src/styles/theme.css (Warm Paper 暖白 / Light). Keep in sync.
+CANVAS = "#faf9f7"
+SURFACE = "#ffffff"
 ELEVATED = "#ffffff"
-SUNKEN = "#fafafa"
+SUNKEN = "#f5f2ee"
 
-TEXT = "#09090b"
-TEXT_SECONDARY = "#3f3f46"
-TEXT_MUTED = "#52525b"
-TEXT_SUBTLE = "#71717a"
+TEXT = "#1c1917"
+TEXT_SECONDARY = "#44403c"
+TEXT_MUTED = "#57534e"
+TEXT_SUBTLE = "#78716c"
 
-ACCENT = "#18181b"
-ACCENT_BRIGHT = "#18181b"
+ACCENT = "#1c1917"
+ACCENT_BRIGHT = "#1c1917"
 ACCENT_FOREGROUND = "#ffffff"
 
 SUCCESS = "#146c2e"
@@ -44,16 +44,16 @@ INFO = "#3d5aa0"
 INFO_BACKGROUND = "#eceef6"  # 10% tint on #ffffff
 INFO_FOREGROUND = "#3d5aa0"
 
-FOCUS = "#18181b"
-MUTED_BACKGROUND = "#f4f4f5"
-MUTED_FOREGROUND = "#52525b"
-DISABLED_BACKGROUND = "#f4f4f5"
-DISABLED_FOREGROUND = "#71717a"
+FOCUS = "#1c1917"
+MUTED_BACKGROUND = "#f3f0eb"
+MUTED_FOREGROUND = "#57534e"
+DISABLED_BACKGROUND = "#f3f0eb"
+DISABLED_FOREGROUND = "#78716c"
 
 BRAND = "#76b900"
 BRAND_FOREGROUND = "#081000"
 
-BORDER_STRONG = "#8b8b93"
+BORDER_STRONG = "#8a8378"
 
 # name, foreground, background, required ratio
 PAIRS: list[tuple[str, str, str, float]] = [

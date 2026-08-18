@@ -1,27 +1,39 @@
 :root {
   /* All text/control pairs below are verified in docs/前端对比度配对表.md
-     (computed by scripts/calc_contrast.py). Changing any value requires
+     (computed by scripts/calc_contrast.py). Changing any color value requires
      re-running the script and updating that table first.
-     Theme: Minimal Product (Light) from design-aesthetics knowledge base. */
+     Theme: Warm Paper 2.0 (暖白 · Minimal Product · Light 单模式).
+     暖白底色 + 暖调近黑强调（#1c1917），NVIDIA 绿（#76b900）仅作为品牌 Logo 点缀。 */
   color-scheme: light;
-  --color-canvas: #ffffff;
-  --color-surface: #fafafa;
+
+  /* ── 底色层级：暖纸底 → 纯白卡片浮于其上，形成柔和的纵向层次 ── */
+  --color-canvas: #faf9f7;
+  --color-surface: #ffffff;
   --color-elevated: #ffffff;
-  --color-sunken: #fafafa;
-  --color-hover: #f4f4f5;
-  --color-active: #e4e4e7;
-  --color-border: #e4e4e7;
-  --color-border-strong: #8b8b93;
-  --color-text: #09090b;
-  --color-text-secondary: #3f3f46;
-  --color-text-muted: #52525b;
-  --color-text-subtle: #71717a;
-  --color-accent: #18181b;
-  --color-accent-bright: #18181b;
+  --color-sunken: #f5f2ee;
+  --color-hover: #f3f0eb;
+  --color-active: #eae6df;
+
+  /* ── 描边：装饰性暖色发丝线 / 合规控件边界（subtle 为纯装饰分隔，无对比度义务） ── */
+  --color-border-subtle: #efece7;
+  --color-border: #e8e4dd;
+  --color-border-strong: #8a8378;
+
+  /* ── 文字：暖调墨色阶梯 ── */
+  --color-text: #1c1917;
+  --color-text-secondary: #44403c;
+  --color-text-muted: #57534e;
+  --color-text-subtle: #78716c;
+
+  /* ── 强调：暖调近黑，承担主操作与关键路径 ── */
+  --color-accent: #1c1917;
+  --color-accent-bright: #1c1917;
   --color-accent-background: var(--color-accent);
   --color-accent-background-hover: #000000;
   --color-accent-text: var(--color-accent);
   --color-accent-foreground: #ffffff;
+
+  /* ── 状态色：亮色界面唯一的彩色通道，浅 Tint 底 + 深色状态文本 ── */
   --color-success: #146c2e;
   --color-success-text: var(--color-success);
   --color-success-background: color-mix(in srgb, #146c2e 10%, #ffffff);
@@ -38,27 +50,49 @@
   --color-info-text: var(--color-info);
   --color-info-background: color-mix(in srgb, #3d5aa0 10%, #ffffff);
   --color-info-foreground: #3d5aa0;
-  --color-focus: #18181b;
-  --color-muted-background: #f4f4f5;
-  --color-muted-foreground: #52525b;
-  --color-muted-border: #d4d4d8;
-  --color-disabled-background: #f4f4f5;
-  --color-disabled-foreground: #71717a;
-  --color-disabled-border: #d4d4d8;
+
+  --color-focus: #1c1917;
+  --color-muted-background: #f3f0eb;
+  --color-muted-foreground: #57534e;
+  --color-muted-border: #ddd7ce;
+  --color-disabled-background: #f3f0eb;
+  --color-disabled-foreground: #78716c;
+  --color-disabled-border: #ddd7ce;
+
   /* Brand color (NVIDIA Green) is isolated to logo/brand badges only */
   --color-brand: #76b900;
   --color-brand-foreground: #081000;
-  --radius-control: 6px;
-  --radius-panel: 8px;
-  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.12);
-  --color-overlay: rgba(0, 0, 0, 0.4);
+
+  /* ── 字体刻度：四层语义阶梯，页面标题不再与卡片标题争层级 ──
+     display 仅用于关键指标数字；title 用于页面 h1；heading 用于卡片/区块；
+     body 正文；label 用于眉题、表头、徽章等辅助标注。 */
+  --text-display: 600 1.625rem/1.2 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-title: 600 1.375rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-heading: 600 0.9375rem/1.4 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-label: 500 0.6875rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+
+  /* ── 圆角：控件收敛、面板舒展，弱化工具感 ── */
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-overlay: 16px;
+
+  /* ── 分层阴影系统：质感核心。暖调投影（基于 #1c1917），低透明、多层次 ── */
+  --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.05);
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 2px 8px rgba(28, 25, 23, 0.04);
+  --shadow-md: 0 2px 6px rgba(28, 25, 23, 0.05), 0 12px 32px rgba(28, 25, 23, 0.08);
+  --shadow-overlay: 0 8px 24px rgba(28, 25, 23, 0.10), 0 24px 64px rgba(28, 25, 23, 0.14);
+  --color-overlay: rgba(28, 25, 23, 0.42);
+
+  /* ── 间距刻度（4px 基网） ── */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-  --duration-micro: 120ms;
+
+  /* ── 动效：enter 快出缓入，exit 快进缓出；页面级过渡走 --duration-local ── */
+  --duration-micro: 140ms;
   --duration-local: 240ms;
   --duration-overlay: 300ms;
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
@@ -72,13 +106,13 @@
 
 *, *::before, *::after {
   scrollbar-width: thin;
-  scrollbar-color: rgba(82, 82, 91, 0.28) transparent;
+  scrollbar-color: rgba(87, 83, 78, 0.26) transparent;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(82, 82, 91, 0.28); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(82, 82, 91, 0.45); }
+::-webkit-scrollbar-thumb { background: rgba(87, 83, 78, 0.26); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(87, 83, 78, 0.44); }
 
 html,
 body,
@@ -94,12 +128,18 @@ html {
 body {
   margin: 0;
   overflow-x: hidden;
-  background: var(--color-canvas);
+  /* 暖白氛围：右上角一抹极淡的暖光，落在纸感底色之上 */
+  background:
+    radial-gradient(1100px 520px at 85% -8%, rgba(255, 242, 220, 0.55), transparent 62%),
+    var(--color-canvas);
+  background-attachment: fixed;
   color: var(--color-text);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 15px;
   line-height: 1.55;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button,
@@ -125,13 +165,45 @@ select:focus-visible {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  background: rgba(255, 224, 178, 0.65);
   color: var(--color-text);
 }
 
 .font-mono-data {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 路由级页面过渡：新页轻浮起 + 淡入，旧页快速让位 ── */
+.page-enter-active {
+  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
+}
+.page-leave-active {
+  transition: opacity var(--duration-micro) var(--ease-exit);
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-leave-to {
+  opacity: 0;
+}
+
+/* ── 骨架屏微光：骨架块扫过一道暖色高光，比 spinner 更克制 ── */
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.skeleton {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--color-hover) 25%,
+    var(--color-sunken) 50%,
+    var(--color-hover) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
 }
 
 .sr-only {

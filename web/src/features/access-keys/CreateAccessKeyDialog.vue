@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 
 import { ApiError } from '../../shared/api/client'
-import { useDialog } from '../../shared/useDialog'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiField from '../../shared/ui/UiField.vue'
+import UiIcon from '../../shared/ui/UiIcon.vue'
+import UiModal from '../../shared/ui/UiModal.vue'
 import { accessKeysApi } from './api'
 
 const props = defineProps<{ open: boolean }>()
@@ -16,12 +19,6 @@ const plaintext = ref('')
 const errorMessage = ref('')
 const copyMessage = ref('')
 const submitting = ref(false)
-const panel = ref<globalThis.HTMLElement | null>(null)
-
-// Esc closes, Tab stays trapped in the panel, focus returns to the trigger, and
-// the background scroll is locked while open. `open` is a prop, so wrap it in a
-// computed ref; Esc routes through emit('close') and the parent flips the prop.
-useDialog(computed(() => props.open), panel, () => emit('close'))
 
 watch(() => props.open, (open) => {
   if (!open) clearSensitiveState()
@@ -91,193 +88,96 @@ function clearSensitiveState(): void {
 </script>
 
 <template>
-  <Transition name="modal">
+  <UiModal
+    :open="open"
+    :title="plaintext ? 'Access Key 已创建' : '创建 Access Key'"
+    size="sm"
+    @close="close"
+  >
+    <!-- Created state -->
     <div
-      v-if="open"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="create-access-key-title"
+      v-if="plaintext"
+      class="space-y-4"
     >
-      <section
-        ref="panel"
-        class="modal-panel max-w-lg"
+      <div class="flex items-start gap-2.5 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3">
+        <UiIcon
+          name="warning"
+          :size="16"
+          class="mt-0.5 shrink-0 text-[var(--color-warning)]"
+        />
+        <p class="text-sm text-[var(--color-warning)]">
+          明文仅显示这一次。关闭后无法恢复，请立即复制并安全保存。
+        </p>
+      </div>
+      <div class="panel-inset border border-[var(--color-border)]">
+        <code
+          data-testid="created-access-key"
+          class="block break-all p-4 font-mono-data text-sm text-[var(--color-info)]"
+        >{{ plaintext }}</code>
+      </div>
+      <p
+        v-if="copyMessage"
+        class="text-center text-sm text-[var(--color-text-secondary)]"
       >
-        <!-- Created state -->
-        <template v-if="plaintext">
-          <div class="border-b border-[var(--color-border)] px-6 py-4">
-            <h2
-              id="create-access-key-title"
-              class="text-base font-semibold text-[var(--color-text)]"
-            >
-              Access Key 已创建
-            </h2>
-          </div>
-          <div class="p-6 space-y-4">
-            <div class="rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3">
-              <div class="flex items-start gap-2">
-                <svg
-                  class="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
-                  />
-                </svg>
-                <p class="text-sm text-[var(--color-warning)]">
-                  明文仅显示这一次。关闭后无法恢复，请立即复制并安全保存。
-                </p>
-              </div>
-            </div>
-            <div class="rounded-lg bg-[var(--color-sunken)] border border-[var(--color-border)]">
-              <code
-                data-testid="created-access-key"
-                class="block break-all p-4 font-mono text-sm text-[var(--color-info)]"
-              >{{ plaintext }}</code>
-            </div>
-            <Transition name="fade">
-              <p
-                v-if="copyMessage"
-                class="text-sm text-[var(--color-text-secondary)] text-center"
-              >
-                {{ copyMessage }}
-              </p>
-            </Transition>
-            <div class="flex justify-end gap-3">
-              <button
-                data-testid="copy-created-access-key"
-                class="btn-secondary rounded-lg px-4 py-2 text-sm"
-                type="button"
-                @click="copyKey"
-              >
-                <span class="flex items-center gap-2">
-                  <svg
-                    class="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                    />
-                  </svg>
-                  复制
-                </span>
-              </button>
-              <button
-                data-testid="close-created-access-key"
-                class="btn-primary rounded-lg px-4 py-2 text-sm"
-                type="button"
-                @click="close"
-              >
-                我已保存，关闭
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <!-- Create form -->
-        <template v-else>
-          <div class="border-b border-[var(--color-border)] px-6 py-4">
-            <h2
-              id="create-access-key-title"
-              class="text-base font-semibold text-[var(--color-text)]"
-            >
-              创建 Access Key
-            </h2>
-          </div>
-          <div class="p-6">
-            <form
-              data-testid="create-access-key-form"
-              class="space-y-4"
-              @submit.prevent="createKey"
-            >
-              <label class="block">
-                <span class="text-sm font-medium text-[var(--color-text-secondary)]">设备或客户端名称</span>
-                <input
-                  id="access-key-name"
-                  v-model="name"
-                  data-testid="access-key-name"
-                  class="input-field mt-1.5"
-                  autocomplete="off"
-                  maxlength="120"
-                >
-              </label>
-              <Transition name="slide">
-                <p
-                  v-if="errorMessage"
-                  class="text-sm text-[var(--color-danger)]"
-                  role="alert"
-                >
-                  {{ errorMessage }}
-                </p>
-              </Transition>
-              <div class="flex justify-end gap-3">
-                <button
-                  class="btn-secondary rounded-lg px-4 py-2 text-sm"
-                  type="button"
-                  @click="close"
-                >
-                  取消
-                </button>
-                <button
-                  class="btn-primary rounded-lg px-4 py-2 text-sm"
-                  type="submit"
-                  :disabled="submitting"
-                >
-                  {{ submitting ? '创建中…' : '创建' }}
-                </button>
-              </div>
-            </form>
-          </div>
-        </template>
-      </section>
+        {{ copyMessage }}
+      </p>
+      <div class="flex justify-end gap-2">
+        <UiButton
+          data-testid="copy-created-access-key"
+          variant="secondary"
+          icon="copy"
+          @click="copyKey"
+        >
+          复制
+        </UiButton>
+        <UiButton
+          data-testid="close-created-access-key"
+          variant="primary"
+          @click="close"
+        >
+          我已保存，关闭
+        </UiButton>
+      </div>
     </div>
-  </Transition>
-</template>
 
-<style scoped>
-.modal-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.modal-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-.modal-enter-from section,
-.modal-leave-to section {
-  transform: scale(0.95);
-}
-.fade-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.fade-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-.slide-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.slide-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>
+    <!-- Create form -->
+    <form
+      v-else
+      data-testid="create-access-key-form"
+      class="space-y-4"
+      @submit.prevent="createKey"
+    >
+      <UiField
+        label="设备或客户端名称"
+        input-id="access-key-name"
+        :error="errorMessage"
+        hint="用于区分调用来源，例如「家庭电脑」「CI 流水线」。"
+      >
+        <input
+          id="access-key-name"
+          v-model="name"
+          data-testid="access-key-name"
+          class="input-field"
+          autocomplete="off"
+          maxlength="120"
+        >
+      </UiField>
+      <div class="flex justify-end gap-2">
+        <UiButton
+          variant="ghost"
+          @click="close"
+        >
+          取消
+        </UiButton>
+        <UiButton
+          variant="primary"
+          type="submit"
+          :loading="submitting"
+          loading-label="创建中…"
+        >
+          创建
+        </UiButton>
+      </div>
+    </form>
+  </UiModal>
+</template>

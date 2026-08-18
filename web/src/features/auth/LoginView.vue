@@ -1,18 +1,21 @@
-﻿<script setup lang="ts">
-import { computed, ref } from 'vue'
+<script setup lang="ts">
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { ApiError } from '../../shared/api/client'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiField from '../../shared/ui/UiField.vue'
+import UiIcon from '../../shared/ui/UiIcon.vue'
+import AuthLayout from './AuthLayout.vue'
 import { useSession } from './useSession'
 
 const router = useRouter()
 const session = useSession()
 const username = ref('admin')
 const password = ref('')
+const showPassword = ref(false)
 const formError = ref('')
 const submitting = ref(false)
-const isPlainHttp = computed(() => globalThis.location.protocol === 'http:')
 
 async function submit(): Promise<void> {
   formError.value = ''
@@ -34,134 +37,84 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-[var(--color-canvas)] px-4">
-    <!-- Ambient decoration -->
-    <div class="fixed inset-0 overflow-hidden pointer-events-none">
-      <div class="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-[color-mix(in_srgb,var(--color-accent)_5%,transparent)] blur-3xl" />
-      <div class="absolute -bottom-40 -left-40 h-80 w-80 rounded-full bg-[color-mix(in_srgb,var(--color-info)_5%,transparent)] blur-3xl" />
-    </div>
+  <AuthLayout
+    title="管理员登录"
+    subtitle="NVIDIA Router 管理控制台"
+  >
+    <template #brand>
+      <p
+        class="sr-only"
+        data-testid="login-brand"
+      >
+        NVIDIA API Router
+      </p>
+    </template>
 
-    <section class="relative w-full max-w-sm animate-fade-in">
-      <!-- Logo -->
-      <div class="mb-8 text-center">
-        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)] bg-[var(--color-accent)] text-lg font-bold text-[var(--color-accent-foreground)]">
-          N
-        </div>
-        <h1 class="mt-4 text-lg font-semibold text-[var(--color-text)]">
-          管理员登录
-        </h1>
-        <p
-          class="sr-only"
-          data-testid="login-brand"
+    <form
+      class="space-y-4"
+      @submit.prevent="submit"
+    >
+      <UiField
+        label="用户名"
+        input-id="login-username"
+      >
+        <input
+          id="login-username"
+          v-model="username"
+          autocomplete="username"
+          class="input-field"
+          name="username"
+          required
         >
-          NVIDIA API Router
-        </p>
-        <p class="mt-1 text-sm text-[var(--color-text-muted)]">
-          管理控制台
-        </p>
-      </div>
+      </UiField>
 
-      <!-- HTTP warning -->
-      <div
-        v-if="isPlainHttp"
-        class="mb-6 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3 text-sm text-[var(--color-warning)]"
+      <UiField
+        label="密码"
+        input-id="login-password"
+      >
+        <div class="relative">
+          <input
+            id="login-password"
+            v-model="password"
+            autocomplete="current-password"
+            class="input-field pr-10"
+            name="password"
+            required
+            :type="showPassword ? 'text' : 'password'"
+          >
+          <button
+            class="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]"
+            type="button"
+            :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+            :aria-pressed="showPassword"
+            @click="showPassword = !showPassword"
+          >
+            <UiIcon
+              :name="showPassword ? 'eye-off' : 'eye'"
+              :size="15"
+            />
+          </button>
+        </div>
+      </UiField>
+
+      <p
+        v-if="formError"
+        class="rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-danger)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_5%,transparent)] px-3 py-2 text-sm text-[var(--color-danger)]"
+        data-testid="form-error"
         role="alert"
       >
-        <div class="flex items-start gap-2">
-          <svg
-            class="mt-0.5 h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
-            />
-          </svg>
-          <span>当前页面使用 HTTP，账号和密码会通过明文连接传输。请仅在可信网络中操作。</span>
-        </div>
-      </div>
+        {{ formError }}
+      </p>
 
-      <!-- Login card. The single h1 (NVIDIA Router · 管理员登录) lives in the
-           logo block above; repeating it here left the page with two
-           "管理员登录" headings. -->
-      <div class="card animate-slide-up p-6">
-        <p class="text-sm text-[var(--color-text-muted)]">
-          请输入凭据继续
-        </p>
-
-        <form
-          class="mt-6 space-y-4"
-          @submit.prevent="submit"
-        >
-          <label class="block">
-            <span class="text-sm font-medium text-[var(--color-text-secondary)]">用户名</span>
-            <input
-              v-model="username"
-              autocomplete="username"
-              class="input-field mt-1.5"
-              name="username"
-              required
-            >
-          </label>
-
-          <label class="block">
-            <span class="text-sm font-medium text-[var(--color-text-secondary)]">密码</span>
-            <input
-              v-model="password"
-              autocomplete="current-password"
-              class="input-field mt-1.5"
-              name="password"
-              required
-              type="password"
-            >
-          </label>
-
-          <Transition name="slide">
-            <p
-              v-if="formError"
-              class="rounded-lg bg-[color-mix(in_srgb,var(--color-danger)_5%,transparent)] border border-[color-mix(in_srgb,var(--color-danger)_20%,transparent)] px-3 py-2 text-sm text-[var(--color-danger)]"
-              data-testid="form-error"
-              role="alert"
-            >
-              {{ formError }}
-            </p>
-          </Transition>
-
-          <button
-            class="btn-primary w-full"
-            :disabled="submitting"
-            type="submit"
-          >
-            <span class="flex items-center justify-center gap-2">
-              <LoadingSpinner
-                v-if="submitting"
-                :show-label="false"
-                label="登录中"
-                size="sm"
-              />
-              {{ submitting ? '登录中…' : '登录' }}
-            </span>
-          </button>
-        </form>
-      </div>
-    </section>
-  </div>
+      <UiButton
+        variant="primary"
+        type="submit"
+        block
+        :loading="submitting"
+        loading-label="登录中…"
+      >
+        登录
+      </UiButton>
+    </form>
+  </AuthLayout>
 </template>
-
-<style scoped>
-.slide-enter-active {
-  transition: all 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.slide-leave-active {
-  transition: all 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>

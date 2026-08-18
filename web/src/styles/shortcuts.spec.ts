@@ -6,7 +6,26 @@ import { describe, expect, it } from 'vitest'
 
 import unoConfig from '../../uno.config'
 
-const shortcuts = unoConfig.shortcuts as Record<string, string>
+// uno.config.ts shortcuts 采用对象数组形式，且 variant 可组合基础类
+//（如 btn-primary 引用 btn-base）；断言前先归一化并展开组合引用。
+const rawShortcuts = unoConfig.shortcuts as Record<string, string>[] | Record<string, string>
+const flat: Record<string, string> = Array.isArray(rawShortcuts)
+  ? Object.assign({}, ...rawShortcuts)
+  : rawShortcuts
+
+function expand(name: string, seen: Set<string> = new Set()): string {
+  if (seen.has(name)) return ''
+  seen.add(name)
+  const value = flat[name] ?? ''
+  return value
+    .split(/\s+/)
+    .map((token) => (token in flat ? expand(token, seen) : token))
+    .join(' ')
+}
+
+const shortcuts: Record<string, string> = Object.fromEntries(
+  Object.keys(flat).map((name) => [name, expand(name)]),
+)
 
 function collectSourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((name) => {

@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import { budgetUsagePercent, formatKeyValue, formatTokens, keyState } from './state'
 import type { AccessKey } from './types'
 
 defineProps<{
   keys: AccessKey[]
   busyId: number | null
-  confirmingRevokeId?: number | null
-  confirmingDeleteId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -20,21 +19,21 @@ const emit = defineEmits<{
 <template>
   <div
     data-testid="access-key-cards"
-    class="space-y-2 p-4 md:hidden"
+    class="space-y-3 p-4 md:hidden"
   >
     <article
       v-for="key in keys"
       :key="`card-${key.id}`"
-      class="card-hover animate-slide-up p-4"
+      class="panel-inset p-4"
     >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <h3 class="text-sm font-medium text-[var(--color-text)]">
             {{ key.name }}
           </h3>
-          <code class="mt-1 block truncate font-mono text-xs text-[var(--color-info)]">{{ key.key_prefix }}</code>
+          <code class="mt-1 block truncate font-mono-data text-xs text-[var(--color-info)]">{{ key.key_prefix }}</code>
         </div>
-        <StatusBadge
+        <UiBadge
           class="shrink-0"
           :variant="keyState(key).variant"
           :label="keyState(key).label"
@@ -65,34 +64,37 @@ const emit = defineEmits<{
         </div>
       </div>
       <div class="mt-4 flex flex-wrap gap-2">
-        <button
+        <UiButton
           :data-testid="`mobile-edit-access-key-policy-${key.id}`"
-          class="btn-secondary flex-1"
-          type="button"
+          variant="secondary"
+          size="sm"
+          class="flex-1"
           :disabled="Boolean(key.revoked_at)"
           @click="emit('edit', key)"
         >
           编辑策略
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           v-if="!key.revoked_at"
           :data-testid="`mobile-revoke-access-key-${key.id}`"
-          class="btn-ghost flex-1"
-          type="button"
+          variant="ghost"
+          size="sm"
+          class="flex-1"
           :disabled="busyId === key.id"
           @click="emit('revoke', key)"
         >
-          {{ confirmingRevokeId === key.id ? '确认撤销？' : '撤销' }}
-        </button>
-        <button
+          撤销
+        </UiButton>
+        <UiButton
           :data-testid="`mobile-delete-access-key-${key.id}`"
-          class="btn-danger flex-1"
-          type="button"
+          variant="danger"
+          size="sm"
+          class="flex-1"
           :disabled="busyId === key.id"
           @click="emit('delete', key)"
         >
-          {{ confirmingDeleteId === key.id ? '确认删除？' : '删除' }}
-        </button>
+          删除
+        </UiButton>
       </div>
     </article>
   </div>

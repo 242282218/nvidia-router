@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import type { Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null; confirmingId?: number | null }>()
+defineProps<{ models: Model[]; busyId: number | null }>()
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
@@ -70,224 +71,232 @@ function audioNeedsVerification(model: Model): boolean {
 function enablingIsBlocked(model: Model): boolean {
   return !model.enabled && audioNeedsVerification(model)
 }
-
-function capBadge(supported: boolean): string {
-  return supported ? 'badge-success' : 'badge-muted'
-}
 </script>
 
 <template>
   <div
     data-testid="model-table"
-    class="hidden overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
+    class="card hidden overflow-hidden md:block"
   >
-    <table class="data-table">
-      <caption class="sr-only">
-        模型白名单，共 {{ models.length }} 条
-      </caption>
-      <thead>
-        <tr>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            模型
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            Kind
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            能力
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            单价 (USD /1M)
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            流式超时
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            状态
-          </th>
-          <th
-            class="data-table-th text-right"
-            scope="col"
-          >
-            操作
-          </th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-[var(--color-border)]">
-        <tr
-          v-for="model in models"
-          :key="model.id"
-          class="transition-colors hover:bg-[var(--color-hover)]"
-        >
-          <td class="data-table-td">
-            <p class="font-medium text-[var(--color-text)]">
-              {{ model.display_name }}
-            </p>
-            <p class="mt-0.5 font-mono text-xs text-[var(--color-text-muted)]">
-              {{ model.public_id }}
-            </p>
-          </td>
-          <td class="data-table-td">
-            <span class="badge-info">{{ model.kind }}</span>
-          </td>
-          <td class="data-table-td">
-            <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
-              <span :class="capBadge(model.supports_vision)">Vision {{ model.supports_vision ? '✓' : '—' }}</span>
-              <span :class="capBadge(model.supports_tools)">Tools {{ model.supports_tools ? '✓' : '—' }}</span>
-              <span :class="capBadge(model.supports_reasoning)">Reasoning {{ model.supports_reasoning ? '✓' : '—' }}</span>
-            </div>
-          </td>
-          <td class="data-table-td">
-            <div
-              v-if="editingPrice === model.id"
-              :data-testid="`model-pricing-edit-${model.id}`"
+    <div class="overflow-x-auto">
+      <table class="data-table">
+        <caption class="sr-only">
+          模型白名单，共 {{ models.length }} 条
+        </caption>
+        <thead>
+          <tr>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              <div class="flex items-center gap-1 text-xs">
-                <span class="text-[var(--color-text-muted)]">入</span>
-                <input
-                  :value="inputDraft"
-                  class="input-field w-16 px-1.5 py-0.5 text-xs"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  data-testid="model-input-price"
-                  @input="(e: Event) => { inputDraft = (e.target as HTMLInputElement).value }"
-                >
-                <span class="text-[var(--color-text-muted)]">出</span>
-                <input
-                  :value="outputDraft"
-                  class="input-field w-16 px-1.5 py-0.5 text-xs"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  data-testid="model-output-price"
-                  @input="(e: Event) => { outputDraft = (e.target as HTMLInputElement).value }"
-                >
-              </div>
-              <div class="mt-1 flex items-center gap-2">
-                <button
-                  class="btn-primary px-2.5 py-1 text-xs"
-                  type="button"
-                  data-testid="model-save-price"
-                  :disabled="busyId === model.id"
-                  @click="submitPricingEdit(model)"
-                >
-                  {{ busyId === model.id ? '保存中…' : '保存' }}
-                </button>
-                <button
-                  class="btn-ghost px-2.5 py-1 text-xs"
-                  type="button"
-                  @click="cancelPricingEdit"
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-            <button
-              v-else
-              class="btn-ghost px-2 py-1 font-mono text-xs"
-              type="button"
-              data-testid="model-edit-price"
-              @click="beginPricingEdit(model)"
+              模型
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              {{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}
-            </button>
-          </td>
-          <td class="data-table-td">
-            <span
-              class="font-mono text-xs"
-              :class="model.stream_first_token_timeout_ms !== undefined || model.stream_idle_timeout_ms !== undefined ? 'text-[var(--color-accent-bright)]' : 'text-[var(--color-text-muted)]'"
+              Kind
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              {{ formatStreamTimeout(model.stream_first_token_timeout_ms, model.stream_idle_timeout_ms) }}
-            </span>
-          </td>
-          <td class="data-table-td">
-            <StatusBadge
-              :variant="model.enabled ? 'success' : 'muted'"
-              :label="model.enabled ? '启用' : '停用'"
-            />
-            <p
-              v-if="model.capability_verified_at"
-              class="mt-1 text-xs text-[var(--color-text-muted)]"
+              能力
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              已验证
-            </p>
-            <p
-              v-else-if="audioNeedsVerification(model)"
-              class="mt-1 text-xs text-[var(--color-warning)]"
+              单价 (USD /1M)
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              需要先完成真实音频能力测试
-            </p>
-            <div
-              v-if="model.blocked_by_key_ids?.length"
-              class="mt-2 space-y-1"
+              流式超时
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
             >
-              <p class="text-xs text-[var(--color-warning)]">
-                已 block：
+              状态
+            </th>
+            <th
+              class="data-table-th text-right"
+              scope="col"
+            >
+              操作
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="model in models"
+            :key="model.id"
+            class="data-table-row"
+          >
+            <td class="data-table-td">
+              <p class="font-medium text-[var(--color-text)]">
+                {{ model.display_name }}
               </p>
-              <button
-                v-for="keyId in model.blocked_by_key_ids"
-                :key="keyId"
-                :data-testid="`model-table-unblock-${keyId}`"
-                class="block text-xs text-[var(--color-danger)] underline hover:opacity-75 disabled:text-[var(--color-text-subtle)]"
-                type="button"
-                :disabled="busyId === model.id"
-                @click="emit('unblock', keyId, model)"
+              <p class="mt-0.5 font-mono-data text-xs text-[var(--color-text-muted)]">
+                {{ model.public_id }}
+              </p>
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                variant="info"
+                :label="model.kind"
+                :dot="false"
+              />
+            </td>
+            <td class="data-table-td">
+              <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs">
+                <UiBadge
+                  :variant="model.supports_vision ? 'success' : 'muted'"
+                  :label="`Vision ${model.supports_vision ? '✓' : '—'}`"
+                  :dot="false"
+                />
+                <UiBadge
+                  :variant="model.supports_tools ? 'success' : 'muted'"
+                  :label="`Tools ${model.supports_tools ? '✓' : '—'}`"
+                  :dot="false"
+                />
+                <UiBadge
+                  :variant="model.supports_reasoning ? 'success' : 'muted'"
+                  :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'}`"
+                  :dot="false"
+                />
+              </div>
+            </td>
+            <td class="data-table-td">
+              <div
+                v-if="editingPrice === model.id"
+                :data-testid="`model-pricing-edit-${model.id}`"
               >
-                Key #{{ keyId }} · 手测恢复
-              </button>
-            </div>
-          </td>
-          <td class="data-table-td text-right">
-            <div class="flex justify-end gap-1.5">
+                <div class="flex items-center gap-1 text-xs">
+                  <span class="text-[var(--color-text-muted)]">入</span>
+                  <input
+                    :value="inputDraft"
+                    class="input-field h-8 w-20 px-2 text-xs"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    data-testid="model-input-price"
+                    @input="(e: Event) => { inputDraft = (e.target as HTMLInputElement).value }"
+                  >
+                  <span class="text-[var(--color-text-muted)]">出</span>
+                  <input
+                    :value="outputDraft"
+                    class="input-field h-8 w-20 px-2 text-xs"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    data-testid="model-output-price"
+                    @input="(e: Event) => { outputDraft = (e.target as HTMLInputElement).value }"
+                  >
+                </div>
+                <div class="mt-1.5 flex items-center gap-1.5">
+                  <UiButton
+                    variant="primary"
+                    size="sm"
+                    data-testid="model-save-price"
+                    :loading="busyId === model.id"
+                    loading-label="保存中…"
+                    @click="submitPricingEdit(model)"
+                  >
+                    保存
+                  </UiButton>
+                  <UiButton
+                    variant="ghost"
+                    size="sm"
+                    @click="cancelPricingEdit"
+                  >
+                    取消
+                  </UiButton>
+                </div>
+              </div>
               <button
-                data-testid="model-enable"
-                class="btn-secondary"
+                v-else
+                class="rounded-[6px] px-2 py-1 font-mono-data text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]"
                 type="button"
-                :disabled="enablingIsBlocked(model) || busyId === model.id"
-                @click="emit('toggle', model)"
+                data-testid="model-edit-price"
+                title="点击编辑单价"
+                @click="beginPricingEdit(model)"
               >
-                {{ model.enabled ? '停用' : '启用' }}
+                {{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}
               </button>
-              <button
-                :data-testid="`model-delete-${model.id}`"
-                class="btn-danger"
-                type="button"
-                :disabled="busyId === model.id"
-                @click="emit('delete', model)"
+            </td>
+            <td class="data-table-td">
+              <span
+                class="font-mono-data text-xs"
+                :class="model.stream_first_token_timeout_ms !== undefined || model.stream_idle_timeout_ms !== undefined ? 'text-[var(--color-text)]' : 'text-[var(--color-text-muted)]'"
               >
-                {{ confirmingId === model.id ? '确认删除？' : '删除' }}
-              </button>
-            </div>
-          </td>
-        </tr>
-        <tr v-if="models.length === 0">
-          <td
-            colspan="7"
-            class="px-4 py-8 text-center text-[var(--color-text-muted)]"
-          >
-            暂无模型白名单。
-          </td>
-        </tr>
-      </tbody>
-    </table>
+                {{ formatStreamTimeout(model.stream_first_token_timeout_ms, model.stream_idle_timeout_ms) }}
+              </span>
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                :variant="model.enabled ? 'success' : 'muted'"
+                :label="model.enabled ? '启用' : '停用'"
+              />
+              <p
+                v-if="model.capability_verified_at"
+                class="mt-1.5 text-xs text-[var(--color-text-muted)]"
+              >
+                已验证
+              </p>
+              <p
+                v-else-if="audioNeedsVerification(model)"
+                class="mt-1.5 text-xs text-[var(--color-warning)]"
+              >
+                需要先完成真实音频能力测试
+              </p>
+              <div
+                v-if="model.blocked_by_key_ids?.length"
+                class="mt-2 space-y-1"
+              >
+                <p class="text-xs text-[var(--color-warning)]">
+                  已 block：
+                </p>
+                <button
+                  v-for="keyId in model.blocked_by_key_ids"
+                  :key="keyId"
+                  :data-testid="`model-table-unblock-${keyId}`"
+                  class="block text-xs text-[var(--color-danger)] underline hover:opacity-75 disabled:text-[var(--color-text-subtle)]"
+                  type="button"
+                  :disabled="busyId === model.id"
+                  @click="emit('unblock', keyId, model)"
+                >
+                  Key #{{ keyId }} · 手测恢复
+                </button>
+              </div>
+            </td>
+            <td class="data-table-td">
+              <div class="flex justify-end gap-1.5">
+                <UiButton
+                  data-testid="model-enable"
+                  variant="secondary"
+                  size="sm"
+                  :disabled="enablingIsBlocked(model) || busyId === model.id"
+                  @click="emit('toggle', model)"
+                >
+                  {{ model.enabled ? '停用' : '启用' }}
+                </UiButton>
+                <UiButton
+                  :data-testid="`model-delete-${model.id}`"
+                  variant="danger"
+                  size="sm"
+                  :disabled="busyId === model.id"
+                  @click="emit('delete', model)"
+                >
+                  删除
+                </UiButton>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>

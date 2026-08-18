@@ -3,8 +3,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatClock, formatLatency } from '../../shared/format'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiEmptyState from '../../shared/ui/UiEmptyState.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
 import type { LiveRequestEvent } from './types'
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
@@ -142,102 +144,103 @@ function latencyColor(duration: number): string {
 </script>
 
 <template>
-  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+  <div :class="embedded ? '' : 'page-container'">
     <div :class="embedded ? '' : 'content-wrapper'">
-      <PageHeader
+      <UiPageHeader
         v-if="!embedded"
-        eyebrow="请求观测"
+        eyebrow="系统观测"
         title="实时请求流"
         :subtitle="`通过 SSE 推送实时展示路由请求的元数据；仅保留最近 ${maxEvents} 条，最新在上、自动滚动。`"
       >
         <template #actions>
-          <StatusBadge
+          <UiBadge
             :variant="connected ? 'success' : 'warning'"
             :label="connected ? '已连接' : '连接中…'"
           />
-          <button
-            class="btn-ghost"
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
             :disabled="events.length === 0"
             @click="clearEvents"
           >
             清空
-          </button>
-          <button
-            class="btn-ghost"
-            type="button"
+          </UiButton>
+          <UiButton
+            variant="secondary"
+            size="sm"
+            icon="refresh"
             @click="connect"
           >
             重连
-          </button>
+          </UiButton>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
       <!-- Embedded toolbar -->
       <div
         v-if="embedded"
-        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] pb-3"
       >
         <div class="flex items-center gap-2">
-          <span class="text-xs text-[var(--color-text-muted)]">连接状态:</span>
-          <StatusBadge
+          <UiBadge
             :variant="connected ? 'success' : 'warning'"
             :label="connected ? '实时接收中' : '连接中…'"
           />
           <span class="text-xs text-[var(--color-text-subtle)]">已缓冲 {{ events.length }} / {{ maxEvents }} 条</span>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            class="btn-ghost px-2.5 py-1 text-xs"
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
             :disabled="events.length === 0"
             @click="clearEvents"
           >
             清空
-          </button>
-          <button
-            class="btn-secondary px-2.5 py-1 text-xs"
-            type="button"
+          </UiButton>
+          <UiButton
+            variant="secondary"
+            size="sm"
+            icon="refresh"
             @click="connect"
           >
             重连
-          </button>
+          </UiButton>
         </div>
       </div>
 
       <div
         v-if="errorMessage"
-        class="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
+        class="mt-4 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
         role="alert"
       >
         {{ errorMessage }}
       </div>
 
-      <div class="card mt-5 overflow-hidden">
-        <div
+      <div class="card mt-4 overflow-hidden">
+        <UiEmptyState
           v-if="events.length === 0 && !errorMessage"
-          class="p-8 text-center text-sm text-[var(--color-text-muted)]"
-        >
-          等待请求到达…
-        </div>
+          icon="bolt"
+          title="等待请求到达…"
+          hint="实时事件流已就绪，新请求元数据会出现在这里。"
+        />
 
         <div class="relative">
           <ul
             ref="listEl"
-            class="max-h-[calc(100vh-16rem)] divide-y divide-[var(--color-border)] overflow-y-auto"
+            class="max-h-[calc(100vh-16rem)] divide-y divide-[var(--color-border-subtle)] overflow-y-auto"
             @scroll="onListScroll"
           >
             <li
               v-for="event in reversedEvents"
               :key="event.request_id"
-              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm hover:bg-[var(--color-hover)]"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-[var(--color-hover)]"
             >
-              <span class="font-mono text-xs text-[var(--color-text-muted)]">
+              <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
                 {{ formatClock(event.created_at) }}
               </span>
-              <code class="truncate font-mono text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
-              <code class="truncate font-mono text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
-              <StatusBadge
+              <code class="truncate font-mono-data text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
+              <code class="truncate font-mono-data text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
+              <UiBadge
                 :variant="statusBadge(event.http_status).variant"
                 :label="statusBadge(event.http_status).label"
                 :dot="false"
@@ -249,7 +252,7 @@ function latencyColor(duration: number): string {
                 {{ event.error_code }}
               </span>
               <span
-                class="ml-auto font-mono text-xs"
+                class="ml-auto font-mono-data text-xs"
                 :class="latencyColor(event.duration_ms)"
               >
                 {{ formatLatency(event.duration_ms) }}
@@ -260,7 +263,7 @@ function latencyColor(duration: number): string {
           <Transition name="fade">
             <button
               v-if="!pinnedToTop && events.length > 0"
-              class="absolute right-4 bottom-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)]"
+              class="absolute bottom-4 right-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)]"
               type="button"
               @click="scrollToTop"
             >

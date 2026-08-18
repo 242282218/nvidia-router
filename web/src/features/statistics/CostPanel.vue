@@ -1,8 +1,8 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import { statisticsApi } from './api'
 import type { DailyModelCost } from './types'
 
@@ -169,7 +169,7 @@ function formatCompactTokens(value: number): string {
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <div
-          class="flex rounded-[var(--radius-control)] border border-[var(--color-border)] p-0.5 bg-[var(--color-sunken)]"
+          class="inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]"
           role="group"
           aria-label="成本统计范围"
         >
@@ -177,8 +177,8 @@ function formatCompactTokens(value: number): string {
             v-for="opt in dayOptions"
             :key="opt.value"
             :data-testid="`cost-range-${opt.value}`"
-            class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-            :class="selectedDays === opt.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-sm' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+            class="h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
+            :class="selectedDays === opt.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
             type="button"
             :aria-pressed="selectedDays === opt.value"
             @click="selectDays(opt.value)"
@@ -223,11 +223,13 @@ function formatCompactTokens(value: number): string {
 
     <div
       v-if="loading"
-      class="mt-4 py-6"
+      class="mt-4"
+      role="status"
+      aria-label="加载成本分析数据…"
     >
-      <LoadingSpinner
-        size="sm"
-        label="加载成本分析数据…"
+      <UiSkeleton
+        variant="cards"
+        :lines="4"
       />
     </div>
 
@@ -238,10 +240,10 @@ function formatCompactTokens(value: number): string {
           <p class="text-xs font-medium text-[var(--color-text-muted)]">
             总估算成本（近 {{ selectedDays }} 天）
           </p>
-          <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+          <p class="mt-2 font-mono-data text-2xl font-semibold tabular-nums text-[var(--color-text)]">
             {{ formatUSD(totalCostUSD) }}
           </p>
-          <p class="mt-1 font-mono text-xs text-[var(--color-text-secondary)]">
+          <p class="mt-1 font-mono-data text-xs text-[var(--color-text-secondary)]">
             ≈ {{ formatCNY(totalCostUSD) }}
           </p>
         </div>
@@ -250,11 +252,11 @@ function formatCompactTokens(value: number): string {
           <p class="text-xs font-medium text-[var(--color-text-muted)]">
             输入 / 输出费用拆解
           </p>
-          <div class="mt-2 flex items-baseline justify-between font-mono text-sm">
+          <div class="mt-2 flex items-baseline justify-between font-mono-data text-sm">
             <span class="text-[var(--color-text-secondary)]">输入</span>
             <span class="font-semibold text-[var(--color-text)]">{{ formatUSD(totalPromptCostUSD) }}</span>
           </div>
-          <div class="mt-1 flex items-baseline justify-between font-mono text-sm">
+          <div class="mt-1 flex items-baseline justify-between font-mono-data text-sm">
             <span class="text-[var(--color-text-secondary)]">输出</span>
             <span class="font-semibold text-[var(--color-text)]">{{ formatUSD(totalCompletionCostUSD) }}</span>
           </div>
@@ -264,7 +266,7 @@ function formatCompactTokens(value: number): string {
           <p class="text-xs font-medium text-[var(--color-text-muted)]">
             总消耗 Token
           </p>
-          <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+          <p class="mt-2 font-mono-data text-2xl font-semibold tabular-nums text-[var(--color-text)]">
             {{ formatCompactTokens(totalTokens) }}
           </p>
           <p class="mt-1 text-xs text-[var(--color-text-muted)]">
@@ -314,8 +316,8 @@ function formatCompactTokens(value: number): string {
             class="flex items-center gap-1.5"
           >
             <span class="h-2 w-2 rounded-full bg-[var(--color-info)]" />
-            <code class="font-mono text-xs">{{ modelId }}</code>
-            <strong class="font-mono text-[var(--color-text)]">{{ entry.sharePercent }}%</strong>
+            <code class="font-mono-data text-xs">{{ modelId }}</code>
+            <strong class="font-mono-data text-[var(--color-text)]">{{ entry.sharePercent }}%</strong>
           </span>
         </div>
       </div>
@@ -373,22 +375,22 @@ function formatCompactTokens(value: number): string {
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-[var(--color-border)]">
+          <tbody class="divide-y divide-[var(--color-border-subtle)]">
             <tr
               v-for="[modelId, entry] in byModel"
               :key="modelId"
-              class="transition-colors hover:bg-[var(--color-hover)]"
+              class="data-table-row"
             >
               <td class="data-table-td">
                 <div class="flex items-center gap-2">
-                  <code class="font-mono text-xs font-medium text-[var(--color-info)]">{{ modelId }}</code>
+                  <code class="font-mono-data text-xs font-medium text-[var(--color-info)]">{{ modelId }}</code>
                   <span
                     v-if="!entry.priced"
                     class="badge-warning"
                   >未定价</span>
                 </div>
               </td>
-              <td class="data-table-td text-right font-mono text-xs">
+              <td class="data-table-td text-right font-mono-data text-xs">
                 <p class="text-[var(--color-text)]">
                   {{ entry.promptTokens.toLocaleString('zh-CN') }}
                 </p>
@@ -396,7 +398,7 @@ function formatCompactTokens(value: number): string {
                   {{ formatCost(entry.inputCostUSD) }}
                 </p>
               </td>
-              <td class="data-table-td text-right font-mono text-xs">
+              <td class="data-table-td text-right font-mono-data text-xs">
                 <p class="text-[var(--color-text)]">
                   {{ entry.completionTokens.toLocaleString('zh-CN') }}
                 </p>
@@ -404,13 +406,13 @@ function formatCompactTokens(value: number): string {
                   {{ formatCost(entry.outputCostUSD) }}
                 </p>
               </td>
-              <td class="data-table-td text-right font-mono text-xs font-medium text-[var(--color-text)]">
+              <td class="data-table-td text-right font-mono-data text-xs font-medium text-[var(--color-text)]">
                 {{ entry.totalTokens.toLocaleString('zh-CN') }}
               </td>
-              <td class="data-table-td text-right font-mono text-xs font-semibold text-[var(--color-text)]">
+              <td class="data-table-td text-right font-mono-data text-xs font-semibold text-[var(--color-text)]">
                 <p>{{ formatCost(entry.totalCostUSD) }}</p>
               </td>
-              <td class="data-table-td text-right font-mono text-xs">
+              <td class="data-table-td text-right font-mono-data text-xs">
                 <div class="flex items-center justify-end gap-2">
                   <div class="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--color-border)]">
                     <div

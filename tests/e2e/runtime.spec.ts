@@ -80,10 +80,10 @@ test.describe('runtime and responsive management UI', () => {
     await expect(page.getByTestId('access-key-cards')).toBeVisible()
     await expect(page.getByTestId('access-key-table')).toBeHidden()
     const mobileAccessKeyCard = page.getByTestId('access-key-cards').locator('article').filter({ hasText: 'mobile-e2e-client' })
-    // Two-step destructive confirmation: first click arms it, second performs it.
-    const revoke = mobileAccessKeyCard.getByRole('button', { name: '撤销' })
-    await revoke.click()
-    await revoke.click()
+    // Destructive confirmation runs through a modal dialog now: the card action
+    // opens it, the dialog's confirm button performs the revoke.
+    await mobileAccessKeyCard.getByRole('button', { name: '撤销' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '撤销' }).click()
     await expect(mobileAccessKeyCard).toContainText('已撤销')
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
 import { formatInteger, formatLogDate, formatTokens } from './format'
 import type { RequestLogsPage } from './types'
 
@@ -29,7 +29,7 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
   >
     <span>{{ logsError }}</span>
     <button
-      class="btn-secondary"
+      class="btn-secondary btn-sm"
       type="button"
       :disabled="loading"
       @click="emit('retry')"
@@ -45,7 +45,7 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
     暂无请求记录。可调整筛选条件或时间范围。
   </p>
   <template v-else>
-    <div class="divide-y divide-[var(--color-border)] md:hidden">
+    <div class="divide-y divide-[var(--color-border-subtle)] md:hidden">
       <article
         v-for="item in logs.items"
         :key="`mobile-${item.request_id}`"
@@ -53,14 +53,14 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
       >
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
-            <p class="font-mono text-xs text-[var(--color-info)]">
+            <p class="font-mono-data text-xs text-[var(--color-info)]">
               {{ item.request_id }}
             </p>
             <p class="mt-1 truncate text-xs text-[var(--color-text-muted)]">
               {{ formatLogDate(item.created_at) }}
             </p>
           </div>
-          <StatusBadge
+          <UiBadge
             :variant="outcome(item.outcome).variant"
             :label="`${outcome(item.outcome).label} · ${item.http_status}`"
           />
@@ -144,7 +144,7 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
           <div class="col-span-2">
             <dt class="text-[var(--color-text-muted)]">
               上游请求 ID
-            </dt><dd class="mt-1 truncate font-mono">
+            </dt><dd class="mt-1 truncate font-mono-data">
               {{ item.upstream_request_id ?? '—' }}
             </dd>
           </div>
@@ -241,24 +241,24 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
           <tr
             v-for="item in logs.items"
             :key="item.request_id"
-            class="transition-colors hover:bg-[var(--color-hover)]"
+            class="data-table-row"
           >
-            <td class="data-table-td font-mono text-xs whitespace-nowrap">
+            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
               {{ formatLogDate(item.created_at) }}
             </td>
-            <td class="data-table-td font-mono text-xs text-[var(--color-info)]">
+            <td class="data-table-td font-mono-data text-xs text-[var(--color-info)]">
               {{ item.request_id }}
             </td>
             <td class="data-table-td">
               <span class="block">{{ item.endpoint }}</span>
-              <span class="mt-1 block max-w-48 truncate font-mono text-xs text-[var(--color-text-muted)]">{{ item.model_id ?? '—' }}</span>
+              <span class="mt-1 block max-w-48 truncate font-mono-data text-xs text-[var(--color-text-muted)]">{{ item.model_id ?? '—' }}</span>
             </td>
             <td class="data-table-td text-xs">
               NVIDIA {{ item.nvidia_key_id ?? '—' }}<br>Access {{ item.access_key_id ?? '—' }}
             </td>
             <td class="data-table-td whitespace-nowrap">
               <span :class="item.outcome === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'">{{ outcome(item.outcome).label }}</span>
-              <span class="ml-1 font-mono text-xs">{{ item.http_status }}</span>
+              <span class="ml-1 font-mono-data text-xs">{{ item.http_status }}</span>
             </td>
             <td class="data-table-td">
               {{ item.is_stream ? (item.stream_done ? '是 · [DONE]' : '是 · 未完成') : '否' }}
@@ -267,16 +267,16 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
               <span class="block whitespace-nowrap">请求 {{ item.reasoning_requested ? '是' : '否' }} · 响应 {{ item.reasoning_present ? '是' : '否' }} · {{ item.reasoning_chars ?? '—' }} 字</span>
               <span class="mt-1 block max-w-44 truncate text-[var(--color-text-muted)]">{{ item.reasoning_wire_fields ?? '—' }} · {{ item.route_mode ?? '—' }}</span>
             </td>
-            <td class="data-table-td font-mono text-xs whitespace-nowrap">
+            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
               {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms
             </td>
             <td class="data-table-td font-mono whitespace-nowrap">
               {{ item.duration_ms }} ms
             </td>
-            <td class="data-table-td font-mono">
+            <td class="data-table-td font-mono-data">
               {{ item.attempt_count }}
             </td>
-            <td class="data-table-td font-mono text-xs whitespace-nowrap">
+            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
               {{ formatTokens((item.prompt_tokens ?? 0) + (item.completion_tokens ?? 0)) }}
             </td>
             <td class="data-table-td max-w-56 truncate text-xs">

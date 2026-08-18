@@ -1,9 +1,11 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
+import UiStat from '../../shared/ui/UiStat.vue'
 import { formatTimeOfDay } from '../../shared/format'
 import { usePolling } from '../../shared/usePolling'
 import CostPanel from './CostPanel.vue'
@@ -319,11 +321,11 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 </script>
 
 <template>
-  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+  <div :class="embedded ? '' : 'page-container'">
     <div :class="embedded ? '' : 'content-wrapper'">
-      <PageHeader
+      <UiPageHeader
         v-if="!embedded"
-        eyebrow="请求观测"
+        eyebrow="系统观测"
         title="监控"
         subtitle="保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。"
       >
@@ -333,64 +335,62 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             role="group"
             aria-label="监控时间范围"
           >
-            <button
-              v-for="option in ranges"
-              :key="option.value"
-              :data-testid="`range-${option.value}`"
-              class="btn-secondary"
-              :class="range === option.value ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
-              type="button"
-              :aria-pressed="range === option.value"
-              @click="selectRange(option.value)"
-            >
-              {{ option.label }}
-            </button>
-            <button
-              class="btn-ghost"
-              type="button"
-              :disabled="loading"
+            <div class="inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]">
+              <button
+                v-for="option in ranges"
+                :key="option.value"
+                :data-testid="`range-${option.value}`"
+                class="h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
+                :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+                type="button"
+                :aria-pressed="range === option.value"
+                @click="selectRange(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <UiButton
+              variant="ghost"
+              :loading="loading"
+              loading-label="刷新中…"
+              icon="refresh"
               @click="loadDashboard"
             >
-              {{ loading ? '刷新中…' : '刷新' }}
-            </button>
+              刷新
+            </UiButton>
           </div>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
       <!-- Embedded toolbar -->
       <div
         v-if="embedded"
-        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] pb-3"
+        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] pb-3"
       >
-        <div class="flex items-center gap-2">
-          <span class="text-xs text-[var(--color-text-muted)]">统计窗口:</span>
-          <div
-            class="flex rounded-[var(--radius-control)] border border-[var(--color-border)] p-0.5 bg-[var(--color-sunken)]"
-            role="group"
-            aria-label="监控时间范围"
+        <div class="inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]">
+          <button
+            v-for="option in ranges"
+            :key="option.value"
+            :data-testid="`range-${option.value}`"
+            class="h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
+            :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+            type="button"
+            :aria-pressed="range === option.value"
+            @click="selectRange(option.value)"
           >
-            <button
-              v-for="option in ranges"
-              :key="option.value"
-              :data-testid="`range-${option.value}`"
-              class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-              :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-sm' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
-              type="button"
-              :aria-pressed="range === option.value"
-              @click="selectRange(option.value)"
-            >
-              {{ option.label }}
-            </button>
-          </div>
+            {{ option.label }}
+          </button>
         </div>
-        <button
-          class="btn-ghost px-2.5 py-1 text-xs"
-          type="button"
-          :disabled="loading"
+        <UiButton
+          variant="ghost"
+          size="sm"
+          :loading="loading"
+          loading-label="刷新中…"
+          icon="refresh"
           @click="loadDashboard"
         >
-          {{ loading ? '刷新中…' : '刷新' }}
-        </button>
+          刷新
+        </UiButton>
       </div>
       <p
         v-if="summaryUpdatedAt"
@@ -401,21 +401,31 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
       <div
         v-if="loading && !snapshot && !logs"
-        class="card mt-5 p-6"
+        class="mt-5"
+        role="status"
+        aria-label="加载监控数据…"
       >
-        <LoadingSpinner label="加载监控数据…" />
+        <UiSkeleton
+          variant="cards"
+          :lines="6"
+        />
+        <UiSkeleton
+          class="mt-4"
+          variant="table"
+          :lines="5"
+        />
       </div>
 
       <template v-else>
         <p
           v-if="summaryStale"
           data-testid="monitoring-summary-stale"
-          class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
+          class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-warning)]"
           role="status"
         >
           <span>汇总自 {{ summaryStaleSince ? formatTimeOfDay(summaryStaleSince) : '最近一次成功' }} 起未更新，后台刷新失败。</span>
           <button
-            class="btn-ghost underline"
+            class="font-medium underline underline-offset-2 hover:opacity-75"
             type="button"
             :disabled="loading"
             @click="loadDashboard"
@@ -426,7 +436,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         <p
           v-if="summaryError"
           data-testid="monitoring-summary-error"
-          class="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
+          class="mt-4 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] px-4 py-3 text-sm text-[var(--color-danger)]"
           role="alert"
         >
           {{ summaryError }}
@@ -445,90 +455,53 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           <p class="mb-2 text-xs text-[var(--color-text-subtle)]">
             口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
           </p>
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-10">
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                请求数
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-                {{ formatInteger(summary.request_count) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                成功率
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-success)]">
-                {{ formatPercent(summary.success_rate) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                失败数
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-danger)]">
-                {{ formatInteger(summary.failure_count) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                平均耗时
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-                {{ formatAverageLatency(summary.average_duration_ms) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                首字节
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
-                {{ formatAverageLatency(summary.average_first_byte_ms) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                TTFT P50
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
-                {{ formatAverageLatency(summary.first_token_p50_ms) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                TTFT P95
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-info)]">
-                {{ formatAverageLatency(summary.first_token_p95_ms) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                平均排队
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-                {{ formatAverageLatency(summary.average_queue_ms) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                总尝试
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-                {{ formatInteger(summary.total_attempts) }}
-              </p>
-            </article>
-            <article class="stat-card">
-              <p class="text-xs text-[var(--color-text-muted)]">
-                Token
-              </p>
-              <p class="mt-2 font-mono text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-                {{ formatTokens(summary.prompt_tokens + summary.completion_tokens) }}
-              </p>
-              <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
-                输入 {{ formatTokens(summary.prompt_tokens) }} · 输出 {{ formatTokens(summary.completion_tokens) }}
-              </p>
-            </article>
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+            <UiStat
+              label="请求数"
+              :value="formatInteger(summary.request_count)"
+            />
+            <UiStat
+              label="成功率"
+              :value="formatPercent(summary.success_rate)"
+              tone="success"
+            />
+            <UiStat
+              label="失败数"
+              :value="formatInteger(summary.failure_count)"
+              tone="danger"
+            />
+            <UiStat
+              label="平均耗时"
+              :value="formatAverageLatency(summary.average_duration_ms)"
+            />
+            <UiStat
+              label="首字节"
+              :value="formatAverageLatency(summary.average_first_byte_ms)"
+              tone="info"
+            />
+            <UiStat
+              label="TTFT P50"
+              :value="formatAverageLatency(summary.first_token_p50_ms)"
+              tone="info"
+            />
+            <UiStat
+              label="TTFT P95"
+              :value="formatAverageLatency(summary.first_token_p95_ms)"
+              tone="info"
+            />
+            <UiStat
+              label="平均排队"
+              :value="formatAverageLatency(summary.average_queue_ms)"
+            />
+            <UiStat
+              label="总尝试"
+              :value="formatInteger(summary.total_attempts)"
+            />
+            <UiStat
+              label="Token"
+              :value="formatTokens(summary.prompt_tokens + summary.completion_tokens)"
+              :hint="`输入 ${formatTokens(summary.prompt_tokens)} · 输出 ${formatTokens(summary.completion_tokens)}`"
+            />
           </div>
         </section>
 
@@ -570,9 +543,9 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           data-testid="monitoring-log-table"
           class="card mt-4 overflow-hidden"
         >
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
             <div>
-              <h2 class="text-sm font-semibold text-[var(--color-text)]">
+              <h2 class="type-heading">
                 请求明细
               </h2>
               <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
@@ -595,17 +568,17 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 
           <div
             v-if="logs"
-            class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] px-4 py-3"
+            class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] px-5 py-3"
           >
             <span class="text-xs text-[var(--color-text-muted)]">
               共 {{ formatInteger(logs.total) }} 条 · 第 {{ logs.page }} / {{ totalPages }} 页
             </span>
-            <div class="flex flex-wrap items-center gap-2">
-              <label class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <label class="mr-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
                 每页
                 <select
                   v-model="pageSize"
-                  class="input-field rounded-md px-2 py-1 text-xs"
+                  class="input-field h-8 w-auto rounded-[7px] px-2 text-xs"
                   data-testid="monitoring-page-size"
                   @change="changePageSize"
                 >
@@ -618,22 +591,24 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   </option>
                 </select>
               </label>
-              <button
-                class="btn-secondary"
-                type="button"
+              <UiButton
+                variant="secondary"
+                size="sm"
                 aria-label="上一页"
                 :disabled="page <= 1 || loading"
                 @click="previousPage"
               >
                 上一页
-              </button>
+              </UiButton>
               <template v-for="(item, index) in pageNumbers">
                 <button
                   v-if="item !== 'ellipsis'"
                   :key="item"
                   :data-testid="`monitoring-page-${item}`"
-                  class="btn-secondary min-w-8 rounded-md px-2 py-1 text-xs"
-                  :class="item === page ? 'border-[var(--color-accent)] bg-[var(--color-active)] text-[var(--color-accent-bright)]' : ''"
+                  class="h-8 min-w-8 rounded-[7px] border text-xs transition-colors duration-[var(--duration-micro)]"
+                  :class="item === page
+                    ? 'border-[var(--color-border-strong)] bg-[var(--color-active)] font-semibold text-[var(--color-text)]'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)]'"
                   type="button"
                   :disabled="loading || item === page"
                   :aria-current="item === page ? 'page' : undefined"
@@ -650,17 +625,17 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   …
                 </span>
               </template>
-              <button
+              <UiButton
                 v-if="logs.has_more"
                 data-testid="monitoring-next-page"
-                class="btn-secondary"
-                type="button"
+                variant="secondary"
+                size="sm"
                 aria-label="下一页"
                 :disabled="loading"
                 @click="nextPage"
               >
                 下一页
-              </button>
+              </UiButton>
               <form
                 class="flex items-center gap-1.5"
                 @submit.prevent="jumpToPage"
@@ -673,19 +648,20 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   id="monitoring-jump-page"
                   v-model="jumpTarget"
                   data-testid="monitoring-jump-page"
-                  class="input-field w-14 rounded-md px-2 py-1 text-xs"
+                  class="input-field h-8 w-16 rounded-[7px] px-2 text-xs"
                   type="number"
                   min="1"
                   :max="totalPages"
                   placeholder="页码"
                 >
-                <button
-                  class="btn-ghost rounded-md px-2 py-1 text-xs"
+                <UiButton
+                  variant="ghost"
+                  size="sm"
                   type="submit"
                   :disabled="loading"
                 >
                   跳转
-                </button>
+                </UiButton>
               </form>
             </div>
           </div>

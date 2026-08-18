@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiIcon from '../../shared/ui/UiIcon.vue'
+import UiSwitch from '../../shared/ui/UiSwitch.vue'
 import { formatDate, keyState } from './state'
 import type { NVIDIAKey } from './types'
 
-defineProps<{ keys: NVIDIAKey[]; busyId: number | null; confirmingId: number | null }>()
+defineProps<{ keys: NVIDIAKey[]; busyId: number | null }>()
 
 const emit = defineEmits<{
   toggle: [key: NVIDIAKey]
@@ -15,7 +18,7 @@ const emit = defineEmits<{
 <template>
   <div
     data-testid="key-table"
-    class="hidden overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] md:block"
+    class="card hidden overflow-hidden md:block"
   >
     <div
       class="overflow-x-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
@@ -47,33 +50,33 @@ const emit = defineEmits<{
               失败 / 最近错误
             </th>
             <th
-              class="data-table-th text-right"
+              class="data-table-th w-44 text-right"
               scope="col"
             >
               操作
             </th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-[var(--color-border)]">
+        <tbody>
           <tr
             v-for="key in keys"
             :key="key.id"
-            class="transition-colors hover:bg-[var(--color-hover)]"
+            class="data-table-row"
           >
             <td class="data-table-td">
-              <code class="font-mono text-sm text-[var(--color-info)]">{{ key.masked }}</code>
-              <span class="mt-1 block font-mono text-xs text-[var(--color-text-subtle)]">#{{ key.id }}</span>
+              <code class="font-mono-data text-sm text-[var(--color-info)]">{{ key.masked }}</code>
+              <span class="mt-0.5 block font-mono-data text-xs text-[var(--color-text-subtle)]">#{{ key.id }}</span>
             </td>
             <td class="data-table-td">
-              <StatusBadge
+              <UiBadge
                 :variant="keyState(key).variant"
                 :label="keyState(key).label"
               />
               <p
                 v-if="key.cooldown_until"
-                class="mt-2 text-xs text-[var(--color-text-muted)]"
+                class="mt-1.5 text-xs text-[var(--color-text-muted)]"
               >
-                冷却至 <span class="font-mono">{{ formatDate(key.cooldown_until) }}</span>
+                冷却至 <span class="font-mono-data">{{ formatDate(key.cooldown_until) }}</span>
                 <span class="sr-only">{{ key.cooldown_until }}</span>
               </p>
             </td>
@@ -81,53 +84,47 @@ const emit = defineEmits<{
               <span class="text-[var(--color-text-secondary)]">连续失败 {{ key.consecutive_failures }}</span>
               <span
                 v-if="key.last_error_code"
-                class="ml-1 font-mono text-[var(--color-danger)]"
+                class="ml-1 font-mono-data text-[var(--color-danger)]"
               >· {{ key.last_error_code }}</span>
               <p
                 v-if="key.last_error_at"
-                class="mt-2 text-xs text-[var(--color-text-muted)]"
+                class="mt-1.5 text-xs text-[var(--color-text-muted)]"
               >
-                最近错误 <span class="font-mono">{{ formatDate(key.last_error_at) }}</span>
+                最近错误 <span class="font-mono-data">{{ formatDate(key.last_error_at) }}</span>
                 <span class="sr-only">{{ key.last_error_at }}</span>
               </p>
             </td>
-            <td class="data-table-td text-right">
-              <div class="flex justify-end gap-1.5">
-                <button
+            <td class="data-table-td">
+              <div class="flex items-center justify-end gap-2">
+                <UiSwitch
                   :data-testid="`key-table-toggle-${key.id}`"
-                  class="btn-secondary"
-                  type="button"
+                  :checked="key.enabled"
                   :disabled="busyId === key.id"
-                  @click="emit('toggle', key)"
-                >
-                  {{ key.enabled ? '停用' : '启用' }}
-                </button>
-                <button
+                  :label="key.enabled ? `停用 Key ${key.masked}` : `启用 Key ${key.masked}`"
+                  @change="emit('toggle', key)"
+                />
+                <UiButton
                   :data-testid="`key-table-test-${key.id}`"
-                  class="btn-secondary"
-                  type="button"
+                  variant="secondary"
+                  size="sm"
                   :disabled="busyId === key.id"
                   @click="emit('test', key)"
                 >
                   单测
-                </button>
+                </UiButton>
                 <button
-                  class="btn-danger"
+                  class="icon-btn h-8 w-8 hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)]"
                   type="button"
                   :disabled="busyId === key.id"
+                  :aria-label="`删除 Key ${key.masked}`"
                   @click="emit('remove', key)"
                 >
-                  {{ confirmingId === key.id ? '确认删除？' : '删除' }}
+                  <UiIcon
+                    name="trash"
+                    :size="15"
+                  />
                 </button>
               </div>
-            </td>
-          </tr>
-          <tr v-if="keys.length === 0">
-            <td
-              class="px-4 py-8 text-center text-[var(--color-text-muted)]"
-              colspan="4"
-            >
-              暂无 NVIDIA Key。
             </td>
           </tr>
         </tbody>

@@ -1,10 +1,11 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError } from '../../shared/api/client'
 import { formatDate, formatTimeOfDay } from '../../shared/format'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import { usePolling } from '../../shared/usePolling'
 import { runtimeApi } from './api'
 import SettingsForm from './SettingsForm.vue'
@@ -150,11 +151,11 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
 </script>
 
 <template>
-  <div :class="embedded ? 'animate-fade-in' : 'page-container animate-fade-in'">
+  <div :class="embedded ? '' : 'page-container'">
     <div :class="embedded ? '' : 'content-wrapper'">
-      <PageHeader
+      <UiPageHeader
         v-if="!embedded"
-        eyebrow="运维摘要"
+        eyebrow="系统观测"
         title="运行状态"
         subtitle="查看 Key 池、当前请求和队列状态，并调整运行参数。"
       />
@@ -166,29 +167,32 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
           role="alert"
         >
           <span>{{ errorMessage }}</span>
-          <button
-            class="btn-secondary rounded-lg px-3 py-1 text-xs"
-            type="button"
+          <UiButton
+            variant="secondary"
+            size="sm"
             :disabled="loading"
             @click="loadRuntime"
           >
             重试
-          </button>
+          </UiButton>
         </p>
       </Transition>
 
-      <div
+      <UiSkeleton
         v-if="loading"
-        class="card p-6"
-      >
-        <LoadingSpinner label="运行状态加载中…" />
-      </div>
+        variant="cards"
+        :lines="4"
+      />
 
       <template v-else>
         <p
           v-if="summaryUpdatedAt"
-          class="mb-3 text-xs text-[var(--color-text-subtle)]"
+          class="mb-3 flex items-center gap-1.5 text-xs text-[var(--color-text-subtle)]"
         >
+          <span
+            class="h-1.5 w-1.5 rounded-full bg-[var(--color-success)] pulse-dot"
+            aria-hidden="true"
+          />
           每 5 秒自动刷新 · 更新于 {{ formatTimeOfDay(summaryUpdatedAt) }}
         </p>
         <!-- Summary cards -->
@@ -199,57 +203,57 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
           <!-- Key counts -->
           <div
             data-testid="runtime-key-counts"
-            class="stat-card md:col-span-2 xl:col-span-2 animate-slide-up"
+            class="stat-card md:col-span-2 xl:col-span-2"
           >
-            <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+            <h2 class="type-label">
               NVIDIA Key
             </h2>
             <div class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm">
-              <span class="text-[var(--color-text-secondary)]">总数 <strong class="text-[var(--color-text)]">{{ summary.keys.total }}</strong></span>
-              <span class="text-[var(--color-success)]">就绪 <strong>{{ summary.keys.ready }}</strong></span>
-              <span class="text-[var(--color-text-secondary)]">启用 <strong class="text-[var(--color-text)]">{{ summary.keys.enabled }}</strong></span>
-              <span class="text-[var(--color-text-secondary)]">停用 <strong class="text-[var(--color-text)]">{{ summary.keys.disabled }}</strong></span>
-              <span class="text-[var(--color-warning)]">冷却 <strong>{{ summary.keys.cooling_down }}</strong></span>
-              <span class="text-[var(--color-danger)]">失效 <strong>{{ summary.keys.auth_invalid }}</strong></span>
+              <span class="text-[var(--color-text-secondary)]">总数 <strong class="font-mono-data text-[var(--color-text)]">{{ summary.keys.total }}</strong></span>
+              <span class="text-[var(--color-success)]">就绪 <strong class="font-mono-data">{{ summary.keys.ready }}</strong></span>
+              <span class="text-[var(--color-text-secondary)]">启用 <strong class="font-mono-data text-[var(--color-text)]">{{ summary.keys.enabled }}</strong></span>
+              <span class="text-[var(--color-text-secondary)]">停用 <strong class="font-mono-data text-[var(--color-text)]">{{ summary.keys.disabled }}</strong></span>
+              <span class="text-[var(--color-warning)]">冷却 <strong class="font-mono-data">{{ summary.keys.cooling_down }}</strong></span>
+              <span class="text-[var(--color-danger)]">失效 <strong class="font-mono-data">{{ summary.keys.auth_invalid }}</strong></span>
             </div>
           </div>
 
           <!-- Active requests -->
           <div
             data-testid="runtime-active"
-            class="stat-card animate-slide-up"
+            class="stat-card"
           >
-            <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+            <h2 class="type-label">
               活跃请求
             </h2>
-            <p class="mt-2 text-3xl font-semibold text-[var(--color-text)]">
+            <p class="mt-2 font-mono-data text-[28px] font-semibold leading-tight text-[var(--color-text)]">
               {{ summary.active }}
-              <span class="ml-2 inline-block h-2 w-2 rounded-full bg-[var(--color-accent)] pulse-dot align-middle" />
+              <span class="ml-1 inline-block h-2 w-2 rounded-full bg-[var(--color-accent)] pulse-dot align-middle" />
             </p>
           </div>
 
           <!-- Queue -->
           <div
             data-testid="runtime-queue"
-            class="stat-card animate-slide-up"
+            class="stat-card"
           >
-            <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+            <h2 class="type-label">
               队列 / 容量
             </h2>
-            <p class="mt-2 text-3xl font-semibold text-[var(--color-text)]">
-              {{ summary.queue.length }} / {{ summary.queue.capacity }}
+            <p class="mt-2 font-mono-data text-[28px] font-semibold leading-tight text-[var(--color-text)]">
+              {{ summary.queue.length }}<span class="text-[var(--color-text-subtle)]"> / {{ summary.queue.capacity }}</span>
             </p>
           </div>
 
           <!-- Earliest cooldown -->
           <div
             data-testid="runtime-cooldown"
-            class="stat-card animate-slide-up"
+            class="stat-card"
           >
-            <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+            <h2 class="type-label">
               最早冷却结束
             </h2>
-            <p class="mt-2 font-mono text-sm text-[var(--color-text-secondary)]">
+            <p class="mt-2 font-mono-data text-sm leading-relaxed text-[var(--color-text-secondary)]">
               {{ formatDate(summary.earliest_cooldown) }}
             </p>
           </div>
@@ -257,9 +261,9 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
           <!-- Shutdown status -->
           <div
             data-testid="runtime-shutdown"
-            class="stat-card animate-slide-up"
+            class="stat-card"
           >
-            <h2 class="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+            <h2 class="type-label">
               服务状态
             </h2>
             <p
@@ -268,7 +272,7 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
             >
               <span
                 class="inline-block h-2 w-2 rounded-full pulse-dot"
-                :class="summary.shutting_down ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-accent)]'"
+                :class="summary.shutting_down ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'"
               />
               {{ summary.shutting_down ? '关闭中' : '接收请求' }}
             </p>
@@ -280,7 +284,7 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
           <p
             v-if="savedMessage"
             data-testid="runtime-saved"
-            class="mt-4 text-sm badge-success inline-flex px-3 py-1"
+            class="badge-success mt-4 inline-flex px-3 py-1 text-sm"
           >
             {{ savedMessage }}
           </p>

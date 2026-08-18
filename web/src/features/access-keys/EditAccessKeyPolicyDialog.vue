@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 
 import { ApiError } from '../../shared/api/client'
-import { useDialog } from '../../shared/useDialog'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiModal from '../../shared/ui/UiModal.vue'
 import { accessKeysApi } from './api'
 import type { AccessKey, AccessKeyPolicy } from './types'
 
@@ -11,9 +12,6 @@ const emit = defineEmits<{
   close: []
   saved: []
 }>()
-
-const panel = ref<globalThis.HTMLElement | null>(null)
-useDialog(computed(() => props.open), panel, () => emit('close'))
 
 const rpm = ref('')
 const tpm = ref('')
@@ -126,198 +124,170 @@ function close(): void {
 </script>
 
 <template>
-  <Transition name="modal">
-    <div
-      v-if="open"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="edit-access-key-policy-title"
+  <UiModal
+    :open="open"
+    :title="`编辑策略 · ${accessKey?.name ?? ''}`"
+    size="sm"
+    @close="close"
+  >
+    <form
+      data-testid="edit-access-key-policy-form"
+      class="space-y-4"
+      novalidate
+      @submit.prevent="save"
     >
-      <section
-        ref="panel"
-        class="modal-panel max-w-lg"
+      <div>
+        <label
+          class="field-label"
+          for="policy-rpm"
+        >RPM 限制</label>
+        <input
+          id="policy-rpm"
+          :value="rpm"
+          data-testid="access-key-rpm-limit"
+          class="input-field"
+          type="number"
+          min="0"
+          max="100000"
+          step="1"
+          :aria-invalid="Boolean(fieldErrors.rpm)"
+          @input="(e: Event) => { rpm = (e.target as HTMLInputElement).value }"
+        >
+        <span
+          v-if="fieldErrors.rpm"
+          data-testid="access-key-rpm-error"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldErrors.rpm }}</span>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">每分钟请求数上限，0 表示不限制。</span>
+      </div>
+
+      <div>
+        <label
+          class="field-label"
+          for="policy-tpm"
+        >TPM 限制</label>
+        <input
+          id="policy-tpm"
+          :value="tpm"
+          data-testid="access-key-tpm-limit"
+          class="input-field"
+          type="number"
+          min="0"
+          max="1000000000"
+          step="1"
+          :aria-invalid="Boolean(fieldErrors.tpm)"
+          @input="(e: Event) => { tpm = (e.target as HTMLInputElement).value }"
+        >
+        <span
+          v-if="fieldErrors.tpm"
+          data-testid="access-key-tpm-error"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldErrors.tpm }}</span>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">每分钟 Token 数上限，0 表示不限制。</span>
+      </div>
+
+      <div>
+        <label
+          class="field-label"
+          for="policy-max-concurrent"
+        >最大并发</label>
+        <input
+          id="policy-max-concurrent"
+          :value="maxConcurrent"
+          data-testid="access-key-max-concurrent"
+          class="input-field"
+          type="number"
+          min="0"
+          max="10000"
+          step="1"
+          :aria-invalid="Boolean(fieldErrors.maxConcurrent)"
+          @input="(e: Event) => { maxConcurrent = (e.target as HTMLInputElement).value }"
+        >
+        <span
+          v-if="fieldErrors.maxConcurrent"
+          data-testid="access-key-max-concurrent-error"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldErrors.maxConcurrent }}</span>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">同时进行的请求数上限，0 表示不限制。</span>
+      </div>
+
+      <div>
+        <label
+          class="field-label"
+          for="policy-token-budget"
+        >Token 总预算</label>
+        <input
+          id="policy-token-budget"
+          :value="tokenBudget"
+          data-testid="access-key-token-budget"
+          class="input-field"
+          type="number"
+          min="0"
+          max="1000000000000"
+          step="1"
+          :aria-invalid="Boolean(fieldErrors.tokenBudget)"
+          @input="(e: Event) => { tokenBudget = (e.target as HTMLInputElement).value }"
+        >
+        <span
+          v-if="fieldErrors.tokenBudget"
+          data-testid="access-key-token-budget-error"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldErrors.tokenBudget }}</span>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">该 Key 累计可消耗的 Token 上限，用尽后拒绝请求，0 表示不限制。</span>
+      </div>
+
+      <div>
+        <label
+          class="field-label"
+          for="policy-expires-at"
+        >过期时间</label>
+        <input
+          id="policy-expires-at"
+          v-model="expiresAt"
+          data-testid="access-key-expires-at"
+          class="input-field"
+          type="datetime-local"
+          :aria-invalid="Boolean(fieldErrors.expiresAt)"
+        >
+        <span
+          v-if="fieldErrors.expiresAt"
+          data-testid="access-key-expires-at-error"
+          class="mt-1.5 block text-xs text-[var(--color-danger)]"
+          role="alert"
+        >{{ fieldErrors.expiresAt }}</span>
+        <span class="mt-1.5 block text-xs text-[var(--color-text-muted)]">留空表示永不过期。</span>
+      </div>
+
+      <p
+        v-if="errorMessage"
+        data-testid="edit-access-key-policy-error"
+        class="text-sm text-[var(--color-danger)]"
+        role="alert"
       >
-        <div class="border-b border-[var(--color-border)] px-6 py-4">
-          <h2
-            id="edit-access-key-policy-title"
-            class="text-base font-semibold text-[var(--color-text)]"
-          >
-            编辑策略 · {{ accessKey?.name }}
-          </h2>
-        </div>
-        <div class="p-6">
-          <form
-            data-testid="edit-access-key-policy-form"
-            class="space-y-4"
-            novalidate
-            @submit.prevent="save"
-          >
-            <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-              <span>RPM 限制</span>
-              <input
-                :value="rpm"
-                data-testid="access-key-rpm-limit"
-                class="input-field mt-1.5"
-                type="number"
-                min="0"
-                max="100000"
-                step="1"
-                :aria-invalid="Boolean(fieldErrors.rpm)"
-                @input="(e: Event) => { rpm = (e.target as HTMLInputElement).value }"
-              >
-              <span
-                v-if="fieldErrors.rpm"
-                data-testid="access-key-rpm-error"
-                class="mt-1 block text-xs text-[var(--color-danger)]"
-                role="alert"
-              >{{ fieldErrors.rpm }}</span>
-              <span class="mt-1 block text-xs text-[var(--color-text-muted)]">每分钟请求数上限，0 表示不限制。</span>
-            </label>
+        {{ errorMessage }}
+      </p>
 
-            <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-              <span>TPM 限制</span>
-              <input
-                :value="tpm"
-                data-testid="access-key-tpm-limit"
-                class="input-field mt-1.5"
-                type="number"
-                min="0"
-                max="1000000000"
-                step="1"
-                :aria-invalid="Boolean(fieldErrors.tpm)"
-                @input="(e: Event) => { tpm = (e.target as HTMLInputElement).value }"
-              >
-              <span
-                v-if="fieldErrors.tpm"
-                data-testid="access-key-tpm-error"
-                class="mt-1 block text-xs text-[var(--color-danger)]"
-                role="alert"
-              >{{ fieldErrors.tpm }}</span>
-              <span class="mt-1 block text-xs text-[var(--color-text-muted)]">每分钟 Token 数上限，0 表示不限制。</span>
-            </label>
-
-            <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-              <span>最大并发</span>
-              <input
-                :value="maxConcurrent"
-                data-testid="access-key-max-concurrent"
-                class="input-field mt-1.5"
-                type="number"
-                min="0"
-                max="10000"
-                step="1"
-                :aria-invalid="Boolean(fieldErrors.maxConcurrent)"
-                @input="(e: Event) => { maxConcurrent = (e.target as HTMLInputElement).value }"
-              >
-              <span
-                v-if="fieldErrors.maxConcurrent"
-                data-testid="access-key-max-concurrent-error"
-                class="mt-1 block text-xs text-[var(--color-danger)]"
-                role="alert"
-              >{{ fieldErrors.maxConcurrent }}</span>
-              <span class="mt-1 block text-xs text-[var(--color-text-muted)]">同时进行的请求数上限，0 表示不限制。</span>
-            </label>
-
-            <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-              <span>Token 总预算</span>
-              <input
-                :value="tokenBudget"
-                data-testid="access-key-token-budget"
-                class="input-field mt-1.5"
-                type="number"
-                min="0"
-                max="1000000000000"
-                step="1"
-                :aria-invalid="Boolean(fieldErrors.tokenBudget)"
-                @input="(e: Event) => { tokenBudget = (e.target as HTMLInputElement).value }"
-              >
-              <span
-                v-if="fieldErrors.tokenBudget"
-                data-testid="access-key-token-budget-error"
-                class="mt-1 block text-xs text-[var(--color-danger)]"
-                role="alert"
-              >{{ fieldErrors.tokenBudget }}</span>
-              <span class="mt-1 block text-xs text-[var(--color-text-muted)]">该 Key 累计可消耗的 Token 上限，用尽后拒绝请求，0 表示不限制。</span>
-            </label>
-
-            <label class="block text-sm font-medium text-[var(--color-text-secondary)]">
-              <span>过期时间</span>
-              <input
-                v-model="expiresAt"
-                data-testid="access-key-expires-at"
-                class="input-field mt-1.5"
-                type="datetime-local"
-                :aria-invalid="Boolean(fieldErrors.expiresAt)"
-              >
-              <span
-                v-if="fieldErrors.expiresAt"
-                data-testid="access-key-expires-at-error"
-                class="mt-1 block text-xs text-[var(--color-danger)]"
-                role="alert"
-              >{{ fieldErrors.expiresAt }}</span>
-              <span class="mt-1 block text-xs text-[var(--color-text-muted)]">留空表示永不过期。</span>
-            </label>
-
-            <Transition name="slide">
-              <p
-                v-if="errorMessage"
-                data-testid="edit-access-key-policy-error"
-                class="text-sm text-[var(--color-danger)]"
-                role="alert"
-              >
-                {{ errorMessage }}
-              </p>
-            </Transition>
-
-            <div class="flex justify-end gap-3">
-              <button
-                class="btn-secondary rounded-lg px-4 py-2 text-sm"
-                type="button"
-                @click="close"
-              >
-                取消
-              </button>
-              <button
-                data-testid="save-access-key-policy"
-                class="btn-primary rounded-lg px-4 py-2 text-sm"
-                type="submit"
-                :disabled="saving"
-              >
-                {{ saving ? '保存中…' : '保存策略' }}
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-    </div>
-  </Transition>
+      <div class="flex justify-end gap-2">
+        <UiButton
+          variant="ghost"
+          @click="close"
+        >
+          取消
+        </UiButton>
+        <UiButton
+          data-testid="save-access-key-policy"
+          variant="primary"
+          type="submit"
+          :loading="saving"
+          loading-label="保存中…"
+        >
+          保存策略
+        </UiButton>
+      </div>
+    </form>
+  </UiModal>
 </template>
-
-<style scoped>
-.modal-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.modal-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-.modal-enter-from section,
-.modal-leave-to section {
-  transform: scale(0.95);
-}
-.slide-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.slide-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-</style>

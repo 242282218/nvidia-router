@@ -142,7 +142,7 @@ describe('ModelsView', () => {
     request.resolve({ data: [makeModel()] })
     await flushPromises()
 
-    expect(state.models).toEqual([])
+    expect(state.models).toEqual(null)
     expect(state.loading).toBe(true)
   })
 
@@ -362,20 +362,19 @@ describe('ModelsView', () => {
     expect(wrapper.text()).toContain('$0.14')
   })
 
-  it('requires two-step confirmation to delete a model and removes it from the list', async () => {
+  it('requires confirmation to delete a model and removes it from the list', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 8, display_name: 'To Delete' })] })
     vi.mocked(modelsApi.delete).mockResolvedValue(undefined)
     const wrapper = mount(ModelsView)
     await flushPromises()
 
     const deleteBtn = wrapper.get('[data-testid="model-delete-8"]')
-    // First click arms confirmation
+    // First click opens the confirm dialog; nothing is deleted yet.
     await deleteBtn.trigger('click')
     expect(modelsApi.delete).not.toHaveBeenCalled()
-    expect(deleteBtn.text()).toContain('确认删除')
 
-    // Second click performs delete
-    await deleteBtn.trigger('click')
+    // Confirming in the dialog performs the deletion.
+    await wrapper.get('[data-testid="confirm-delete-model"]').trigger('click')
     await flushPromises()
 
     expect(modelsApi.delete).toHaveBeenCalledWith(8)

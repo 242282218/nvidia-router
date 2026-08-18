@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import type { Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null; confirmingId?: number | null }>()
+defineProps<{ models: Model[]; busyId: number | null }>()
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
@@ -16,10 +17,6 @@ function audioNeedsVerification(model: Model): boolean {
 function enablingIsBlocked(model: Model): boolean {
   return !model.enabled && audioNeedsVerification(model)
 }
-
-function capBadge(supported: boolean): string {
-  return supported ? 'badge-success' : 'badge-muted'
-}
 </script>
 
 <template>
@@ -30,28 +27,45 @@ function capBadge(supported: boolean): string {
     <article
       v-for="model in models"
       :key="model.id"
-      class="card-hover p-4 animate-slide-up"
+      class="card p-4"
     >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <h3 class="text-sm font-medium text-[var(--color-text)]">
             {{ model.display_name }}
           </h3>
-          <p class="mt-0.5 truncate font-mono text-xs text-[var(--color-text-muted)]">
+          <p class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]">
             {{ model.public_id }}
           </p>
         </div>
-        <span class="badge-info shrink-0">{{ model.kind }}</span>
+        <UiBadge
+          class="shrink-0"
+          variant="info"
+          :label="model.kind"
+          :dot="false"
+        />
       </div>
 
-      <div class="mt-3 flex flex-wrap gap-2 text-xs">
-        <span :class="capBadge(model.supports_vision)">Vision {{ model.supports_vision ? '✓' : '—' }}</span>
-        <span :class="capBadge(model.supports_tools)">Tools {{ model.supports_tools ? '✓' : '—' }}</span>
-        <span :class="capBadge(model.supports_reasoning)">Reasoning {{ model.supports_reasoning ? '✓' : '—' }}</span>
+      <div class="mt-3 flex flex-wrap gap-1.5 text-xs">
+        <UiBadge
+          :variant="model.supports_vision ? 'success' : 'muted'"
+          :label="`Vision ${model.supports_vision ? '✓' : '—'}`"
+          :dot="false"
+        />
+        <UiBadge
+          :variant="model.supports_tools ? 'success' : 'muted'"
+          :label="`Tools ${model.supports_tools ? '✓' : '—'}`"
+          :dot="false"
+        />
+        <UiBadge
+          :variant="model.supports_reasoning ? 'success' : 'muted'"
+          :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'}`"
+          :dot="false"
+        />
       </div>
 
       <div class="mt-3 flex items-center justify-between">
-        <StatusBadge
+        <UiBadge
           :variant="model.enabled ? 'success' : 'muted'"
           :label="model.enabled ? '启用' : '停用'"
         />
@@ -91,31 +105,26 @@ function capBadge(supported: boolean): string {
       </div>
 
       <div class="mt-4 flex gap-2">
-        <button
+        <UiButton
           data-testid="model-card-toggle"
-          class="btn-secondary flex-1"
-          type="button"
+          variant="secondary"
+          size="sm"
+          class="flex-1"
           :disabled="enablingIsBlocked(model) || busyId === model.id"
           @click="emit('toggle', model)"
         >
           {{ model.enabled ? '停用' : '启用' }}
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           :data-testid="`model-card-delete-${model.id}`"
-          class="btn-danger"
-          type="button"
+          variant="danger"
+          size="sm"
           :disabled="busyId === model.id"
           @click="emit('delete', model)"
         >
-          {{ confirmingId === model.id ? '确认删除？' : '删除' }}
-        </button>
+          删除
+        </UiButton>
       </div>
     </article>
-    <p
-      v-if="models.length === 0"
-      class="rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
-    >
-      暂无模型白名单。
-    </p>
   </div>
 </template>

@@ -1,12 +1,13 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatLocalDateTime } from '../../shared/format'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import LoadingSpinner from '../../shared/components/LoadingSpinner.vue'
-import StatePanel from '../../shared/components/StatePanel.vue'
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiStat from '../../shared/ui/UiStat.vue'
+import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
 import { usePolling } from '../../shared/usePolling'
 import { proxyPoolApi } from './api'
 import type { PoolStatusData, ProxyPoolPatch, ProxyPoolSettings } from './types'
@@ -192,46 +193,47 @@ async function refreshPool(): Promise<void> {
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
+  <div class="page-container">
     <div class="content-wrapper">
-      <PageHeader
-        eyebrow="内置出口层"
+      <UiPageHeader
+        eyebrow="资源接入"
         title="代理池"
         subtitle="XApi 采集、出口验证、质量路由和 NVIDIA CONNECT 全部运行在本服务内。"
       >
         <template #actions>
-          <StatusBadge
+          <UiBadge
             :variant="poolBadge().variant"
             :label="poolBadge().label"
           />
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
-      <StatePanel
-        class="mt-5"
+      <UiStatePanel
         :loading="loading"
         :error="errorMessage"
         loadingLabel="加载内置代理配置…"
+        skeleton="text"
+        :skeleton-lines="5"
         errorTestId="proxy-settings-load-error"
         retryTestId="proxy-settings-retry"
         retryLabel="重新加载"
         @retry="loadSettings"
       >
         <form
-          class="card animate-slide-up p-5"
+          class="card p-5 sm:p-6"
           novalidate
           @submit.prevent="save"
         >
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 class="text-sm font-medium">
+              <h2 class="type-heading">
                 运行配置
               </h2>
               <p class="mt-1 text-sm text-[var(--color-text-muted)]">
                 当前配置来源：{{ sourceLabel(settings?.source) }}。XApi 凭据只以密文保存，页面不回显完整地址。
               </p>
             </div>
-            <label class="flex min-h-11 items-center gap-3 text-sm">
+            <label class="flex h-9 cursor-pointer items-center gap-2.5 text-sm text-[var(--color-text-secondary)]">
               <input
                 v-model="enabled"
                 data-testid="proxy-enabled"
@@ -242,87 +244,111 @@ async function refreshPool(): Promise<void> {
             </label>
           </div>
 
-          <div class="mt-6 grid gap-5 md:grid-cols-2">
-            <div class="block text-sm font-medium md:col-span-2">
-              <span>XApi 上游地址</span>
+          <div class="mt-6 grid gap-x-5 gap-y-4 md:grid-cols-2">
+            <div class="md:col-span-2">
+              <span class="field-label">XApi 上游地址</span>
               <div
                 data-testid="proxy-upstream-summary"
-                class="input-field mt-1.5 font-mono"
+                class="panel-inset mt-1.5 px-3 py-2.5 font-mono-data text-sm text-[var(--color-text-secondary)]"
               >
                 {{ settings?.upstream_configured ? `已配置（${settings.upstream_endpoint || 'endpoint 已脱敏'}）` : '未配置' }}
               </div>
               <input
                 v-model="upstreamURL"
                 data-testid="proxy-upstream-url"
-                class="input-field mt-2 font-mono"
+                class="input-field mt-2 font-mono-data"
                 type="password"
                 autocomplete="new-password"
                 placeholder="粘贴完整 XApi URL（保存后不回显）"
               >
               <span
                 id="proxy-upstream-help"
-                class="mt-1 block text-xs text-[var(--color-text-muted)]"
+                class="mt-1.5 block text-xs text-[var(--color-text-muted)]"
               >管理端可修改，完整地址只发送到后端加密保存；清除凭据前必须先停用代理池。</span>
             </div>
-            <label class="block text-sm font-medium">
-              <span>验证地址</span>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-validation-url-input"
+              >验证地址</label>
               <input
+                id="proxy-validation-url-input"
                 v-model="validationUrl"
                 data-testid="proxy-validation-url"
-                class="input-field mt-1.5 font-mono"
+                class="input-field font-mono-data"
                 type="url"
                 placeholder="留空使用 NVIDIA API 根地址"
               >
-            </label>
-            <label class="block text-sm font-medium">
-              <span>预期状态码</span>
+            </div>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-validation-status-input"
+              >预期状态码</label>
               <input
+                id="proxy-validation-status-input"
                 v-model.number="validationStatus"
                 data-testid="proxy-validation-status"
-                class="input-field mt-1.5"
+                class="input-field"
                 type="number"
                 min="100"
                 max="599"
               >
-            </label>
-            <label class="block text-sm font-medium">
-              <span>采集周期</span>
+            </div>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-interval-input"
+              >采集周期</label>
               <input
+                id="proxy-interval-input"
                 v-model="interval"
                 data-testid="proxy-interval"
-                class="input-field mt-1.5 font-mono"
+                class="input-field font-mono-data"
                 placeholder="5s"
               >
-            </label>
-            <label class="block text-sm font-medium">
-              <span>代理 TTL</span>
+            </div>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-ttl-input"
+              >代理 TTL</label>
               <input
+                id="proxy-ttl-input"
                 v-model="proxyTTL"
                 data-testid="proxy-ttl"
-                class="input-field mt-1.5 font-mono"
+                class="input-field font-mono-data"
                 placeholder="120s"
               >
-            </label>
-            <label class="block text-sm font-medium">
-              <span>采集并发</span>
+            </div>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-concurrency-input"
+              >采集并发</label>
               <input
+                id="proxy-concurrency-input"
                 v-model.number="concurrency"
                 data-testid="proxy-concurrency"
-                class="input-field mt-1.5"
+                class="input-field"
                 type="number"
                 min="1"
                 max="20"
               >
-            </label>
-            <label class="block text-sm font-medium">
-              <span>最大延迟（可选）</span>
+            </div>
+            <div>
+              <label
+                class="field-label"
+                for="proxy-max-latency-input"
+              >最大延迟（可选）</label>
               <input
+                id="proxy-max-latency-input"
                 v-model="maxLatency"
                 data-testid="proxy-max-latency"
-                class="input-field mt-1.5 font-mono"
+                class="input-field font-mono-data"
                 placeholder="例如 3s"
               >
-            </label>
+            </div>
           </div>
 
           <p
@@ -334,45 +360,47 @@ async function refreshPool(): Promise<void> {
           </p>
           <p
             v-if="savedMessage"
-            class="mt-4 inline-flex px-3 py-1 text-sm badge-success"
+            class="badge-success mt-4 inline-flex px-3 py-1 text-sm"
           >
             {{ savedMessage }}
           </p>
 
-          <div class="mt-6 flex flex-wrap justify-end gap-3">
-            <button
+          <div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-[var(--color-border-subtle)] pt-5">
+            <UiButton
               data-testid="proxy-refresh-now"
-              class="btn-secondary"
-              type="button"
-              :disabled="refreshing || !settings?.enabled"
+              variant="secondary"
+              :loading="refreshing"
+              loading-label="采集中…"
+              :disabled="!settings?.enabled"
               @click="refreshPool"
             >
-              {{ refreshing ? '采集中…' : '立即采集' }}
-            </button>
-            <button
+              立即采集
+            </UiButton>
+            <UiButton
               data-testid="proxy-clear-upstream"
-              class="btn-secondary"
-              type="button"
+              variant="secondary"
               :disabled="saving || !settings?.upstream_configured || enabled"
               @click="clearUpstreamURL"
             >
               清除 XApi 凭据
-            </button>
-            <button
+            </UiButton>
+            <UiButton
               data-testid="proxy-save"
-              class="btn-primary"
+              variant="primary"
               type="submit"
-              :disabled="saving || !settings"
+              :loading="saving"
+              loading-label="保存中…"
+              :disabled="!settings"
             >
-              {{ saving ? '保存中…' : '保存配置' }}
-            </button>
+              保存配置
+            </UiButton>
           </div>
         </form>
-      </StatePanel>
+      </UiStatePanel>
 
       <section
         data-testid="proxy-status-panel"
-        class="card animate-slide-up mt-4"
+        class="card mt-5"
         :aria-busy="statusLoading"
         aria-labelledby="proxy-status-heading"
       >
@@ -380,22 +408,23 @@ async function refreshPool(): Promise<void> {
           <div>
             <h2
               id="proxy-status-heading"
-              class="text-sm font-medium"
+              class="type-heading"
             >
               实时池状态
             </h2>
-            <p class="mt-1 text-xs text-[var(--color-text-muted)]">
+            <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
               状态来自本进程内置 Collector，不依赖独立代理池服务。
             </p>
           </div>
-          <button
-            class="btn-ghost"
-            type="button"
+          <UiButton
+            variant="ghost"
+            size="sm"
+            icon="refresh"
             :disabled="statusLoading"
             @click="refreshStatus"
           >
             刷新
-          </button>
+          </UiButton>
         </div>
 
         <div
@@ -410,30 +439,22 @@ async function refreshPool(): Promise<void> {
           v-if="statusData"
           class="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4"
         >
-          <div class="metric-card">
-            <span class="text-xs text-[var(--color-text-muted)]">有效出口</span>
-            <strong class="mt-1 block font-mono text-xl tabular-nums text-[var(--color-text)]">
-              {{ statusData.healthy_size ?? 0 }}
-            </strong>
-          </div>
-          <div class="metric-card">
-            <span class="text-xs text-[var(--color-text-muted)]">池内记录</span>
-            <strong class="mt-1 block font-mono text-xl tabular-nums text-[var(--color-text)]">
-              {{ statusData.total_size ?? 0 }}
-            </strong>
-          </div>
-          <div class="metric-card">
-            <span class="text-xs text-[var(--color-text-muted)]">最近采集</span>
-            <strong class="mt-1 block font-mono text-sm leading-7 text-[var(--color-text)]">
-              {{ formatLocalDateTime(statusData.last_success_at) }}
-            </strong>
-          </div>
-          <div class="metric-card">
-            <span class="text-xs text-[var(--color-text-muted)]">上游状态</span>
-            <strong class="mt-1 block font-mono text-sm leading-7 text-[var(--color-text)]">
-              {{ statusData.last_error_code || '正常' }}
-            </strong>
-          </div>
+          <UiStat
+            label="有效出口"
+            :value="statusData.healthy_size ?? 0"
+          />
+          <UiStat
+            label="池内记录"
+            :value="statusData.total_size ?? 0"
+          />
+          <UiStat
+            label="最近采集"
+            :value="formatLocalDateTime(statusData.last_success_at)"
+          />
+          <UiStat
+            label="上游状态"
+            :value="statusData.last_error_code || '正常'"
+          />
         </div>
 
         <div
@@ -482,24 +503,24 @@ async function refreshPool(): Promise<void> {
               <tr
                 v-for="proxy in statusData.proxies"
                 :key="proxy.address"
-                class="transition-colors hover:bg-[var(--color-hover)]"
+                class="data-table-row"
               >
-                <td class="data-table-td font-mono">
+                <td class="data-table-td font-mono-data">
                   {{ proxy.address }}
                 </td>
                 <td class="data-table-td">
-                  <StatusBadge
+                  <UiBadge
                     :variant="proxy.ejected ? 'danger' : proxy.healthy ? 'success' : 'muted'"
                     :label="proxy.healthy ? '健康' : proxy.ejected ? '隔离' : '待验证'"
                   />
                 </td>
-                <td class="data-table-td font-mono tabular-nums">
+                <td class="data-table-td font-mono-data">
                   {{ proxy.latency_ewma_ms ?? '—' }} ms
                 </td>
-                <td class="data-table-td font-mono tabular-nums">
+                <td class="data-table-td font-mono-data">
                   {{ proxy.quality_score ?? '—' }}
                 </td>
-                <td class="data-table-td font-mono tabular-nums">
+                <td class="data-table-td font-mono-data">
                   {{ proxy.remaining_seconds ?? 0 }} s
                 </td>
               </tr>
@@ -513,20 +534,15 @@ async function refreshPool(): Promise<void> {
           暂无已验证出口。可点击“立即采集”重试。
         </p>
 
-        <div
-          v-if="statusLoading && statusData"
-          class="border-t border-[var(--color-border)] px-5 py-3"
-        >
-          <LoadingSpinner
-            size="sm"
-            label="刷新池状态…"
-          />
-        </div>
         <p
           v-if="statusUpdatedAt"
           class="border-t border-[var(--color-border)] px-5 py-3 text-xs text-[var(--color-text-subtle)]"
         >
-          更新于 {{ statusUpdatedAt.toLocaleTimeString() }}
+          <span
+            v-if="statusLoading"
+            class="mr-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-info)]"
+            aria-hidden="true"
+          />更新于 {{ statusUpdatedAt.toLocaleTimeString() }}<span v-if="statusLoading">（刷新中…）</span>
         </p>
       </section>
     </div>

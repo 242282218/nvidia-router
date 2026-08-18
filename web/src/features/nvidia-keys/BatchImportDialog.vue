@@ -2,7 +2,9 @@
 import { computed, ref, watch } from 'vue'
 
 import { ApiError, isRecord } from '../../shared/api/client'
-import { useDialog } from '../../shared/useDialog'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiModal from '../../shared/ui/UiModal.vue'
+import UiTextarea from '../../shared/ui/UiTextarea.vue'
 import { nvidiaKeysApi } from './api'
 import { isImportResult } from './types'
 import type { ImportResult, KeyTestResult } from './types'
@@ -15,9 +17,6 @@ const errorMessage = ref('')
 const submitting = ref(false)
 const testing = ref(false)
 const testResults = ref<KeyTestResult[]>([])
-const panel = ref<globalThis.HTMLElement | null>(null)
-
-useDialog(computed(() => props.open), panel, () => close())
 
 watch(() => props.open, (open) => {
   if (!open) {
@@ -110,253 +109,189 @@ function testStatusClass(status: string): string {
 </script>
 
 <template>
-  <Transition name="modal">
-    <div
-      v-if="open"
-      class="modal-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="batch-import-heading"
-      @click.self="close"
+  <UiModal
+    :open="open"
+    title="批量导入 NVIDIA Key"
+    subtitle="每行一个 Key。导入只做本地校验和保存，不执行上游测活。"
+    size="lg"
+    @close="close"
+  >
+    <form
+      class="space-y-4"
+      @submit.prevent="submit"
     >
-      <section
-        ref="panel"
-        class="modal-panel flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden animate-scale-in"
+      <p class="rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-info)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-info)_5%,transparent)] px-3 py-2 text-xs text-[var(--color-info)]">
+        导入完成后，如需验证上游可用性，请返回页面点击“顺序测活全部”。
+      </p>
+      <UiTextarea
+        v-model="text"
+        mono
+        :rows="7"
+        name="batch-keys"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="每行一个 NVIDIA Key"
+        aria-label="批量 NVIDIA Key"
+      />
+      <p
+        v-if="errorMessage"
+        class="text-sm text-[var(--color-danger)]"
+        role="alert"
       >
-        <!-- Header -->
-        <div class="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] px-4 py-4 sm:px-6">
-          <div class="min-w-0">
-            <h2
-              id="batch-import-heading"
-              class="text-base font-semibold text-[var(--color-text)]"
-            >
-              批量导入 NVIDIA Key
-            </h2>
-            <p class="mt-0.5 truncate text-sm text-[var(--color-text-muted)]">
-              每行一个 Key。导入只做本地校验和保存，不执行上游测活。
+        {{ errorMessage }}
+      </p>
+      <div class="flex justify-end gap-2">
+        <UiButton
+          variant="ghost"
+          @click="close"
+        >
+          取消
+        </UiButton>
+        <UiButton
+          variant="primary"
+          type="submit"
+          :loading="submitting"
+          loading-label="导入中…"
+        >
+          导入
+        </UiButton>
+      </div>
+    </form>
+
+    <!-- Results -->
+    <Transition name="fade">
+      <div
+        v-if="results.length"
+        data-testid="batch-import-results"
+        class="card mt-5 overflow-hidden"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
+          <div>
+            <h3 class="type-heading">
+              导入结果
+            </h3>
+            <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
+              共 {{ results.length }} 条记录
             </p>
           </div>
-          <button
-            class="btn-secondary shrink-0"
-            type="button"
-            aria-label="关闭批量导入窗口"
-            @click="close"
-          >
-            <svg
-              class="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
+          <div class="flex items-center gap-2 text-xs">
+            <span class="badge-success">成功 {{ resultSummary.imported }}</span>
+            <span
+              v-if="resultSummary.failed"
+              class="badge-warning"
+            >需处理 {{ resultSummary.failed }}</span>
+            <UiButton
+              v-if="resultSummary.imported > 0"
+              variant="secondary"
+              size="sm"
+              :loading="testing"
+              loading-label="测活中…"
+              data-testid="test-newly-imported"
+              @click="testNewlyImported"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-            <span>关闭</span>
-          </button>
+              测活新增 {{ resultSummary.imported }} 个
+            </UiButton>
+          </div>
+        </div>
+        <div
+          class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
+          tabindex="0"
+          aria-label="批量导入结果，可横向滚动"
+        >
+          <table class="data-table min-w-[560px]">
+            <caption class="sr-only">
+              批量导入结果，共 {{ results.length }} 条
+            </caption>
+            <thead class="sticky top-0 z-10 bg-[var(--color-surface)]">
+              <tr>
+                <th
+                  class="data-table-th w-16"
+                  scope="col"
+                >
+                  行
+                </th>
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
+                  Key
+                </th>
+                <th
+                  class="data-table-th w-32"
+                  scope="col"
+                >
+                  状态
+                </th>
+                <th
+                  class="data-table-th"
+                  scope="col"
+                >
+                  原因
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="result in results"
+                :key="`${result.line}-${result.masked}`"
+                class="data-table-row"
+              >
+                <td class="data-table-td">
+                  {{ result.line ?? '—' }}
+                </td>
+                <td
+                  class="data-table-td max-w-[220px] truncate font-mono-data text-[var(--color-info)]"
+                  :title="result.masked || '—'"
+                >
+                  {{ result.masked || '—' }}
+                </td>
+                <td class="data-table-td">
+                  <span :class="statusClass(result.status)">{{ result.status }}</span>
+                </td>
+                <td
+                  class="data-table-td max-w-[240px] truncate text-[var(--color-text-muted)]"
+                  :title="result.reason || '—'"
+                >
+                  {{ result.reason || '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
-        <!-- Body -->
-        <div class="min-h-0 overflow-y-auto p-4 sm:p-6">
-          <form
-            class="space-y-4"
-            @submit.prevent="submit"
-          >
-            <p class="rounded-lg border border-[color-mix(in_srgb,var(--color-info)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-info)_5%,transparent)] px-3 py-2 text-xs text-[var(--color-info)]">
-              导入完成后，如需验证上游可用性，请返回页面点击“顺序测活全部”。
-            </p>
-            <textarea
-              v-model="text"
-              class="input-field min-h-[140px] w-full font-mono text-sm"
-              name="batch-keys"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="每行一个 NVIDIA Key"
-            />
-            <Transition name="fade">
-              <p
-                v-if="errorMessage"
-                class="text-sm text-[var(--color-danger)]"
-                role="alert"
-              >
-                {{ errorMessage }}
-              </p>
-            </Transition>
-            <div class="flex justify-end gap-2">
-              <button
-                class="btn-secondary rounded-lg px-4 py-2 text-sm"
-                type="button"
-                @click="close"
-              >
-                取消
-              </button>
-              <button
-                class="btn-primary rounded-lg px-4 py-2 text-sm"
-                type="submit"
-                :disabled="submitting"
-              >
-                {{ submitting ? '导入中…' : '导入' }}
-              </button>
-            </div>
-          </form>
-
-          <!-- Results -->
-          <Transition name="fade">
-            <div
-              v-if="results.length"
-              data-testid="batch-import-results"
-              class="mt-6 overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-sunken)_40%,transparent)]"
+        <!-- Probe outcomes for newly imported keys -->
+        <div
+          v-if="testResults.length"
+          data-testid="batch-import-test-results"
+          class="border-t border-[var(--color-border)] px-4 py-3"
+        >
+          <h4 class="text-xs font-medium text-[var(--color-text-muted)]">
+            测活结果
+          </h4>
+          <ul class="mt-2 space-y-1">
+            <li
+              v-for="result in testResults"
+              :key="result.id"
+              class="flex items-center justify-between gap-2 text-xs"
             >
-              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
-                <div>
-                  <h3 class="text-sm font-medium text-[var(--color-text)]">
-                    导入结果
-                  </h3>
-                  <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
-                    共 {{ results.length }} 条记录
-                  </p>
-                </div>
-                <div class="flex items-center gap-2 text-xs">
-                  <span class="badge-success">成功 {{ resultSummary.imported }}</span>
-                  <span
-                    v-if="resultSummary.failed"
-                    class="badge-warning"
-                  >需处理 {{ resultSummary.failed }}</span>
-                  <button
-                    v-if="resultSummary.imported > 0"
-                    class="btn-secondary ml-1 rounded-md px-2.5 py-1 text-xs"
-                    type="button"
-                    :disabled="testing"
-                    data-testid="test-newly-imported"
-                    @click="testNewlyImported"
-                  >
-                    {{ testing ? '测活中…' : `测活新增 ${resultSummary.imported} 个` }}
-                  </button>
-                </div>
-              </div>
-              <div
-                class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
-                tabindex="0"
-                aria-label="批量导入结果，可横向滚动"
-              >
-                <table class="data-table min-w-[560px]">
-                  <caption class="sr-only">
-                    批量导入结果，共 {{ results.length }} 条
-                  </caption>
-                  <thead class="sticky top-0 z-10">
-                    <tr>
-                      <th
-                        class="data-table-th w-16"
-                        scope="col"
-                      >
-                        行
-                      </th>
-                      <th
-                        class="data-table-th"
-                        scope="col"
-                      >
-                        Key
-                      </th>
-                      <th
-                        class="data-table-th w-32"
-                        scope="col"
-                      >
-                        状态
-                      </th>
-                      <th
-                        class="data-table-th"
-                        scope="col"
-                      >
-                        原因
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-[var(--color-border)]">
-                    <tr
-                      v-for="result in results"
-                      :key="`${result.line}-${result.masked}`"
-                      class="transition-colors hover:bg-[var(--color-hover)]"
-                    >
-                      <td class="data-table-td">
-                        {{ result.line ?? '—' }}
-                      </td>
-                      <td
-                        class="data-table-td max-w-[220px] truncate font-mono text-[var(--color-info)]"
-                        :title="result.masked || '—'"
-                      >
-                        {{ result.masked || '—' }}
-                      </td>
-                      <td class="data-table-td">
-                        <span :class="statusClass(result.status)">{{ result.status }}</span>
-                      </td>
-                      <td
-                        class="data-table-td max-w-[240px] truncate text-[var(--color-text-muted)]"
-                        :title="result.reason || '—'"
-                      >
-                        {{ result.reason || '—' }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <!-- Probe outcomes for newly imported keys -->
-              <div
-                v-if="testResults.length"
-                data-testid="batch-import-test-results"
-                class="border-t border-[var(--color-border)] px-4 py-3"
-              >
-                <h4 class="text-xs font-medium text-[var(--color-text-muted)]">
-                  测活结果
-                </h4>
-                <ul class="mt-2 space-y-1">
-                  <li
-                    v-for="result in testResults"
-                    :key="result.id"
-                    class="flex items-center justify-between gap-2 text-xs"
-                  >
-                    <code class="truncate font-mono text-[var(--color-info)]">#{{ result.id }}</code>
-                    <span :class="'px-2 py-0.5 rounded ' + testStatusClass(result.status)">
-                      {{ result.status }}
-                    </span>
-                    <span
-                      v-if="result.reason"
-                      class="truncate text-[var(--color-text-muted)]"
-                      :title="result.reason"
-                    >{{ result.reason }}</span>
-                  </li>
-                </ul>
-              </div>
-            </div>
-          </Transition>
+              <code class="truncate font-mono-data text-[var(--color-info)]">#{{ result.id }}</code>
+              <span :class="'px-2 py-0.5 rounded ' + testStatusClass(result.status)">
+                {{ result.status }}
+              </span>
+              <span
+                v-if="result.reason"
+                class="truncate text-[var(--color-text-muted)]"
+                :title="result.reason"
+              >{{ result.reason }}</span>
+            </li>
+          </ul>
         </div>
-
-        <!-- The close affordances are the fixed top-right button, the form's
-             cancel and Esc; a third identical footer button was redundant. -->
-      </section>
-    </div>
-  </Transition>
+      </div>
+    </Transition>
+  </UiModal>
 </template>
 
 <style scoped>
-.modal-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
-}
-.modal-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
-}
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-.modal-enter-from .modal-panel,
-.modal-leave-to .modal-panel {
-  transform: scale(0.95);
-}
 .fade-enter-active {
   transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
 }

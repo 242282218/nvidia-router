@@ -40,7 +40,7 @@ function onToastLeave(id: number, type: ToastType): void {
         v-for="toast in toastState.toasts"
         :key="toast.id"
         :role="toastRole(toast.type)"
-        class="pointer-events-auto flex items-start gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)] px-3.5 py-3 shadow-[var(--shadow-overlay)]"
+        class="pointer-events-auto flex items-start gap-3 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-elevated)] px-3.5 py-3 shadow-[var(--shadow-overlay)]"
         @mouseenter="onToastEnter(toast.id)"
         @mouseleave="onToastLeave(toast.id, toast.type)"
         @focusin="onToastEnter(toast.id)"

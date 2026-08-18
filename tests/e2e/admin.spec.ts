@@ -34,6 +34,6 @@ test.describe('administrator authentication', () => {
     await expect(page).toHaveURL(/\/admin\/login$/)
     await login(page)
     await expect(page).toHaveURL(/\/admin\/$/)
-    await expect(page.getByRole('main').getByText('管理端已登录。')).toBeVisible()
+    await expect(page.getByLabel('管理侧栏').getByText('会话有效')).toBeVisible()
   })
 })

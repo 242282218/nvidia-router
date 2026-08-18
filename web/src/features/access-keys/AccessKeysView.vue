@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import StatePanel from '../../shared/components/StatePanel.vue'
 import { toastError, toastSuccess } from '../../shared/toast'
+import { useAsyncData } from '../../shared/useAsyncData'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiConfirmDialog from '../../shared/ui/UiConfirmDialog.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
 import { accessKeysApi } from './api'
 import AccessKeyCards from './AccessKeyCards.vue'
 import AccessKeyTable from './AccessKeyTable.vue'
@@ -12,52 +15,33 @@ import CreateAccessKeyDialog from './CreateAccessKeyDialog.vue'
 import EditAccessKeyPolicyDialog from './EditAccessKeyPolicyDialog.vue'
 import type { AccessKey } from './types'
 
-const keys = ref<AccessKey[]>([])
-const loading = ref(false)
-const loadError = ref('')
+const { data: keys, loading, error: loadError, refresh: loadKeys, setData, isDisposed } = useAsyncData<AccessKey[]>(
+  async () => {
+    const response: unknown = await accessKeysApi.list()
+    if (!isDataArrayResponse(response, isAccessKey)) {
+      throw new TypeError('Invalid Access Key list response.')
+    }
+    return response.data
+  },
+  { errorMessage: 'Access Key 列表加载失败。' },
+)
+
+const keyList = computed<AccessKey[]>(() => keys.value ?? [])
+
 const dialogOpen = ref(false)
 const editDialogOpen = ref(false)
 const editingKey = ref<AccessKey | null>(null)
 const busyId = ref<number | null>(null)
-const confirmingRevokeId = ref<number | null>(null)
-const confirmingDeleteId = ref<number | null>(null)
-let loadSequence = 0
-let disposed = false
+// 撤销/删除共用一个确认对话框：pendingAction 描述「对哪条 Key 做什么」。
+const pendingAction = ref<{ type: 'revoke' | 'delete'; key: AccessKey } | null>(null)
+const acting = ref(false)
 
 onMounted(() => {
   void loadKeys()
 })
 
-onBeforeUnmount(() => {
-  disposed = true
-  loadSequence += 1
-})
-
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback
-}
-
-async function loadKeys(): Promise<void> {
-  if (disposed) return
-  const sequence = ++loadSequence
-  loading.value = true
-  loadError.value = ''
-  try {
-    const response: unknown = await accessKeysApi.list()
-    if (disposed || sequence !== loadSequence) return
-    if (!isDataArrayResponse(response, isAccessKey)) {
-      throw new TypeError('Invalid Access Key list response.')
-    }
-    keys.value = response.data
-  } catch (error) {
-    if (disposed || sequence !== loadSequence) return
-    // A failed load must not read as "no keys exist": keep the list untouched
-    // and surface a persistent error with a retry instead of an empty state.
-    loadError.value = errorMessage(error, 'Access Key 列表加载失败。')
-    toastError(loadError.value)
-  } finally {
-    if (!disposed && sequence === loadSequence) loading.value = false
-  }
 }
 
 function isAccessKey(value: unknown): value is AccessKey {
@@ -83,123 +67,104 @@ function openEditPolicy(key: AccessKey): void {
   editDialogOpen.value = true
 }
 
-async function revokeKey(key: AccessKey): Promise<void> {
-  if (busyId.value === key.id) return
-  if (confirmingRevokeId.value === key.id) {
-    confirmingRevokeId.value = null
-    busyId.value = key.id
-    try {
-      await accessKeysApi.revoke(key.id)
-      if (disposed) return
-      await loadKeys()
-      toastSuccess(`Access Key「${key.name}」已撤销。`)
-    } catch (error) {
-      if (disposed) return
-      toastError(errorMessage(error, 'Access Key 撤销失败。'))
-    } finally {
-      if (!disposed) busyId.value = null
+const confirmCopy = computed(() => {
+  const action = pendingAction.value
+  if (!action) return { title: '', message: '', confirmLabel: '确认' }
+  if (action.type === 'revoke') {
+    return {
+      title: '撤销 Access Key',
+      message: `将立即撤销「${action.key.name}」（${action.key.key_prefix}…）。撤销后使用该凭证的客户端立刻无法调用，此操作不可恢复。`,
+      confirmLabel: '撤销',
     }
-    return
   }
-  confirmingRevokeId.value = key.id
-  globalThis.setTimeout(() => {
-    if (confirmingRevokeId.value === key.id) confirmingRevokeId.value = null
-  }, 3000)
-}
+  return {
+    title: '删除 Access Key',
+    message: `将永久删除「${action.key.name}」（${action.key.key_prefix}…）及其策略配置。`,
+    confirmLabel: '删除',
+  }
+})
 
-async function deleteKey(key: AccessKey): Promise<void> {
-  if (busyId.value === key.id) return
-  if (confirmingDeleteId.value === key.id) {
-    confirmingDeleteId.value = null
-    busyId.value = key.id
-    try {
-      await accessKeysApi.delete(key.id)
-      if (disposed) return
-      keys.value = keys.value.filter((item) => item.id !== key.id)
-      toastSuccess(`Access Key「${key.name}」已删除。`)
-    } catch (error) {
-      if (disposed) return
-      toastError(errorMessage(error, 'Access Key 删除失败。'))
-    } finally {
-      if (!disposed) busyId.value = null
+async function confirmAction(): Promise<void> {
+  const action = pendingAction.value
+  if (!action || acting.value) return
+  acting.value = true
+  busyId.value = action.key.id
+  try {
+    if (action.type === 'revoke') {
+      await accessKeysApi.revoke(action.key.id)
+      if (isDisposed()) return
+      pendingAction.value = null
+      await loadKeys()
+      toastSuccess(`Access Key「${action.key.name}」已撤销。`)
+    } else {
+      await accessKeysApi.delete(action.key.id)
+      if (isDisposed()) return
+      pendingAction.value = null
+      setData(keyList.value.filter((item) => item.id !== action.key.id))
+      toastSuccess(`Access Key「${action.key.name}」已删除。`)
     }
-    return
+  } catch (error) {
+    if (isDisposed()) return
+    toastError(errorMessage(error, action.type === 'revoke' ? 'Access Key 撤销失败。' : 'Access Key 删除失败。'))
+  } finally {
+    if (!isDisposed()) {
+      busyId.value = null
+      acting.value = false
+    }
   }
-  confirmingDeleteId.value = key.id
-  globalThis.setTimeout(() => {
-    if (confirmingDeleteId.value === key.id) confirmingDeleteId.value = null
-  }, 3000)
 }
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
+  <div class="page-container">
     <div class="content-wrapper">
-      <PageHeader
-        eyebrow="安全管理"
+      <UiPageHeader
+        eyebrow="资源接入"
         title="Access Key"
         subtitle="管理调用路由器的下游设备和客户端凭证。"
       >
         <template #actions>
-          <button
+          <UiButton
             data-testid="open-create-access-key"
-            class="btn-primary"
-            type="button"
+            variant="primary"
+            icon="plus"
             @click="dialogOpen = true"
           >
-            <span class="flex items-center gap-2">
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 4.5v15m7.5-7.5h-15"
-                />
-              </svg>
-              创建 Access Key
-            </span>
-          </button>
+            创建 Access Key
+          </UiButton>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
-      <div class="mt-5 overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)]">
-        <StatePanel
-          :loading="loading"
-          :error="loadError"
-          :empty="keys.length === 0"
-          loadingLabel="Access Key 加载中…"
-          emptyLabel="尚未创建 Access Key。"
-          emptyHint="点击右上角「创建 Access Key」生成供客户端使用的凭证。"
-          errorTestId="access-keys-load-error"
-          retryTestId="access-keys-retry"
-          @retry="loadKeys"
-        >
+      <UiStatePanel
+        :loading="loading"
+        :error="loadError"
+        :empty="keyList.length === 0"
+        loadingLabel="Access Key 加载中…"
+        skeleton="table"
+        emptyLabel="尚未创建 Access Key"
+        emptyHint="点击右上角「创建 Access Key」生成供客户端使用的凭证。"
+        empty-icon="access"
+        errorTestId="access-keys-load-error"
+        retryTestId="access-keys-retry"
+        @retry="loadKeys"
+      >
+        <div class="card overflow-hidden">
           <AccessKeyCards
-            :keys="keys"
+            :keys="keyList"
             :busy-id="busyId"
-            :confirming-revoke-id="confirmingRevokeId"
-            :confirming-delete-id="confirmingDeleteId"
             @edit="openEditPolicy"
-            @revoke="revokeKey"
-            @delete="deleteKey"
+            @revoke="pendingAction = { type: 'revoke', key: $event }"
+            @delete="pendingAction = { type: 'delete', key: $event }"
           />
           <AccessKeyTable
-            :keys="keys"
+            :keys="keyList"
             :busy-id="busyId"
-            :confirming-revoke-id="confirmingRevokeId"
-            :confirming-delete-id="confirmingDeleteId"
             @edit="openEditPolicy"
-            @revoke="revokeKey"
-            @delete="deleteKey"
+            @revoke="pendingAction = { type: 'revoke', key: $event }"
+            @delete="pendingAction = { type: 'delete', key: $event }"
           />
-        </StatePanel>
-      </div>
+        </div>
+      </UiStatePanel>
     </div>
 
     <CreateAccessKeyDialog
@@ -212,6 +177,17 @@ async function deleteKey(key: AccessKey): Promise<void> {
       :access-key="editingKey"
       @close="editDialogOpen = false"
       @saved="loadKeys"
+    />
+    <UiConfirmDialog
+      :open="pendingAction !== null"
+      :title="confirmCopy.title"
+      :message="confirmCopy.message"
+      :confirm-label="confirmCopy.confirmLabel"
+      :busy="acting"
+      confirm-test-id="confirm-access-key-action"
+      cancel-test-id="cancel-access-key-action"
+      @confirm="confirmAction"
+      @cancel="pendingAction = null"
     />
   </div>
 </template>

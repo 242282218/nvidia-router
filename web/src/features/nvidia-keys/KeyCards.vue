@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import { formatDate, keyState } from './state'
 import type { NVIDIAKey } from './types'
 
-defineProps<{ keys: NVIDIAKey[]; busyId: number | null; confirmingId: number | null }>()
+defineProps<{ keys: NVIDIAKey[]; busyId: number | null }>()
 
 const emit = defineEmits<{
   toggle: [key: NVIDIAKey]
@@ -20,34 +21,34 @@ const emit = defineEmits<{
     <article
       v-for="key in keys"
       :key="key.id"
-      class="card-hover animate-slide-up p-4"
+      class="card p-4"
     >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <code class="block truncate font-mono text-sm text-[var(--color-info)]">{{ key.masked }}</code>
-          <StatusBadge
-            class="mt-2 inline-flex"
+          <code class="block truncate font-mono-data text-sm text-[var(--color-info)]">{{ key.masked }}</code>
+          <UiBadge
+            class="mt-2"
             :variant="keyState(key).variant"
             :label="keyState(key).label"
           />
         </div>
-        <span class="shrink-0 font-mono text-xs text-[var(--color-text-muted)]">#{{ key.id }}</span>
+        <span class="shrink-0 font-mono-data text-xs text-[var(--color-text-muted)]">#{{ key.id }}</span>
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-2 text-xs">
-        <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] p-3">
+        <div class="panel-inset p-3">
           <p class="text-[var(--color-text-muted)]">
             连续失败
           </p>
-          <p class="mt-1 font-mono text-sm text-[var(--color-text-secondary)]">
+          <p class="mt-1 font-mono-data text-sm text-[var(--color-text-secondary)]">
             {{ key.consecutive_failures }}
           </p>
         </div>
-        <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] p-3">
+        <div class="panel-inset p-3">
           <p class="text-[var(--color-text-muted)]">
             最近错误
           </p>
-          <p class="mt-1 truncate font-mono text-sm text-[var(--color-danger)]">
+          <p class="mt-1 truncate font-mono-data text-sm text-[var(--color-danger)]">
             {{ key.last_error_code || '—' }}
           </p>
         </div>
@@ -59,7 +60,7 @@ const emit = defineEmits<{
           class="flex justify-between gap-3"
         >
           <dt>冷却至</dt>
-          <dd class="font-mono text-right">
+          <dd class="font-mono-data text-right">
             {{ formatDate(key.cooldown_until) }}
             <span class="sr-only">{{ key.cooldown_until }}</span>
           </dd>
@@ -69,7 +70,7 @@ const emit = defineEmits<{
           class="flex justify-between gap-3"
         >
           <dt>最近错误</dt>
-          <dd class="font-mono text-right">
+          <dd class="font-mono-data text-right">
             {{ formatDate(key.last_error_at) }}
             <span class="sr-only">{{ key.last_error_at }}</span>
           </dd>
@@ -77,40 +78,34 @@ const emit = defineEmits<{
       </dl>
 
       <div class="mt-4 grid grid-cols-3 gap-2">
-        <button
+        <UiButton
           data-testid="key-card-toggle"
-          class="btn-secondary"
-          type="button"
+          variant="secondary"
+          size="sm"
           :disabled="busyId === key.id"
           @click="emit('toggle', key)"
         >
           {{ key.enabled ? '停用' : '启用' }}
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           data-testid="key-card-test"
-          class="btn-secondary"
-          type="button"
+          variant="secondary"
+          size="sm"
           :disabled="busyId === key.id"
           @click="emit('test', key)"
         >
           单测
-        </button>
-        <button
+        </UiButton>
+        <UiButton
           data-testid="key-card-delete"
-          class="btn-danger"
-          type="button"
+          variant="danger"
+          size="sm"
           :disabled="busyId === key.id"
           @click="emit('remove', key)"
         >
-          {{ confirmingId === key.id ? '确认删除？' : '删除' }}
-        </button>
+          删除
+        </UiButton>
       </div>
     </article>
-    <p
-      v-if="keys.length === 0"
-      class="rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
-    >
-      暂无 NVIDIA Key。
-    </p>
   </div>
 </template>

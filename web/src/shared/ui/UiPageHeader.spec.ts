@@ -1,11 +1,11 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import PageHeader from './PageHeader.vue'
+import UiPageHeader from './UiPageHeader.vue'
 
-describe('PageHeader', () => {
+describe('UiPageHeader', () => {
   it('renders eyebrow, single h1 and subtitle', () => {
-    const wrapper = mount(PageHeader, {
+    const wrapper = mount(UiPageHeader, {
       props: { eyebrow: '安全管理', title: '审计日志', subtitle: '记录所有管理操作。' },
     })
     expect(wrapper.find('h1').text()).toBe('审计日志')
@@ -15,7 +15,7 @@ describe('PageHeader', () => {
   })
 
   it('omits the subtitle node and action container when unused', () => {
-    const wrapper = mount(PageHeader, {
+    const wrapper = mount(UiPageHeader, {
       props: { eyebrow: '运维管理', title: 'NVIDIA Key' },
     })
     expect(wrapper.find('p.page-subtitle').exists()).toBe(false)
@@ -23,7 +23,7 @@ describe('PageHeader', () => {
   })
 
   it('renders the actions slot next to the title block', () => {
-    const wrapper = mount(PageHeader, {
+    const wrapper = mount(UiPageHeader, {
       props: { eyebrow: '运维管理', title: 'NVIDIA Key' },
       slots: { actions: '<button data-testid="action">批量导入</button>' },
     })

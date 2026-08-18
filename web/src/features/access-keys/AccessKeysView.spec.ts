@@ -142,18 +142,18 @@ describe('AccessKeysView', () => {
     request.resolve({ data: [listedKey] })
     await flushPromises()
 
-    expect(state.keys).toEqual([])
+    expect(state.keys).toEqual(null)
     expect(state.loading).toBe(true)
   })
 
   it('does not start a post-mutation reload after unmount', async () => {
     const revoke = deferred<void>()
     vi.mocked(accessKeysApi.revoke).mockReset().mockReturnValueOnce(revoke.promise)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const wrapper = mount(AccessKeysView)
     await flushPromises()
 
     await wrapper.get('[data-testid="revoke-access-key-4"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-access-key-action"]').trigger('click')
     wrapper.unmount()
     revoke.resolve(undefined)
     await flushPromises()
@@ -318,13 +318,12 @@ describe('AccessKeysView', () => {
     expect(wrapper.text()).toContain('17:30')
 
     const revoke = wrapper.get('[data-testid="revoke-access-key-4"]')
-    // First click arms the confirmation; nothing is revoked yet.
+    // First click opens the confirm dialog; nothing is revoked yet.
     await revoke.trigger('click')
     expect(accessKeysApi.revoke).not.toHaveBeenCalled()
-    expect(revoke.text()).toContain('确认撤销')
 
-    // Second click within the window performs the revoke.
-    await revoke.trigger('click')
+    // Confirming in the dialog performs the revoke.
+    await wrapper.get('[data-testid="confirm-access-key-action"]').trigger('click')
     await flushPromises()
     expect(accessKeysApi.revoke).toHaveBeenCalledWith(4)
   })
@@ -379,18 +378,17 @@ describe('AccessKeysView', () => {
     expect(accessKeysApi.updatePolicy).not.toHaveBeenCalled()
   })
 
-  it('requires two-step confirmation to delete an access key and removes it from the list', async () => {
+  it('requires confirmation to delete an access key and removes it from the list', async () => {
     const wrapper = mount(AccessKeysView)
     await flushPromises()
 
     const deleteBtn = wrapper.get('[data-testid="delete-access-key-4"]')
-    // First click arms confirmation
+    // First click opens the confirm dialog; nothing is deleted yet.
     await deleteBtn.trigger('click')
     expect(accessKeysApi.delete).not.toHaveBeenCalled()
-    expect(deleteBtn.text()).toContain('确认删除')
 
-    // Second click performs deletion
-    await deleteBtn.trigger('click')
+    // Confirming in the dialog performs the deletion.
+    await wrapper.get('[data-testid="confirm-access-key-action"]').trigger('click')
     await flushPromises()
 
     expect(accessKeysApi.delete).toHaveBeenCalledWith(4)

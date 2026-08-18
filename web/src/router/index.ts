@@ -12,9 +12,26 @@ import ProxyPoolView from '../features/proxy/ProxyPoolView.vue'
 import ObservabilityView from '../features/observability/ObservabilityView.vue'
 import type { SessionStore } from '../features/auth/useSession'
 import AppShell from '../shared/components/AppShell.vue'
+import type { IconName } from '../shared/ui'
+
+// 导航元信息：侧栏分组、图标、排序、测试锚点全部登记在路由上。
+// AppShell 直接消费路由表生成导航——新增页面 = 新增一条路由，导航自动出现。
+export interface NavItemMeta {
+  group: string
+  icon: IconName
+  order: number
+  testId: string
+}
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    title?: string
+    nav?: NavItemMeta
+  }
+}
 
 const NotFoundView = {
-  template: '<div class="page-container"><div class="content-wrapper"><h1 class="page-title">页面不存在</h1><p class="page-subtitle">请检查地址后重试。</p></div></div>',
+  template: '<div class="page-container"><div class="content-wrapper"><h1 class="type-title">页面不存在</h1><p class="page-subtitle">请检查地址后重试。</p></div></div>',
 }
 
 export function createAppRouter(
@@ -27,15 +44,38 @@ export function createAppRouter(
       {
         component: AppShell,
         path: '/',
-        meta: { requiresAuth: true },
         children: [
           { component: NvidiaKeysView, path: '', meta: { title: 'NVIDIA Key' } },
-          { component: NvidiaKeysView, path: 'nvidia-keys', meta: { title: 'NVIDIA Key' } },
-          { component: ProvidersView, path: 'providers', meta: { title: '提供商' } },
-          { component: ModelsView, path: 'models', meta: { title: '模型白名单' } },
-          { component: AccessKeysView, path: 'access-keys', meta: { title: 'Access Key' } },
-          { component: ProxyPoolView, path: 'proxy-pool', meta: { title: '代理池' } },
-          { component: ObservabilityView, path: 'system', meta: { title: '系统与观测' } },
+          {
+            component: NvidiaKeysView,
+            path: 'nvidia-keys',
+            meta: { title: 'NVIDIA Key', nav: { group: '资源接入', icon: 'key', order: 10, testId: 'nav-nvidia-keys' } },
+          },
+          {
+            component: ProvidersView,
+            path: 'providers',
+            meta: { title: '提供商', nav: { group: '资源接入', icon: 'provider', order: 20, testId: 'nav-providers' } },
+          },
+          {
+            component: ModelsView,
+            path: 'models',
+            meta: { title: '模型白名单', nav: { group: '资源接入', icon: 'model', order: 30, testId: 'nav-models' } },
+          },
+          {
+            component: AccessKeysView,
+            path: 'access-keys',
+            meta: { title: 'Access Key', nav: { group: '资源接入', icon: 'access', order: 40, testId: 'nav-access-keys' } },
+          },
+          {
+            component: ProxyPoolView,
+            path: 'proxy-pool',
+            meta: { title: '代理池', nav: { group: '资源接入', icon: 'proxy', order: 50, testId: 'nav-proxy-pool' } },
+          },
+          {
+            component: ObservabilityView,
+            path: 'system',
+            meta: { title: '系统与观测', nav: { group: '系统观测', icon: 'system', order: 60, testId: 'nav-system' } },
+          },
           { path: 'runtime', redirect: '/system?tab=runtime' },
           { path: 'statistics', redirect: '/system?tab=statistics' },
           { path: 'live', redirect: '/system?tab=live' },
@@ -62,6 +102,12 @@ export function createAppRouter(
       return '/'
     }
     return true
+  })
+
+  // 文档标题跟随路由，多标签页场景可辨识。
+  router.afterEach((to) => {
+    const title = to.meta.title
+    globalThis.document.title = title ? `${title} · NVIDIA Router` : 'NVIDIA Router'
   })
 
   const install = router.install

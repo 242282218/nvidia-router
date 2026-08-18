@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
-import PageHeader from '../../shared/components/PageHeader.vue'
-import StatePanel from '../../shared/components/StatePanel.vue'
 import { toastError, toastInfo, toastSuccess } from '../../shared/toast'
+import { useAsyncData } from '../../shared/useAsyncData'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
+import UiCard from '../../shared/ui/UiCard.vue'
+import UiConfirmDialog from '../../shared/ui/UiConfirmDialog.vue'
+import UiField from '../../shared/ui/UiField.vue'
+import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
 import { nvidiaKeysApi } from './api'
 import BatchImportDialog from './BatchImportDialog.vue'
 import KeyCards from './KeyCards.vue'
@@ -13,7 +19,23 @@ import KeyTestDialog from './KeyTestDialog.vue'
 import { isImportResult } from './types'
 import type { ImportResult, KeyTestResult, NVIDIAKey } from './types'
 
-const keys = ref<NVIDIAKey[]>([])
+const { data: keys, loading, error: loadError, refresh: loadKeys, isDisposed } = useAsyncData<NVIDIAKey[]>(
+  async () => {
+    const response: unknown = await nvidiaKeysApi.list()
+    if (!isDataArrayResponse(response, isNvidiaKey)) {
+      throw new TypeError('Invalid NVIDIA Key list response.')
+    }
+    return response.data
+  },
+  { errorMessage: 'NVIDIA Key 列表加载失败。' },
+)
+
+const keyList = computed<NVIDIAKey[]>(() => keys.value ?? [])
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback
+}
+
 const singleKey = ref('')
 const singleResult = ref<ImportResult | null>(null)
 const testResults = ref<KeyTestResult[]>([])
@@ -22,51 +44,17 @@ const testResults = ref<KeyTestResult[]>([])
 // unrelated form.
 const importError = ref('')
 const submitting = ref(false)
-const loading = ref(false)
-const loadError = ref('')
 const testingAll = ref(false)
 const batchOpen = ref(false)
 const testDialogOpen = ref(false)
 const busyId = ref<number | null>(null)
-const confirmingId = ref<number | null>(null)
-let loadSequence = 0
-let disposed = false
+// 删除确认：对话框持有待删目标，confirm 才真正执行。
+const pendingDelete = ref<NVIDIAKey | null>(null)
+const deleting = ref(false)
 
 onMounted(() => {
   void loadKeys()
 })
-
-onBeforeUnmount(() => {
-  disposed = true
-  loadSequence += 1
-})
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof ApiError ? error.message : fallback
-}
-
-async function loadKeys(): Promise<void> {
-  if (disposed) return
-  const sequence = ++loadSequence
-  loading.value = true
-  loadError.value = ''
-  try {
-    const response: unknown = await nvidiaKeysApi.list()
-    if (disposed || sequence !== loadSequence) return
-    if (!isDataArrayResponse(response, isNvidiaKey)) {
-      throw new TypeError('Invalid NVIDIA Key list response.')
-    }
-    keys.value = response.data
-  } catch (error) {
-    if (disposed || sequence !== loadSequence) return
-    // A failed load must not read as "no keys exist": surface a persistent
-    // error with a retry instead of letting the empty state lie.
-    loadError.value = errorMessage(error, 'NVIDIA Key 列表加载失败。')
-    toastError(loadError.value)
-  } finally {
-    if (!disposed && sequence === loadSequence) loading.value = false
-  }
-}
 
 function isNvidiaKey(value: unknown): value is NVIDIAKey {
   return isRecord(value)
@@ -104,17 +92,17 @@ async function importOne(): Promise<void> {
   submitting.value = true
   try {
     const result: unknown = await nvidiaKeysApi.importOne(value)
-    if (disposed) return
+    if (isDisposed()) return
     if (!isImportResult(result)) {
       throw new TypeError('Invalid NVIDIA Key import response.')
     }
     singleResult.value = result
     await loadKeys()
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     importError.value = errorMessage(error, 'NVIDIA Key 导入失败。')
   } finally {
-    if (!disposed) submitting.value = false
+    if (!isDisposed()) submitting.value = false
   }
 }
 
@@ -122,14 +110,14 @@ async function toggleKey(key: NVIDIAKey): Promise<void> {
   busyId.value = key.id
   try {
     await nvidiaKeysApi.setEnabled(key.id, !key.enabled)
-    if (disposed) return
+    if (isDisposed()) return
     await loadKeys()
     toastSuccess(`NVIDIA Key ${key.enabled ? '已停用' : '已启用'}。`)
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     toastError(errorMessage(error, '更新 NVIDIA Key 状态失败。'))
   } finally {
-    if (!disposed) busyId.value = null
+    if (!isDisposed()) busyId.value = null
   }
 }
 
@@ -137,7 +125,7 @@ async function testKey(key: NVIDIAKey): Promise<void> {
   busyId.value = key.id
   try {
     const result: unknown = await nvidiaKeysApi.test(key.id)
-    if (disposed) return
+    if (isDisposed()) return
     if (!isKeyTestResult(result)) {
       throw new TypeError('Invalid NVIDIA Key test response.')
     }
@@ -145,10 +133,10 @@ async function testKey(key: NVIDIAKey): Promise<void> {
     testDialogOpen.value = true
     await loadKeys()
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     toastError(errorMessage(error, 'NVIDIA Key 测试失败。'))
   } finally {
-    if (!disposed) busyId.value = null
+    if (!isDisposed()) busyId.value = null
   }
 }
 
@@ -157,7 +145,7 @@ async function testAll(): Promise<void> {
   testingAll.value = true
   try {
     const response: unknown = await nvidiaKeysApi.testAll()
-    if (disposed) return
+    if (isDisposed()) return
     if (!isDataArrayResponse(response, isKeyTestResult)) {
       throw new TypeError('Invalid NVIDIA Key test-all response.')
     }
@@ -169,208 +157,150 @@ async function testAll(): Promise<void> {
     }
     await loadKeys()
   } catch (error) {
-    if (disposed) return
+    if (isDisposed()) return
     toastError(errorMessage(error, '批量测活失败。'))
   } finally {
-    if (!disposed) testingAll.value = false
+    if (!isDisposed()) testingAll.value = false
   }
 }
 
-async function removeKey(key: NVIDIAKey): Promise<void> {
-  if (busyId.value === key.id) return
-  // Two-step destructive confirmation (design-system consistent; the native
-  // window.confirm dialog is visually detached from the app chrome).
-  if (confirmingId.value === key.id) {
-    confirmingId.value = null
-    busyId.value = key.id
-    try {
-      await nvidiaKeysApi.remove(key.id)
-      if (disposed) return
-      await loadKeys()
-      toastSuccess(`NVIDIA Key ${key.masked} 已删除。`)
-    } catch (error) {
-      if (disposed) return
-      toastError(errorMessage(error, '删除 NVIDIA Key 失败。'))
-    } finally {
-      if (!disposed) busyId.value = null
-    }
-    return
+async function confirmDelete(): Promise<void> {
+  const key = pendingDelete.value
+  if (!key || deleting.value) return
+  deleting.value = true
+  try {
+    await nvidiaKeysApi.remove(key.id)
+    if (isDisposed()) return
+    pendingDelete.value = null
+    await loadKeys()
+    toastSuccess(`NVIDIA Key ${key.masked} 已删除。`)
+  } catch (error) {
+    if (isDisposed()) return
+    toastError(errorMessage(error, '删除 NVIDIA Key 失败。'))
+  } finally {
+    if (!isDisposed()) deleting.value = false
   }
-  confirmingId.value = key.id
-  globalThis.setTimeout(() => {
-    if (confirmingId.value === key.id) confirmingId.value = null
-  }, 3000)
 }
 </script>
 
 <template>
-  <div class="page-container animate-fade-in">
+  <div class="page-container">
     <div class="content-wrapper">
-      <PageHeader
-        eyebrow="运维管理"
+      <UiPageHeader
+        eyebrow="资源接入"
         title="NVIDIA Key"
         subtitle="管理上游凭据状态。页面只显示脱敏值，不保留 Key 明文。"
       >
         <template #actions>
-          <button
+          <UiButton
             data-testid="open-batch-import"
-            class="btn-secondary"
-            type="button"
+            variant="secondary"
+            icon="upload"
             @click="batchOpen = true"
           >
-            <span class="flex items-center gap-2">
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
-                />
-              </svg>
-              批量导入
-            </span>
-          </button>
-          <button
+            批量导入
+          </UiButton>
+          <UiButton
             data-testid="test-all-keys"
-            class="btn-primary"
-            type="button"
-            :disabled="loading || testingAll"
+            variant="primary"
+            icon="play"
+            :loading="testingAll"
+            loading-label="测活中…"
+            :disabled="loading"
             @click="testAll"
           >
-            <span class="flex items-center gap-2">
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
-                />
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              {{ testingAll ? '测活中…' : '顺序测活全部' }}
-            </span>
-          </button>
+            顺序测活全部
+          </UiButton>
         </template>
-      </PageHeader>
+      </UiPageHeader>
 
       <!-- Single import -->
-      <div class="card p-5 animate-slide-up">
-        <h2 class="text-sm font-medium text-[var(--color-text)]">
-          单个导入
-        </h2>
+      <UiCard
+        title="单个导入"
+        subtitle="粘贴 Key 后回车即提交，提交后立即清空输入框。"
+      >
         <form
           data-testid="single-import-form"
-          class="mt-3 flex flex-col gap-3 sm:flex-row"
+          class="flex flex-col gap-3 sm:flex-row sm:items-start"
           @submit.prevent="importOne"
         >
-          <div class="relative min-w-0 flex-1">
-            <label
-              class="sr-only"
-              for="nvidia-key-input"
-            >NVIDIA Key</label>
+          <UiField
+            class="min-w-0 flex-1"
+            :error="importError"
+          >
             <input
               id="nvidia-key-input"
               v-model="singleKey"
-              class="input-field w-full pr-10 font-mono"
+              class="input-field font-mono-data"
               name="nvidia-key"
               type="password"
               autocomplete="off"
               spellcheck="false"
               placeholder="粘贴 NVIDIA Key，提交后立即清空"
+              aria-label="NVIDIA Key"
             >
-          </div>
-          <button
-            class="btn-primary whitespace-nowrap"
+          </UiField>
+          <UiButton
+            variant="primary"
             type="submit"
-            :disabled="submitting"
+            :loading="submitting"
+            loading-label="导入中…"
           >
-            {{ submitting ? '导入中…' : '导入' }}
-          </button>
+            导入
+          </UiButton>
         </form>
         <Transition name="fade">
           <div
             v-if="singleResult"
             class="mt-3"
           >
-            <span
-              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm"
-              :class="singleResult.status === 'imported' ? 'badge-success' : 'badge-warning'"
-            >
-              <span>行 {{ singleResult.line ?? 1 }}</span>
-              <span class="opacity-40">·</span>
-              <span class="font-mono">{{ singleResult.masked || '—' }}</span>
-              <span class="opacity-40">·</span>
-              <span>{{ singleResult.status }}</span>
-              <span
-                v-if="singleResult.reason"
-                class="opacity-40"
-              >· {{ singleResult.reason }}</span>
-            </span>
+            <UiBadge
+              :variant="singleResult.status === 'imported' ? 'success' : 'warning'"
+              :label="`行 ${singleResult.line ?? 1} · ${singleResult.masked || '—'} · ${singleResult.status}${singleResult.reason ? ` · ${singleResult.reason}` : ''}`"
+              :dot="false"
+            />
           </div>
         </Transition>
-        <Transition name="fade">
-          <p
-            v-if="importError"
-            class="mt-3 text-sm text-[var(--color-danger)]"
-            role="alert"
-          >
-            {{ importError }}
-          </p>
-        </Transition>
-      </div>
+      </UiCard>
 
       <!-- Mobile hint -->
       <p
         data-testid="mobile-batch-hint"
-        class="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
+        class="panel-inset mt-4 px-3 py-2 text-xs text-[var(--color-text-muted)] md:hidden"
       >
         移动端支持逐条启停、单测和删除；批量导入等高级操作请在桌面端或页面右上角完成。
       </p>
 
       <!-- Key list -->
-      <div class="mt-4">
-        <StatePanel
+      <div class="mt-5">
+        <UiStatePanel
           :loading="loading"
           :error="loadError"
+          :empty="keyList.length === 0"
           loadingLabel="NVIDIA Key 加载中…"
+          skeleton="table"
+          emptyLabel="尚未导入 NVIDIA Key"
+          emptyHint="通过上方单个导入或右上角批量导入添加第一个上游凭据。"
+          empty-icon="key"
           errorTestId="nvidia-keys-load-error"
           retryTestId="nvidia-keys-retry"
           @retry="loadKeys"
         >
           <KeyTable
-            :keys="keys"
+            :keys="keyList"
             :busy-id="busyId"
-            :confirming-id="confirmingId"
             @toggle="toggleKey"
             @test="testKey"
-            @remove="removeKey"
+            @remove="pendingDelete = $event"
           />
           <KeyCards
-            :keys="keys"
+            :keys="keyList"
             :busy-id="busyId"
-            :confirming-id="confirmingId"
             @toggle="toggleKey"
             @test="testKey"
-            @remove="removeKey"
+            @remove="pendingDelete = $event"
           />
-        </StatePanel>
+        </UiStatePanel>
       </div>
     </div>
 
@@ -384,15 +314,26 @@ async function removeKey(key: NVIDIAKey): Promise<void> {
       :results="testResults"
       @close="testDialogOpen = false"
     />
+    <UiConfirmDialog
+      :open="pendingDelete !== null"
+      title="删除 NVIDIA Key"
+      :message="pendingDelete ? `将永久删除 ${pendingDelete.masked}（#${pendingDelete.id}）。删除后该凭据立即退出轮询池，正在排队的请求会切换到其他可用 Key。` : ''"
+      confirm-label="删除"
+      :busy="deleting"
+      confirm-test-id="confirm-delete-key"
+      cancel-test-id="cancel-delete-key"
+      @confirm="confirmDelete"
+      @cancel="pendingDelete = null"
+    />
   </div>
 </template>
 
 <style scoped>
 .fade-enter-active {
-  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1), transform 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
+  transition: opacity 0.2s cubic-bezier(0.0, 0.0, 0.2, 1);
 }
 .fade-leave-active {
-  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1), transform 0.14s cubic-bezier(0.4, 0.0, 1, 1);
+  transition: opacity 0.14s cubic-bezier(0.4, 0.0, 1, 1);
 }
 .fade-enter-from,
 .fade-leave-to {

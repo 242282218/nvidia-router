@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import StatusBadge from '../../shared/components/StatusBadge.vue'
+import UiBadge from '../../shared/ui/UiBadge.vue'
+import UiButton from '../../shared/ui/UiButton.vue'
 import { budgetUsagePercent, formatKeyValue, formatTokens, keyState } from './state'
 import type { AccessKey } from './types'
 
 defineProps<{
   keys: AccessKey[]
   busyId: number | null
-  confirmingRevokeId?: number | null
-  confirmingDeleteId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -72,16 +71,16 @@ const emit = defineEmits<{
           </th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-[var(--color-border)]">
+      <tbody>
         <tr
           v-for="key in keys"
           :key="key.id"
-          class="transition-colors hover:bg-[var(--color-hover)]"
+          class="data-table-row"
         >
           <td class="data-table-td font-medium text-[var(--color-text)]">
             {{ key.name }}
           </td>
-          <td class="data-table-td font-mono text-[var(--color-info)]">
+          <td class="data-table-td font-mono-data text-[var(--color-info)]">
             {{ key.key_prefix }}
           </td>
           <td class="data-table-td text-[var(--color-text-secondary)]">
@@ -96,13 +95,13 @@ const emit = defineEmits<{
               class="w-32"
               :data-testid="`access-key-budget-${key.id}`"
             >
-              <div class="flex justify-between font-mono text-xs text-[var(--color-text-muted)]">
+              <div class="flex justify-between font-mono-data text-xs text-[var(--color-text-muted)]">
                 <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}</span>
                 <span>{{ budgetUsagePercent(key) }}%</span>
               </div>
               <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
                 <div
-                  class="h-full rounded-full transition-all"
+                  class="h-full rounded-full transition-[width] duration-300"
                   :class="budgetUsagePercent(key) >= 90 ? 'bg-[var(--color-danger)]' : budgetUsagePercent(key) >= 60 ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'"
                   :style="{ width: `${budgetUsagePercent(key)}%` }"
                 />
@@ -116,47 +115,47 @@ const emit = defineEmits<{
             </span>
           </td>
           <td class="data-table-td">
-            <StatusBadge
+            <UiBadge
               :variant="keyState(key).variant"
               :label="keyState(key).label"
             />
             <span
               v-if="key.expires_at && keyState(key).label !== '已过期'"
-              class="mt-1 block text-xs text-[var(--color-text-subtle)]"
+              class="mt-1.5 block text-xs text-[var(--color-text-subtle)]"
             >
               {{ formatKeyValue(key.expires_at) }} 过期
             </span>
           </td>
-          <td class="data-table-td text-right">
+          <td class="data-table-td">
             <div class="flex justify-end gap-1.5">
-              <button
+              <UiButton
                 :data-testid="`edit-access-key-policy-${key.id}`"
-                class="btn-secondary"
-                type="button"
+                variant="secondary"
+                size="sm"
                 :disabled="Boolean(key.revoked_at)"
                 @click="emit('edit', key)"
               >
                 编辑策略
-              </button>
-              <button
+              </UiButton>
+              <UiButton
                 v-if="!key.revoked_at"
                 :data-testid="`revoke-access-key-${key.id}`"
-                class="btn-ghost"
-                type="button"
+                variant="ghost"
+                size="sm"
                 :disabled="busyId === key.id"
                 @click="emit('revoke', key)"
               >
-                {{ confirmingRevokeId === key.id ? '确认撤销？' : '撤销' }}
-              </button>
-              <button
+                撤销
+              </UiButton>
+              <UiButton
                 :data-testid="`delete-access-key-${key.id}`"
-                class="btn-danger"
-                type="button"
+                variant="danger"
+                size="sm"
                 :disabled="busyId === key.id"
                 @click="emit('delete', key)"
               >
-                {{ confirmingDeleteId === key.id ? '确认删除？' : '删除' }}
-              </button>
+                删除
+              </UiButton>
             </div>
           </td>
         </tr>

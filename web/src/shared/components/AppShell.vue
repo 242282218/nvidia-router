@@ -3,8 +3,22 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useSession } from '../../features/auth/useSession'
+import UiIcon from '../ui/UiIcon.vue'
+import type { IconName } from '../ui'
 
 defineOptions({ name: 'AppShell' })
+
+interface NavItem {
+  path: string
+  label: string
+  icon: IconName
+  testId: string
+}
+
+interface NavGroup {
+  label: string
+  items: NavItem[]
+}
 
 const router = useRouter()
 const route = useRoute()
@@ -50,30 +64,40 @@ watch(sidebarOpen, async (open) => {
   }
 }, { flush: 'post' })
 
-const navItems = [
-  { path: '/nvidia-keys', label: 'NVIDIA Key', icon: 'key', testId: 'nav-nvidia-keys' },
-  { path: '/providers', label: '提供商', icon: 'provider', testId: 'nav-providers' },
-  { path: '/models', label: '模型白名单', icon: 'model', testId: 'nav-models' },
-  { path: '/access-keys', label: 'Access Key', icon: 'access', testId: 'nav-access-keys' },
-  { path: '/proxy-pool', label: '代理池', icon: 'proxy', testId: 'nav-proxy-pool' },
-  { path: '/system', label: '系统与观测', icon: 'system', testId: 'nav-system' },
-] as const
-
-const currentLabel = computed(() => {
-  if (route.path === '/system' || route.path === '/runtime' || route.path === '/statistics' || route.path === '/live' || route.path === '/audit') {
-    return '系统与观测'
+// 导航由路由 meta 派生：分组、图标、排序的唯一事实来源在路由表里。
+const navGroups = computed<NavGroup[]>(() => {
+  const root = router.options.routes.find((record) => record.path === '/')
+  const items: (NavItem & { group: string; order: number })[] = []
+  for (const child of root?.children ?? []) {
+    const nav = child.meta?.nav
+    const title = child.meta?.title
+    if (!nav || !title) continue
+    items.push({
+      path: `/${child.path}`,
+      label: title,
+      icon: nav.icon,
+      testId: nav.testId,
+      group: nav.group,
+      order: nav.order,
+    })
   }
-  return navItems.find((item) => item.path === route.path)?.label ?? 'NVIDIA Key'
+  items.sort((a, b) => a.order - b.order)
+  const groups = new Map<string, NavItem[]>()
+  for (const item of items) {
+    const list = groups.get(item.group) ?? []
+    list.push({ path: item.path, label: item.label, icon: item.icon, testId: item.testId })
+    groups.set(item.group, list)
+  }
+  return [...groups.entries()].map(([label, groupItems]) => ({ label, items: groupItems }))
 })
+
+const currentTitle = computed(() => route.meta.title ?? 'NVIDIA Key')
 
 watch(() => route.path, () => {
   sidebarOpen.value = false
 })
 
 function isActive(path: string): boolean {
-  if (path === '/system') {
-    return route.path === '/system' || route.path === '/runtime' || route.path === '/statistics' || route.path === '/live' || route.path === '/audit'
-  }
   return route.path === path || (path === '/nvidia-keys' && route.path === '/')
 }
 
@@ -97,47 +121,29 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[var(--color-canvas)] text-[var(--color-text)]">
+  <div class="min-h-screen text-[var(--color-text)]">
     <!-- Mobile header -->
-    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_95%,transparent)] px-4 backdrop-blur-md lg:hidden">
+    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_92%,transparent)] px-4 backdrop-blur-md lg:hidden">
       <button
         ref="menuButton"
-        class="btn-ghost h-11 w-11 rounded-lg p-2"
+        class="icon-btn"
         type="button"
         aria-label="切换菜单"
         :aria-expanded="sidebarOpen"
         aria-controls="admin-sidebar"
         @click="sidebarOpen = !sidebarOpen"
       >
-        <svg
-          class="h-5 w-5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path
-            v-if="!sidebarOpen"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 6h16M4 12h16M4 18h16"
-          />
-          <path
-            v-else
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M6 18L18 6M6 6l12 12"
-          />
-        </svg>
+        <UiIcon
+          :name="sidebarOpen ? 'close' : 'menu'"
+          :size="20"
+        />
       </button>
-      <div class="min-w-0">
-        <p class="truncate text-sm font-semibold">
-          NVIDIA API Router
-        </p>
-        <p class="truncate text-xs text-[var(--color-text-muted)]">
-          {{ currentLabel }}
+      <div class="flex min-w-0 items-center gap-2.5">
+        <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--color-brand)] text-[11px] font-bold text-[var(--color-brand-foreground)]">
+          N
+        </div>
+        <p class="truncate text-sm font-semibold tracking-[-0.01em]">
+          {{ currentTitle }}
         </p>
       </div>
     </header>
@@ -157,17 +163,17 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <aside
       id="admin-sidebar"
       ref="sidebar"
-      class="fixed inset-y-0 left-0 z-40 flex w-64 -translate-x-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
+      class="fixed inset-y-0 left-0 z-40 flex w-60 -translate-x-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
       :class="sidebarOpen ? 'translate-x-0' : ''"
       :inert="isMobile && !sidebarOpen"
       aria-label="管理侧栏"
     >
-      <div class="flex h-16 items-center gap-3 border-b border-[var(--color-border)] px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)]">
+      <div class="flex h-16 items-center gap-3 px-5">
+        <div class="flex h-8 w-8 items-center justify-center rounded-[10px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)] shadow-[var(--shadow-xs)]">
           N
         </div>
         <div class="min-w-0">
-          <p class="truncate text-sm font-semibold">
+          <p class="truncate text-sm font-semibold tracking-[-0.01em]">
             NVIDIA Router
           </p>
           <p class="text-xs text-[var(--color-text-muted)]">
@@ -176,148 +182,102 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         </div>
       </div>
 
-      <div class="border-b border-[var(--color-border)] px-4 py-4">
-        <p class="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--color-text-subtle)]">
-          运行环境
-        </p>
-        <div class="mt-2 flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-          <span
-            class="h-2 w-2 rounded-full bg-[var(--color-success)] pulse-dot"
-            aria-hidden="true"
-          />
-          <span>管理端已登录。</span>
-        </div>
-      </div>
-
       <nav
-        class="flex-1 space-y-1 overflow-y-auto p-3"
+        class="flex-1 overflow-y-auto px-3 pb-3"
         aria-label="管理功能"
       >
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          :data-testid="item.testId"
-          :class="isActive(item.path) ? 'nav-link-active' : 'nav-link'"
-          :aria-current="isActive(item.path) ? 'page' : undefined"
+        <div
+          v-for="group in navGroups"
+          :key="group.label"
         >
-          <svg
-            v-if="item.icon === 'key'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
-            />
-          </svg>
-          <svg
-            v-else-if="item.icon === 'model'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"
-            />
-          </svg>
-          <svg
-            v-else-if="item.icon === 'access'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
-            />
-          </svg>
-          <svg
-            v-else-if="item.icon === 'proxy'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M4.5 7.5h15m-12 4.5h9m-12 4.5h15M6.75 4.5h10.5A2.25 2.25 0 0119.5 6.75v10.5a2.25 2.25 0 01-2.25 2.25H6.75a2.25 2.25 0 01-2.25-2.25V6.75A2.25 2.25 0 016.75 4.5z"
-            />
-          </svg>
-          <svg
-            v-else-if="item.icon === 'system'"
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-hidden="true"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125 0 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"
-            />
-          </svg>
-          {{ item.label }}
-        </RouterLink>
+          <p class="nav-group-label">
+            {{ group.label }}
+          </p>
+          <div class="space-y-0.5">
+            <RouterLink
+              v-for="item in group.items"
+              :key="item.path"
+              :to="item.path"
+              :data-testid="item.testId"
+              :class="isActive(item.path) ? 'nav-link-active' : 'nav-link'"
+              :aria-current="isActive(item.path) ? 'page' : undefined"
+            >
+              <UiIcon
+                :name="item.icon"
+                :size="16"
+                class="shrink-0"
+              />
+              {{ item.label }}
+            </RouterLink>
+          </div>
+        </div>
       </nav>
 
+      <!-- 用户区块：会话状态 + 账户操作（修改密码此前无入口，只能手输地址） -->
       <div class="border-t border-[var(--color-border)] p-3">
-        <button
-          data-testid="logout"
-          class="nav-link w-full"
-          type="button"
-          :disabled="loggingOut"
-          @click="logout"
-        >
-          <svg
-            class="h-4 w-4 shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+        <div class="flex items-center gap-2.5 rounded-[var(--radius-control)] px-2 py-1.5">
+          <div
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-sunken)] text-[var(--color-text-muted)]"
             aria-hidden="true"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"
+            <UiIcon
+              name="user"
+              :size="16"
             />
-          </svg>
-          {{ loggingOut ? '退出中…' : '退出登录' }}
-        </button>
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-[13px] font-medium text-[var(--color-text-secondary)]">
+              管理员
+            </p>
+            <p class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+              <span
+                class="h-1.5 w-1.5 rounded-full bg-[var(--color-success)] pulse-dot"
+                aria-hidden="true"
+              />
+              会话有效
+            </p>
+          </div>
+          <RouterLink
+            class="icon-btn h-8 w-8"
+            to="/change-password"
+            aria-label="修改管理员密码"
+            title="修改密码"
+          >
+            <UiIcon
+              name="settings"
+              :size="15"
+            />
+          </RouterLink>
+          <button
+            data-testid="logout"
+            class="icon-btn h-8 w-8"
+            type="button"
+            :disabled="loggingOut"
+            aria-label="退出登录"
+            title="退出登录"
+            @click="logout"
+          >
+            <UiIcon
+              name="logout"
+              :size="15"
+            />
+          </button>
+        </div>
       </div>
     </aside>
 
-    <main class="min-w-0 lg:pl-64 lg:pt-0 pt-14">
-      <div class="mx-auto flex min-h-14 max-w-[1440px] items-center justify-between border-b border-[var(--color-border)] px-4 sm:px-6 lg:px-8">
-        <div class="hidden items-center gap-2 text-sm text-[var(--color-text-muted)] lg:flex">
-          <span
-            class="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]"
-            aria-hidden="true"
+    <main class="min-w-0 pt-14 lg:pl-60 lg:pt-0">
+      <RouterView v-slot="{ Component }">
+        <Transition
+          name="page"
+          mode="out-in"
+        >
+          <component
+            :is="Component"
+            :key="route.path"
           />
-          管理端已登录。
-        </div>
-      </div>
-      <RouterView />
+        </Transition>
+      </RouterView>
     </main>
   </div>
 </template>
