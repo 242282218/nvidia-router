@@ -105,14 +105,14 @@ func TestSettingsServiceDisabledSnapshotIncludesSaveablePoolDefaults(t *testing.
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if snapshot.Enabled || snapshot.CollectorInterval != "5s" || snapshot.ProxyTTL != "120s" || snapshot.ValidationURL != "" || snapshot.ValidationStatus != 404 || snapshot.ExpectedQty != 2 || snapshot.Concurrency != 2 || snapshot.MaxLatency != "" {
+	if snapshot.Enabled || snapshot.CollectorInterval != "5s" || snapshot.ProxyTTL != "120s" || snapshot.ValidationURL != "" || snapshot.ValidationStatus != 404 || snapshot.ExpectedQty != 4 || snapshot.Concurrency != 3 || snapshot.MaxLatency != "" {
 		t.Fatalf("disabled snapshot defaults = %#v", snapshot)
 	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	for _, field := range []string{`"collector_interval":"5s"`, `"proxy_ttl":"120s"`, `"validation_url":""`, `"validation_status":404`, `"expected_qty":2`, `"concurrency":2`, `"max_latency":""`} {
+	for _, field := range []string{`"collector_interval":"5s"`, `"proxy_ttl":"120s"`, `"validation_url":""`, `"validation_status":404`, `"expected_qty":4`, `"concurrency":3`, `"max_latency":""`} {
 		if !strings.Contains(string(data), field) {
 			t.Fatalf("snapshot JSON = %s, missing %s", data, field)
 		}

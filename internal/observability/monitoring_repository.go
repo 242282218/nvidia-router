@@ -12,12 +12,12 @@ import (
 )
 
 type monitoringAggregate struct {
-	requestCount, successCount, failureCount int64
-	totalDurationMS, totalFirstByteMS        int64
-	firstByteCount, totalQueueMS             int64
-	totalFirstTokenMS, firstTokenCount       int64
-	totalAttempts, promptTokens              int64
-	completionTokens                         int64
+	requestCount, successCount, failureCount, canceledCount int64
+	totalDurationMS, totalFirstByteMS                       int64
+	firstByteCount, totalQueueMS                            int64
+	totalFirstTokenMS, firstTokenCount                      int64
+	totalAttempts, promptTokens                             int64
+	completionTokens                                        int64
 }
 
 type monitoringBucketSpec struct {
@@ -196,6 +196,35 @@ func (r *Repository) queryDailyAggregate(ctx context.Context, query MonitoringQu
 		WHERE day >= ? AND day <= ? AND dimension_type = ? AND dimension_id = ?
 	`, query.From.UTC().Format("2006-01-02"), query.To.UTC().Format("2006-01-02"), dimensionType, dimensionID)
 	aggregate, err := scanMonitoringAggregate(row, nil)
+	if err != nil && strings.Contains(err.Error(), "canceled_count") {
+		return r.queryDailyAggregateLegacy(ctx, query, dimensionType, dimensionID)
+	}
+	if err != nil {
+		return monitoringAggregate{}, fmt.Errorf("query daily monitoring aggregate: %w", err)
+	}
+	return aggregate, nil
+}
+
+func (r *Repository) queryDailyAggregateLegacy(ctx context.Context, query MonitoringQuery, dimensionType, dimensionID string) (monitoringAggregate, error) {
+	const legacy = `
+	COALESCE(SUM(request_count), 0),
+	COALESCE(SUM(success_count), 0),
+	COALESCE(SUM(failure_count), 0),
+	COALESCE(SUM(total_duration_ms), 0),
+	COALESCE(SUM(total_first_byte_ms), 0),
+	COALESCE(SUM(first_byte_count), 0),
+	COALESCE(SUM(total_first_token_ms), 0),
+	COALESCE(SUM(first_token_count), 0),
+	COALESCE(SUM(total_queue_ms), 0),
+	COALESCE(SUM(total_attempts), 0),
+	COALESCE(SUM(prompt_tokens), 0),
+	COALESCE(SUM(completion_tokens), 0)`
+	row := r.read().QueryRowContext(ctx, `
+		SELECT `+legacy+`
+		FROM daily_stats
+		WHERE day >= ? AND day <= ? AND dimension_type = ? AND dimension_id = ?
+	`, query.From.UTC().Format("2006-01-02"), query.To.UTC().Format("2006-01-02"), dimensionType, dimensionID)
+	aggregate, err := scanMonitoringAggregateLegacy(row, nil)
 	if err != nil {
 		return monitoringAggregate{}, fmt.Errorf("query daily monitoring aggregate: %w", err)
 	}
@@ -211,16 +240,53 @@ func (r *Repository) queryDailySeries(ctx context.Context, query MonitoringQuery
 		ORDER BY day
 	`, query.From.UTC().Format("2006-01-02"), query.To.UTC().Format("2006-01-02"), dimensionType, dimensionID)
 	if err != nil {
+		if strings.Contains(err.Error(), "canceled_count") {
+			return r.queryDailySeriesLegacy(ctx, query, dimensionType, dimensionID)
+		}
 		return nil, fmt.Errorf("query daily monitoring series: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanMonitoringSeries(rows)
+	values, err := scanMonitoringSeries(rows)
+	if err != nil && strings.Contains(err.Error(), "canceled_count") {
+		_ = rows.Close()
+		return r.queryDailySeriesLegacy(ctx, query, dimensionType, dimensionID)
+	}
+	return values, err
+}
+
+func (r *Repository) queryDailySeriesLegacy(ctx context.Context, query MonitoringQuery, dimensionType, dimensionID string) (map[string]monitoringAggregate, error) {
+	const legacy = `
+	COALESCE(SUM(request_count), 0),
+	COALESCE(SUM(success_count), 0),
+	COALESCE(SUM(failure_count), 0),
+	COALESCE(SUM(total_duration_ms), 0),
+	COALESCE(SUM(total_first_byte_ms), 0),
+	COALESCE(SUM(first_byte_count), 0),
+	COALESCE(SUM(total_first_token_ms), 0),
+	COALESCE(SUM(first_token_count), 0),
+	COALESCE(SUM(total_queue_ms), 0),
+	COALESCE(SUM(total_attempts), 0),
+	COALESCE(SUM(prompt_tokens), 0),
+	COALESCE(SUM(completion_tokens), 0)`
+	rows, err := r.read().QueryContext(ctx, `
+		SELECT day, `+legacy+`
+		FROM daily_stats
+		WHERE day >= ? AND day <= ? AND dimension_type = ? AND dimension_id = ?
+		GROUP BY day
+		ORDER BY day
+	`, query.From.UTC().Format("2006-01-02"), query.To.UTC().Format("2006-01-02"), dimensionType, dimensionID)
+	if err != nil {
+		return nil, fmt.Errorf("query daily monitoring series: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanMonitoringSeriesLegacy(rows)
 }
 
 const monitoringAggregateColumns = `
 	COUNT(*),
 	COALESCE(SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END), 0),
-	COALESCE(SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN outcome = 'failure' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN outcome = 'canceled' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(duration_ms), 0),
 	COALESCE(SUM(first_byte_ms), 0),
 	COALESCE(SUM(CASE WHEN first_byte_ms IS NOT NULL THEN 1 ELSE 0 END), 0),
@@ -235,6 +301,7 @@ const dailyAggregateColumns = `
 	COALESCE(SUM(request_count), 0),
 	COALESCE(SUM(success_count), 0),
 	COALESCE(SUM(failure_count), 0),
+	COALESCE(SUM(canceled_count), 0),
 	COALESCE(SUM(total_duration_ms), 0),
 	COALESCE(SUM(total_first_byte_ms), 0),
 	COALESCE(SUM(first_byte_count), 0),
@@ -246,9 +313,22 @@ const dailyAggregateColumns = `
 	COALESCE(SUM(completion_tokens), 0)`
 
 func (a monitoringAggregate) toSummary() MonitoringSummary {
+	// SuccessRate is computed over non-canceled requests only, so a fleet of
+	// slow-but-correct 499s does not appear as a 70% failure rate.
+	denom := a.requestCount - a.canceledCount
+	if denom < 0 {
+		denom = 0
+	}
+	rate := successRate(a.successCount, denom)
+	if denom == 0 {
+		// Fall back to the old total-based rate when every request was canceled;
+		// it keeps the UI from showing 0% when the service was never actually
+		// given a chance to succeed.
+		rate = successRate(a.successCount, a.requestCount)
+	}
 	return MonitoringSummary{
-		RequestCount: a.requestCount, SuccessCount: a.successCount, FailureCount: a.failureCount,
-		SuccessRate:         successRate(a.successCount, a.requestCount),
+		RequestCount: a.requestCount, SuccessCount: a.successCount, FailureCount: a.failureCount, CanceledCount: a.canceledCount,
+		SuccessRate:         rate,
 		AverageDurationMS:   average(a.totalDurationMS, a.requestCount),
 		AverageFirstByteMS:  average(a.totalFirstByteMS, a.firstByteCount),
 		AverageFirstTokenMS: average(a.totalFirstTokenMS, a.firstTokenCount),
@@ -261,7 +341,7 @@ func (a monitoringAggregate) toSeriesPoint(bucket string) MonitoringSeriesPoint 
 	summary := a.toSummary()
 	return MonitoringSeriesPoint{
 		Bucket: bucket, RequestCount: summary.RequestCount, SuccessCount: summary.SuccessCount,
-		FailureCount: summary.FailureCount, AverageDurationMS: summary.AverageDurationMS,
+		FailureCount: summary.FailureCount, CanceledCount: summary.CanceledCount, AverageDurationMS: summary.AverageDurationMS,
 		AverageFirstByteMS: summary.AverageFirstByteMS, AverageFirstTokenMS: summary.AverageFirstTokenMS,
 		AverageQueueMS: summary.AverageQueueMS,
 		TotalAttempts:  summary.TotalAttempts, PromptTokens: summary.PromptTokens,
@@ -301,6 +381,25 @@ type monitoringScanner interface {
 
 func scanMonitoringAggregate(scanner monitoringScanner, bucket *string) (monitoringAggregate, error) {
 	var aggregate monitoringAggregate
+	arguments := make([]any, 0, 14)
+	if bucket != nil {
+		arguments = append(arguments, bucket)
+	}
+	arguments = append(arguments,
+		&aggregate.requestCount, &aggregate.successCount, &aggregate.failureCount, &aggregate.canceledCount,
+		&aggregate.totalDurationMS, &aggregate.totalFirstByteMS, &aggregate.firstByteCount,
+		&aggregate.totalFirstTokenMS, &aggregate.firstTokenCount,
+		&aggregate.totalQueueMS, &aggregate.totalAttempts, &aggregate.promptTokens,
+		&aggregate.completionTokens,
+	)
+	if err := scanner.Scan(arguments...); err != nil {
+		return monitoringAggregate{}, err
+	}
+	return aggregate, nil
+}
+
+func scanMonitoringAggregateLegacy(scanner monitoringScanner, bucket *string) (monitoringAggregate, error) {
+	var aggregate monitoringAggregate
 	arguments := make([]any, 0, 13)
 	if bucket != nil {
 		arguments = append(arguments, bucket)
@@ -316,6 +415,22 @@ func scanMonitoringAggregate(scanner monitoringScanner, bucket *string) (monitor
 		return monitoringAggregate{}, err
 	}
 	return aggregate, nil
+}
+
+func scanMonitoringSeriesLegacy(rows *sql.Rows) (map[string]monitoringAggregate, error) {
+	values := make(map[string]monitoringAggregate)
+	for rows.Next() {
+		var bucket string
+		aggregate, err := scanMonitoringAggregateLegacy(rows, &bucket)
+		if err != nil {
+			return nil, err
+		}
+		values[bucket] = aggregate
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate monitoring series: %w", err)
+	}
+	return values, nil
 }
 
 func requestBucketExpression(rangeName string) string {

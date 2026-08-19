@@ -5,6 +5,10 @@ import "time"
 const (
 	OutcomeSuccess = "success"
 	OutcomeFailure = "failure"
+	// OutcomeCanceled is a client-side cancel (HTTP 499). It is intentionally
+	// not counted as failure so NVIDIA TTFT-driven 499s do not drag the success
+	// rate down; the separate http_status/error_code dimension keeps it visible.
+	OutcomeCanceled = "canceled"
 )
 
 const (
@@ -54,6 +58,7 @@ type DailyStat struct {
 	RequestCount        int64   `json:"request_count"`
 	SuccessCount        int64   `json:"success_count"`
 	FailureCount        int64   `json:"failure_count"`
+	CanceledCount       int64   `json:"canceled_count"`
 	AverageDuration     float64 `json:"average_duration_ms"`
 	AverageQueue        float64 `json:"average_queue_ms"`
 	AverageAttempts     float64 `json:"average_attempts"`

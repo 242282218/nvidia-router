@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -66,12 +68,28 @@ func NewService(repository *Repository, secrets SecretProvider, discoverer Model
 }
 
 func (s *Service) WithOpenCodeFree(client OpenCodeFreeClient) *Service {
+	if isNilOpenCodeFreeClient(client) {
+		return s
+	}
 	s.opencodefree = client
 	return s
 }
 
 func (s *Service) OpenCodeFreeConfigured() bool {
-	return s.opencodefree != nil
+	return !isNilOpenCodeFreeClient(s.opencodefree)
+}
+
+func isNilOpenCodeFreeClient(client OpenCodeFreeClient) bool {
+	if client == nil {
+		return true
+	}
+	v := reflect.ValueOf(client)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr, reflect.Slice, reflect.Interface, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s *Service) DiscoverCandidates(ctx context.Context, keyID int64) ([]Candidate, error) {
@@ -404,6 +422,103 @@ func (s *Service) DeleteModel(ctx context.Context, id int64) error {
 		return fmt.Errorf("delete model: %w", err)
 	}
 	return nil
+}
+
+// SyncOpenCodeFreeModels disables enabled OpenCodeFree models whose upstream ID
+// is no longer present in the gateway's /models list. It is idempotent and
+// safe to run periodically: a gateway fetch failure aborts without disabling
+// anything, and only models with provider=opencodefree and enabled=1 are
+// considered. New gateway models are not auto-enabled; operators enable them
+// via the normal selection flow.
+func (s *Service) SyncOpenCodeFreeModels(ctx context.Context) (int, error) {
+	if isNilOpenCodeFreeClient(s.opencodefree) {
+		return 0, nil
+	}
+	gatewayIDs, err := s.opencodefree.Models(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("fetch OpenCodeFree gateway models: %w", err)
+	}
+	gatewaySet := make(map[string]struct{}, len(gatewayIDs))
+	for _, id := range gatewayIDs {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		gatewaySet[trimmed] = struct{}{}
+	}
+	models, err := s.repository.List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list models for OpenCodeFree sync: %w", err)
+	}
+	disabled := 0
+	for _, model := range models {
+		if model.Provider != ProviderOpenCodeFree || !model.Enabled {
+			continue
+		}
+		if _, ok := gatewaySet[model.UpstreamID]; ok {
+			continue
+		}
+		// Also check public ID without prefix as a fallback; some legacy rows
+		// may have stored the full public ID as upstream (defensive).
+		if _, ok := gatewaySet[strings.TrimPrefix(model.PublicID, ProviderOpenCodeFree+"/")]; ok {
+			continue
+		}
+		if err := s.repository.SetEnabled(ctx, model.ID, false, s.clock.Now()); err != nil {
+			slog.Default().Warn("auto-disable stale OpenCodeFree model failed", "public_id", model.PublicID, "upstream_id", model.UpstreamID, "error", err)
+			continue
+		}
+		slog.Default().Info("auto-disabled stale OpenCodeFree model", "public_id", model.PublicID, "upstream_id", model.UpstreamID)
+		disabled++
+	}
+	return disabled, nil
+}
+
+// StartOpenCodeFreeSync runs a background loop that periodically calls
+// SyncOpenCodeFreeModels. It stops when ctx is canceled. The interval is
+// deliberately long (1h) because the gateway's free list changes at most daily
+// and each run touches the DB for every enabled free model.
+func (s *Service) StartOpenCodeFreeSync(ctx context.Context, interval time.Duration) {
+	if isNilOpenCodeFreeClient(s.opencodefree) {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	go func() {
+		// Initial jitter so a fleet restart does not hammer the gateway at once.
+		jitter := time.Duration(0)
+		if interval > time.Minute {
+			jitter = time.Duration(float64(interval) * 0.1 * float64(time.Now().UnixNano()%10) / 10)
+		}
+		timer := time.NewTimer(jitter)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		// First sync shortly after startup with a timeout so a hung gateway does
+		// not block shutdown.
+		syncCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if _, err := s.SyncOpenCodeFreeModels(syncCtx); err != nil {
+			slog.Default().Warn("initial OpenCodeFree sync failed", "error", err)
+		}
+		cancel()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				syncCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				if _, err := s.SyncOpenCodeFreeModels(syncCtx); err != nil {
+					slog.Default().Warn("periodic OpenCodeFree sync failed", "error", err)
+				}
+				cancel()
+			}
+		}
+	}()
 }
 
 func candidateFromHint(modelID string, hint nvidia.CapabilityHint) Candidate {

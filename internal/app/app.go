@@ -305,6 +305,10 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	}()
 	app.Server = NewServer(resolved.Config.ListenAddress, app.handler, settings, func() { app.beginShutdown(0) })
 	app.Server.setRootContext(rootCtx)
+	// Periodic OpenCodeFree catalog sync: keeps the enabled free list aligned
+	// with the gateway's live /models so a 6-model outage (2026-08-19) cannot
+	// recur without operator intervention. No-op when the gateway is unconfigured.
+	models.StartOpenCodeFreeSync(rootCtx, time.Hour)
 	lockTransferred = true
 	return app, nil
 }

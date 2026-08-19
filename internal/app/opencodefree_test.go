@@ -98,6 +98,12 @@ func seedChatModelWithProvider(t *testing.T, application *App, publicID, upstrea
 func TestOpenCodeFreeChatRoutesToGatewayAndListsInModels(t *testing.T) {
 	var hits int64
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
 		atomic.AddInt64(&hits, 1)
 		if r.URL.Path != "/chat/completions" {
 			http.NotFound(w, r)
@@ -165,6 +171,12 @@ func TestOpenCodeFreeChatRoutesToGatewayAndListsInModels(t *testing.T) {
 func TestOpenCodeFreeChatStreamRoutesToGateway(t *testing.T) {
 	var hits int64
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
 		atomic.AddInt64(&hits, 1)
 		if r.URL.Path != "/chat/completions" {
 			http.NotFound(w, r)
@@ -229,5 +241,87 @@ func TestOpenCodeFreeUnconfiguredReturns503(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestOpenCodeFreeRetriesTransient502(t *testing.T) {
+	// A gateway that answers 502 once then succeeds must still deliver the
+	// response (non-stream only).
+	var calls int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		n := atomic.AddInt64(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":"transient"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"ocf-r","object":"chat.completion","model":"free-model","choices":[{"index":0,"message":{"role":"assistant","content":"retried ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "retried ok") {
+		t.Fatalf("expected retried success, status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if atomic.LoadInt64(&calls) != 2 {
+		t.Fatalf("gateway calls = %d, want 2 (1 fail + 1 retry)", atomic.LoadInt64(&calls))
+	}
+}
+
+func TestOpenCodeFreeDoesNotRetry429(t *testing.T) {
+	// 429 is the gateway's own concurrency limit; retrying would only add load.
+	var calls int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		atomic.AddInt64(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"rate limited"}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if atomic.LoadInt64(&calls) != 1 {
+		t.Fatalf("gateway calls = %d, want 1 (no retry on 429)", atomic.LoadInt64(&calls))
 	}
 }

@@ -89,19 +89,21 @@ docker compose stop app
 | `NVIDIA_ROUTER_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `NVIDIA_ROUTER_TEMP_DIR` | `/tmp` | 请求临时资源目录 |
 | `NVIDIA_ROUTER_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | NVIDIA 上游 HTTPS 地址 |
-| `NVIDIA_ROUTER_OPENCODEFREE_BASE_URL` | 空 | 可选 OpenCodeFree 网关地址；仅用于候选发现和只读模型测试，不进入生产路由 |
+| `NVIDIA_ROUTER_OPENCODEFREE_BASE_URL` | 空 | 可选 OpenCodeFree 网关地址；候选发现、只读测试及**每小时自动禁用已下线 free 模型**（2026-08-19 P1-3/M4 修复，网关返回 `Model not supported` 时 502 `upstream_error` 可观测，`/v1/models` 仅暴露 live 模型） |
 | `NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY` | 空 | 可选的运行时入口认证；OpenCodeFree 不需要用户凭据，真实值不得写入仓库 |
 | `NVIDIA_ROUTER_XK_UPSTREAM_URL` | 空 | 内置采集器的 XApi 地址；必须带 provider query 凭据，可作为运行时回退，也可从管理端加密保存；Web 只返回脱敏 endpoint |
 | `NVIDIA_ROUTER_XK_VALIDATION_URL` | NVIDIA 基础地址 | 代理验证地址，不含 query 或凭据 |
 | `NVIDIA_ROUTER_XK_VALIDATION_STATUS` | `404` | 代理验证期望的 HTTP 状态码 |
 | `NVIDIA_ROUTER_XK_COLLECT_INTERVAL` | `5s` | 采集周期 |
 | `NVIDIA_ROUTER_XK_PROXY_TTL` | `120s` | 代理出口 TTL |
-| `NVIDIA_ROUTER_XK_EXPECTED_QTY` | `2` | 每次租约期望出口数量 |
-| `NVIDIA_ROUTER_XK_CONCURRENCY` | `2` | 代理验证并发数 |
+| `NVIDIA_ROUTER_XK_EXPECTED_QTY` | `4` | 每次租约期望出口数量（2-10，4 为 2026-08-19 后生产推荐值，缓解采集抖动） |
+| `NVIDIA_ROUTER_XK_CONCURRENCY` | `3` | 代理验证并发数（1-10，3 为生产推荐值） |
 
 `nvida反代` 在单体进程内完成 XApi 采集、TXT 解析、代理验证、TTL 管理、质量评分、轮换和 NVIDIA CONNECT。代理配置启用后不会静默回退直连；上游未就绪、代理池为空或 CONNECT 失败会返回临时不可用。Web 可以热更新采集参数，也可以通过管理员页面提交新的 XApi URL；服务端只保存其加密密文，页面和 API 只返回脱敏 endpoint。运行时 Secret 仍可作为首次启动或兼容回退配置。
 
-流式请求的运行时设置将首 token 等待与已提交响应的空闲窗口分开：`stream_first_token_timeout_ms` 默认 60000，`stream_idle_timeout_ms` 默认 180000。DeepSeek v4-flash 这类长思考模型建议保留较大的 idle 窗口；窗口越大，单个 Key 的流式槽位被占用时间越长。429 会尊重上游 `Retry-After` 后再切换 Key，NVIDIA 529 临时过载也会进入有界重试和冷却，不会通过代理失败静默回退直连。
+流式请求的运行时设置将首 token 等待与已提交响应的空闲窗口分开：`stream_first_token_timeout_ms` 默认 60000，`stream_idle_timeout_ms` 默认 180000。DeepSeek v4-flash、z-ai/glm-5.2、minimax-m3 等长思考模型已由迁移 034 自动置为 300000；窗口越大，单个 Key 的流式槽位被占用时间越长。429 会尊重上游 `Retry-After` 后再切换 Key，NVIDIA 529 临时过载也会进入有界重试和冷却，不会通过代理失败静默回退直连。
+
+> **客户端超时建议（2026-08-19 P1-1）**：NVIDIA 推理模型首字节 60-90s 属正常，`curl -m 60` 或 SDK 默认 60s 会在服务端首 token 前被客户端主动关闭，记为 `499 request_canceled` 且**不计入**失败率（已单列为 `canceled_count`）。对 `z-ai/*`、`deepseek-*`、`minimax-*` 建议 `client_timeout >= 120s`，或优先走 `opencode-free/*` 快路径（P95 1.3-1.9s）。监控已将 499 与 502/503 分离，`failure_count` 仅含真实上游失败。
 
 ## CLI
 

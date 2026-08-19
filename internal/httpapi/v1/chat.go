@@ -193,12 +193,29 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		})
 		return
 	}
+	// The gateway occasionally answers 502/503/504 on a transient upstream blip
+	// (observed in round-2 stability runs). Non-stream requests retry once after
+	// a short pause; streams never retry because headers may already be written.
+	for attempt := 0; ; attempt++ {
+		retryable := h.openCodeFreeOnce(writer, request, body, stream)
+		if !retryable || attempt >= 1 || stream {
+			return
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-request.Context().Done():
+			return
+		}
+	}
+}
+
+func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Request, body []byte, stream bool) (retryable bool) {
 	ctx, cancel := context.WithTimeout(nvidia.WithForwardedHeaders(request.Context(), request.Header), openCodeFreeRequestTimeout)
 	defer cancel()
 	response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
 	if err != nil {
 		writeChatError(writer, fmt.Errorf("OpenCodeFree chat: %w", err))
-		return
+		return false
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -214,17 +231,24 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 				Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_model_not_found",
 				Message: msg,
 			})
-			return
+			return false
 		}
 		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusGatewayTimeout {
-			writeChatError(writer, fault.New(response.StatusCode, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
-			return
+			// 502/503/504 are transient; the non-stream caller retries once. 429 is
+			// the gateway's own concurrency limit — retrying would only add load —
+			// and a streamed response can never be retried, so both surface the
+			// error immediately.
+			retryable = !stream && response.StatusCode != http.StatusTooManyRequests
+			if !retryable {
+				writeChatError(writer, fault.New(response.StatusCode, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
+			}
+			return retryable
 		}
 		writeChatError(writer, &apierror.Error{
 			Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_error",
 			Message: msg,
 		})
-		return
+		return false
 	}
 	if stream {
 		// No Attempt budget exists on this path, so primeSSE's idle wrapper would
@@ -232,20 +256,20 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		// absolute context deadline above plus the transport timeouts bound it,
 		// and streamResponse derives its write stall window from ctx.
 		h.streamResponse(ctx, writer, response)
-		return
+		return false
 	}
 	validated, err := nvidia.ValidateNonstreamChat(response)
 	if err != nil {
 		if errors.Is(err, nvidia.ErrEmptyResponse) {
 			writeChatError(writer, fault.EmptyResponse(err))
-			return
+			return false
 		}
 		if errors.Is(err, nvidia.ErrProtocol) {
 			writeChatError(writer, fault.Protocol(err))
-			return
+			return false
 		}
 		writeChatError(writer, err)
-		return
+		return false
 	}
 	markResponseComplete(response)
 	_ = response.Body.Close()
@@ -255,6 +279,7 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(writer, response.Body)
+	return false
 }
 
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {

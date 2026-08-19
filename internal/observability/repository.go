@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,15 +50,16 @@ const insertRequestLogQuery = `
 const upsertDailyStatQuery = `
 	INSERT INTO daily_stats (
 		day, dimension_type, dimension_id, request_count, success_count,
-		failure_count, total_duration_ms, total_queue_ms, total_attempts,
+		failure_count, canceled_count, total_duration_ms, total_queue_ms, total_attempts,
 		total_first_byte_ms, first_byte_count,
 		total_first_token_ms, first_token_count,
 		prompt_tokens, completion_tokens
-	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
 		request_count = request_count + 1,
 		success_count = success_count + excluded.success_count,
 		failure_count = failure_count + excluded.failure_count,
+		canceled_count = canceled_count + excluded.canceled_count,
 		total_duration_ms = total_duration_ms + excluded.total_duration_ms,
 		total_queue_ms = total_queue_ms + excluded.total_queue_ms,
 		total_attempts = total_attempts + excluded.total_attempts,
@@ -189,16 +191,30 @@ func (r *Repository) DeleteDailyStatsBefore(ctx context.Context, cutoff time.Tim
 
 // MetricsSummary returns label-free global request counters for Prometheus.
 // It reads pre-aggregated daily_stats rather than scanning request_logs.
+// Canceled (499) is kept as a separate gauge so 30% TTFT-driven cancels do
+// not appear as 70% failure in Prometheus alerts.
 func (r *Repository) MetricsSummary(ctx context.Context) (MetricsSummary, error) {
 	var summary MetricsSummary
 	err := r.read().QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(request_count), 0),
 		       COALESCE(SUM(success_count), 0),
-	       COALESCE(SUM(failure_count), 0)
+	       COALESCE(SUM(failure_count), 0),
+	       COALESCE(SUM(canceled_count), 0)
 		FROM daily_stats
 		WHERE dimension_type = ? AND dimension_id = ?`,
 		DimensionGlobal, GlobalDimensionID,
-	).Scan(&summary.Requests, &summary.Successes, &summary.Failures)
+	).Scan(&summary.Requests, &summary.Successes, &summary.Failures, &summary.Canceled)
+	if err != nil && strings.Contains(err.Error(), "canceled_count") {
+		// Fallback for DBs that have not yet run the 033 migration.
+		err = r.read().QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(request_count), 0),
+			       COALESCE(SUM(success_count), 0),
+		       COALESCE(SUM(failure_count), 0)
+			FROM daily_stats
+			WHERE dimension_type = ? AND dimension_id = ?`,
+			DimensionGlobal, GlobalDimensionID,
+		).Scan(&summary.Requests, &summary.Successes, &summary.Failures)
+	}
 	if err != nil {
 		return MetricsSummary{}, fmt.Errorf("load metrics summary: %w", err)
 	}
@@ -242,18 +258,65 @@ func execInsertRequestRecord(ctx context.Context, runner stmtRunner, record Requ
 
 func execUpsertDailyStat(ctx context.Context, runner stmtRunner, record RequestRecord, dimension dimension) error {
 	success, failure := outcomeCounts(record.Outcome)
+	canceled := 0
+	if record.Outcome == OutcomeCanceled {
+		canceled = 1
+	}
 	firstByteMS, firstByteCount := firstByteAggregate(record.FirstByteMS)
 	firstTokenMS, firstTokenCount := firstByteAggregate(record.FirstTokenMS)
 	_, err := runner.ExecContext(ctx,
 		record.CreatedAt.UTC().Format("2006-01-02"), dimension.typeName, dimension.id,
-		success, failure, record.DurationMS, record.QueueMS, record.AttemptCount,
+		success, failure, canceled, record.DurationMS, record.QueueMS, record.AttemptCount,
 		firstByteMS, firstByteCount, firstTokenMS, firstTokenCount,
 		valueOrZero(record.PromptTokens), valueOrZero(record.CompletionTokens),
 	)
 	if err != nil {
+		// Fallback for DBs that have not yet run the 033 migration (canceled_count
+		// column missing). Downgrade to the legacy upsert so a rolling deploy does
+		// not hard-fail on the first request after the code ships.
+		if isMissingCanceledColumn(err) {
+			_, fallbackErr := runner.ExecContext(ctx, `
+				INSERT INTO daily_stats (
+					day, dimension_type, dimension_id, request_count, success_count,
+					failure_count, total_duration_ms, total_queue_ms, total_attempts,
+					total_first_byte_ms, first_byte_count,
+					total_first_token_ms, first_token_count,
+					prompt_tokens, completion_tokens
+				) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
+					request_count = request_count + 1,
+					success_count = success_count + excluded.success_count,
+					failure_count = failure_count + excluded.failure_count,
+					total_duration_ms = total_duration_ms + excluded.total_duration_ms,
+					total_queue_ms = total_queue_ms + excluded.total_queue_ms,
+					total_attempts = total_attempts + excluded.total_attempts,
+					total_first_byte_ms = total_first_byte_ms + excluded.total_first_byte_ms,
+					first_byte_count = first_byte_count + excluded.first_byte_count,
+					total_first_token_ms = total_first_token_ms + excluded.total_first_token_ms,
+					first_token_count = first_token_count + excluded.first_token_count,
+					prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+					completion_tokens = completion_tokens + excluded.completion_tokens
+			`, record.CreatedAt.UTC().Format("2006-01-02"), dimension.typeName, dimension.id,
+				success, failure, record.DurationMS, record.QueueMS, record.AttemptCount,
+				firstByteMS, firstByteCount, firstTokenMS, firstTokenCount,
+				valueOrZero(record.PromptTokens), valueOrZero(record.CompletionTokens),
+			)
+			if fallbackErr != nil {
+				return fmt.Errorf("upsert %s daily stats (fallback): %w", dimension.typeName, fallbackErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("upsert %s daily stats: %w", dimension.typeName, err)
 	}
 	return nil
+}
+
+func isMissingCanceledColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "canceled_count") && strings.Contains(msg, "no column")
 }
 
 func firstByteAggregate(value *int64) (int64, int64) {
@@ -264,10 +327,14 @@ func firstByteAggregate(value *int64) (int64, int64) {
 }
 
 func outcomeCounts(outcome string) (int, int) {
-	if outcome == OutcomeSuccess {
+	switch outcome {
+	case OutcomeSuccess:
 		return 1, 0
+	case OutcomeCanceled:
+		return 0, 0
+	default:
+		return 0, 1
 	}
-	return 0, 1
 }
 
 func nullableString(value string) any {

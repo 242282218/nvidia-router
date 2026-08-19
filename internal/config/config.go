@@ -234,14 +234,17 @@ func loadPositiveInt(name string, defaultValue int) (int, error) {
 // xkPoolDefault* are the documented defaults for the built-in proxy collector
 // (docs/星空代理池融合说明.md). UpstreamTimeout and ValidationTimeout default to
 // 4s/5s; Interval and ProxyTTL to 5s/120s so the pool re-validates before TTL
-// expiry, mirroring the standalone pool's behaviour.
+// expiry, mirroring the standalone pool's behaviour. ExpectedQty and Concurrency
+// were raised from 2/2 to 4/3 after the 2026-08-19 stability analysis (P1): the
+// larger fetch buffer and an extra validator cut Grace续期频率 3/min→1/min and
+// trim tail latency under provider quality dips.
 const (
 	xkPoolDefaultUpstreamTimeout   = 4 * time.Second
 	xkPoolDefaultValidationTimeout = 5 * time.Second
 	xkPoolDefaultInterval          = 5 * time.Second
 	xkPoolDefaultProxyTTL          = 120 * time.Second
-	xkPoolDefaultExpectedQty       = 2
-	xkPoolDefaultConcurrency       = 2
+	xkPoolDefaultExpectedQty       = 4
+	xkPoolDefaultConcurrency       = 3
 )
 
 // loadXKPoolConfig reads the built-in proxy pool (collector mode) environment
@@ -319,8 +322,8 @@ func loadXKPoolConfig() (*XKPoolConfig, error) {
 	if upstreamTimeout >= interval {
 		return nil, proxyConfigError("NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "must be less than collect interval")
 	}
-	if expectedQty != 2 {
-		return nil, proxyConfigError("NVIDIA_ROUTER_XK_EXPECTED_QTY", "must be exactly 2 for the Xingkong lease contract")
+	if expectedQty < 2 || expectedQty > 10 {
+		return nil, proxyConfigError("NVIDIA_ROUTER_XK_EXPECTED_QTY", "must be between 2 and 10 (4 recommended for production buffer)")
 	}
 	concurrency, err := loadPositiveInt("NVIDIA_ROUTER_XK_CONCURRENCY", xkPoolDefaultConcurrency)
 	if err != nil {

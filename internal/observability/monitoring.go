@@ -32,16 +32,20 @@ type MonitoringQuery struct {
 
 // MetricsSummary is the aggregate, label-free subset safe to expose on the
 // unauthenticated Prometheus endpoint. It contains no model, key, or request IDs.
+// Canceled (499) is exposed as a separate gauge so the operator can alert on
+// "pool drained" vs "clients timed out waiting for slow TTFT" independently.
 type MetricsSummary struct {
 	Requests  int64
 	Successes int64
 	Failures  int64
+	Canceled  int64
 }
 
 type MonitoringSummary struct {
 	RequestCount        int64   `json:"request_count"`
 	SuccessCount        int64   `json:"success_count"`
 	FailureCount        int64   `json:"failure_count"`
+	CanceledCount       int64   `json:"canceled_count"`
 	SuccessRate         float64 `json:"success_rate"`
 	AverageDurationMS   float64 `json:"average_duration_ms"`
 	AverageFirstByteMS  float64 `json:"average_first_byte_ms"`
@@ -63,6 +67,7 @@ type MonitoringSeriesPoint struct {
 	RequestCount        int64   `json:"request_count"`
 	SuccessCount        int64   `json:"success_count"`
 	FailureCount        int64   `json:"failure_count"`
+	CanceledCount       int64   `json:"canceled_count"`
 	AverageDurationMS   float64 `json:"average_duration_ms"`
 	AverageFirstByteMS  float64 `json:"average_first_byte_ms"`
 	AverageFirstTokenMS float64 `json:"average_first_token_ms"`

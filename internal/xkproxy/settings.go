@@ -574,11 +574,11 @@ func validatePoolSettings(cfg CollectorConfig) error {
 	if cfg.ValidationStatus < 100 || cfg.ValidationStatus > 599 {
 		return errors.New("proxy pool: validation status must be between 100 and 599")
 	}
-	if cfg.ExpectedQty != 2 {
-		return errors.New("proxy pool: expected quantity must be exactly 2")
+	if cfg.ExpectedQty < 2 || cfg.ExpectedQty > 10 {
+		return errors.New("proxy pool: expected quantity must be between 2 and 10 (4 recommended)")
 	}
-	if cfg.Concurrency <= 0 {
-		return errors.New("proxy pool: concurrency must be positive")
+	if cfg.Concurrency <= 0 || cfg.Concurrency > 10 {
+		return errors.New("proxy pool: concurrency must be between 1 and 10")
 	}
 	if cfg.Interval < 5*time.Second {
 		return errors.New("proxy pool: collect interval must be at least 5s")
@@ -629,8 +629,8 @@ func defaultCollectorConfig() *CollectorConfig {
 		ValidationTimeout: 5 * time.Second,
 		Interval:          5 * time.Second,
 		ProxyTTL:          120 * time.Second,
-		ExpectedQty:       2,
-		Concurrency:       2,
+		ExpectedQty:       4,
+		Concurrency:       3,
 	}
 }
 
@@ -671,8 +671,8 @@ func makeProxyConfig(enabled bool, proxyURL *url.URL, authKey string, source Sou
 			CollectorInterval: "5s",
 			ProxyTTL:          "120s",
 			ValidationStatus:  http.StatusNotFound,
-			ExpectedQty:       2,
-			Concurrency:       2,
+			ExpectedQty:       4,
+			Concurrency:       3,
 		},
 		proxyURL: proxyURL,
 		authKey:  authKey,

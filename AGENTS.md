@@ -55,6 +55,11 @@ ssh -F .\ssh_config_local hangzhou2-2
 - 在国内测试机运行单体 `nvida反代`，通过运行时 Secret 注入 `NVIDIA_ROUTER_XK_UPSTREAM_URL`。
 - 真实联调必须确认 XApi 采集、代理验证、池内轮换和 CONNECT 链路成功；池未就绪时 `nvida反代` 不会静默直连。
 
+## 记忆沉淀
+
+- 任务完成后将可复用的测试方法、运行命令、前置条件、已知限制和排障结论沉淀到项目根 `memory.md`，后续同类任务先读 `memory.md` 再执行。
+- 不记录密钥、URL 凭据、日志原文、临时数据或普通通过结果；无值得沉淀内容时不创建空文件。
+
 ## 连接方式
 
 Windows 本机无 sshpass/plink，用 Python paramiko 4.x（已安装）执行远程操作：

@@ -84,10 +84,12 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 			status = http.StatusOK
 		}
 		outcome := OutcomeFailure
-		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		if status == 499 {
+			outcome = OutcomeCanceled
+		} else if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			outcome = OutcomeSuccess
 		}
-		if outcome == OutcomeFailure && metadata.ErrorCode == nil {
+		if (outcome == OutcomeFailure || outcome == OutcomeCanceled) && metadata.ErrorCode == nil {
 			code := fallbackHTTPErrorCode(status)
 			metadata.ErrorCode = &code
 		}
@@ -131,6 +133,8 @@ func HTTPMiddleware(recorder RequestRecorder, source clock.Clock, logger *slog.L
 
 func fallbackHTTPErrorCode(status int) string {
 	switch {
+	case status == 499:
+		return "request_canceled"
 	case status >= http.StatusInternalServerError:
 		return "http_5xx"
 	case status >= http.StatusBadRequest:
