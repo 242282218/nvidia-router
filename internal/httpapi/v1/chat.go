@@ -32,14 +32,29 @@ type AttemptRunner interface {
 	Run(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error)
 }
 
+// OpenCodeFreeChat is the chat surface of the optional OpenCodeFree gateway. It
+// has no NVIDIA key pool, so the router talks to it directly instead of through
+// Attempt; the shared HTTP transport still bounds connect and response windows.
+type OpenCodeFreeChat interface {
+	Chat(context.Context, runtimeconfig.Snapshot, []byte, bool) (*http.Response, error)
+}
+
 type Chat struct {
-	models   ModelResolver
-	attempts AttemptRunner
-	client   provider.Provider
+	models       ModelResolver
+	attempts     AttemptRunner
+	client       provider.Provider
+	openCodeFree OpenCodeFreeChat // optional; nil keeps NVIDIA-only routing
 }
 
 func NewChat(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Chat {
 	return &Chat{models: models, attempts: attempts, client: client}
+}
+
+// WithOpenCodeFree attaches the optional OpenCodeFree gateway client. Models
+// whose provider is opencodefree are routed here instead of the NVIDIA key pool.
+func (h *Chat) WithOpenCodeFree(client OpenCodeFreeChat) *Chat {
+	h.openCodeFree = client
+	return h
 }
 
 func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -81,6 +96,13 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	stream := parsed.Stream()
+	// OpenCodeFree models route to the optional gateway directly: no NVIDIA key
+	// pool, no failover, one upstream. Every other provider keeps the Attempt
+	// path (key pool, retry budget, sticky sessions).
+	if model.Provider == modelcatalog.ProviderOpenCodeFree {
+		h.serveOpenCodeFree(writer, request, upstreamBody, stream)
+		return
+	}
 	// Propagate per-model streaming timeout overrides so the budget builder
 	// inside Attempt.Run uses the model's configured windows instead of the
 	// global defaults. Matters most for deepseek-v4-flash, whose TTFT on
@@ -153,6 +175,54 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 		response.ContentLength = int64(len(validated.Body))
 		return response, nil
 	}
+}
+
+// openCodeFreeRequestTimeout bounds a single OpenCodeFree gateway call. The
+// gateway is a local/trusted endpoint with no key pool, so a hung upstream is
+// bounded by an absolute window instead of the NVIDIA retry machinery.
+const openCodeFreeRequestTimeout = 10 * time.Minute
+
+// serveOpenCodeFree runs a chat request against the optional OpenCodeFree
+// gateway. It mirrors the NVIDIA path's stream/nonstream handling but skips the
+// key pool: the model's provider decides the route before this is called.
+func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Request, body []byte, stream bool) {
+	if h.openCodeFree == nil {
+		writeChatError(writer, &apierror.Error{
+			Status: http.StatusServiceUnavailable, Type: "server_error", Code: "provider_unconfigured",
+			Message: "The OpenCodeFree gateway is not configured.",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(nvidia.WithForwardedHeaders(request.Context(), request.Header), openCodeFreeRequestTimeout)
+	defer cancel()
+	response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
+	if err != nil {
+		writeChatError(writer, fmt.Errorf("OpenCodeFree chat: %w", err))
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	if stream {
+		// No Attempt budget exists on this path, so primeSSE's idle wrapper would
+		// get a zero window and tear the stream down immediately. Instead the
+		// absolute context deadline above plus the transport timeouts bound it,
+		// and streamResponse derives its write stall window from ctx.
+		h.streamResponse(ctx, writer, response)
+		return
+	}
+	validated, err := nvidia.ValidateNonstreamChat(response)
+	if err != nil {
+		writeChatError(writer, err)
+		return
+	}
+	markResponseComplete(response)
+	_ = response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(validated.Body))
+	response.ContentLength = int64(len(validated.Body))
+	copyResponseHeaders(writer.Header(), response.Header)
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(writer, response.Body)
 }
 
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {

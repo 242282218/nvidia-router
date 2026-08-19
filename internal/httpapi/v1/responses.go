@@ -66,6 +66,9 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, modelError(err))
 		return
 	}
+	if !requireNVIDIAProvider(writer, model) {
+		return
+	}
 	upstreamBody, err := parsed.MarshalFor(model)
 	if err != nil {
 		writeChatError(writer, err)

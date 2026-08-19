@@ -186,8 +186,8 @@ func validateEnabledProvider(provider string, enabled bool) error {
 	if provider != ProviderNVIDIA && provider != ProviderOpenCodeFree {
 		return fmt.Errorf("%w: unsupported model provider %q", ErrInvalidModelSelection, provider)
 	}
-	if enabled && provider != ProviderNVIDIA {
-		return fmt.Errorf("%w: only NVIDIA provider models can be enabled", ErrInvalidModelSelection)
-	}
+	// Both NVIDIA and OpenCodeFree models may be enabled. OpenCodeFree models
+	// route to the configured gateway (checked at request time); an enabled
+	// model whose gateway is missing answers 503 instead of failing the edit.
 	return nil
 }

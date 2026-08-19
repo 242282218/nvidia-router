@@ -351,17 +351,7 @@ var probeWAV = []byte{
 }
 
 func (s *Service) ListEnabled(ctx context.Context) ([]Model, error) {
-	models, err := s.repository.ListEnabled(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list enabled models: %w", err)
-	}
-	routable := make([]Model, 0, len(models))
-	for _, model := range models {
-		if model.Provider == "" || model.Provider == ProviderNVIDIA {
-			routable = append(routable, model)
-		}
-	}
-	return routable, nil
+	return s.repository.ListEnabled(ctx)
 }
 
 func (s *Service) Resolve(ctx context.Context, publicID string, requirements Requirements) (Model, error) {
@@ -371,9 +361,6 @@ func (s *Service) Resolve(ctx context.Context, publicID string, requirements Req
 	}
 	if model.Provider == "" {
 		model.Provider = defaultModelProvider
-	}
-	if model.Provider != ProviderNVIDIA {
-		return Model{}, fmt.Errorf("resolve model %q: %w", publicID, ErrProviderNotRoutable)
 	}
 	if err := validateRequirements(model, requirements); err != nil {
 		return Model{}, fmt.Errorf("validate model %q capabilities: %w", publicID, err)

@@ -144,6 +144,9 @@ func (h *Audio) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, modelError(err))
 		return
 	}
+	if !requireNVIDIAProvider(writer, model) {
+		return
+	}
 	if h.attempts == nil || h.client == nil {
 		writeChatError(writer, &apierror.Error{Status: http.StatusInternalServerError, Type: "server_error", Code: "internal_error", Message: "The audio service is not configured."})
 		return
@@ -266,6 +269,9 @@ func (h *Speech) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
 		writeChatError(writer, modelError(err))
+		return
+	}
+	if !requireNVIDIAProvider(writer, model) {
 		return
 	}
 	upstreamBody, err := parsed.MarshalFor(model)
