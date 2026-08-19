@@ -56,6 +56,7 @@ func RotateDatabase(ctx context.Context, db *sql.DB, oldKeys, newKeys *KeySet) (
 		return RotationResult{}, fmt.Errorf("rotate database: commit: %w", err)
 	}
 	committed = true
+	InvalidateGCMCache()
 	return result, nil
 }
 

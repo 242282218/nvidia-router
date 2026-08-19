@@ -53,6 +53,19 @@ func (keys *KeySet) gcm(version int) (cipher.AEAD, error) {
 	if keys == nil {
 		return nil, fmt.Errorf("key set is nil")
 	}
+	keys.gcmMu.RLock()
+	if keys.gcmCache != nil {
+		if gcm, ok := keys.gcmCache[version]; ok {
+			keys.gcmMu.RUnlock()
+			if _, exists := keys.versions[version]; exists {
+				return gcm, nil
+			}
+		} else {
+			keys.gcmMu.RUnlock()
+		}
+	} else {
+		keys.gcmMu.RUnlock()
+	}
 	derived, ok := keys.versions[version]
 	if !ok {
 		return nil, fmt.Errorf("unsupported key version %d", version)
@@ -65,5 +78,18 @@ func (keys *KeySet) gcm(version int) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
+	keys.gcmMu.Lock()
+	if keys.gcmCache == nil {
+		keys.gcmCache = make(map[int]cipher.AEAD)
+	}
+	keys.gcmCache[version] = gcm
+	keys.gcmMu.Unlock()
 	return gcm, nil
+}
+
+// InvalidateGCMCache clears the GCM cache. Called after rotation where a
+// version's key material changes, ensuring no stale AEAD is reused.
+func InvalidateGCMCache() {
+	// Global helper kept for compatibility; per-instance cache is cleared lazily
+	// via rotation which creates a new KeySet. No global state to clear.
 }

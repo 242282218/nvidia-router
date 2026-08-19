@@ -73,7 +73,7 @@ type Provider interface {
 }
 
 type Manager struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	proxyURL   *url.URL
 	pool       *Pool      // Built-in proxy pool (optional)
 	collector  *Collector // Proxy collector (optional)
@@ -224,8 +224,8 @@ func (m *Manager) Enabled() bool {
 	if m == nil {
 		return false
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return !m.closed
 }
 
@@ -237,83 +237,162 @@ func (m *Manager) Acquire(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 		return nil, errors.New("proxy manager is nil")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
-		return nil, &Error{reason: ReasonManagerClosed}
-	}
-
-	// Resolve the transport. A cache hit reuses the existing transport and its
-	// bound proxy; only a cache miss needs a proxy from the pool. This keeps a
-	// healthy cached connection usable even when the pool momentarily reports no
-	// healthy proxy (e.g. all TTLs expired between fetches), and makes failure
-	// reporting name the proxy the transport was actually built against rather
-	// than whatever the rotation cursor returns on this Acquire.
 	key := transportKey{
 		connectTimeoutMS:   snapshot.ConnectTimeoutMS,
 		firstByteTimeoutMS: snapshot.FirstByteTimeoutMS,
 		session:            session,
 	}
+
+	// Fast path: read lock for cache hit.
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, &Error{reason: ReasonManagerClosed}
+	}
 	entry := m.transports[key]
-	if entry == nil {
-		var selectedProxy Proxy
-		var hasProxy bool
-		if m.pool != nil {
-			// Quality-aware scheduling prefers exits with real request evidence;
-			// the legacy rotation remains available when the setting is off.
-			if snapshot.LatencyRoutingEnabled {
-				selectedProxy, hasProxy = m.pool.GetWithQuality(time.Now())
-			} else {
-				selectedProxy, hasProxy = m.pool.Get(time.Now())
-			}
-			if !hasProxy {
-				// The pool is momentarily empty: the request never reached the
-				// upstream, so this is not a key fault. ReasonNoHealthyProxy lets
-				// the router surface a retryable 503 instead of cooldowning the
-				// key (audit D3).
-				return nil, NewNoHealthyProxyError()
-			}
-		}
-		transport, err := m.newTransport(key, selectedProxy)
-		if err != nil {
-			return nil, NewTransportError(err)
-		}
-		entry = &cachedTransport{transport: transport, proxyKey: selectedProxy.Key(), createdAt: time.Now()}
-		m.transports[key] = entry
-	} else if m.pool != nil && entry.proxyKey != "" {
-		now := time.Now()
-		stale := now.Sub(entry.createdAt) >= stickyRebindInterval
-		if stale || !m.pool.HasHealthy(entry.proxyKey, now) {
-			// Rebuild when the bound proxy was ejected or removed (audit H3), or
-			// when the session has been pinned long enough to re-select (audit
-			// H9). Only replace when the pool has an alternative: when the pool is
-			// momentarily empty, the healthy cached connection stays usable, and
-			// when the pool's best proxy is the current one, rebinding would just
-			// re-CONNECT for nothing.
-			var selectedProxy Proxy
-			var hasProxy bool
-			if snapshot.LatencyRoutingEnabled {
-				selectedProxy, hasProxy = m.pool.GetWithQuality(now)
-			} else {
-				selectedProxy, hasProxy = m.pool.Get(now)
-			}
-			if hasProxy && (!stale || selectedProxy.Key() != entry.proxyKey) {
-				entry.transport.CloseIdleConnections()
-				transport, err := m.newTransport(key, selectedProxy)
-				if err != nil {
-					return nil, NewTransportError(err)
+	if entry != nil {
+		proxyKey := entry.proxyKey
+		createdAt := entry.createdAt
+		transport := entry.transport
+		// Check if rebuild is needed; if not, just update LRU and return.
+		if m.pool == nil || proxyKey == "" {
+			m.mu.RUnlock()
+			m.mu.Lock()
+			if e, ok := m.transports[key]; ok && e.transport == transport {
+				m.clock++
+				e.lastUsed = m.clock
+				if len(m.transports) > maxCachedTransports {
+					m.evictLeastRecentlyUsed()
 				}
-				entry = &cachedTransport{transport: transport, proxyKey: selectedProxy.Key(), createdAt: now}
-				m.transports[key] = entry
+				handle := &Handle{manager: m, key: key, transport: e.transport, proxyKey: e.proxyKey}
+				m.mu.Unlock()
+				return handle, nil
 			}
+			m.mu.Unlock()
+			// entry disappeared, fall through to miss path
+		} else {
+			now := time.Now()
+			stale := now.Sub(createdAt) >= stickyRebindInterval
+			needsRebuild := stale || !m.pool.HasHealthy(proxyKey, now)
+			if !needsRebuild {
+				m.mu.RUnlock()
+				m.mu.Lock()
+				if e, ok := m.transports[key]; ok && e.transport == transport {
+					m.clock++
+					e.lastUsed = m.clock
+					if len(m.transports) > maxCachedTransports {
+						m.evictLeastRecentlyUsed()
+					}
+					handle := &Handle{manager: m, key: key, transport: e.transport, proxyKey: e.proxyKey}
+					m.mu.Unlock()
+					return handle, nil
+				}
+				m.mu.Unlock()
+			} else {
+				m.mu.RUnlock()
+				// Rebuild path: select fresh proxy and clone outside lock.
+				var selectedProxy Proxy
+				var hasProxy bool
+				if snapshot.LatencyRoutingEnabled {
+					selectedProxy, hasProxy = m.pool.GetWithQuality(now)
+				} else {
+					selectedProxy, hasProxy = m.pool.Get(now)
+				}
+				// If pool is empty now, keep old cached entry usable.
+				if !hasProxy {
+					m.mu.Lock()
+					if e, ok := m.transports[key]; ok && e.transport == transport {
+						m.clock++
+						e.lastUsed = m.clock
+						handle := &Handle{manager: m, key: key, transport: e.transport, proxyKey: e.proxyKey}
+						m.mu.Unlock()
+						return handle, nil
+					}
+					m.mu.Unlock()
+				} else if stale && selectedProxy.Key() == proxyKey {
+					// Rebind would pick same proxy, keep old to avoid needless CONNECT.
+					m.mu.Lock()
+					if e, ok := m.transports[key]; ok && e.transport == transport {
+						m.clock++
+						e.lastUsed = m.clock
+						handle := &Handle{manager: m, key: key, transport: e.transport, proxyKey: e.proxyKey}
+						m.mu.Unlock()
+						return handle, nil
+					}
+					m.mu.Unlock()
+				} else {
+					transport2, err := m.newTransport(key, selectedProxy)
+					if err != nil {
+						return nil, NewTransportError(err)
+					}
+					m.mu.Lock()
+					if m.closed {
+						transport2.CloseIdleConnections()
+						m.mu.Unlock()
+						return nil, &Error{reason: ReasonManagerClosed}
+					}
+					// Double-check entry still same.
+					if cur, ok := m.transports[key]; ok && cur.transport == transport {
+						cur.transport.CloseIdleConnections()
+					}
+					newEntry := &cachedTransport{transport: transport2, proxyKey: selectedProxy.Key(), createdAt: now}
+					m.transports[key] = newEntry
+					m.clock++
+					newEntry.lastUsed = m.clock
+					if len(m.transports) > maxCachedTransports {
+						m.evictLeastRecentlyUsed()
+					}
+					handle := &Handle{manager: m, key: key, transport: newEntry.transport, proxyKey: newEntry.proxyKey}
+					m.mu.Unlock()
+					return handle, nil
+				}
+			}
+		}
+	} else {
+		m.mu.RUnlock()
+	}
+
+	// Cache miss: select proxy and build transport outside lock.
+	var selectedProxy Proxy
+	var hasProxy bool
+	if m.pool != nil {
+		if snapshot.LatencyRoutingEnabled {
+			selectedProxy, hasProxy = m.pool.GetWithQuality(time.Now())
+		} else {
+			selectedProxy, hasProxy = m.pool.Get(time.Now())
+		}
+		if !hasProxy {
+			return nil, NewNoHealthyProxyError()
 		}
 	}
+	transport, err := m.newTransport(key, selectedProxy)
+	if err != nil {
+		return nil, NewTransportError(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		transport.CloseIdleConnections()
+		return nil, &Error{reason: ReasonManagerClosed}
+	}
+	// Another goroutine may have installed entry while we cloned.
+	if existing, ok := m.transports[key]; ok {
+		transport.CloseIdleConnections()
+		m.clock++
+		existing.lastUsed = m.clock
+		if len(m.transports) > maxCachedTransports {
+			m.evictLeastRecentlyUsed()
+		}
+		return &Handle{manager: m, key: key, transport: existing.transport, proxyKey: existing.proxyKey}, nil
+	}
+	entry2 := &cachedTransport{transport: transport, proxyKey: selectedProxy.Key(), createdAt: time.Now()}
+	m.transports[key] = entry2
 	m.clock++
-	entry.lastUsed = m.clock
+	entry2.lastUsed = m.clock
 	if len(m.transports) > maxCachedTransports {
 		m.evictLeastRecentlyUsed()
 	}
-	return &Handle{manager: m, key: key, transport: entry.transport, proxyKey: entry.proxyKey}, nil
+	return &Handle{manager: m, key: key, transport: entry2.transport, proxyKey: entry2.proxyKey}, nil
 }
 
 func (m *Manager) evictLeastRecentlyUsed() {
@@ -435,7 +514,7 @@ func (m *Manager) PoolStatus() PoolStatus {
 	if m == nil {
 		return PoolStatus{}
 	}
-	m.mu.Lock()
+	m.mu.RLock()
 	proxyURL := ""
 	if m.proxyURL != nil {
 		publicURL := *m.proxyURL
@@ -444,7 +523,7 @@ func (m *Manager) PoolStatus() PoolStatus {
 	}
 	closed := m.closed
 	pool := m.pool
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	if closed {
 		return PoolStatus{}
 	}

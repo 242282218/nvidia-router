@@ -362,36 +362,44 @@ func validationErrorClass(err error) string {
 }
 
 func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedAt time.Time) []Proxy {
-	sem := make(chan struct{}, c.concurrency)
 	results := make(chan Proxy, len(proxies))
+	jobs := make(chan Proxy, len(proxies))
+	for _, p := range proxies {
+		jobs <- p
+	}
+	close(jobs)
+
+	workers := c.concurrency
+	if workers > len(proxies) {
+		workers = len(proxies)
+	}
+	if workers <= 0 {
+		workers = 1
+	}
 	var wg sync.WaitGroup
-
-	for _, proxy := range proxies {
+	for range workers {
 		wg.Add(1)
-		go func(p Proxy) {
+		go func() {
 			defer wg.Done()
-
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			latency, err := c.validator.ValidateWithLatency(ctx, p)
-			if err != nil {
-				c.logger.Debug("proxy_validation_failed",
-					"error_class", validationErrorClass(err),
-					"latency_ms", latency.Milliseconds(),
-				)
-				return
+			for p := range jobs {
+				latency, err := c.validator.ValidateWithLatency(ctx, p)
+				if err != nil {
+					c.logger.Debug("proxy_validation_failed",
+						"error_class", validationErrorClass(err),
+						"latency_ms", latency.Milliseconds(),
+					)
+					continue
+				}
+				p.FetchedAt = fetchedAt
+				p.ValidatedAt = time.Now()
+				p.ExpiresAt = fetchedAt.Add(c.proxyTTL)
+				p.LatencyEWMA = latency
+				// First validation is one latency sample; Merge then increments it on
+				// every re-validation so the UI can tell a fresh EWMA from a noisy one.
+				p.LatencySamples = 1
+				results <- p
 			}
-
-			p.FetchedAt = fetchedAt
-			p.ValidatedAt = time.Now()
-			p.ExpiresAt = fetchedAt.Add(c.proxyTTL)
-			p.LatencyEWMA = latency
-			// First validation is one latency sample; Merge then increments it on
-			// every re-validation so the UI can tell a fresh EWMA from a noisy one.
-			p.LatencySamples = 1
-			results <- p
-		}(proxy)
+		}()
 	}
 
 	go func() {

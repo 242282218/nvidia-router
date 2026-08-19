@@ -1,9 +1,11 @@
 package crypto
 
 import (
+	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 )
 
 const (
@@ -24,6 +26,9 @@ type KeySet struct {
 	fingerprintKey [derivedKeyLength]byte
 	accessKeyKey   [derivedKeyLength]byte
 	sessionKey     [derivedKeyLength]byte
+
+	gcmMu    sync.RWMutex
+	gcmCache map[int]cipher.AEAD
 }
 
 type derivedKeys struct {

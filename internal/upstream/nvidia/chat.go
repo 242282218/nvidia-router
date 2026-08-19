@@ -183,15 +183,15 @@ func ValidateNonstreamChat(response *http.Response) (ValidatedChatResponse, erro
 		return ValidatedChatResponse{}, emptyResponseError()
 	}
 
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+	// Optimized: single struct unmarshal instead of generic map to avoid
+	// extra allocation and iteration over all top-level keys.
+	var envelope struct {
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Choices == nil {
 		return ValidatedChatResponse{}, protocolError()
 	}
-	choices, exists := fields["choices"]
-	if !exists {
-		return ValidatedChatResponse{}, protocolError()
-	}
-	items, valid := chatChoiceItems(choices)
+	items, valid := chatChoiceItems(envelope.Choices)
 	if !valid {
 		return ValidatedChatResponse{}, protocolError()
 	}

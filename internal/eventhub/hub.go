@@ -21,6 +21,8 @@ type Event struct {
 type Hub struct {
 	mu          sync.Mutex
 	ring        []Event
+	head        int // next write index when ring is full (circular buffer)
+	size        int // number of valid entries in ring
 	subscribers map[*subscriber]struct{}
 	maxEvents   int
 }
@@ -49,12 +51,17 @@ func New(maxEvents int) *Hub {
 // is full is dropped: the live view must never back-pressure request handling.
 func (h *Hub) Publish(event Event) {
 	h.mu.Lock()
-	if len(h.ring) >= h.maxEvents {
-		// Ring full: shift elements in place with memmove (copy) and overwrite last element.
-		copy(h.ring, h.ring[1:])
-		h.ring[len(h.ring)-1] = event
-	} else {
+	if h.size < h.maxEvents {
 		h.ring = append(h.ring, event)
+		h.size++
+		if h.size == h.maxEvents {
+			h.head = 0
+		}
+	} else {
+		// Ring full: O(1) circular overwrite instead of O(n) memmove (500 shifts
+		// per publish at 1000 RPS = 500k moves). head always points to oldest.
+		h.ring[h.head] = event
+		h.head = (h.head + 1) % h.maxEvents
 	}
 	for sub := range h.subscribers {
 		select {
@@ -66,7 +73,7 @@ func (h *Hub) Publish(event Event) {
 }
 
 // Subscribe registers a subscriber with an initial replay of the events in the
-// ring (newest-last), then returns a channel that receives live events until
+// ring (oldest-first), then returns a channel that receives live events until
 // Unsubscribe is called. The returned channel is never closed by the hub; call
 // Unsubscribe to stop it.
 func (h *Hub) Subscribe() (<-chan Event, func()) {
@@ -74,12 +81,22 @@ func (h *Hub) Subscribe() (<-chan Event, func()) {
 	defer h.mu.Unlock()
 	sub := &subscriber{ch: make(chan Event, 64), closed: make(chan struct{})}
 	h.subscribers[sub] = struct{}{}
-	// Replay ring contents to the new subscriber before any subsequent live
-	// events, so a freshly connected admin sees recent activity immediately.
-	for _, event := range h.ring {
-		select {
-		case sub.ch <- event:
-		default:
+	// Replay ring contents in chronological order. When the buffer is full
+	// (size==maxEvents) the ring is circular with head pointing to oldest.
+	if h.size < h.maxEvents {
+		for _, event := range h.ring {
+			select {
+			case sub.ch <- event:
+			default:
+			}
+		}
+	} else {
+		for i := 0; i < h.size; i++ {
+			event := h.ring[(h.head+i)%h.maxEvents]
+			select {
+			case sub.ch <- event:
+			default:
+			}
 		}
 	}
 	unsubscribe := func() {
@@ -98,5 +115,5 @@ func (h *Hub) Subscribe() (<-chan Event, func()) {
 func (h *Hub) Len() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.ring)
+	return h.size
 }

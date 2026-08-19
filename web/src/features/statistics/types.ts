@@ -15,6 +15,7 @@ export interface MonitoringSeriesPoint {
   request_count: number
   success_count: number
   failure_count: number
+  canceled_count: number
   average_duration_ms: number
   average_first_byte_ms: number
   average_first_token_ms: number
@@ -28,6 +29,7 @@ export interface MonitoringSummary {
   request_count: number
   success_count: number
   failure_count: number
+  canceled_count: number
   success_rate: number
   average_duration_ms: number
   average_first_byte_ms: number

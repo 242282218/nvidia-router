@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -76,7 +77,7 @@ func (v *Validator) ValidateWithLatency(ctx context.Context, proxy Proxy) (time.
 	if dialTimeout <= 0 {
 		dialTimeout = v.timeout
 	}
-	transport := v.transportFor(proxy, proxyURL.String(), dialTimeout)
+	transport := v.transportForWithURL(proxy, proxyURL, dialTimeout)
 
 	attemptCtx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
@@ -130,7 +131,20 @@ func classifyValidationError(err error) error {
 }
 
 func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.Duration) *http.Transport {
-	fingerprint := fmt.Sprintf("%s|%s|%s", proxyURL, dialTimeout, v.timeout)
+	parsed, _ := url.Parse(proxyURL)
+	if parsed == nil || parsed.Host == "" {
+		if pURL, err := proxy.URL(); err == nil {
+			parsed = pURL
+		}
+	}
+	return v.transportForWithURL(proxy, parsed, dialTimeout)
+}
+
+func (v *Validator) transportForWithURL(proxy Proxy, proxyURL *url.URL, dialTimeout time.Duration) *http.Transport {
+	// Reuse already-parsed URL to avoid double parsing (hot path in collector).
+	// proxy.URL() is called once in ValidateWithLatency and must not be repeated
+	// inside the lock (reference: caddy's parsed-URL caching in reverseproxy).
+	fingerprint := fmt.Sprintf("%s|%s|%s", proxy.Key(), dialTimeout, v.timeout)
 	key := proxy.Key()
 
 	v.mu.Lock()
@@ -144,17 +158,19 @@ func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.
 		delete(v.transports, key)
 	}
 
-	parsed, err := proxy.URL()
 	transport := &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		TLSHandshakeTimeout: dialTimeout,
-		// Each validated proxy is checked against the same validation host, so
-		// MaxIdleConnsPerHost would otherwise cap concurrent probes across ALL
-		// proxies to 2 and queue the rest behind them, eating the timeout budget
-		// and misclassifying healthy proxies as dead (audit H7). Validation is a
-		// one-shot connection per proxy: disable keep-alives and let every probe
-		// use its own connection.
-		DisableKeepAlives: true,
+		// Keep-alives enabled with bounded idle pool so a proxy validated
+		// every 5s reuses its CONNECT tunnel instead of paying TCP+TLS
+		// handshake each cycle. MaxIdleConnsPerHost is raised from the
+		// default 2 (which capped concurrent probes and misclassified
+		// healthy proxies as dead, audit H7) to 10 so 4 proxies×3
+		// concurrent validations do not queue.
+		DisableKeepAlives:   false,
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
 		// The validation target (NVIDIA) sits behind a CDN that speaks HTTP/2.
 		// Like the request-path transport (manager.go), the probe's outer leg to
 		// the proxy is plain HTTP CONNECT, so ForceAttemptHTTP2 only governs the
@@ -164,8 +180,8 @@ func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.
 		// last-known-good exits (found in real 联调 2026-08-13).
 		ForceAttemptHTTP2: true,
 	}
-	if err == nil {
-		transport.Proxy = http.ProxyURL(parsed)
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 
 	v.transports[key] = &cachedValidationTransport{

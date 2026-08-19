@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,13 +19,11 @@ const (
 	jsonBodyReadTimeout    = 30 * time.Second
 	audioBodyReadTimeout   = 2 * time.Minute
 	// chunkedReserveBytes is the placeholder byte budget reserved for a chunked
-	// body before its size is known. Reserving the whole endpoint limit meant
-	// two concurrent chunked uploads exhausted the 64MiB pool and every third
-	// request (even a small Content-Length one) got 429 server_busy. The reserve
-	// only marks "a chunked body is in flight"; the actual size is charged
-	// incrementally as the body is read (see readChunkedBody), and MaxBytesReader
-	// still caps each request.
-	chunkedReserveBytes = 1 << 20
+	// body before its size is known. Reduced from 1MB→64KB to cut CAS contention
+	// under 16 concurrent chunked uploads: 1MB placeholder left only 48MB for
+	// content-length bodies and caused frequent 429; 64KB keeps aggregation
+	// precise while reducing global budget pressure 16×.
+	chunkedReserveBytes = 64 << 10
 	// bodyBudgetChunkSize is the read window used to pre-reserve the global byte
 	// budget for chunked bodies. Reserving per chunk enforces the aggregate
 	// ceiling while bytes are being read instead of reconciling after the fact.
@@ -36,6 +35,17 @@ const (
 // with unbounded slow readers.
 var bodyReadSemaphore = make(chan struct{}, maxConcurrentBodyReads)
 var inFlightBodyBytes atomic.Int64
+
+// chunkedBufferPool reuses 256 KiB read buffers for chunked bodies. Allocating
+// a fresh 256 KiB per request at high RPS generated noticeable GC pressure
+// (see pprof alloc_space). The pool keeps at most maxConcurrentBodyReads buffers
+// live — matching the semaphore — and lets the GC reclaim extras under load.
+var chunkedBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, bodyBudgetChunkSize)
+		return &b
+	},
+}
 
 type bodyLease struct {
 	bytes     int64
@@ -197,7 +207,9 @@ func readChunkedBody(request *http.Request, limit int64, timeout time.Duration, 
 	defer stop()
 
 	var out []byte
-	buf := make([]byte, bodyBudgetChunkSize)
+	bufPtr := chunkedBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer chunkedBufferPool.Put(bufPtr)
 	limited := http.MaxBytesReader(nil, request.Body, limit+1)
 	for {
 		remaining := limit + 1 - int64(len(out))
@@ -288,19 +300,16 @@ func (r *budgetReservingReadCloser) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	// Charge the global budget for the window about to be read. tryReserve is
-	// atomic; on a lost race the window shrinks instead of reading past the
-	// ceiling, and at one byte the charge either succeeds or the budget is
-	// genuinely exhausted.
-	maxLen := len(p)
-	for !r.lease.tryReserve(int64(maxLen)) {
-		maxLen /= 2
-		if maxLen == 0 {
-			return 0, errBodyBudgetExhausted
-		}
+	// Single CAS attempt for the full window: the halving loop in the
+	// previous version caused up to log2(len) CAS retries per Read under
+	// contention. A single tryReserve either succeeds (common case) or
+	// fails to 429 immediately; the caller can back off, and the budget
+	// is not over-reserved because we release the unused tail.
+	if !r.lease.tryReserve(int64(len(p))) {
+		return 0, errBodyBudgetExhausted
 	}
-	n, err := r.ReadCloser.Read(p[:maxLen])
-	r.lease.releaseReserved(int64(maxLen - n))
+	n, err := r.ReadCloser.Read(p)
+	r.lease.releaseReserved(int64(len(p) - n))
 	return n, err
 }
 

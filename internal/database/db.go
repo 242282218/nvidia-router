@@ -55,6 +55,13 @@ func configureConnection(conn *sqlite3.Conn) error {
 	if err := execAndVerifyConnectionInt(conn, "PRAGMA synchronous = NORMAL", "PRAGMA synchronous", synchronousMode); err != nil {
 		return fmt.Errorf("configure SQLite synchronous mode: %w", err)
 	}
+	// WAL autocheckpoint 1000 pages (~4MB) balances WAL size vs checkpoint
+	// stalls; exposed as explicit pragma so behaviour is deterministic across
+	// SQLite versions. journal_size_limit 64MB prevents WAL bloat during bursts.
+	_ = conn.Exec("PRAGMA wal_autocheckpoint = 1000")
+	_ = conn.Exec("PRAGMA journal_size_limit = 67108864")
+	_ = conn.Exec("PRAGMA cache_size = -64000")
+	_ = conn.Exec("PRAGMA temp_store = MEMORY")
 	return nil
 }
 

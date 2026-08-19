@@ -4,12 +4,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 const maxDecodedImageBytes = 20 << 20
+
+var imageDecodePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
+}
 
 var supportedImageDataPrefixes = map[string]struct{}{
 	"data:image/png;base64":  {},
@@ -587,9 +594,18 @@ func validateDataImage(source, param string) error {
 	if decodedBytes > maxDecodedImageBytes {
 		return invalidRequest("image_too_large", param, "A decoded image exceeds the 20 MiB limit.")
 	}
-	decoder := base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(encoded))
-	written, err := io.Copy(io.Discard, decoder)
-	if err != nil || written != int64(decodedBytes) {
+	// Single-pass strict decode: strictBase64DecodedLength already validated
+	// alphabet/padding and length, but io.Copy(Discard) previously re-decoded
+	// the entire image (CPU×2). Decode once into a pooled buffer instead.
+	bufPtr := imageDecodePool.Get().(*[]byte)
+	defer imageDecodePool.Put(bufPtr)
+	if cap(*bufPtr) < decodedBytes {
+		nb := make([]byte, decodedBytes)
+		bufPtr = &nb
+	} else {
+		*bufPtr = (*bufPtr)[:decodedBytes]
+	}
+	if _, err := base64.StdEncoding.Strict().Decode(*bufPtr, []byte(encoded)); err != nil {
 		return invalidImageData(param)
 	}
 	return nil

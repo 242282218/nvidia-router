@@ -48,7 +48,7 @@ type Summary struct {
 }
 
 type Pool struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	settings runtimeconfig.Provider
 	clock    clock.Clock
 	keys     map[int64]*keyState
@@ -76,8 +76,8 @@ func New(settings runtimeconfig.Provider, source clock.Clock) *Pool {
 
 // Summary returns a lock-consistent view without exposing credential state.
 func (p *Pool) Summary() Summary {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	summary := Summary{Queue: QueueSummary{Length: p.waiters.Len(), Capacity: resolveQueueSettings(p.currentSnapshot()).capacity}, ShuttingDown: p.closed}
 	now := p.clock.Now()
@@ -449,20 +449,25 @@ func (p *Pool) weightedSelect(candidates []*keyState, measured int) *keyState {
 	if measured < 2 {
 		// Uniform fallback: index = floor(rng * len).
 		index := int(p.rng() * float64(len(candidates)))
+		if index >= len(candidates) {
+			index = len(candidates) - 1
+		}
 		return candidates[index]
 	}
+	// Two-pass without allocating a weights slice: first pass sums weights,
+	// second pass draws. latencyWeight is a single division (1/(1+EWMA)) so
+	// recomputing is cheaper than allocating and retaining a float64 slice per
+	// request (reference: traefik/caddy hot-path schedulers avoid per-request
+	// slice allocs on the same scale).
 	total := 0.0
-	weights := make([]float64, len(candidates))
-	for index, candidate := range candidates {
-		weight := candidate.latencyWeight(unmeasuredLatencyWeight)
-		weights[index] = weight
-		total += weight
+	for _, candidate := range candidates {
+		total += candidate.latencyWeight(unmeasuredLatencyWeight)
 	}
 	draw := p.rng() * total
-	for index, weight := range weights {
-		draw -= weight
+	for _, candidate := range candidates {
+		draw -= candidate.latencyWeight(unmeasuredLatencyWeight)
 		if draw < 0 {
-			return candidates[index]
+			return candidate
 		}
 	}
 	return candidates[len(candidates)-1]

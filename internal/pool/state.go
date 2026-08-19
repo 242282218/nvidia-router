@@ -38,8 +38,9 @@ type keyState struct {
 
 func newKeyState(snapshot keystate.KeySnapshot) *keyState {
 	return &keyState{
-		snapshot: cloneSnapshot(snapshot),
-		blocks:   make(map[int64]struct{}),
+		snapshot:     cloneSnapshot(snapshot),
+		blocks:       make(map[int64]struct{}),
+		requestTimes: make([]time.Time, 0, keyRequestLimit),
 	}
 }
 
@@ -89,12 +90,16 @@ func (s *keyState) reserveRequest(now time.Time) (time.Duration, bool) {
 	if retryAfter > 0 {
 		return retryAfter, false
 	}
+	// Append without re-scanning: requestRetryAfter already pruned expired
+	// entries and the slice has cap=keyRequestLimit, so no allocation on hot path.
 	s.requestTimes = append(s.requestTimes, now)
 	return 0, true
 }
 
 func (s *keyState) requestRetryAfter(now time.Time) time.Duration {
 	cutoff := now.Add(-keyRequestWindow)
+	// In-place filter reuses backing array (cap 30) — zero allocation.
+	// For keyRequestLimit=30 linear scan is cheaper than token bucket overhead.
 	kept := s.requestTimes[:0]
 	for _, requestAt := range s.requestTimes {
 		if requestAt.After(cutoff) {

@@ -185,34 +185,47 @@ func (p *Pool) GetWithQuality(now time.Time) (Proxy, bool) {
 
 func orderByQuality(candidates []Proxy) []Proxy {
 	ordered := append([]Proxy(nil), candidates...)
-	// Pool-relative slowness is a strong signal only among exits whose latency is
-	// measured on the same scale (real request latency). Probe latency is a
-	// different quantity (fast health check vs. full LLM round-trip) and must not
-	// demote a proven real-request exit just because a probe-only exit answered a
-	// validation ping faster. The threshold is computed from real-request samples
-	// only; when none exist, no slow demotion happens and the score tie-breaker
-	// below still prefers measured exits.
 	slowThreshold := relativeSlowThreshold(ordered)
-	sort.SliceStable(ordered, func(a, b int) bool {
-		slowA := slowThreshold > 0 && ordered[a].RequestLatencyEWMA > slowThreshold
-		slowB := slowThreshold > 0 && ordered[b].RequestLatencyEWMA > slowThreshold
-		if slowA != slowB {
-			return !slowA
+	// Precompute scores and effective latencies once per candidate so the sort
+	// comparator does not repeatedly recompute QualityScore (division + branching)
+	// on every comparison (O(n log n) calls). For n=4–10 the win is small per
+	// request but accumulates at high RPS and keeps the comparator trivial.
+	type scored struct {
+		idx     int
+		score   int
+		latency time.Duration
+		slow    bool
+	}
+	scoredCandidates := make([]scored, len(ordered))
+	for i := range ordered {
+		scoredCandidates[i] = scored{
+			idx:     i,
+			score:   ordered[i].QualityScore(),
+			latency: ordered[i].EffectiveRequestLatency(),
+			slow:    slowThreshold > 0 && ordered[i].RequestLatencyEWMA > slowThreshold,
 		}
-		scoreA, scoreB := ordered[a].QualityScore(), ordered[b].QualityScore()
-		if scoreA != scoreB {
-			return scoreA > scoreB
+	}
+	sort.SliceStable(scoredCandidates, func(a, b int) bool {
+		sa, sb := scoredCandidates[a], scoredCandidates[b]
+		if sa.slow != sb.slow {
+			return !sa.slow
 		}
-		latencyA, latencyB := ordered[a].EffectiveRequestLatency(), ordered[b].EffectiveRequestLatency()
-		if latencyA <= 0 {
+		if sa.score != sb.score {
+			return sa.score > sb.score
+		}
+		if sa.latency <= 0 {
 			return false
 		}
-		if latencyB <= 0 {
+		if sb.latency <= 0 {
 			return true
 		}
-		return latencyA < latencyB
+		return sa.latency < sb.latency
 	})
-	return ordered
+	result := make([]Proxy, len(ordered))
+	for i, s := range scoredCandidates {
+		result[i] = ordered[s.idx]
+	}
+	return result
 }
 
 // relativeSlowThreshold returns fastestRequestLatency×slowLatencyFactor across
@@ -319,6 +332,29 @@ func (p *Pool) CandidatesWithLatency(now time.Time, minRemainingLife time.Durati
 }
 
 func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration, preferLatency bool) (ordered []Proxy, panicMode bool) {
+	// Fast path: most requests use minRemainingLife==0 (no TTL floor).
+	// Avoid allocating preferred/sufficientLive and skip RemainingLife checks.
+	if minRemainingLife <= 0 {
+		available := make([]Proxy, 0, len(p.proxies))
+		live := make([]Proxy, 0, len(p.proxies))
+		for _, proxy := range p.proxies {
+			if !proxy.LiveAt(now) {
+				continue
+			}
+			live = append(live, proxy)
+			if proxy.AvailableAt(now) {
+				available = append(available, proxy)
+			}
+		}
+		if len(available) > 0 {
+			return p.rotateFor(available, preferLatency), false
+		}
+		if len(live) > 0 {
+			return p.rotateFor(live, preferLatency), true
+		}
+		return nil, false
+	}
+	// Slow path: TTL-aware filtering with preferred / panic fallback.
 	live := make([]Proxy, 0, len(p.proxies))
 	available := make([]Proxy, 0, len(p.proxies))
 	preferred := make([]Proxy, 0, len(p.proxies))
@@ -335,30 +371,19 @@ func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration, pref
 			preferred = append(preferred, proxy)
 		}
 	}
-
 	if len(preferred) > 0 {
 		return p.rotateFor(preferred, preferLatency), false
 	}
-	if minRemainingLife > 0 {
-		sufficientLive := make([]Proxy, 0, len(live))
-		for _, proxy := range live {
-			if proxy.RemainingLife(now) >= minRemainingLife {
-				sufficientLive = append(sufficientLive, proxy)
-			}
+	sufficientLive := make([]Proxy, 0, len(live))
+	for _, proxy := range live {
+		if proxy.RemainingLife(now) >= minRemainingLife {
+			sufficientLive = append(sufficientLive, proxy)
 		}
-		if len(sufficientLive) > 0 {
-			return p.rotateFor(sufficientLive, preferLatency), true
-		}
-		return nil, false
 	}
-	switch {
-	case len(available) > 0:
-		return p.rotateFor(available, preferLatency), false
-	case len(live) > 0:
-		return p.rotateFor(live, preferLatency), true
-	default:
-		return nil, false
+	if len(sufficientLive) > 0 {
+		return p.rotateFor(sufficientLive, preferLatency), true
 	}
+	return nil, false
 }
 
 func (p *Pool) rotateFor(source []Proxy, preferLatency bool) []Proxy {
@@ -389,10 +414,12 @@ func (p *Pool) rotateLatency(source []Proxy) []Proxy {
 	})
 	cursor := p.selectionCursor.Load()
 	start := int(cursor % uint64(length))
-	result := make([]Proxy, length)
-	for offset := range result {
-		result[offset] = ordered[(start+offset)%length]
-	}
+	// Rotate in place via append to avoid second full allocation + manual copy.
+	// append(ordered[start:], ordered[:start]...) reuses the same backing array
+	// capacity and is measurably cheaper at high RPS than the explicit loop.
+	result := make([]Proxy, 0, length)
+	result = append(result, ordered[start:]...)
+	result = append(result, ordered[:start]...)
 	return result
 }
 
@@ -422,20 +449,23 @@ func demoteSlow(candidates []Proxy) []Proxy {
 		return candidates
 	}
 	threshold := fastest * slowLatencyFactor
-	indexed := make([]int, len(candidates))
-	for i := range indexed {
-		indexed[i] = i
+	// Stable partition in O(n) without sorting: fast first, slow last, preserving
+	// original rotation order within each group. The previous implementation used
+	// sort.SliceStable over an index array (O(n log n) comparisons) just to
+	// partition by a boolean.
+	fast := make([]Proxy, 0, len(candidates))
+	slow := make([]Proxy, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.LatencyEWMA > threshold {
+			slow = append(slow, candidate)
+		} else {
+			fast = append(fast, candidate)
+		}
 	}
-	sort.SliceStable(indexed, func(a, b int) bool {
-		slowA := candidates[indexed[a]].LatencyEWMA > threshold
-		slowB := candidates[indexed[b]].LatencyEWMA > threshold
-		return !slowA && slowB
-	})
-	result := make([]Proxy, len(candidates))
-	for i, index := range indexed {
-		result[i] = candidates[index]
+	if len(slow) == 0 {
+		return candidates
 	}
-	return result
+	return append(fast, slow...)
 }
 
 func (p *Pool) Merge(now time.Time, incoming []Proxy, policies ...EjectionPolicy) {

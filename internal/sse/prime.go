@@ -34,48 +34,39 @@ func PrimeUntil(ctx context.Context, response *http.Response, accept func(Event)
 	}
 
 	captured := &captureReader{reader: response.Body}
-	result := make(chan error, 1)
-	go func() {
-		decoder := NewDecoder(captured)
-		for {
-			event, err := decoder.Decode()
-			if errors.Is(err, ErrEventTooLarge) {
-				result <- ErrEventTooLarge
-				return
-			}
-			if err == io.EOF {
-				err = io.ErrUnexpectedEOF
-			}
-			if err != nil {
-				result <- err
-				return
-			}
-			accepted, acceptErr := accept(event)
-			if acceptErr != nil {
-				result <- acceptErr
-				return
-			}
-			if accepted {
-				result <- nil
-				return
-			}
-		}
-	}()
+	// Cancel-aware decode without per-stream goroutine: AfterFunc closes the
+	// body when ctx is cancelled, unblocking Decode's Read (which then returns
+	// error and we map it to ctx.Err). Saves 1 goroutine + channel per SSE
+	// stream (1k streams = 1k goroutines saved).
+	stop := context.AfterFunc(ctx, func() { _ = response.Body.Close() })
+	defer stop()
 
-	select {
-	case err := <-result:
+	decoder := NewDecoder(captured)
+	for {
+		event, err := decoder.Decode()
+		if errors.Is(err, ErrEventTooLarge) {
+			return ErrEventTooLarge
+		}
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
-		response.Body = &replayReadCloser{
-			Reader: io.MultiReader(bytes.NewReader(captured.Bytes()), response.Body),
-			closer: response.Body,
+		accepted, acceptErr := accept(event)
+		if acceptErr != nil {
+			return acceptErr
 		}
-		return nil
-	case <-ctx.Done():
-		_ = response.Body.Close()
-		<-result
-		return ctx.Err()
+		if accepted {
+			response.Body = &replayReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(captured.Bytes()), response.Body),
+				closer: response.Body,
+			}
+			return nil
+		}
 	}
 }
 
