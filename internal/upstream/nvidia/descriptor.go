@@ -127,6 +127,19 @@ func reasoningHints() map[string]CapabilityHint {
 		// deepseek-v4-flash now answers 410 Gone); keep both so discovery does
 		// not downgrade reasoning for whichever ID is live.
 		"deepseek-ai/deepseek-v4-flash-0731",
+		"deepseek-ai/deepseek-r1",
+		"deepseek-ai/deepseek-r1-distill-llama-70b",
+		"deepseek-ai/deepseek-r1-distill-qwen-32b",
+		"deepseek-ai/deepseek-r1-distill-qwen-14b",
+		"deepseek-ai/deepseek-r1-distill-qwen-7b",
+		"deepseek-ai/deepseek-r1-distill-qwen-1.5b",
+		"deepseek-ai/deepseek-r1-distill-llama-8b",
+		"deepseek-ai/deepseek-reasoner",
+		"qwen/qwq-32b-preview",
+		"qwen/qwq-32b",
+		"openai/o1",
+		"openai/o3-mini",
+		"openai/o4-mini",
 	}
 	hints := make(map[string]CapabilityHint, len(models))
 	for _, model := range models {

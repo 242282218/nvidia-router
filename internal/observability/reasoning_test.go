@@ -71,6 +71,9 @@ func TestReasoningContentFromBodyCountsCharacters(t *testing.T) {
 		{"thinking alias", `{"choices":[{"message":{"thinking":"思考"}}]}`, true, 2},
 		{"multi-byte runes counted not bytes", `{"choices":[{"message":{"reasoning_content":"思考abc"}}]}`, true, 5},
 		{"multiple choices summed", `{"choices":[{"message":{"reasoning_content":"ab"}},{"message":{"reasoning_content":"cd"}}]}`, true, 4},
+		{"reasoning field alternative", `{"choices":[{"message":{"reasoning":"thinking_step"}}]}`, true, 13},
+		{"thinking object with thought field", `{"choices":[{"message":{"thinking":{"thought":"internal_reasoning"}}}]}`, true, 18},
+		{"thinking object with text field", `{"choices":[{"message":{"thinking":{"text":"thought_text"}}}]}`, true, 12},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +98,8 @@ func TestReasoningDeltaCharsParsesStreamChunk(t *testing.T) {
 		{"thinking alias delta", `{"choices":[{"delta":{"thinking":"思考"}}]}`, true, 2},
 		{"null reasoning delta", `{"choices":[{"delta":{"reasoning_content":null}}]}`, false, 0},
 		{"multiple choices summed", `{"choices":[{"delta":{"reasoning_content":"a"}},{"delta":{"reasoning_content":"bc"}}]}`, true, 3},
+		{"reasoning field delta", `{"choices":[{"delta":{"reasoning":"step"}}]}`, true, 4},
+		{"thinking object delta", `{"choices":[{"delta":{"thinking":{"thought":"thought_delta"}}}]}`, true, 13},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

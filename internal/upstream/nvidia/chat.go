@@ -240,7 +240,7 @@ func hasSemanticChatChoices(items []json.RawMessage) (bool, bool) {
 		if json.Unmarshal(messageValue, &message) != nil || message == nil {
 			return false, false
 		}
-		for _, field := range []string{"content", "reasoning_content"} {
+		for _, field := range []string{"content", "reasoning_content", "reasoning", "thinking"} {
 			if raw, ok := message[field]; ok {
 				present, valid := hasTextValue(raw)
 				if !valid {
@@ -268,6 +268,15 @@ func hasTextValue(raw json.RawMessage) (bool, bool) {
 	var text string
 	if json.Unmarshal(trimmed, &text) == nil {
 		return text != "", true
+	}
+	var nested struct {
+		Thought string `json:"thought"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(trimmed, &nested) == nil {
+		if nested.Thought != "" || nested.Text != "" {
+			return true, true
+		}
 	}
 	var parts []struct {
 		Text string `json:"text"`

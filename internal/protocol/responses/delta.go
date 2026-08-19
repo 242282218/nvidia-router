@@ -26,12 +26,12 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 		Usage   *ChatUsage `json:"usage"`
 		Choices []struct {
 			Delta struct {
-				Role           string              `json:"role"`
-				Content        json.RawMessage     `json:"content"`
-				Reasoning      json.RawMessage     `json:"reasoning_content"`
-				ReasoningAlias json.RawMessage     `json:"reasoning"`
-				Thinking       json.RawMessage     `json:"thinking"`
-				ToolCalls      []chatChunkToolCall `json:"tool_calls"`
+				Role             string              `json:"role"`
+				Content          json.RawMessage     `json:"content"`
+				ReasoningContent json.RawMessage     `json:"reasoning_content"`
+				Reasoning        json.RawMessage     `json:"reasoning"`
+				Thinking         json.RawMessage     `json:"thinking"`
+				ToolCalls        []chatChunkToolCall `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason json.RawMessage `json:"finish_reason"`
 		} `json:"choices"`
@@ -43,9 +43,9 @@ func ParseChatDelta(data []byte) (delta ChatDelta, done bool, err error) {
 	if len(chunk.Choices) > 0 {
 		choice := chunk.Choices[0]
 		parsed.Content = decodeStringField(choice.Delta.Content)
-		reasoning := decodeStringField(choice.Delta.Reasoning)
+		reasoning := decodeStringField(choice.Delta.ReasoningContent)
 		if reasoning == "" {
-			reasoning = decodeStringField(choice.Delta.ReasoningAlias)
+			reasoning = decodeStringField(choice.Delta.Reasoning)
 		}
 		if reasoning == "" {
 			reasoning = decodeStringField(choice.Delta.Thinking)
@@ -102,7 +102,7 @@ func decodeToolArguments(raw json.RawMessage) string {
 // decodeStringField returns the string value of a JSON field that may be a
 // string, null or absent. When the field is an array of content parts (the
 // OpenAI-compatible shape some upstreams stream, e.g.
-// [{"type":"text","text":"..."}]), the text parts are concatenated so content
+// [{"type":"text","text":"..."}]) or an object with thought/text, the text parts are concatenated so content
 // deltas are not silently dropped.
 func decodeStringField(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
@@ -111,6 +111,18 @@ func decodeStringField(raw json.RawMessage) string {
 	var asString string
 	if json.Unmarshal(raw, &asString) == nil {
 		return asString
+	}
+	var nested struct {
+		Thought string `json:"thought"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(raw, &nested) == nil {
+		if nested.Thought != "" {
+			return nested.Thought
+		}
+		if nested.Text != "" {
+			return nested.Text
+		}
 	}
 	var parts []struct {
 		Text string `json:"text"`

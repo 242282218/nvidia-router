@@ -78,6 +78,12 @@ func Parse(payload []byte) (Request, error) {
 		}
 		return Request{}, compatRequestError(err)
 	}
+	if err := validateTokenLimits(fields); err != nil {
+		return Request{}, err
+	}
+	if err := validateSampling(fields); err != nil {
+		return Request{}, err
+	}
 	return Request{
 		fields: fields, publicModel: modelID, stream: stream,
 		requirements: modelcatalog.Requirements{
@@ -142,7 +148,85 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 			return nil, reasoningModelError(err)
 		}
 	}
+
+	// Normalize max_completion_tokens to max_tokens for upstreams (like NVIDIA NIM)
+	// that only accept max_tokens, and remove max_completion_tokens so strict upstream
+	// schema validation does not fail with 422 extra fields not permitted.
+	if maxComp, ok := fields["max_completion_tokens"]; ok && !isJSONNull(maxComp) {
+		if _, hasMaxTokens := fields["max_tokens"]; !hasMaxTokens || isJSONNull(fields["max_tokens"]) {
+			fields["max_tokens"] = maxComp
+		}
+		delete(fields, "max_completion_tokens")
+	}
+
 	return marshalFields(fields)
+}
+
+func validateTokenLimits(fields map[string]json.RawMessage) error {
+	if raw, ok := fields["max_tokens"]; ok && !isJSONNull(raw) {
+		var maxTokens *int
+		if json.Unmarshal(raw, &maxTokens) != nil || maxTokens == nil || *maxTokens <= 0 {
+			return invalidRequest("invalid_parameter", "max_tokens", "The max_tokens parameter must be a positive integer.")
+		}
+	}
+	if raw, ok := fields["max_completion_tokens"]; ok && !isJSONNull(raw) {
+		var maxComp *int
+		if json.Unmarshal(raw, &maxComp) != nil || maxComp == nil || *maxComp <= 0 {
+			return invalidRequest("invalid_parameter", "max_completion_tokens", "The max_completion_tokens parameter must be a positive integer.")
+		}
+	}
+	return nil
+}
+
+func validateSampling(fields map[string]json.RawMessage) error {
+	if raw, ok := fields["temperature"]; ok && !isJSONNull(raw) {
+		var temp *float64
+		if json.Unmarshal(raw, &temp) != nil || temp == nil || *temp < 0 || *temp > 2 {
+			return invalidRequest("invalid_parameter", "temperature", "The temperature parameter must be between 0 and 2.")
+		}
+	}
+	if raw, ok := fields["top_p"]; ok && !isJSONNull(raw) {
+		var topP *float64
+		if json.Unmarshal(raw, &topP) != nil || topP == nil || *topP < 0 || *topP > 1 {
+			return invalidRequest("invalid_parameter", "top_p", "The top_p parameter must be between 0 and 1.")
+		}
+	}
+	if raw, ok := fields["n"]; ok && !isJSONNull(raw) {
+		var n *int
+		if json.Unmarshal(raw, &n) != nil || n == nil || *n <= 0 {
+			return invalidRequest("invalid_parameter", "n", "The n parameter must be a positive integer.")
+		}
+	}
+	if raw, ok := fields["presence_penalty"]; ok && !isJSONNull(raw) {
+		var pp *float64
+		if json.Unmarshal(raw, &pp) != nil || pp == nil || *pp < -2 || *pp > 2 {
+			return invalidRequest("invalid_parameter", "presence_penalty", "The presence_penalty parameter must be between -2 and 2.")
+		}
+	}
+	if raw, ok := fields["frequency_penalty"]; ok && !isJSONNull(raw) {
+		var fp *float64
+		if json.Unmarshal(raw, &fp) != nil || fp == nil || *fp < -2 || *fp > 2 {
+			return invalidRequest("invalid_parameter", "frequency_penalty", "The frequency_penalty parameter must be between -2 and 2.")
+		}
+	}
+	if raw, ok := fields["stream_options"]; ok && !isJSONNull(raw) {
+		var options map[string]json.RawMessage
+		if json.Unmarshal(raw, &options) != nil || options == nil {
+			return invalidRequest("invalid_parameter", "stream_options", "The stream_options parameter must be an object.")
+		}
+		if rawUsage, hasUsage := options["include_usage"]; hasUsage && !isJSONNull(rawUsage) {
+			var includeUsage *bool
+			if json.Unmarshal(rawUsage, &includeUsage) != nil || includeUsage == nil {
+				return invalidRequest("invalid_parameter", "stream_options.include_usage", "include_usage must be a boolean.")
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
 func decodeFields(payload []byte) (map[string]json.RawMessage, error) {

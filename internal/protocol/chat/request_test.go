@@ -73,6 +73,16 @@ func TestParseValidatesRequiredAndKnownFieldTypes(t *testing.T) {
 		{name: "function name", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{}}]}`, code: "missing_required_parameter", param: "tools[0].function.name"},
 		{name: "tool choice type", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":1}`, code: "invalid_parameter", param: "tool_choice"},
 		{name: "tool choice value", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"sometimes"}`, code: "invalid_parameter", param: "tool_choice"},
+		{name: "max tokens negative", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"max_tokens":-1}`, code: "invalid_parameter", param: "max_tokens"},
+		{name: "max tokens string", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"max_tokens":"many"}`, code: "invalid_parameter", param: "max_tokens"},
+		{name: "max completion tokens zero", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"max_completion_tokens":0}`, code: "invalid_parameter", param: "max_completion_tokens"},
+		{name: "temperature out of range", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"temperature":2.5}`, code: "invalid_parameter", param: "temperature"},
+		{name: "top_p out of range", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"top_p":1.5}`, code: "invalid_parameter", param: "top_p"},
+		{name: "n zero", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"n":0}`, code: "invalid_parameter", param: "n"},
+		{name: "presence penalty out of range", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"presence_penalty":3}`, code: "invalid_parameter", param: "presence_penalty"},
+		{name: "frequency penalty out of range", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"frequency_penalty":-3}`, code: "invalid_parameter", param: "frequency_penalty"},
+		{name: "stream options not object", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"stream_options":"true"}`, code: "invalid_parameter", param: "stream_options"},
+		{name: "include_usage not bool", payload: `{"model":"m","messages":[{"role":"user","content":"x"}],"stream_options":{"include_usage":"yes"}}`, code: "invalid_parameter", param: "stream_options.include_usage"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -329,6 +339,57 @@ func TestModelMappingPreservesNativeReasoningFields(t *testing.T) {
 	}
 	if _, exists := fields["thinking"]; !exists {
 		t.Fatal("native thinking field was removed")
+	}
+}
+
+func TestMarshalForNormalizesMaxCompletionTokens(t *testing.T) {
+	request, err := Parse([]byte(`{
+		"model":"public-model",
+		"messages":[{"role":"user","content":"solve this"}],
+		"max_completion_tokens":4096
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got := string(fields["max_tokens"]); got != "4096" {
+		t.Fatalf("max_tokens = %s, want 4096", got)
+	}
+	if _, exists := fields["max_completion_tokens"]; exists {
+		t.Fatal("max_completion_tokens should be stripped from upstream body")
+	}
+}
+
+func TestMarshalForPreservesExistingMaxTokensWhenMaxCompletionTokensPresent(t *testing.T) {
+	request, err := Parse([]byte(`{
+		"model":"public-model",
+		"messages":[{"role":"user","content":"solve this"}],
+		"max_tokens":2048,
+		"max_completion_tokens":4096
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	body, err := request.MarshalFor(chatModel())
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got := string(fields["max_tokens"]); got != "2048" {
+		t.Fatalf("max_tokens = %s, want 2048", got)
+	}
+	if _, exists := fields["max_completion_tokens"]; exists {
+		t.Fatal("max_completion_tokens should be stripped from upstream body")
 	}
 }
 

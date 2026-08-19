@@ -377,11 +377,11 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Content        json.RawMessage   `json:"content"`
-				Reasoning      json.RawMessage   `json:"reasoning_content"`
-				ReasoningAlias json.RawMessage   `json:"reasoning"`
-				Thinking       json.RawMessage   `json:"thinking"`
-				ToolCalls      []json.RawMessage `json:"tool_calls"`
+				Content          json.RawMessage   `json:"content"`
+				ReasoningContent json.RawMessage   `json:"reasoning_content"`
+				Reasoning        json.RawMessage   `json:"reasoning"`
+				Thinking         json.RawMessage   `json:"thinking"`
+				ToolCalls        []json.RawMessage `json:"tool_calls"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
@@ -389,8 +389,11 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 		return false, fmt.Errorf("decode upstream chat event: %w", err)
 	}
 	for _, choice := range chunk.Choices {
-		if hasSSETextValue(choice.Delta.Content) || hasSSETextValue(choice.Delta.Reasoning) ||
-			hasSSETextValue(choice.Delta.ReasoningAlias) || hasSSETextValue(choice.Delta.Thinking) || len(choice.Delta.ToolCalls) > 0 {
+		if hasSSETextValue(choice.Delta.Content) ||
+			hasSSETextValue(choice.Delta.ReasoningContent) ||
+			hasSSETextValue(choice.Delta.Reasoning) ||
+			hasSSETextValue(choice.Delta.Thinking) ||
+			len(choice.Delta.ToolCalls) > 0 {
 			return true, nil
 		}
 	}
@@ -405,6 +408,15 @@ func hasSSETextValue(raw json.RawMessage) bool {
 	var text string
 	if json.Unmarshal(trimmed, &text) == nil {
 		return text != ""
+	}
+	var nested struct {
+		Thought string `json:"thought"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(trimmed, &nested) == nil {
+		if nested.Thought != "" || nested.Text != "" {
+			return true
+		}
 	}
 	var parts []struct {
 		Text string `json:"text"`

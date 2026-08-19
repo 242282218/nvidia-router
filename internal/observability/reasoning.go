@@ -49,8 +49,8 @@ func ReasoningLevelFromBody(body []byte) (string, bool) {
 }
 
 // ReasoningContentFromBody reports whether a non-stream chat body carries
-// assistant reasoning_content and its total character count (runes). Only the
-// length is returned; the reasoning text itself is never retained.
+// assistant reasoning_content, reasoning, or thinking and its total character count (runes).
+// Only the length is returned; the reasoning text itself is never retained.
 func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 	var chat struct {
 		Choices []struct {
@@ -76,7 +76,7 @@ func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 }
 
 // ReasoningDeltaChars reports whether a single SSE chat delta frame carries
-// reasoning_content and its character count (runes). Only the length is
+// reasoning_content, reasoning, or thinking and its character count (runes). Only the length is
 // returned; reasoning text is never retained.
 func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
 	var chunk struct {
@@ -111,15 +111,27 @@ func firstReasoningLength(values ...json.RawMessage) (int64, bool) {
 	return 0, false
 }
 
-// reasoningContentLength returns the rune count of a reasoning_content field
-// that may be a string, null or absent, and whether any text was present.
+// reasoningContentLength returns the rune count of a reasoning field
+// that may be a string, structured object (thought/text), null or absent, and whether any text was present.
 func reasoningContentLength(raw json.RawMessage) (int64, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return 0, false
 	}
 	var text string
-	if json.Unmarshal(raw, &text) != nil || text == "" {
-		return 0, false
+	if json.Unmarshal(raw, &text) == nil && text != "" {
+		return int64(utf8.RuneCountInString(text)), true
 	}
-	return int64(utf8.RuneCountInString(text)), true
+	var nested struct {
+		Thought string `json:"thought"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(raw, &nested) == nil {
+		if nested.Thought != "" {
+			return int64(utf8.RuneCountInString(nested.Thought)), true
+		}
+		if nested.Text != "" {
+			return int64(utf8.RuneCountInString(nested.Text)), true
+		}
+	}
+	return 0, false
 }

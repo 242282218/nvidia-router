@@ -1,10 +1,18 @@
 package sse
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 )
+
+var eventBufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
 
 type Encoder struct {
 	writer io.Writer
@@ -15,38 +23,44 @@ func NewEncoder(w io.Writer) *Encoder {
 }
 
 func (e *Encoder) Encode(event Event) error {
+	buf := eventBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer eventBufPool.Put(buf)
+
 	for _, comment := range event.Comments {
-		if _, err := fmt.Fprintf(e.writer, ":%s\n", comment); err != nil {
-			return fmt.Errorf("write SSE comment: %w", err)
-		}
+		buf.WriteByte(':')
+		buf.WriteString(comment)
+		buf.WriteByte('\n')
 	}
 
 	if event.Event != "" {
-		if _, err := fmt.Fprintf(e.writer, "event: %s\n", event.Event); err != nil {
-			return fmt.Errorf("write SSE event: %w", err)
-		}
+		buf.WriteString("event: ")
+		buf.WriteString(event.Event)
+		buf.WriteByte('\n')
 	}
 
 	if event.ID != "" {
-		if _, err := fmt.Fprintf(e.writer, "id: %s\n", event.ID); err != nil {
-			return fmt.Errorf("write SSE id: %w", err)
-		}
+		buf.WriteString("id: ")
+		buf.WriteString(event.ID)
+		buf.WriteByte('\n')
 	}
 
 	if event.Retry != "" {
-		if _, err := fmt.Fprintf(e.writer, "retry: %s\n", event.Retry); err != nil {
-			return fmt.Errorf("write SSE retry: %w", err)
-		}
+		buf.WriteString("retry: ")
+		buf.WriteString(event.Retry)
+		buf.WriteByte('\n')
 	}
 
 	for _, data := range event.Data {
-		if _, err := fmt.Fprintf(e.writer, "data: %s\n", data); err != nil {
-			return fmt.Errorf("write SSE data: %w", err)
-		}
+		buf.WriteString("data: ")
+		buf.WriteString(data)
+		buf.WriteByte('\n')
 	}
 
-	if _, err := e.writer.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write SSE delimiter: %w", err)
+	buf.WriteByte('\n')
+
+	if _, err := e.writer.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("write SSE event: %w", err)
 	}
 
 	return nil
@@ -54,7 +68,14 @@ func (e *Encoder) Encode(event Event) error {
 
 func (e *Encoder) WriteRaw(line string) error {
 	line = strings.TrimSuffix(line, "\n")
-	if _, err := fmt.Fprintf(e.writer, "%s\n", line); err != nil {
+	buf := eventBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer eventBufPool.Put(buf)
+
+	buf.WriteString(line)
+	buf.WriteByte('\n')
+
+	if _, err := e.writer.Write(buf.Bytes()); err != nil {
 		return fmt.Errorf("write SSE raw line: %w", err)
 	}
 	return nil
