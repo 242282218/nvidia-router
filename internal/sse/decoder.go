@@ -48,6 +48,9 @@ func (d *Decoder) Decode() (Event, error) {
 			return event, nil
 		}
 
+		if d.bytesRead > MaxEventSize {
+			return Event{}, ErrEventTooLarge
+		}
 		if err := d.parseLine(line); err != nil {
 			return Event{}, err
 		}
@@ -58,10 +61,13 @@ func (d *Decoder) readLine() ([]byte, error) {
 	d.buffer.Reset()
 	for {
 		fragment, err := d.reader.ReadSlice('\n')
-		d.bytesRead += len(fragment)
-		if d.bytesRead > MaxEventSize {
+		// Track both the accumulated event size and the in-progress line
+		// buffer so a single event composed of many small lines (e.g. 10k
+		// comment lines) cannot exceed MaxEventSize without detection.
+		if d.bytesRead+len(fragment) > MaxEventSize {
 			return nil, ErrEventTooLarge
 		}
+		d.bytesRead += len(fragment)
 		_, _ = d.buffer.Write(fragment)
 		if err == bufio.ErrBufferFull {
 			continue

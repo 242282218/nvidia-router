@@ -246,7 +246,12 @@ func (c *HealthChecker) Sweep(ctx context.Context) error {
 }
 
 func (c *HealthChecker) probeOne(ctx context.Context, candidate keystate.KeySnapshot) {
-	result := c.probe(ctx, candidate.ID)
+	// Guard each probe with its own deadline so a hung upstream cannot pile
+	// up probe goroutines; the client's transport timeouts normally bound the
+	// probe, but this covers validator paths that never reach the transport.
+	probeCtx, cancel := context.WithTimeout(ctx, c.interval)
+	defer cancel()
+	result := c.probe(probeCtx, candidate.ID)
 	if !result.Recovered {
 		if c.logger.Enabled(ctx, slog.LevelDebug) {
 			c.logger.Debug("health check probe not recovered", "key_id", candidate.ID, "category", result.Category, "reason", result.Reason)

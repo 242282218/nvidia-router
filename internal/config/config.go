@@ -231,6 +231,9 @@ func loadXKPoolConfig() (*XKPoolConfig, error) {
 	if parsedUpstream.RawQuery == "" {
 		return nil, proxyConfigError(upstreamEnv, "must include the provider query credentials")
 	}
+	if err := rejectPrivateHost(upstreamEnv, parsedUpstream.Host); err != nil {
+		return nil, err
+	}
 
 	validationURL := strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_XK_VALIDATION_URL"))
 	if validationURL == "" {
@@ -241,6 +244,9 @@ func loadXKPoolConfig() (*XKPoolConfig, error) {
 	parsedValidationURL, err := url.Parse(validationURL)
 	if err != nil || parsedValidationURL.Host == "" || (parsedValidationURL.Scheme != "http" && parsedValidationURL.Scheme != "https") || parsedValidationURL.User != nil || parsedValidationURL.RawQuery != "" || parsedValidationURL.Fragment != "" {
 		return nil, proxyConfigError("NVIDIA_ROUTER_XK_VALIDATION_URL", "must be an absolute HTTP or HTTPS URL without credentials, query, or fragment")
+	}
+	if err := rejectPrivateHost("NVIDIA_ROUTER_XK_VALIDATION_URL", parsedValidationURL.Host); err != nil {
+		return nil, err
 	}
 
 	validationStatus, err := loadPositiveInt("NVIDIA_ROUTER_XK_VALIDATION_STATUS", httpStatusNotFound)
@@ -385,6 +391,47 @@ func validateInitialAdminPassword(password string) error {
 		return errors.New("must not equal admin")
 	}
 	return nil
+}
+
+func rejectPrivateHost(envName, host string) error {
+	hostname := host
+	if strings.HasPrefix(hostname, "[") {
+		if end := strings.IndexByte(hostname, ']'); end >= 0 {
+			hostname = hostname[1:end]
+		}
+	} else if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+	ip := net.ParseIP(hostname)
+	if ip == nil {
+		// Hostname, not a literal IP — deep SSRF via DNS rebinding is
+		// mitigated at fetch time with redirect checks; config-time
+		// validation rejects literal private IPs to block direct metadata
+		// service targeting (e.g. 169.254.169.254).
+		return nil
+	}
+	if isPrivateIP(ip) {
+		return proxyConfigError(envName, "must not target a private or loopback IP")
+	}
+	return nil
+}
+
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+		return true
+	}
+	// 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10
+	privateCIDRs := []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"169.254.0.0/16", "127.0.0.0/8", "fc00::/7", "fe80::/10", "::1/128",
+	}
+	for _, cidr := range privateCIDRs {
+		_, network, _ := net.ParseCIDR(cidr)
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadNVIDIABaseURL(rawURL string, allowInsecure bool) (*url.URL, error) {

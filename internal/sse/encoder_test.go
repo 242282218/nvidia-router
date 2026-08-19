@@ -51,6 +51,34 @@ func TestEncoderWriteRaw(t *testing.T) {
 	}
 }
 
+func TestEncoderSplitsDataContainingNewlines(t *testing.T) {
+	// A data value with embedded newlines must be split into per-line data:
+	// fields, otherwise a client EventSource would parse the injected newline
+	// as an event boundary (audit: SSE data newline injection).
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"single value with LF", []string{"line1\nline2"}, "data: line1\ndata: line2\n\n"},
+		{"CRLF normalized", []string{"a\r\nb"}, "data: a\ndata: b\n\n"},
+		{"lone CR normalized", []string{"a\rb"}, "data: a\ndata: b\n\n"},
+		{"multiline joined with other values", []string{"first", "x\ny", "last"}, "data: first\ndata: x\ndata: y\ndata: last\n\n"},
+		{"no newline passthrough", []string{"plain"}, "data: plain\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := NewEncoder(&out).Encode(Event{Data: tc.in}); err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("encoded = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func BenchmarkEncoderEncode(b *testing.B) {
 	event := Event{
 		Event: "chunk",

@@ -139,9 +139,19 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		// Set the deadline before any response body write, including the first
 		// WriteHeader and replayed comment/pending bytes. A ResponseController
 		// deadline is the only cancellable boundary available to synchronous
-		// ResponseWriter operations.
+		// ResponseWriter operations. When the writer does not support
+		// deadlines (e.g. httptest, or a buffering reverse proxy) downgrade
+		// to the watchdog alone instead of failing the stream.
 		if err := SetWriteDeadline(writer, opts.WriteIdleTimeout); err != nil {
-			return err
+			if errors.Is(err, ErrWriteDeadlineUnsupported) {
+				opts.WriteIdleTimeout = 0
+				if watchdog != nil {
+					watchdog.Stop()
+					watchdog = nil
+				}
+			} else {
+				return err
+			}
 		}
 
 		if !firstDataWritten {
@@ -168,7 +178,13 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 			if watchdog != nil {
 				watchdog.Disarm()
 			}
-			return err
+			if errors.Is(err, ErrWriteDeadlineUnsupported) {
+				// Writer does not support deadlines — fallback to plain
+				// Flush. The watchdog still guards stalled clients.
+				flusher.Flush()
+			} else {
+				return err
+			}
 		}
 		if watchdog != nil {
 			watchdog.Disarm()

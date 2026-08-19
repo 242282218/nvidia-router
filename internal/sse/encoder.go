@@ -52,6 +52,20 @@ func (e *Encoder) Encode(event Event) error {
 	}
 
 	for _, data := range event.Data {
+		// Per SSE spec a data field must not contain raw newlines. A raw
+		// newline inside one data value would be parsed by the client as a
+		// new field line (event boundary confusion / injection). Split on
+		// any newline sequence and emit each segment as its own data: line.
+		normalized := strings.ReplaceAll(data, "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
+		if strings.Contains(normalized, "\n") {
+			for _, part := range strings.Split(normalized, "\n") {
+				buf.WriteString("data: ")
+				buf.WriteString(part)
+				buf.WriteByte('\n')
+			}
+			continue
+		}
 		buf.WriteString("data: ")
 		buf.WriteString(data)
 		buf.WriteByte('\n')

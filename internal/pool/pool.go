@@ -163,8 +163,10 @@ func (p *Pool) UpsertKey(key keystate.KeySnapshot) {
 	}
 	nextKeyID, hasNextKey := p.nextKeyID()
 	p.keys[key.ID] = newKeyState(key)
-	p.order = append(p.order, key.ID)
-	p.sortOrder()
+	// Insert the new ID into the sorted order in O(n) instead of resorting
+	// the whole slice: the order is the round-robin cursor sequence, and a
+	// full sort per key insertion would be O(n log n) for every UpsertKey.
+	p.order = insertSorted(p.order, key.ID)
 	if !hasNextKey {
 		p.cursor = 0
 		return
@@ -175,6 +177,17 @@ func (p *Pool) UpsertKey(key keystate.KeySnapshot) {
 			return
 		}
 	}
+}
+
+// insertSorted inserts value into the ascending-sorted slice in place,
+// returning the new slice. It keeps the round-robin order deterministic
+// without a full sort per insertion.
+func insertSorted(ids []int64, value int64) []int64 {
+	index := sort.Search(len(ids), func(i int) bool { return ids[i] >= value })
+	ids = append(ids, 0)
+	copy(ids[index+1:], ids[index:])
+	ids[index] = value
+	return ids
 }
 
 // SetKeyEnabled applies only the admin-owned Enabled flag. UpsertKey replaces

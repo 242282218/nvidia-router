@@ -367,6 +367,17 @@ func nearestLevel(requested ReasoningLevel, requestedBudget int, levels []Reason
 			}
 		}
 	}
+	// Auto is a dynamic sentinel, not a fixed budget. When the caller
+	// explicitly asked for auto, return it directly if the profile offers
+	// it; mapping it to none via budget distance (-1 vs 0) was a
+	// regression that collapsed auto -> none under nearest-neighbor.
+	if requested == ReasoningAuto {
+		for _, level := range levels {
+			if level == ReasoningAuto {
+				return ReasoningAuto
+			}
+		}
+	}
 	best := ReasoningLevel("")
 	bestDistance := int64(math.MaxInt64)
 	for _, level := range levels {

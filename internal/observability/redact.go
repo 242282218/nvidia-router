@@ -26,7 +26,7 @@ const redactedBearerText = "<redacted>"
 // Examples that do not match (token too short):
 //
 //	"bearer short"
-var bearerTokenPattern = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+\-]{20,}`)
+var bearerTokenPattern = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+\-/=]{20,}`)
 
 // RedactBearerToken returns s with every `bearer <token>` pair replaced by
 // `bearer <redacted>`. It is intended as a final safety filter on content that

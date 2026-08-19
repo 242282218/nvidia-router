@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	randv2 "math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -468,7 +468,7 @@ func (a *Attempt) backoff(ctx context.Context, attempts int, budget Budget, curr
 	if delay > retryBackoffMax || delay <= 0 {
 		delay = retryBackoffMax
 	}
-	delay = time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+	delay = time.Duration(float64(delay) * (0.8 + 0.4*randv2.Float64()))
 	if currentFault != nil && currentFault.RetryAfter > 0 {
 		suggested := currentFault.RetryAfter
 		if suggested > retryAfterMaxDelay {

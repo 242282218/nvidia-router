@@ -24,6 +24,10 @@ func WithIdleTimeout(body io.ReadCloser, idle time.Duration) io.ReadCloser {
 	wrapper := &idleReadCloser{ReadCloser: body, idle: idle}
 	wrapper.timer = time.AfterFunc(idle, func() {
 		wrapper.mu.Lock()
+		if wrapper.closed {
+			wrapper.mu.Unlock()
+			return
+		}
 		wrapper.expired = true
 		wrapper.mu.Unlock()
 		_ = body.Close()
@@ -37,6 +41,7 @@ type idleReadCloser struct {
 	timer   *time.Timer
 	mu      sync.Mutex
 	expired bool
+	closed  bool
 }
 
 // MarkComplete forwards semantic stream completion through the idle wrapper.
@@ -58,11 +63,14 @@ func (r *idleReadCloser) Read(payload []byte) (int, error) {
 	if read > 0 {
 		// Any byte is progress; keep-alive comments and deltas both
 		// count. Only reset when the idle callback has not already
-		// fired: once expired, the stream is being torn down and a
-		// late Reset would resurrect the timer racing the callback's
-		// body.Close, double-closing the underlying body.
+		// fired and the wrapper is not closed: once expired/closed, the
+		// stream is being torn down and a late Reset would resurrect the
+		// timer racing the callback's body.Close.
 		r.mu.Lock()
-		if !r.expired {
+		if !r.expired && !r.closed {
+			// Reset on a fired AfterFunc timer is safe, but the timer may
+			// have already executed its callback. The expired guard above
+			// ensures we do not resurrect a dead timer.
 			r.timer.Reset(r.idle)
 		}
 		r.mu.Unlock()
@@ -78,6 +86,11 @@ func (r *idleReadCloser) Read(payload []byte) (int, error) {
 
 func (r *idleReadCloser) Close() error {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return r.ReadCloser.Close()
+	}
+	r.closed = true
 	if !r.expired {
 		r.timer.Stop()
 	}

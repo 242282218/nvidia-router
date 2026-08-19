@@ -132,6 +132,40 @@ func TestDecoderRejectsOversizedEventWithoutReadingFullPayload(t *testing.T) {
 	}
 }
 
+func TestDecoderRejectsManySmallLinesExceedingEventSize(t *testing.T) {
+	// A single event composed of thousands of small comment lines must be
+	// bounded by MaxEventSize too; per-line fragments were the only counter
+	// before, so this stream slipped past the cap (audit O-02).
+	line := strings.Repeat("x", 100) + "\n"
+	count := MaxEventSize/len(line) + 10
+	input := strings.Repeat(line, count)
+	decoder := NewDecoder(strings.NewReader(input))
+
+	_, err := decoder.Decode()
+	if !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("Decode error = %v, want ErrEventTooLarge", err)
+	}
+}
+
+func TestDecoderAllowsLargeButUnderCapMultiLineEvent(t *testing.T) {
+	line := ":" + strings.Repeat("y", 100) + "\n"
+	count := MaxEventSize/len(line)/2
+	var builder strings.Builder
+	for i := 0; i < count; i++ {
+		builder.WriteString(line)
+	}
+	builder.WriteString("data: end\n\n")
+	decoder := NewDecoder(strings.NewReader(builder.String()))
+
+	event, err := decoder.Decode()
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(event.Comments) != count || event.Data[0] != "end" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestDecoderHandlesIncompleteEventAtEOF(t *testing.T) {
 	input := "data: incomplete"
 	decoder := NewDecoder(strings.NewReader(input))

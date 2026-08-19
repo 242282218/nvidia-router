@@ -15,6 +15,8 @@ func TestRedactBearerTokenReplacesLongCredentials(t *testing.T) {
 		{name: "sk-style", in: "header bearer sk-1234567890abcdefghijkl", want: "header bearer <redacted>"},
 		{name: "case-insensitive scheme", in: "BEARER 12345678901234567890ABCD", want: "bearer <redacted>"},
 		{name: "jwt-like", in: "token: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMifQ.signature", want: "token: bearer <redacted>"},
+		{name: "jwt with padding equals", in: "auth Bearer abcdefghijklmnopqrstuvwx==", want: "auth bearer <redacted>"},
+		{name: "token with slash", in: "auth Bearer abcdefghijklmnopqrstuvw/x", want: "auth bearer <redacted>"},
 		{name: "multiple matches", in: "Bearer 12345678901234567890AA Bearer 98765432109876543210BB", want: "bearer <redacted> bearer <redacted>"},
 	}
 	for _, c := range cases {

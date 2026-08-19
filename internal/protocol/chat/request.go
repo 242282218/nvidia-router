@@ -153,7 +153,7 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	// that only accept max_tokens, and remove max_completion_tokens so strict upstream
 	// schema validation does not fail with 422 extra fields not permitted.
 	if maxComp, ok := fields["max_completion_tokens"]; ok && !isJSONNull(maxComp) {
-		if _, hasMaxTokens := fields["max_tokens"]; !hasMaxTokens || isJSONNull(fields["max_tokens"]) {
+		if maxTokens, hasMaxTokens := fields["max_tokens"]; !hasMaxTokens || isJSONNull(maxTokens) {
 			fields["max_tokens"] = maxComp
 		}
 		delete(fields, "max_completion_tokens")

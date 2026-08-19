@@ -222,6 +222,51 @@ func TestLoadFromEnvRejectsStaticAndPoolProxyTogether(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRejectsPrivateHostInXKUpstreamURL(t *testing.T) {
+	cases := []string{
+		"http://127.0.0.1:8080/tools/XApi.ashx?apikey=x",
+		"http://169.254.169.254/latest/meta-data/?apikey=x",
+		"http://10.0.0.1:80/x?apikey=x",
+		"http://192.168.1.1/x?apikey=x",
+		"http://[::1]:8080/x?apikey=x",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			clearConfigEnv(t)
+			setBaseConfigEnv(t)
+			t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", raw)
+			_, err := LoadFromEnv(LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), "must not target a private or loopback IP") {
+				t.Fatalf("LoadFromEnv error = %v, want private-IP rejection", err)
+			}
+		})
+	}
+}
+
+func TestLoadFromEnvAllowsPublicHostInXKUpstreamURL(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "http://api.xingkongdaili.com/api/getproxy/123?apikey=test")
+	cfg, err := LoadFromEnv(LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	if cfg.XKPool == nil {
+		t.Fatal("XKPool = nil, want configured collector")
+	}
+}
+
+func TestLoadFromEnvRejectsPrivateHostInXKValidationURL(t *testing.T) {
+	clearConfigEnv(t)
+	setBaseConfigEnv(t)
+	t.Setenv("NVIDIA_ROUTER_XK_UPSTREAM_URL", "http://api.xingkongdaili.com/api/getproxy/123?apikey=test")
+	t.Setenv("NVIDIA_ROUTER_XK_VALIDATION_URL", "http://127.0.0.1:9999/")
+	_, err := LoadFromEnv(LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "must not target a private or loopback IP") {
+		t.Fatalf("LoadFromEnv error = %v, want private-IP rejection for validation URL", err)
+	}
+}
+
 func TestLoadFromEnvRejectsInvalidPoolValidationStatus(t *testing.T) {
 	clearConfigEnv(t)
 	setBaseConfigEnv(t)

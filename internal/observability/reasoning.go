@@ -112,7 +112,8 @@ func firstReasoningLength(values ...json.RawMessage) (int64, bool) {
 }
 
 // reasoningContentLength returns the rune count of a reasoning field
-// that may be a string, structured object (thought/text), null or absent, and whether any text was present.
+// that may be a string, structured object (thought/text), array of
+// text parts, null or absent, and whether any text was present.
 func reasoningContentLength(raw json.RawMessage) (int64, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return 0, false
@@ -131,6 +132,28 @@ func reasoningContentLength(raw json.RawMessage) (int64, bool) {
 		}
 		if nested.Text != "" {
 			return int64(utf8.RuneCountInString(nested.Text)), true
+		}
+	}
+	// Some models emit reasoning as [{type:"text",text:"..."}] or
+	// [{"text":"..."}]. Sum all text/thought fields.
+	var array []struct {
+		Thought string `json:"thought"`
+		Text    string `json:"text"`
+	}
+	if json.Unmarshal(raw, &array) == nil && len(array) > 0 {
+		var total int64
+		found := false
+		for _, item := range array {
+			if item.Thought != "" {
+				total += int64(utf8.RuneCountInString(item.Thought))
+				found = true
+			} else if item.Text != "" {
+				total += int64(utf8.RuneCountInString(item.Text))
+				found = true
+			}
+		}
+		if found {
+			return total, true
 		}
 	}
 	return 0, false
