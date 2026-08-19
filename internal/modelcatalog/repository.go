@@ -12,11 +12,28 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// WithReader routes read-only queries to a separate connection pool. The writer
+// pool is capped at one connection, so without this every per-request model
+// resolution queued behind in-flight writes.
+func (r *Repository) WithReader(reader *sql.DB) *Repository {
+	clone := *r
+	clone.reader = reader
+	return &clone
+}
+
+func (r *Repository) read() *sql.DB {
+	if r.reader != nil {
+		return r.reader
+	}
+	return r.db
 }
 
 func (r *Repository) SaveSelections(ctx context.Context, selections []Selection, now time.Time) (returnErr error) {
@@ -203,7 +220,7 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 }
 
 func (r *Repository) List(ctx context.Context) ([]Model, error) {
-	rows, err := r.db.QueryContext(ctx, modelColumns+" ORDER BY public_id")
+	rows, err := r.read().QueryContext(ctx, modelColumns+" ORDER BY public_id")
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -235,7 +252,7 @@ func (r *Repository) attachBlockedKeyIDs(ctx context.Context, models []Model) er
 	for index := range models {
 		indexes[models[index].ID] = index
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT model_id, nvidia_key_id
 		FROM nvidia_key_model_blocks
 		ORDER BY model_id, nvidia_key_id
@@ -280,7 +297,7 @@ func attachBlockedKeyIDsTx(ctx context.Context, tx *sql.Tx, model *Model) error 
 }
 
 func (r *Repository) ListEnabled(ctx context.Context) ([]Model, error) {
-	rows, err := r.db.QueryContext(ctx, modelColumns+" WHERE enabled = 1 ORDER BY public_id")
+	rows, err := r.read().QueryContext(ctx, modelColumns+" WHERE enabled = 1 ORDER BY public_id")
 	if err != nil {
 		return nil, fmt.Errorf("list enabled models: %w", err)
 	}
@@ -300,7 +317,7 @@ func (r *Repository) ListEnabled(ctx context.Context) ([]Model, error) {
 }
 
 func (r *Repository) ResolveEnabled(ctx context.Context, publicID string) (Model, error) {
-	model, err := scanModel(r.db.QueryRowContext(ctx, modelColumns+" WHERE public_id = ? AND enabled = 1", publicID))
+	model, err := scanModel(r.read().QueryRowContext(ctx, modelColumns+" WHERE public_id = ? AND enabled = 1", publicID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Model{}, ErrModelNotFound
 	}
@@ -311,7 +328,7 @@ func (r *Repository) ResolveEnabled(ctx context.Context, publicID string) (Model
 }
 
 func (r *Repository) Get(ctx context.Context, id int64) (Model, error) {
-	model, err := scanModel(r.db.QueryRowContext(ctx, modelColumns+" WHERE id = ?", id))
+	model, err := scanModel(r.read().QueryRowContext(ctx, modelColumns+" WHERE id = ?", id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Model{}, ErrModelNotFound
 	}
@@ -481,7 +498,7 @@ func (r *Repository) UnblockKeyModel(ctx context.Context, keyID, modelID int64) 
 }
 
 func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT nvidia_key_id, model_id FROM nvidia_key_model_blocks ORDER BY nvidia_key_id, model_id")
+	rows, err := r.read().QueryContext(ctx, "SELECT nvidia_key_id, model_id FROM nvidia_key_model_blocks ORDER BY nvidia_key_id, model_id")
 	if err != nil {
 		return nil, fmt.Errorf("list NVIDIA key model blocks: %w", err)
 	}
