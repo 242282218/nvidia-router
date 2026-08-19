@@ -90,3 +90,14 @@ func TestLimiterBudgetUnlimitedWhenZero(t *testing.T) {
 		t.Fatalf("unlimited begin after charges: %v", err)
 	}
 }
+
+func BenchmarkLimiterBeginRelease(b *testing.B) {
+	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	lim := newLimiter()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = lim.begin(1, 1000000, 1000000, 1000, 0, 0, now)
+		lim.release(1)
+	}
+}

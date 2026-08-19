@@ -86,3 +86,13 @@ func TestHubUnsubscribeStopsDelivery(t *testing.T) {
 	default:
 	}
 }
+
+func BenchmarkHubPublish(b *testing.B) {
+	hub := New(500)
+	event := Event{Type: "request", Serialized: `{"id":"req-1","status":200}`}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		hub.Publish(event)
+	}
+}

@@ -95,3 +95,15 @@ func TestCacheBoundsTotalResponseBytes(t *testing.T) {
 		t.Fatal("most-recently-used response was evicted")
 	}
 }
+
+func BenchmarkCacheGetPut(b *testing.B) {
+	cache := New(256)
+	key := Fingerprint([]byte(`{"model":"nvidia/nv-embed-v1","input":"benchmark sample text"}`))
+	payload := []byte(`{"object":"list","data":[{"embedding":[0.1,0.2,0.3],"index":0}]}`)
+	cache.Put(key, payload)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = cache.Get(key)
+	}
+}

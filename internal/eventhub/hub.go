@@ -50,11 +50,12 @@ func New(maxEvents int) *Hub {
 func (h *Hub) Publish(event Event) {
 	h.mu.Lock()
 	if len(h.ring) >= h.maxEvents {
-		// Ring full: drop the oldest entry (shift the backing slice) so a bounded
-		// ring never grows unbounded.
-		h.ring = append(h.ring[:0], h.ring[1:]...)
+		// Ring full: shift elements in place with memmove (copy) and overwrite last element.
+		copy(h.ring, h.ring[1:])
+		h.ring[len(h.ring)-1] = event
+	} else {
+		h.ring = append(h.ring, event)
 	}
-	h.ring = append(h.ring, event)
 	for sub := range h.subscribers {
 		select {
 		case sub.ch <- event:
