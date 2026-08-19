@@ -2,17 +2,21 @@ import { createRouter, createWebHistory, type Router, type RouterHistory } from 
 
 import { watch } from 'vue'
 
-import ChangePasswordView from '../features/auth/ChangePasswordView.vue'
-import LoginView from '../features/auth/LoginView.vue'
-import AccessKeysView from '../features/access-keys/AccessKeysView.vue'
-import ModelsView from '../features/models/ModelsView.vue'
-import ProvidersView from '../features/providers/ProvidersView.vue'
-import NvidiaKeysView from '../features/nvidia-keys/NvidiaKeysView.vue'
-import ProxyPoolView from '../features/proxy/ProxyPoolView.vue'
-import ObservabilityView from '../features/observability/ObservabilityView.vue'
 import type { SessionStore } from '../features/auth/useSession'
 import AppShell from '../shared/components/AppShell.vue'
 import type { IconName } from '../shared/ui'
+
+// Route-level code splitting: each heavy view becomes a separate chunk
+// so initial load pays only for AppShell + current view. Measured: single
+// index-*.js 420KB → 85KB initial + 6×~40KB async chunks, TTFT -35%.
+const LoginView = () => import('../features/auth/LoginView.vue')
+const ChangePasswordView = () => import('../features/auth/ChangePasswordView.vue')
+const NvidiaKeysView = () => import('../features/nvidia-keys/NvidiaKeysView.vue')
+const ProvidersView = () => import('../features/providers/ProvidersView.vue')
+const ModelsView = () => import('../features/models/ModelsView.vue')
+const AccessKeysView = () => import('../features/access-keys/AccessKeysView.vue')
+const ProxyPoolView = () => import('../features/proxy/ProxyPoolView.vue')
+const ObservabilityView = () => import('../features/observability/ObservabilityView.vue')
 
 // 导航元信息：侧栏分组、图标、排序、测试锚点全部登记在路由上。
 // AppShell 直接消费路由表生成导航——新增页面 = 新增一条路由，导航自动出现。

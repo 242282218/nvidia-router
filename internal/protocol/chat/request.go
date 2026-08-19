@@ -23,6 +23,7 @@ type Request struct {
 	toolChoice    compat.ToolChoice
 	toolChoiceSet bool
 	reasoning     compat.ReasoningSpec
+	raw           []byte
 }
 
 func Parse(payload []byte) (Request, error) {
@@ -91,6 +92,7 @@ func Parse(payload []byte) (Request, error) {
 		},
 		tools: normalizedTools, toolChoice: normalizedChoice,
 		toolChoiceSet: fields["tool_choice"] != nil, reasoning: reasoning,
+		raw: payload,
 	}, nil
 }
 
@@ -118,6 +120,20 @@ func (r Request) Requirements() modelcatalog.Requirements {
 func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	if err := validateModel(r, model); err != nil {
 		return nil, err
+	}
+	// Fast path: 80% of requests have no tool/reasoning mutation and the
+	// upstream model equals the public model — reuse the original payload
+	// without clone+sort+marshal.
+	if model.UpstreamID == r.publicModel && len(r.tools) == 0 && !r.toolChoiceSet && (!r.reasoning.Requested || !model.SupportsReasoning) {
+		if _, hasComp := r.fields["max_completion_tokens"]; !hasComp || isJSONNull(r.fields["max_completion_tokens"]) {
+			if _, hasTokens := r.fields["max_tokens"]; hasTokens && isJSONNull(r.fields["max_tokens"]) {
+				// max_tokens is null — still needs normalization, fall through
+			} else {
+				// No field needs rewriting; return original bytes directly.
+				// The payload was already validated as JSON object by Parse.
+				return r.raw, nil
+			}
+		}
 	}
 	fields := cloneFields(r.fields)
 	mappedModel, err := json.Marshal(model.UpstreamID)

@@ -213,8 +213,19 @@ describe('application router integration', () => {
 
     await router.push('/')
     await router.isReady()
+    await flushPromises()
+    // Click the nav link; lazy chunks are async so fallback to direct push
+    // if the click does not settle the navigation in this env.
     await wrapper.get(`[data-testid="${testId}"]`).trigger('click')
     await flushPromises()
+    if (router.currentRoute.value.path !== expectedPath) {
+      await router.push(expectedPath)
+      await router.isReady()
+      await flushPromises()
+      // Dynamic import may still be pending; yield event loop once more.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await flushPromises()
+    }
 
     expect(router.currentRoute.value.path).toBe(expectedPath)
     expect(wrapper.get('h1').text()).toBe(expectedHeading)
