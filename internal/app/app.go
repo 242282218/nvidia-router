@@ -114,12 +114,12 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize runtime settings store: %w", err))
 	}
-	keyRepository := nvidiakey.NewRepository(db)
+	keyRepository := nvidiakey.NewRepository(db).WithReader(reader)
 	keySnapshots, err := keyRepository.ListSnapshots(ctx)
 	if err != nil {
 		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("load NVIDIA key scheduling snapshots: %w", err))
 	}
-	modelRepository := modelcatalog.NewRepository(db)
+	modelRepository := modelcatalog.NewRepository(db).WithReader(reader)
 	modelBlocks, err := modelRepository.ListBlocks(ctx)
 	if err != nil {
 		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("load NVIDIA key model blocks: %w", err))

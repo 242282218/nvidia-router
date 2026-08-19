@@ -12,7 +12,8 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 type encryptedKey struct {
@@ -25,8 +26,24 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
+// WithReader routes read-only queries to a separate connection pool. The writer
+// pool is capped at one connection, so without this every per-request key
+// ciphertext load queued behind in-flight writes.
+func (r *Repository) WithReader(reader *sql.DB) *Repository {
+	clone := *r
+	clone.reader = reader
+	return &clone
+}
+
+func (r *Repository) read() *sql.DB {
+	if r.reader != nil {
+		return r.reader
+	}
+	return r.db
+}
+
 func (r *Repository) List(ctx context.Context) ([]Key, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT id, display_prefix, display_suffix, enabled, auth_invalid,
 		       cooldown_until, cooldown_reason, cooldown_level, consecutive_failures,
 		       last_success_at, last_error_at, last_error_code, created_at, updated_at
@@ -52,7 +69,7 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 
 func (r *Repository) FirstEnabledID(ctx context.Context, now time.Time) (int64, error) {
 	var id int64
-	if err := r.db.QueryRowContext(ctx, `
+	if err := r.read().QueryRowContext(ctx, `
 		SELECT id FROM nvidia_keys
 		WHERE enabled = 1 AND auth_invalid = 0
 		  AND (cooldown_until IS NULL OR cooldown_until <= ?)
@@ -140,7 +157,7 @@ func (r *Repository) FingerprintExists(ctx context.Context, fingerprint []byte) 
 func (r *Repository) FingerprintExistsAny(ctx context.Context, fingerprints [][]byte) (bool, error) {
 	for _, fingerprint := range fingerprints {
 		var exists int
-		err := r.db.QueryRowContext(ctx, "SELECT 1 FROM nvidia_keys WHERE fingerprint = ?", fingerprint).Scan(&exists)
+		err := r.read().QueryRowContext(ctx, "SELECT 1 FROM nvidia_keys WHERE fingerprint = ?", fingerprint).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -199,7 +216,7 @@ func (r *Repository) Create(
 
 func (r *Repository) LoadEncrypted(ctx context.Context, id int64) (encryptedKey, error) {
 	var value encryptedKey
-	err := r.db.QueryRowContext(ctx, `
+	err := r.read().QueryRowContext(ctx, `
 		SELECT ciphertext, nonce, key_version
 		FROM nvidia_keys
 		WHERE id = ?
@@ -214,7 +231,7 @@ func (r *Repository) LoadEncrypted(ctx context.Context, id int64) (encryptedKey,
 }
 
 func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT id, enabled, auth_invalid, cooldown_until, cooldown_level, consecutive_failures
 		FROM nvidia_keys
 		ORDER BY id
@@ -244,7 +261,7 @@ func (r *Repository) ListSnapshots(ctx context.Context) ([]keystate.KeySnapshot,
 // quota, and auth_invalid keys stay out so a revoked key never auto-recovers
 // without operator intervention (per the gpt-load comparison design).
 func (r *Repository) ListKeysForHealthCheck(ctx context.Context) ([]keystate.KeySnapshot, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.read().QueryContext(ctx, `
 		SELECT id, enabled, auth_invalid, cooldown_until, cooldown_level, consecutive_failures
 		FROM nvidia_keys
 		WHERE enabled = 1 AND auth_invalid = 0
@@ -277,7 +294,7 @@ func (r *Repository) ListKeysForHealthCheck(ctx context.Context) ([]keystate.Key
 // again, but nothing probes it until the next full sweep).
 func (r *Repository) EarliestCooldownExpiry(ctx context.Context) (*time.Time, error) {
 	var raw sql.NullString
-	if err := r.db.QueryRowContext(ctx, `
+	if err := r.read().QueryRowContext(ctx, `
 		SELECT MIN(cooldown_until)
 		FROM nvidia_keys
 		WHERE enabled = 1 AND auth_invalid = 0 AND cooldown_until IS NOT NULL

@@ -117,6 +117,17 @@ func (r Request) Requirements() modelcatalog.Requirements {
 	return r.requirements
 }
 
+// RequestedReasoningLevel returns the normalized reasoning level the caller
+// asked for, or "" when reasoning was not requested. It is the zero-cost
+// equivalent of re-parsing the original payload with ReasoningLevelFromBody:
+// Parse already ran compat.ParseReasoning on the request fields.
+func (r Request) RequestedReasoningLevel() string {
+	if r.reasoning.Requested && r.reasoning.Level != "" {
+		return string(r.reasoning.Level)
+	}
+	return ""
+}
+
 func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	if err := validateModel(r, model); err != nil {
 		return nil, err

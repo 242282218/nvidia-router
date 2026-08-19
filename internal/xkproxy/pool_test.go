@@ -404,3 +404,33 @@ func TestPoolDoesNotResurrectPermanentlyEjectedProxy(t *testing.T) {
 		t.Fatal("proxy was not re-admitted after the removal cooldown expired")
 	}
 }
+
+// TestStickyGetFallsBackWhenBoundProxyGone guards the StickyGet binding path
+// against a double-unlock panic: when the bound proxy is ejected or expired, the
+// method must drop the stale binding and fall back to the generic selection
+// without touching stickyMu twice (audit: dead-code panic, enabled-on-use).
+func TestStickyGetFallsBackWhenBoundProxyGone(t *testing.T) {
+	now := time.Now()
+	pool := NewPool()
+	proxyA := Proxy{Scheme: "http", Address: "10.0.0.1:8080", ExpiresAt: now.Add(10 * time.Minute)}
+	proxyB := Proxy{Scheme: "http", Address: "10.0.0.2:8080", ExpiresAt: now.Add(10 * time.Minute)}
+	pool.Replace([]Proxy{proxyA, proxyB})
+	pool.StickyRebind("sess", proxyA.Key(), now, time.Minute)
+
+	// Bound proxy still present -> sticky hit returns it first.
+	candidates, _, hit := pool.StickyGet("sess", now, 0, time.Minute)
+	if !hit || len(candidates) == 0 || candidates[0].Key() != proxyA.Key() {
+		t.Fatalf("sticky hit: got hit=%v candidates=%v, want proxy A first", hit, candidates)
+	}
+
+	// Remove the bound proxy: must fall back to the generic selection without
+	// a double-unlock panic and must not report a sticky hit.
+	pool.Replace([]Proxy{proxyB})
+	candidates, _, hit = pool.StickyGet("sess", now, 0, time.Minute)
+	if hit {
+		t.Fatal("reported a sticky hit for a removed proxy")
+	}
+	if len(candidates) == 0 || candidates[0].Key() != proxyB.Key() {
+		t.Fatalf("fallback: got candidates %v, want proxy B", candidates)
+	}
+}

@@ -4,6 +4,7 @@
 package opencodefree
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,7 +77,7 @@ func (c *Client) Chat(ctx context.Context, _ runtimeconfig.Snapshot, body []byte
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body []byte, stream bool) (*http.Request, error) {
-	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, strings.NewReader(string(body)))
+	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create OpenCodeFree request: %w", err)
 	}

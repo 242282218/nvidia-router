@@ -79,7 +79,10 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	observability.SetModel(request.Context(), parsed.PublicModelID(), parsed.Stream())
-	requestedReasoningLevel, _ := observability.ReasoningLevelFromBody(payload)
+	// Parse already resolved the requested reasoning level (compat.ParseReasoning
+	// ran on the request fields); re-parsing the payload for it would duplicate a
+	// full-body unmarshal of every request, amplified by large image payloads.
+	requestedReasoningLevel := parsed.RequestedReasoningLevel()
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
@@ -91,9 +94,10 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	effectiveReasoningLevel, _ := observability.ReasoningLevelFromBody(upstreamBody)
+	// One pass over the upstream body extracts both the effective level and the
+	// reasoning wire fields (previously two full-body unmarshals).
+	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
-	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	stream := parsed.Stream()
 	// OpenCodeFree models route to the optional gateway directly: no NVIDIA key

@@ -36,6 +36,10 @@
 - **410 Gone**：裸 `deepseek-v4-flash` 已 410，迁移 015 映射到 `deepseek-ai/deepseek-v4-flash-0731`；白名单发现与 gateway 同步缺口会导致已下线 free 模型仍 enabled（需 `opencodefree.Client.Models` 定时禁用）。
 - **Race**：无 CGO 时 `go test -race` 不可用，依赖锁结构与并发测试覆盖；`go vet` 必过。
 - **多实例**：限流与池状态为内存态，不跨实例共享，需 Redis 才可多实例（当前不做）。
+- **性能基线（2026-08-20 两轮优化后）**：详见 `docs/plans/2026-08-20-性能优化调研与实施.md` 与调研底稿 `docs/代码全量调研与优化建议.md`（含逐条状态）。要点：不需要换语言（Go 最优，Rust 仅窄模块 15% 收益）；热点对照表（crypto GCM 实例缓存、eventhub O(1) 环形、SSE AfterFunc 去 goroutine、MarshalFor raw 快路径、collector worker 池、validator keep-alive、manager RWMutex+Clone 外移、SQLite 035/036 索引）可直接复用；前端改动必须重建并提交 `internal/web/dist`（go:embed）。
+- **SQLite 迁移命名坑**：`CREATE INDEX IF NOT EXISTS` 同名已存在时是 no-op，升级索引必须换新名字（035 的 model/access 部分索引因与 002 同名失效，036 用 `_v2` 后缀重建，`docs/代码全量调研与优化建议.md` #6）。新增迁移前先核对 `002_indexes.sql` 已有索引名。
+- **opencodefree 请求体零拷贝**：`client.go:79` 已由 `strings.NewReader(string(body))` 改 `bytes.NewReader(body)`，25MiB 上限场景省全量拷贝。
+- **契约红 = 前后端类型漂移**：后端 migration/结构体加字段后，`web/src/features/statistics/types.ts` 与 `contract.spec.ts` 必须同步（`canceled_count` 教训），跑 `pnpm --dir web run test` 验证。
 
 ## 4. 验证方法（最小充分）
 
@@ -84,6 +88,19 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 ## 6. 文档与脚本约定
 
 - 有效文档：`docs/*.md`（`docs/README.md` 索引）；历史归档：`docs/archive/*.md`（`archive/README.md` 说明）；阶段报告：`docs/plans/YYYY-MM-DD-*.md`。
+- 代码调研底稿：`docs/代码全量调研与优化建议.md`（P0-P3 问题清单 + 对标项目 + 语言重写评估；实施前先读）。
 - 测试脚本：可复用 `scripts/test/{live-nvidia,compose-acceptance,proxy-pool-integration-test,run-deepseek-stability,verify_remote}.sh`，诊断归档 `scripts/test/_archive/`（ignored）。
 - 新增脚本：含 Secret 的必须 `umask 077` + `mktemp 600`，不打印 Key/URL；一次性诊断优先写 `D:\tmp\temp\`，用后删除。
 - 日志/产物：根 `*.log`/`*.exe`/`.tmp-*`/`tmp/` 按 `.gitignore` 清理；`data/` 与 `key/` 不提交。
+
+## 7. 代码库要点（2026-08-20 全量调研沉淀）
+
+- **语言结论**：Go 是最优解，不换语言；Python/Node/Rust 均不划算。
+- **热点瓶颈**（均已验证，详见 docs/代码全量调研与优化建议.md）：
+  - 读查询未走 reader 池：`nvidiakey/repository.go:200 LoadEncrypted` 与 `modelcatalog/repository.go` 全走单写连接（MaxOpenConns(1)），与写事务争抢 → 吞吐天花板；`busy_timeout` 触发主因。
+  - 同一 body 重复全量 JSON 解析 2-3 次：`chat.go:82,94,96` + `responses.go:62,77,79` 的 `ReasoningLevelFromBody/ReasoningFieldsFromBody` 各做一次完整 unmarshal。
+  - 流式每 token 全量 unmarshal（chat.go:515 reasoning 采样），应先字节级短路。
+  - `opencodefree/client.go:79` 应改 `bytes.NewReader(body)` 零拷贝。
+  - 后台 goroutine 无 panic recover（collector.go:116,382,405）；`manager.Close`/`settings.Update` 锁内长阻塞（wg.Wait 上限 ~27s）。
+- **已知坑**：`035_perf_indexes.sql` 部分索引因同名 no-op 未生效（002 已有同名索引）；`pool.go StickyGet` 双重 Unlock panic（死代码，启用即崩）；`ShouldBackOff` 未接入采集退避。
+- **对标结论**：架构已覆盖通用方案（transport 池化、换 Key 重试防重放、读写池分离、SSE 硬上限）；可借鉴：出口 backup 分级、冷却渐进恢复、按错误类型分冷却阈值、重试/冷却事件指标、保池策略（healthy<expected 提前采集）、限流标准响应头。

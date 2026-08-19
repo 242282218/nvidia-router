@@ -945,6 +945,8 @@ func (p *Pool) StickyGet(sessionKey string, now time.Time, minRemainingLife time
 	p.stickyMu.Lock()
 	binding, exists := p.stickyBindings[sessionKey]
 	if exists && now.Before(binding.expiresAt) {
+		// The binding is still valid: we must drop stickyMu before taking p.mu
+		// (lock order stickyMu -> p.mu is the only order this code uses).
 		p.stickyMu.Unlock()
 
 		p.mu.RLock()
@@ -967,6 +969,18 @@ func (p *Pool) StickyGet(sessionKey string, now time.Time, minRemainingLife time
 				return result, pm, true
 			}
 		}
+		// The bound proxy was ejected or expired: clear the stale binding and
+		// fall through to the generic selection path. stickyMu was already
+		// released above, so re-lock briefly to delete the binding.
+		p.stickyMu.Lock()
+		delete(p.stickyBindings, sessionKey)
+		p.stickyMu.Unlock()
+		candidates, panicMode = p.orderedLocked(now, minRemainingLife, false)
+		if len(candidates) == 0 {
+			return nil, false, false
+		}
+		p.selectionCursor.Add(1)
+		return candidates, panicMode, false
 	} else if exists {
 		delete(p.stickyBindings, sessionKey)
 	}

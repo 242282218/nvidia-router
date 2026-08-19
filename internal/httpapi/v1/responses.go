@@ -59,7 +59,9 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 	modelID, stream := parsed.PublicModelID(), parsed.Stream()
 	observability.SetModel(request.Context(), modelID, stream)
-	requestedReasoningLevel, _ := observability.ReasoningLevelFromBody(payload)
+	// Parse already resolved the requested reasoning level; re-parsing the
+	// payload would duplicate a full-body unmarshal of every request.
+	requestedReasoningLevel := parsed.RequestedReasoningLevel()
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
 	model, err := h.models.Resolve(request.Context(), modelID, parsed.Requirements())
 	if err != nil {
@@ -74,9 +76,10 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	effectiveReasoningLevel, _ := observability.ReasoningLevelFromBody(upstreamBody)
+	// One pass over the upstream body extracts both the effective level and the
+	// reasoning wire fields (previously two full-body unmarshals).
+	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
-	reasoningRequested, wireFields := observability.ReasoningFieldsFromBody(upstreamBody)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
 	id, err := responsesprotocol.NewResponseID()
 	if err != nil {

@@ -34,8 +34,40 @@ func ReasoningFieldsFromBody(body []byte) (requested bool, wireFields string) {
 	return true, strings.Join(names, ",")
 }
 
+// ReasoningMetadataFromBody extracts the reasoning-level and wire-field-name
+// metadata of a marshaled upstream body in a single pass. It is the hot-path
+// replacement for calling ReasoningLevelFromBody plus ReasoningFieldsFromBody on
+// the same bytes, which performed two full-body unmarshals (large image payloads
+// amplified the cost). Semantics are identical to the two functions it merges.
+func ReasoningMetadataFromBody(body []byte) (effectiveLevel string, requested bool, wireFields string) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return "", false, ""
+	}
+	spec, err := compat.ParseReasoning(fields)
+	if err != nil {
+		return "", false, ""
+	}
+	names := make([]string, 0, len(reasoningWireFieldOrder))
+	for _, name := range reasoningWireFieldOrder {
+		if _, ok := fields[name]; ok {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "", false, ""
+	}
+	wireFields = strings.Join(names, ",")
+	if spec.Requested && spec.Level != "" {
+		return string(spec.Level), true, wireFields
+	}
+	return "", true, wireFields
+}
+
 // ReasoningLevelFromBody extracts only the normalized reasoning level from a
 // request body. It deliberately discards all reasoning values and text.
+// Prefer ReasoningMetadataFromBody when the same bytes also need wire-field
+// names; this function remains for callers that only need the level.
 func ReasoningLevelFromBody(body []byte) (string, bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {

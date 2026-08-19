@@ -145,6 +145,17 @@ func (r Request) Requirements() modelcatalog.Requirements { return r.requirement
 
 func (r Request) ResponseConfig() ResponseConfig { return r.config }
 
+// RequestedReasoningLevel returns the normalized reasoning level the caller
+// asked for, or "" when reasoning was not requested. It is the zero-cost
+// equivalent of re-parsing the original payload with ReasoningLevelFromBody:
+// Parse already ran compat.ParseReasoning on the request fields.
+func (r Request) RequestedReasoningLevel() string {
+	if r.reasoning.Requested && r.reasoning.Level != "" {
+		return string(r.reasoning.Level)
+	}
+	return ""
+}
+
 // MarshalFor binds a parsed request to a resolved enabled Chat model and emits
 // one normalized NVIDIA Chat request shape.
 func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
