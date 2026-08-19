@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const migrationBootstrap = `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -31,6 +32,22 @@ type migration struct {
 	checksum string
 }
 
+// verifyMigrationsCache memoizes the embedded migration ledger: the embed FS is
+// immutable for the process lifetime, but /health/ready re-verifies migrations
+// on every probe, so re-reading and re-hashing 36 files per probe is wasted work.
+var (
+	verifyMigrationsCacheOnce sync.Once
+	verifyMigrationsCacheList []migration
+	verifyMigrationsCacheErr  error
+)
+
+func embeddedMigrationList() ([]migration, error) {
+	verifyMigrationsCacheOnce.Do(func() {
+		verifyMigrationsCacheList, verifyMigrationsCacheErr = loadMigrations(embeddedMigrations)
+	})
+	return verifyMigrationsCacheList, verifyMigrationsCacheErr
+}
+
 func Migrate(db *sql.DB) error {
 	if err := migrateFS(db, embeddedMigrations); err != nil {
 		return fmt.Errorf("apply embedded SQLite migrations: %w", err)
@@ -40,7 +57,7 @@ func Migrate(db *sql.DB) error {
 
 // VerifyMigrations checks that the database exactly matches the embedded migration ledger.
 func VerifyMigrations(ctx context.Context, db *sql.DB) error {
-	migrations, err := loadMigrations(embeddedMigrations)
+	migrations, err := embeddedMigrationList()
 	if err != nil {
 		return fmt.Errorf("load embedded migrations: %w", err)
 	}

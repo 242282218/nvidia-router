@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -206,22 +207,36 @@ func (s *SettingsService) Update(ctx context.Context, patch Patch) (Snapshot, er
 		return Snapshot{}, errors.New("proxy settings service is nil")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return Snapshot{}, errors.New("proxy settings service is closed")
 	}
 
 	next, err := s.applyPatch(patch)
 	if err != nil {
+		s.mu.Unlock()
 		return Snapshot{}, err
+	}
+	// Repeated admin saves with no effective change must not tear down and
+	// rebuild the collector (and its goroutine) every time: the persisted config
+	// is already current, so just return the existing snapshot.
+	if reflect.DeepEqual(next, s.current) {
+		s.mu.Unlock()
+		return s.current.snapshot, nil
 	}
 	var manager *Manager
 	if next.snapshot.Enabled {
 		manager, err = s.newManager(next)
 		if err != nil {
+			s.mu.Unlock()
 			return Snapshot{}, err
 		}
 	}
+	// persist (DB IO) and switcher.Apply (which drains the previous collector on
+	// replacement, up to ~27s) must not run under s.mu: concurrent Snapshot and
+	// Refresh keep serving the previous settings until the swap commits below.
+	s.mu.Unlock()
+
 	if err := s.persist(ctx, next); err != nil {
 		if manager != nil {
 			manager.Close()
@@ -232,7 +247,9 @@ func (s *SettingsService) Update(ctx context.Context, patch Patch) (Snapshot, er
 		return Snapshot{}, fmt.Errorf("apply proxy settings: %w", err)
 	}
 	next.snapshot.Source = SourceDatabase
+	s.mu.Lock()
 	s.current = next
+	s.mu.Unlock()
 	return next.snapshot, nil
 }
 

@@ -2,6 +2,7 @@ package xkproxy
 
 import (
 	"context"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -16,7 +17,8 @@ func TestValidatorTransportEnablesHTTP2(t *testing.T) {
 	t.Cleanup(v.Close)
 
 	proxy := Proxy{Scheme: "http", Address: "10.0.0.1:8080"}
-	transport := v.transportFor(proxy, "http://10.0.0.1:8080", 2*time.Second)
+	parsed, _ := url.Parse("http://10.0.0.1:8080")
+	transport := v.transportForWithURL(proxy, parsed, 2*time.Second)
 	if !transport.ForceAttemptHTTP2 {
 		t.Fatal("validation transport must enable HTTP/2 for the tunnel target")
 	}

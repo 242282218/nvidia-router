@@ -110,6 +110,18 @@ func proxyLogLabel(key string) string {
 	return parts[0] + "://" + parts[1]
 }
 
+// stickySessionLabelFor returns the memoized sticky label for a key ID. The
+// label is deterministic for the key within a process (stickySessionKey is
+// fixed), so the HMAC is computed once and reused on the hot path.
+func (c *Client) stickySessionLabelFor(keyID int64) string {
+	if cached, ok := c.stickyLabels.Load(keyID); ok {
+		return cached.(string)
+	}
+	label := stickySessionLabel(c.stickySessionKey, keyID)
+	cached, _ := c.stickyLabels.LoadOrStore(keyID, label)
+	return cached.(string)
+}
+
 func newStickySessionKey() ([]byte, error) {
 	key := make([]byte, xkStickySessionHMACKeySize)
 	if _, err := rand.Read(key); err != nil {
@@ -134,7 +146,11 @@ type Client struct {
 	// stickySessionKey derives the per-process sticky label so the proxy pool never
 	// sees the internal database key id. It is only used in proxy mode.
 	stickySessionKey []byte
-	closeOnce        sync.Once
+	// stickyLabels memoizes keyID -> sticky label: the label is stable for the
+	// lifetime of the process (derived from stickySessionKey), so caching avoids
+	// a per-request HMAC on the hot path.
+	stickyLabels sync.Map
+	closeOnce    sync.Once
 }
 type requestFactory func(context.Context) (*http.Request, error)
 
@@ -400,7 +416,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	// internal numbering back out of the header.
 	session := ""
 	if keyID, ok := stickySessionFrom(ctx); ok {
-		session = stickySessionLabel(c.stickySessionKey, keyID)
+		session = c.stickySessionLabelFor(keyID)
 	}
 	handle, err := c.proxy.Acquire(ctx, snapshot, session)
 	if err != nil {

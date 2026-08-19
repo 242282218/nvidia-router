@@ -29,6 +29,7 @@ var ErrInvalidSession = errors.New("invalid admin session")
 
 type SessionService struct {
 	db     *sql.DB
+	reader *sql.DB
 	clock  clock.Clock
 	keys   *crypto.KeySet
 	secure bool
@@ -50,6 +51,23 @@ func NewSessionService(db *sql.DB, source clock.Clock, keys *crypto.KeySet, secu
 		source = clock.RealClock{}
 	}
 	return &SessionService{db: db, clock: source, keys: keys, secure: secure}
+}
+
+// WithReader routes read-only session queries to a separate connection pool.
+// SPA session polling authenticates on every request; most hits are throttled
+// on the last_seen write and fall back to a SELECT that must not queue behind
+// business writes on the single writer connection.
+func (s *SessionService) WithReader(reader *sql.DB) *SessionService {
+	clone := *s
+	clone.reader = reader
+	return &clone
+}
+
+func (s *SessionService) read() *sql.DB {
+	if s.reader != nil {
+		return s.reader
+	}
+	return s.db
 }
 
 // SessionCookie returns a new session cookie for secure=false deployments.
@@ -173,7 +191,7 @@ func (s *SessionService) Authenticate(ctx context.Context, token string) (Sessio
 			RETURNING id, expires_at
 		`, timestamp(now), digest, timestamp(now), timestamp(now.Add(-sessionTouchInterval))).Scan(&session.ID, &expiresAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			err = s.db.QueryRowContext(ctx, `
+			err = s.read().QueryRowContext(ctx, `
 			SELECT id, expires_at
 			FROM admin_sessions
 			WHERE token_digest = ? AND revoked_at IS NULL AND expires_at > ?

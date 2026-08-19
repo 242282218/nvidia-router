@@ -492,20 +492,26 @@ func (m *Manager) Close() {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return
 	}
 	m.closed = true
-
-	if m.collector != nil {
-		_ = m.collector.Close()
-	}
-
+	// Take the collector reference out from under the lock: collector.Close()
+	// blocks until in-flight fetch/validation completes (up to ~27s), which must
+	// not stall concurrent Acquire calls. closed is already set, so new Acquires
+	// reject while we wait.
+	collector := m.collector
+	m.collector = nil
 	for _, entry := range m.transports {
 		entry.transport.CloseIdleConnections()
 	}
 	m.transports = nil
+	m.mu.Unlock()
+
+	if collector != nil {
+		_ = collector.Close()
+	}
 	m.logger.Info("proxy_manager_closed")
 }
 

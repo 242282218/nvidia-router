@@ -3,7 +3,9 @@ package xkproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -31,7 +33,9 @@ type Collector struct {
 	started    bool
 	done       chan struct{}
 	closeDone  chan struct{}
-	closeErr   error
+	// closeCalls is a test-only observation hook (production never sets it; the
+	// nil-channel guard keeps Close a no-op for it). It lets the lifecycle test
+	// observe concurrent Close entry without a public callback.
 	closeCalls chan struct{}
 	wg         sync.WaitGroup
 	lastErr    error
@@ -118,6 +122,11 @@ func (c *Collector) Start(ctx context.Context) {
 
 func (c *Collector) run(ctx context.Context) {
 	defer c.wg.Done()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.logger.Error("proxy_collector_run_panic", "panic", fmt.Sprint(recovered))
+		}
+	}()
 
 	// Immediate first fetch; its outcome seeds the backoff state so a startup
 	// against a not-yet-ready upstream does not hammer it on the base interval.
@@ -151,7 +160,11 @@ func (c *Collector) nextInterval(success bool) time.Duration {
 	if c.backoffLevel < collectorMaxBackoffLevel {
 		c.backoffLevel++
 	}
-	return c.interval << c.backoffLevel
+	base := c.interval << c.backoffLevel
+	// Jitter up to half the base so a fleet of routers sharing one upstream does
+	// not re-poll in lockstep after a provider outage (a synchronized thundering
+	// herd would look exactly like the outage continuing).
+	return base + time.Duration(rand.Int64N(int64(base)/2+1))
 }
 
 // validationRetryLimit bounds how many times fetch re-fetches after a batch of
@@ -160,6 +173,11 @@ func (c *Collector) nextInterval(success bool) time.Duration {
 // without waiting out the next interval. The limit keeps a persistently-dead
 // upstream from being hammered inside a single fetch.
 const validationRetryLimit = 3
+
+// validationRetryBackoff spaces re-fetch attempts after a validation-all-failed
+// batch so a failed lease is not hammered back-to-back; the provider needs a
+// beat to rotate its exit pool.
+const validationRetryBackoff = 500 * time.Millisecond
 
 // Refresh performs one bounded collection cycle. It is intentionally single-flight:
 // the scheduler and an operator-triggered refresh must never overlap and consume two
@@ -211,12 +229,21 @@ func (c *Collector) fetch(ctx context.Context) bool {
 	for attempt := 0; attempt < validationRetryLimit; attempt++ {
 		proxies, fetchedAt, err := c.upstream.Fetch(ctx)
 		if err != nil {
+			code := ErrorCode(err)
+			// A rate-limit (403/406) or account-level code (204/205/208/211/302/
+			// 430/432) means the provider will keep refusing for a while. Jump to
+			// the deepest backoff immediately instead of grinding up one level per
+			// poll, so a throttled upstream is not hammered at base rate.
+			if ShouldBackOff(code) {
+				c.mu.Lock()
+				c.backoffLevel = collectorMaxBackoffLevel
+				c.mu.Unlock()
+			}
 			c.mu.Lock()
 			c.lastErr = err
 			c.lastFetchAt = time.Now()
 			c.mu.Unlock()
 
-			code := ErrorCode(err)
 			c.logger.Warn("upstream_fetch_failed",
 				"error_class", upstreamErrorClass(err),
 				"provider_code", code,
@@ -266,6 +293,14 @@ func (c *Collector) fetch(ctx context.Context) bool {
 		)
 		if !c.retryWorthwhile(ctx, attempt) {
 			break
+		}
+		// Brief pause before re-fetching so a failed lease is not hammered
+		// back-to-back; proxy quality is random per lease but the provider needs
+		// a beat to rotate its exits.
+		select {
+		case <-time.After(validationRetryBackoff):
+		case <-ctx.Done():
+			return false
 		}
 	}
 
@@ -382,27 +417,41 @@ func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedA
 		go func() {
 			defer wg.Done()
 			for p := range jobs {
-				latency, err := c.validator.ValidateWithLatency(ctx, p)
-				if err != nil {
-					c.logger.Debug("proxy_validation_failed",
-						"error_class", validationErrorClass(err),
-						"latency_ms", latency.Milliseconds(),
-					)
-					continue
-				}
-				p.FetchedAt = fetchedAt
-				p.ValidatedAt = time.Now()
-				p.ExpiresAt = fetchedAt.Add(c.proxyTTL)
-				p.LatencyEWMA = latency
-				// First validation is one latency sample; Merge then increments it on
-				// every re-validation so the UI can tell a fresh EWMA from a noisy one.
-				p.LatencySamples = 1
-				results <- p
+				// A single validation panic must not take down the whole worker
+				// pool (and with it the collector run loop).
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							c.logger.Error("proxy_validation_panic", "proxy", p.Address, "panic", fmt.Sprint(recovered))
+						}
+					}()
+					latency, err := c.validator.ValidateWithLatency(ctx, p)
+					if err != nil {
+						c.logger.Debug("proxy_validation_failed",
+							"error_class", validationErrorClass(err),
+							"latency_ms", latency.Milliseconds(),
+						)
+						return
+					}
+					p.FetchedAt = fetchedAt
+					p.ValidatedAt = time.Now()
+					p.ExpiresAt = fetchedAt.Add(c.proxyTTL)
+					p.LatencyEWMA = latency
+					// First validation is one latency sample; Merge then increments it on
+					// every re-validation so the UI can tell a fresh EWMA from a noisy one.
+					p.LatencySamples = 1
+					results <- p
+				}()
 			}
 		}()
 	}
 
 	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				c.logger.Error("proxy_validation_closer_panic", "panic", fmt.Sprint(recovered))
+			}
+		}()
 		wg.Wait()
 		close(results)
 	}()
@@ -417,17 +466,14 @@ func (c *Collector) validateBatch(ctx context.Context, proxies []Proxy, fetchedA
 
 func (c *Collector) Close() error {
 	c.mu.Lock()
-	if c.closeCalls != nil {
+	if c.closeCalls != nil { // test hook: observe concurrent Close entry
 		c.closeCalls <- struct{}{}
 	}
 	if c.closed {
 		done := c.closeDone
 		c.mu.Unlock()
 		<-done
-		c.mu.Lock()
-		err := c.closeErr
-		c.mu.Unlock()
-		return err
+		return nil
 	}
 	c.closed = true
 	c.mu.Unlock()
@@ -439,9 +485,7 @@ func (c *Collector) Close() error {
 	c.validator.Close()
 
 	c.mu.Lock()
-	c.closeErr = nil
 	close(c.closeDone)
-	err := c.closeErr
 	c.mu.Unlock()
-	return err
+	return nil
 }

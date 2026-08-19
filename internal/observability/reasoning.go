@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
@@ -111,6 +112,14 @@ func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 // reasoning_content, reasoning, or thinking and its character count (runes). Only the length is
 // returned; reasoning text is never retained.
 func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
+	// Fast path: the overwhelming majority of streamed tokens are ordinary text
+	// deltas with no reasoning field. A byte scan for the field names avoids a
+	// full unmarshal per token. A false positive (content that happens to contain
+	// a field-name substring) only falls through to the slow path; it can never
+	// misclassify.
+	if !hasReasoningField(data) {
+		return false, 0
+	}
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
@@ -132,6 +141,20 @@ func ReasoningDeltaChars(data []byte) (present bool, chars int64) {
 		present = true
 	}
 	return present, chars
+}
+
+var (
+	reasoningContentField = []byte(`"reasoning_content"`)
+	reasoningField        = []byte(`"reasoning":`)
+	thinkingField         = []byte(`"thinking":`)
+)
+
+// hasReasoningField scans a serialized chat delta for any reasoning field name
+// at the JSON key position. It is the fast-path gate before the full unmarshal.
+func hasReasoningField(data []byte) bool {
+	return bytes.Contains(data, reasoningContentField) ||
+		bytes.Contains(data, reasoningField) ||
+		bytes.Contains(data, thinkingField)
 }
 
 func firstReasoningLength(values ...json.RawMessage) (int64, bool) {

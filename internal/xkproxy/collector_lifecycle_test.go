@@ -361,3 +361,66 @@ func TestCollectorRefetchesAfterValidationAllFailed(t *testing.T) {
 		t.Fatalf("pool size = %d, want 1 validated exit", size)
 	}
 }
+
+// codeUpstream returns a fixed provider error code on every fetch.
+type codeUpstream struct {
+	code string
+}
+
+func (u *codeUpstream) Fetch(context.Context) ([]Proxy, time.Time, error) {
+	return nil, time.Time{}, &ProviderError{Code: u.code, Message: "fixture"}
+}
+
+func (u *codeUpstream) Close() {}
+
+// TestCollectorRateLimitCodeJumpsBackoff guards the ShouldBackOff wiring: a
+// rate-limit (403/406) or account-level code must jump the fetch backoff
+// straight to the deepest level so a throttled upstream is not polled at the
+// base interval.
+func TestCollectorRateLimitCodeJumpsBackoff(t *testing.T) {
+	collector := NewCollector(CollectorConfig{
+		UpstreamURL:     "https://fixture.invalid/",
+		UpstreamTimeout: time.Second,
+	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	collector.upstream = &codeUpstream{code: "403"}
+
+	if collector.fetchSingleFlight(context.Background()) {
+		t.Fatal("fetch returned true for a failing upstream")
+	}
+	if collector.backoffLevel != collectorMaxBackoffLevel {
+		t.Fatalf("backoffLevel = %d, want %d after a rate-limit code", collector.backoffLevel, collectorMaxBackoffLevel)
+	}
+	minInterval := collector.interval << collectorMaxBackoffLevel
+	got := collector.nextInterval(false)
+	if got < minInterval || got > minInterval+minInterval/2 {
+		t.Fatalf("interval = %v, want within [%v, %v] (jittered cap)", got, minInterval, minInterval+minInterval/2)
+	}
+	_ = collector.Close()
+}
+
+// TestCollectorPlainErrorBacksOffGradually proves ordinary fetch errors (no
+// rate-limit/account code) still grow the backoff one level per failure instead
+// of jumping to the cap.
+func TestCollectorPlainErrorBacksOffGradually(t *testing.T) {
+	collector := NewCollector(CollectorConfig{
+		UpstreamURL:     "https://fixture.invalid/",
+		UpstreamTimeout: time.Second,
+	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	collector.upstream = &codeUpstream{code: "201"} // request format invalid: not throttling
+
+	if collector.fetchSingleFlight(context.Background()) {
+		t.Fatal("fetch returned true for a failing upstream")
+	}
+	if collector.backoffLevel != 0 {
+		t.Fatalf("backoffLevel = %d after first plain failure, want 0", collector.backoffLevel)
+	}
+	got := collector.nextInterval(false)
+	if collector.backoffLevel != 1 {
+		t.Fatalf("backoffLevel = %d after nextInterval, want 1", collector.backoffLevel)
+	}
+	minInterval := collector.interval << 1
+	if got < minInterval || got > minInterval+minInterval/2 {
+		t.Fatalf("interval = %v, want within [%v, %v] (jittered)", got, minInterval, minInterval+minInterval/2)
+	}
+	_ = collector.Close()
+}

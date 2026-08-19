@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -23,7 +24,9 @@ const (
 // serialized embedding response body for exact-repeat requests.
 type Cache struct {
 	mu       sync.Mutex
-	max      int
+	// max is atomic so Resize can skip work (and avoid the mutex) when the
+	// runtime setting is unchanged, which is the per-request steady state.
+	max      atomic.Int32
 	maxBytes int64
 	bytes    int64
 	entries  map[string]*list.Element
@@ -40,12 +43,13 @@ func New(maxEntries int) *Cache {
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
 	}
-	return &Cache{
-		max:      maxEntries,
+	cache := &Cache{
 		maxBytes: maxCacheBytes,
 		entries:  make(map[string]*list.Element, maxEntries),
 		lru:      list.New(),
 	}
+	cache.max.Store(int32(maxEntries))
+	return cache
 }
 
 // Get returns a cached response body for key, or nil on a miss.
@@ -85,7 +89,7 @@ func (c *Cache) Put(key string, response []byte) {
 }
 
 func (c *Cache) evictLocked() {
-	for len(c.entries) > c.max || c.bytes > c.maxBytes {
+	for len(c.entries) > int(c.max.Load()) || c.bytes > c.maxBytes {
 		oldest := c.lru.Back()
 		if oldest == nil {
 			break
@@ -99,14 +103,21 @@ func (c *Cache) evictLocked() {
 
 // Resize changes the entry bound and immediately removes excess LRU entries.
 // The byte bound remains fixed so runtime setting changes cannot make the
-// process retain an unbounded response set.
+// process retain an unbounded response set. The common per-request call with an
+// unchanged value returns without taking the lock.
 func (c *Cache) Resize(maxEntries int) {
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
 	}
+	if int(c.max.Load()) == maxEntries {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.max = maxEntries
+	if c.max.Load() == int32(maxEntries) {
+		return
+	}
+	c.max.Store(int32(maxEntries))
 	c.evictLocked()
 }
 

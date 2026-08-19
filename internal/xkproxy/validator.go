@@ -130,16 +130,6 @@ func classifyValidationError(err error) error {
 	return fmt.Errorf("request validation URL: %w", err)
 }
 
-func (v *Validator) transportFor(proxy Proxy, proxyURL string, dialTimeout time.Duration) *http.Transport {
-	parsed, _ := url.Parse(proxyURL)
-	if parsed == nil || parsed.Host == "" {
-		if pURL, err := proxy.URL(); err == nil {
-			parsed = pURL
-		}
-	}
-	return v.transportForWithURL(proxy, parsed, dialTimeout)
-}
-
 func (v *Validator) transportForWithURL(proxy Proxy, proxyURL *url.URL, dialTimeout time.Duration) *http.Transport {
 	// Reuse already-parsed URL to avoid double parsing (hot path in collector).
 	// proxy.URL() is called once in ValidateWithLatency and must not be repeated

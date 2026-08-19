@@ -84,11 +84,14 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	// the upstream. The cache is off by default and bounded; the mapped model
 	// remains part of the hashed request body.
 	cacheSettings := h.settings.Snapshot()
+	cacheEnabled := h.cache != nil && cacheSettings.EmbeddingCacheEnabled
 	if h.cache != nil {
 		h.cache.Resize(cacheSettings.EmbeddingCacheMaxEntries)
 	}
-	if h.cache != nil && cacheSettings.EmbeddingCacheEnabled {
-		if cached, ok := h.cache.Get(embedcache.Fingerprint(upstreamBody)); ok {
+	var fingerprint string
+	if cacheEnabled {
+		fingerprint = embedcache.Fingerprint(upstreamBody)
+		if cached, ok := h.cache.Get(fingerprint); ok {
 			writer.Header().Set("Content-Type", "application/json")
 			writer.Header().Set("X-Embedding-Cache", "HIT")
 			writer.WriteHeader(http.StatusOK)
@@ -118,8 +121,8 @@ func (h *Embeddings) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	}
 	// Only cache 2xx responses: a cached error would wrongfully hide an upstream
 	// outage. The validated body (already parsed by execute) is safe to cache.
-	if h.cache != nil && h.settings.Snapshot().EmbeddingCacheEnabled {
-		h.cache.Put(embedcache.Fingerprint(upstreamBody), body)
+	if cacheEnabled {
+		h.cache.Put(fingerprint, body)
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(result.Response.StatusCode)

@@ -107,7 +107,9 @@ type directTransportKey struct {
 // directTransportPool reuses attempt-scoped transports instead of cloning a
 // fresh transport (and tearing its connection pool down) on every request.
 type directTransportPool struct {
-	mu    sync.Mutex
+	// mu is a RWMutex so the per-request cache hit takes the read lock instead
+	// of serializing all requests behind the writer lock.
+	mu    sync.RWMutex
 	base  http.RoundTripper
 	items map[directTransportKey]*pooledTransport
 	clock uint64
@@ -141,16 +143,28 @@ func (p *directTransportPool) Close() {
 // creating it on first use. LRU eviction keeps the pool bounded.
 func (p *directTransportPool) Get(snapshot runtimeconfig.Snapshot) http.RoundTripper {
 	key := directTransportKey{connectMS: snapshot.ConnectTimeoutMS, firstByteMS: snapshot.FirstByteTimeoutMS}
+	p.mu.RLock()
+	item, ok := p.items[key]
+	if ok {
+		p.clock++
+		item.lastUsed = p.clock
+		p.mu.RUnlock()
+		return item.transport
+	}
+	p.mu.RUnlock()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if item, ok := p.items[key]; ok {
+	// Double-check: another goroutine may have created the entry between the
+	// read-lock miss and the write-lock acquisition.
+	if item, ok = p.items[key]; ok {
 		p.clock++
 		item.lastUsed = p.clock
 		return item.transport
 	}
 	transport, _ := newAttemptTransport(p.base, snapshot)
 	p.clock++
-	item := &pooledTransport{transport: transport, lastUsed: p.clock}
+	item = &pooledTransport{transport: transport, lastUsed: p.clock}
 	p.items[key] = item
 	if len(p.items) > maxPooledDirectTransports {
 		p.evictLeastRecentlyUsed()

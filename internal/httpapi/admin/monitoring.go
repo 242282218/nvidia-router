@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/observability"
@@ -16,6 +18,12 @@ const (
 	defaultMonitoringPageSize = 50
 	maxMonitoringPage         = 100000
 	maxMonitoringTextLength   = 128
+	// monitoringSummaryCacheTTL bounds how long a MonitoringSummary result is
+	// served from memory. The admin UI refreshes the summary on a short timer and
+	// the 24h window scans request_logs with five queries (aggregate, series,
+	// COUNT, p50, p95) every refresh; a short TTL keeps those scans off the hot
+	// reader-pool path while staying fresh enough for a dashboard.
+	monitoringSummaryCacheTTL = 5 * time.Second
 )
 
 type monitoringStore interface {
@@ -25,6 +33,15 @@ type monitoringStore interface {
 type Monitoring struct {
 	store monitoringStore
 	clock clock.Clock
+
+	summaryMu    sync.Mutex
+	summaryCache monitoringSummaryCacheEntry
+}
+
+type monitoringSummaryCacheEntry struct {
+	key       string
+	snapshot  observability.MonitoringSnapshot
+	expiresAt time.Time
 }
 
 func NewMonitoring(store monitoringStore, source clock.Clock) *Monitoring {
@@ -60,12 +77,71 @@ func (h *Monitoring) summary(writer http.ResponseWriter, request *http.Request) 
 		writeInvalidRequest(writer, "The monitoring query is invalid.", err)
 		return
 	}
+	key := monitoringSummaryCacheKey(query)
+	if snapshot, ok := h.cachedSummary(key); ok {
+		writeJSON(writer, http.StatusOK, map[string]any{"data": snapshot})
+		return
+	}
 	snapshot, err := h.store.MonitoringSummary(request.Context(), query)
 	if err != nil {
 		writeInternalError(writer, err)
 		return
 	}
+	h.setSummaryCache(key, snapshot)
 	writeJSON(writer, http.StatusOK, map[string]any{"data": snapshot})
+}
+
+// monitoringSummaryCacheKey identifies a summary query by its range and filters,
+// deliberately excluding From/To: NewMonitoringQuery shifts To on every refresh,
+// so a time-sensitive key would never hit. The TTL bounds the staleness instead.
+func monitoringSummaryCacheKey(query observability.MonitoringQuery) string {
+	var builder strings.Builder
+	builder.WriteString(query.Range)
+	filter := query.Filter
+	builder.WriteByte('\x00')
+	builder.WriteString(filter.ModelID)
+	builder.WriteByte('\x00')
+	builder.WriteString(filter.Endpoint)
+	builder.WriteByte('\x00')
+	builder.WriteString(filter.Outcome)
+	builder.WriteByte('\x00')
+	builder.WriteString(filter.Search)
+	builder.WriteByte('\x00')
+	builder.WriteString(intToString(filter.Status))
+	builder.WriteByte('\x00')
+	builder.WriteString(int64ToString(filter.AccessKeyID))
+	builder.WriteByte('\x00')
+	builder.WriteString(int64ToString(filter.NVIDIAKeyID))
+	return builder.String()
+}
+
+func intToString(value *int) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.Itoa(*value)
+}
+
+func int64ToString(value *int64) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
+func (h *Monitoring) cachedSummary(key string) (observability.MonitoringSnapshot, bool) {
+	h.summaryMu.Lock()
+	defer h.summaryMu.Unlock()
+	if h.summaryCache.key == key && h.clock.Now().Before(h.summaryCache.expiresAt) {
+		return h.summaryCache.snapshot, true
+	}
+	return observability.MonitoringSnapshot{}, false
+}
+
+func (h *Monitoring) setSummaryCache(key string, snapshot observability.MonitoringSnapshot) {
+	h.summaryMu.Lock()
+	defer h.summaryMu.Unlock()
+	h.summaryCache = monitoringSummaryCacheEntry{key: key, snapshot: snapshot, expiresAt: h.clock.Now().Add(monitoringSummaryCacheTTL)}
 }
 
 func (h *Monitoring) logs(writer http.ResponseWriter, request *http.Request) {

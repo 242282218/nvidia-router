@@ -176,7 +176,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db).WithReader(reader), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
-	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
+	adminSecurity := adminapi.NewAuth(adminRepository, adminauth.NewSessionService(db, resolved.Clock, keys, resolved.Config.AdminSecureCookie).WithReader(reader), adminauth.NewLoginLimiter(resolved.Clock), originPolicy)
 	auditRepository := adminaudit.NewRepository(db).WithReader(reader)
 	auditRecorder := adminaudit.NewRecorder(auditRepository, resolved.Logger)
 	providerCredentialRepository := providercredential.NewRepository(db, resolved.Clock, keys)

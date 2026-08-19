@@ -7,6 +7,7 @@ import (
 	randv2 "math/rand/v2"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"nvidia-router/internal/apierror"
@@ -92,6 +93,12 @@ type Attempt struct {
 	stateSync StateSync
 	clock     clock.Clock
 	latency   LatencyObserver
+
+	// failoverCache memoizes FailoverMatcher by spec string: the runtime spec
+	// changes rarely, but Run builds a matcher per request (token split + sort +
+	// merge). Building once per distinct spec removes that per-request cost.
+	failoverMu    sync.Mutex
+	failoverCache map[string]fault.FailoverMatcher
 }
 
 func NewAttempt(
@@ -107,12 +114,13 @@ func NewAttempt(
 		source = clock.RealClock{}
 	}
 	attempt := &Attempt{
-		settings:  settings,
-		keyPool:   keyPool,
-		secrets:   secrets,
-		states:    states,
-		stateSync: stateSync,
-		clock:     source,
+		settings:     settings,
+		keyPool:      keyPool,
+		secrets:      secrets,
+		states:       states,
+		stateSync:    stateSync,
+		clock:        source,
+		failoverCache: make(map[string]fault.FailoverMatcher),
 	}
 	if len(latencyObservers) > 0 {
 		attempt.latency = latencyObservers[0]
@@ -151,8 +159,9 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 
 	// Build the failover matcher once per request: the spec lives on the same
 	// snapshot the rest of the budget reads, so decoding it during Run keeps the
-	// retry policy consistent with the timeouts above (audit B4).
-	failover := buildFailoverMatcher(settings.FailoverStatusCodes)
+	// retry policy consistent with the timeouts above (audit B4). The matcher
+	// itself is memoized by spec so only a spec change pays the parse cost.
+	failover := a.failoverMatcher(settings.FailoverStatusCodes)
 
 	attempted := make(map[int64]struct{})
 	var totalQueue time.Duration
@@ -262,6 +271,20 @@ func buildFailoverMatcher(spec string) fault.FailoverMatcher {
 	if err != nil {
 		return fault.MustFailoverMatcher(fault.DefaultFailoverStatusCodes)
 	}
+	return matcher
+}
+
+// failoverMatcher returns the memoized matcher for spec, building it on first
+// use. FailoverMatcher is a value type whose ranges slice is immutable after
+// construction, so returning the cached copy is safe under concurrency.
+func (a *Attempt) failoverMatcher(spec string) fault.FailoverMatcher {
+	a.failoverMu.Lock()
+	defer a.failoverMu.Unlock()
+	if matcher, ok := a.failoverCache[spec]; ok {
+		return matcher
+	}
+	matcher := buildFailoverMatcher(spec)
+	a.failoverCache[spec] = matcher
 	return matcher
 }
 
