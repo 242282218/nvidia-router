@@ -34,25 +34,47 @@ func (r *Repository) read() *sql.DB {
 	return r.db
 }
 
-func (r *Repository) Record(ctx context.Context, record RequestRecord) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin request record transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+const insertRequestLogQuery = `
+	INSERT INTO request_logs (
+		request_id, endpoint, model_id, access_key_id, nvidia_key_id,
+		http_status, outcome, error_code, is_stream, queue_ms,
+		first_byte_ms, first_token_ms, duration_ms, attempt_count,
+		prompt_tokens, completion_tokens, upstream_request_id, created_at,
+		reasoning_requested, reasoning_wire_fields, reasoning_present,
+		reasoning_chars, stream_done, route_mode,
+		reasoning_requested_level, reasoning_effective_level
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
 
-	if err := insertRequestRecord(ctx, tx, record); err != nil {
-		return err
-	}
-	for _, dimension := range recordDimensions(record) {
-		if err := upsertDailyStat(ctx, tx, record, dimension); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit request record transaction: %w", err)
-	}
-	return nil
+const upsertDailyStatQuery = `
+	INSERT INTO daily_stats (
+		day, dimension_type, dimension_id, request_count, success_count,
+		failure_count, total_duration_ms, total_queue_ms, total_attempts,
+		total_first_byte_ms, first_byte_count,
+		total_first_token_ms, first_token_count,
+		prompt_tokens, completion_tokens
+	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
+		request_count = request_count + 1,
+		success_count = success_count + excluded.success_count,
+		failure_count = failure_count + excluded.failure_count,
+		total_duration_ms = total_duration_ms + excluded.total_duration_ms,
+		total_queue_ms = total_queue_ms + excluded.total_queue_ms,
+		total_attempts = total_attempts + excluded.total_attempts,
+		total_first_byte_ms = total_first_byte_ms + excluded.total_first_byte_ms,
+		first_byte_count = first_byte_count + excluded.first_byte_count,
+		total_first_token_ms = total_first_token_ms + excluded.total_first_token_ms,
+		first_token_count = first_token_count + excluded.first_token_count,
+		prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+		completion_tokens = completion_tokens + excluded.completion_tokens
+`
+
+type stmtRunner interface {
+	ExecContext(ctx context.Context, args ...any) (sql.Result, error)
+}
+
+func (r *Repository) Record(ctx context.Context, record RequestRecord) error {
+	return r.RecordBatch(ctx, []RequestRecord{record})
 }
 
 // RecordBatch persists a slice of request records in a single transaction.
@@ -69,12 +91,24 @@ func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) e
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	insertStmt, err := tx.PrepareContext(ctx, insertRequestLogQuery)
+	if err != nil {
+		return fmt.Errorf("prepare insert request log: %w", err)
+	}
+	defer insertStmt.Close()
+
+	upsertStmt, err := tx.PrepareContext(ctx, upsertDailyStatQuery)
+	if err != nil {
+		return fmt.Errorf("prepare upsert daily stats: %w", err)
+	}
+	defer upsertStmt.Close()
+
 	for _, record := range records {
-		if err := insertRequestRecord(ctx, tx, record); err != nil {
+		if err := execInsertRequestRecord(ctx, insertStmt, record); err != nil {
 			return err
 		}
 		for _, dimension := range recordDimensions(record) {
-			if err := upsertDailyStat(ctx, tx, record, dimension); err != nil {
+			if err := execUpsertDailyStat(ctx, upsertStmt, record, dimension); err != nil {
 				return err
 			}
 		}
@@ -190,18 +224,8 @@ func recordDimensions(record RequestRecord) []dimension {
 	return dimensions
 }
 
-func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) error {
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO request_logs (
-			request_id, endpoint, model_id, access_key_id, nvidia_key_id,
-			http_status, outcome, error_code, is_stream, queue_ms,
-			first_byte_ms, first_token_ms, duration_ms, attempt_count,
-			prompt_tokens, completion_tokens, upstream_request_id, created_at,
-			reasoning_requested, reasoning_wire_fields, reasoning_present,
-			reasoning_chars, stream_done, route_mode,
-			reasoning_requested_level, reasoning_effective_level
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+func execInsertRequestRecord(ctx context.Context, runner stmtRunner, record RequestRecord) error {
+	_, err := runner.ExecContext(ctx,
 		record.RequestID, record.Endpoint, nullableString(record.ModelID), record.AccessKeyID, record.NVIDIAKeyID,
 		record.HTTPStatus, record.Outcome, record.ErrorCode, boolInt(record.IsStream), record.QueueMS,
 		record.FirstByteMS, record.FirstTokenMS, record.DurationMS, record.AttemptCount,
@@ -216,32 +240,11 @@ func insertRequestRecord(ctx context.Context, tx *sql.Tx, record RequestRecord) 
 	return nil
 }
 
-func upsertDailyStat(ctx context.Context, tx *sql.Tx, record RequestRecord, dimension dimension) error {
+func execUpsertDailyStat(ctx context.Context, runner stmtRunner, record RequestRecord, dimension dimension) error {
 	success, failure := outcomeCounts(record.Outcome)
 	firstByteMS, firstByteCount := firstByteAggregate(record.FirstByteMS)
 	firstTokenMS, firstTokenCount := firstByteAggregate(record.FirstTokenMS)
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO daily_stats (
-			day, dimension_type, dimension_id, request_count, success_count,
-			failure_count, total_duration_ms, total_queue_ms, total_attempts,
-			total_first_byte_ms, first_byte_count,
-			total_first_token_ms, first_token_count,
-			prompt_tokens, completion_tokens
-		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(day, dimension_type, dimension_id) DO UPDATE SET
-			request_count = request_count + 1,
-			success_count = success_count + excluded.success_count,
-			failure_count = failure_count + excluded.failure_count,
-			total_duration_ms = total_duration_ms + excluded.total_duration_ms,
-			total_queue_ms = total_queue_ms + excluded.total_queue_ms,
-			total_attempts = total_attempts + excluded.total_attempts,
-			total_first_byte_ms = total_first_byte_ms + excluded.total_first_byte_ms,
-			first_byte_count = first_byte_count + excluded.first_byte_count,
-			total_first_token_ms = total_first_token_ms + excluded.total_first_token_ms,
-			first_token_count = first_token_count + excluded.first_token_count,
-			prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-			completion_tokens = completion_tokens + excluded.completion_tokens
-	`,
+	_, err := runner.ExecContext(ctx,
 		record.CreatedAt.UTC().Format("2006-01-02"), dimension.typeName, dimension.id,
 		success, failure, record.DurationMS, record.QueueMS, record.AttemptCount,
 		firstByteMS, firstByteCount, firstTokenMS, firstTokenCount,
