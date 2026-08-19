@@ -139,9 +139,15 @@ const model = object({
 })
 
 const candidate = object({
+  public_id: scalar('string'),
   upstream_id: scalar('string'),
   display_name: scalar('string'),
   kind: scalar('string'),
+  provider: scalar('string'),
+  channel: scalar('string'),
+  badge: scalar('string'),
+  status: scalar('string'),
+  capabilities: array(scalar('string')),
   supports_vision: scalar('boolean'),
   supports_tools: scalar('boolean'),
   supports_reasoning: scalar('boolean'),

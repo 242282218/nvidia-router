@@ -89,6 +89,8 @@ docker compose stop app
 | `NVIDIA_ROUTER_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `NVIDIA_ROUTER_TEMP_DIR` | `/tmp` | 请求临时资源目录 |
 | `NVIDIA_ROUTER_NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | NVIDIA 上游 HTTPS 地址 |
+| `NVIDIA_ROUTER_OPENCODEFREE_BASE_URL` | 空 | 可选 OpenCodeFree 网关地址；仅用于候选发现和只读模型测试，不进入生产路由 |
+| `NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY` | 空 | 可选的运行时入口认证；OpenCodeFree 不需要用户凭据，真实值不得写入仓库 |
 | `NVIDIA_ROUTER_XK_UPSTREAM_URL` | 空 | 内置采集器的 XApi 地址；必须带 provider query 凭据，可作为运行时回退，也可从管理端加密保存；Web 只返回脱敏 endpoint |
 | `NVIDIA_ROUTER_XK_VALIDATION_URL` | NVIDIA 基础地址 | 代理验证地址，不含 query 或凭据 |
 | `NVIDIA_ROUTER_XK_VALIDATION_STATUS` | `404` | 代理验证期望的 HTTP 状态码 |
@@ -140,6 +142,8 @@ unset new_password
 所有未知的 `/v1/*` 路径返回结构化 HTTP `501`，不会转发到 NVIDIA。
 
 Audio 模型的真实能力验证使用 `POST /admin/api/models/<id>/test`，兼容别名为 `/admin/api/models/<id>/verify`。请求体只允许 `{"key_id": <positive integer>}`；未知字段返回 `400 invalid_request`。服务端使用对应加密 NVIDIA Key 真实调用模型 endpoint，成功后生成 UTC `capability_verified_at` 并事务清除 block；失败不写时间、不清 block，调用者不能提交 `verified_at`。ASR/TTS 验证前不能启用，验证后仍需显式 PATCH `{"enabled":true}`。
+
+模型白名单页面也可以从配置的 OpenCodeFree 网关发现模型，并执行顺序、并发或单模型只读测试。OpenCodeFree 候选保存为停用项，不会出现在 `/v1/models`，也不会被生产请求解析；这条链路只代表候选发现和管理闭环，不代表已支持 OpenCodeFree 生产调用。
 
 真实联调见 [docs/NVIDIA真实联调说明.md](docs/NVIDIA真实联调说明.md)。`NVIDIA_ROUTER_LIVE_KEY` 只能从运行环境注入。`SKIP` 不是 PASS，命令成功退出也不能替代逐 case `status=PASS`；CI 负责 race、lint、secret scan、Compose 和 E2E，真实 NVIDIA 仍需显式注入运行时凭证。真实联调会产生 NVIDIA 费用并处理敏感数据，第一轮普通 HTTP 明文风险仍然存在。
 

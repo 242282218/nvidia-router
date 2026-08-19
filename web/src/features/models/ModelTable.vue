@@ -3,14 +3,33 @@ import { ref } from 'vue'
 
 import UiBadge from '../../shared/ui/UiBadge.vue'
 import UiButton from '../../shared/ui/UiButton.vue'
-import type { Model } from './types'
+import {
+  candidatePublicId,
+  candidateSelectionKey,
+  capabilityLabels,
+  normalizeProvider,
+} from './types'
+import type { Candidate, Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null }>()
+withDefaults(defineProps<{
+  models: Model[]
+  candidates?: Candidate[]
+  busyId: number | null
+  selectedModelIds?: ReadonlySet<number>
+  selectedCandidateKeys?: ReadonlySet<string>
+}>(), {
+  candidates: () => [],
+  selectedModelIds: () => new Set<number>(),
+  selectedCandidateKeys: () => new Set<string>(),
+})
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
   savePricing: [model: Model, inputUsd: number, outputUsd: number]
   delete: [model: Model]
+  toggleTest: [model: Model, selected: boolean]
+  toggleCandidate: [candidate: Candidate, selected: boolean]
+  test: [model: Model]
 }>()
 
 // editingPricing tracks the row currently in price-edit mode; raw inputs start
@@ -69,7 +88,29 @@ function audioNeedsVerification(model: Model): boolean {
 }
 
 function enablingIsBlocked(model: Model): boolean {
-  return !model.enabled && audioNeedsVerification(model)
+  return (!model.enabled && audioNeedsVerification(model))
+    || (normalizeProvider(model.provider) === 'opencodefree' && !model.enabled)
+}
+
+function providerLabel(provider?: string): string {
+  return normalizeProvider(provider) === 'opencodefree' ? 'OpenCodeFree' : 'NVIDIA'
+}
+
+function isPendingProvider(provider?: string): boolean {
+  return normalizeProvider(provider) === 'opencodefree'
+}
+
+function candidateStatus(candidate: Candidate, configured: boolean): string {
+  if (isPendingProvider(candidate.provider)) return '待接入'
+  return configured ? '已在白名单' : '候选'
+}
+
+function onCandidateChange(candidate: Candidate, event: globalThis.Event): void {
+  emit('toggleCandidate', candidate, (event.target as globalThis.HTMLInputElement).checked)
+}
+
+function onModelTestChange(model: Model, event: globalThis.Event): void {
+  emit('toggleTest', model, (event.target as globalThis.HTMLInputElement).checked)
 }
 </script>
 
@@ -86,10 +127,22 @@ function enablingIsBlocked(model: Model): boolean {
         <thead>
           <tr>
             <th
+              class="data-table-th w-20"
+              scope="col"
+            >
+              测试/保存
+            </th>
+            <th
               class="data-table-th"
               scope="col"
             >
               模型
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
+            >
+              渠道
             </th>
             <th
               class="data-table-th"
@@ -131,10 +184,102 @@ function enablingIsBlocked(model: Model): boolean {
         </thead>
         <tbody>
           <tr
+            v-for="candidate in candidates"
+            :key="`candidate-${candidateSelectionKey(candidate)}`"
+            class="data-table-row bg-[var(--color-sunken)]"
+          >
+            <td class="data-table-td">
+              <label class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                <input
+                  :checked="selectedCandidateKeys.has(candidateSelectionKey(candidate))"
+                  class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+                  :data-testid="`candidate-table-${candidateSelectionKey(candidate)}`"
+                  type="checkbox"
+                  @change="onCandidateChange(candidate, $event)"
+                >
+                保存
+              </label>
+            </td>
+            <td class="data-table-td">
+              <p class="font-medium text-[var(--color-text)]">
+                {{ candidate.display_name }}
+              </p>
+              <p class="mt-0.5 font-mono-data text-xs text-[var(--color-text-muted)]">
+                {{ candidatePublicId(candidate) }}
+              </p>
+              <p
+                v-if="candidatePublicId(candidate) !== candidate.upstream_id"
+                class="mt-0.5 text-xs text-[var(--color-text-subtle)]"
+              >
+                上游 {{ candidate.upstream_id }}
+              </p>
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                :variant="isPendingProvider(candidate.provider) ? 'warning' : 'info'"
+                :label="providerLabel(candidate.provider)"
+              />
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                variant="info"
+                :label="candidate.kind"
+                :dot="false"
+              />
+            </td>
+            <td class="data-table-td">
+              <div class="flex flex-wrap gap-x-2 gap-y-1 text-xs">
+                <UiBadge
+                  v-for="label in capabilityLabels(candidate)"
+                  :key="label"
+                  variant="success"
+                  :label="label"
+                  :dot="false"
+                />
+                <span
+                  v-if="capabilityLabels(candidate).length === 0"
+                  class="text-xs text-[var(--color-text-subtle)]"
+                >
+                  —
+                </span>
+              </div>
+            </td>
+            <td class="data-table-td text-xs text-[var(--color-text-subtle)]">
+              —
+            </td>
+            <td class="data-table-td text-xs text-[var(--color-text-subtle)]">
+              —
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                :variant="isPendingProvider(candidate.provider) ? 'warning' : 'muted'"
+                :label="candidateStatus(candidate, selectedCandidateKeys.has(candidateSelectionKey(candidate)))"
+              />
+              <p class="mt-1.5 text-xs text-[var(--color-text-muted)]">
+                保存后保持停用，可参与只读测试
+              </p>
+            </td>
+            <td class="data-table-td text-right text-xs text-[var(--color-text-subtle)]">
+              候选发现
+            </td>
+          </tr>
+          <tr
             v-for="model in models"
             :key="model.id"
             class="data-table-row"
           >
+            <td class="data-table-td">
+              <label class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                <input
+                  :checked="selectedModelIds.has(model.id)"
+                  class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+                  :data-testid="`test-model-${model.id}`"
+                  type="checkbox"
+                  @change="onModelTestChange(model, $event)"
+                >
+                测试
+              </label>
+            </td>
             <td class="data-table-td">
               <p class="font-medium text-[var(--color-text)]">
                 {{ model.display_name }}
@@ -142,6 +287,12 @@ function enablingIsBlocked(model: Model): boolean {
               <p class="mt-0.5 font-mono-data text-xs text-[var(--color-text-muted)]">
                 {{ model.public_id }}
               </p>
+            </td>
+            <td class="data-table-td">
+              <UiBadge
+                :variant="isPendingProvider(model.provider) ? 'warning' : 'info'"
+                :label="providerLabel(model.provider)"
+              />
             </td>
             <td class="data-table-td">
               <UiBadge
@@ -237,8 +388,8 @@ function enablingIsBlocked(model: Model): boolean {
             </td>
             <td class="data-table-td">
               <UiBadge
-                :variant="model.enabled ? 'success' : 'muted'"
-                :label="model.enabled ? '启用' : '停用'"
+                :variant="isPendingProvider(model.provider) ? 'warning' : model.enabled ? 'success' : 'muted'"
+                :label="isPendingProvider(model.provider) ? '待接入' : model.enabled ? '启用' : '停用'"
               />
               <p
                 v-if="model.capability_verified_at"
@@ -274,6 +425,15 @@ function enablingIsBlocked(model: Model): boolean {
             </td>
             <td class="data-table-td">
               <div class="flex justify-end gap-1.5">
+                <UiButton
+                  :data-testid="`test-model-button-${model.id}`"
+                  variant="ghost"
+                  size="sm"
+                  :disabled="busyId === model.id"
+                  @click="emit('test', model)"
+                >
+                  单测
+                </UiButton>
                 <UiButton
                   data-testid="model-enable"
                   variant="secondary"

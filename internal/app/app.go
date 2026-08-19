@@ -36,6 +36,7 @@ import (
 	"nvidia-router/internal/router"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
+	"nvidia-router/internal/upstream/opencodefree"
 	webui "nvidia-router/internal/web"
 	"nvidia-router/internal/xkproxy"
 )
@@ -149,6 +150,15 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		proxySettings.Close()
 		return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize NVIDIA client: %w", err))
 	}
+	var openCodeFreeClient *opencodefree.Client
+	if resolved.Config.OpenCodeFreeBaseURL != nil {
+		openCodeFreeClient, err = opencodefree.NewClient(resolved.NVIDIAHTTPClient, resolved.Config.OpenCodeFreeBaseURL, resolved.Config.OpenCodeFreeAuthKey)
+		if err != nil {
+			nvidiaClient.Close()
+			proxySettings.Close()
+			return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize OpenCodeFree client: %w", err))
+		}
+	}
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
 	healthChecker := nvidiakey.NewHealthChecker(keyRepository, resolved.Clock, nvidiakey.HealthCheckerOptions{
 		Logger: resolved.Logger,
@@ -162,6 +172,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	// waiting out the full sweep interval (half-open circuit recovery).
 	healthChecker.WireCooldownExpiry(keyRepository.EarliestCooldownExpiry)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
+	models.WithOpenCodeFree(openCodeFreeClient)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db).WithReader(reader), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
@@ -176,6 +187,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		adminapi.NewProxyPool(proxySettings),
 		adminapi.NewAuditLogs(auditRepository),
 		adminapi.NewProviderCredentials(providerCredentialRepository),
+		adminapi.NewModelTestJobs(models),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock, keyPool)
 	observabilityRepository := observability.NewRepository(db).WithReader(reader)
@@ -338,7 +350,7 @@ func toCollectorConfig(pool *config.XKPoolConfig) *xkproxy.CollectorConfig {
 }
 
 func resolveDependencies(dependencies Dependencies) (Dependencies, error) {
-	if dependencies.Config.ListenAddress == "" && dependencies.Config.DataDir == "" && dependencies.Config.TempDir == "" && dependencies.Config.MasterKey == ([32]byte{}) && dependencies.Config.InitialAdminPassword == "" && !dependencies.Config.AdminSecureCookie && dependencies.Config.AdminExternalOrigin == nil && len(dependencies.Config.TrustedProxyCIDRs) == 0 && dependencies.Config.NVIDIABaseURL == nil && dependencies.Config.XKProxyURL == nil && dependencies.Config.XKProxyAuthKey == "" && dependencies.Config.XKPool == nil {
+	if dependencies.Config.ListenAddress == "" && dependencies.Config.DataDir == "" && dependencies.Config.TempDir == "" && dependencies.Config.MasterKey == ([32]byte{}) && dependencies.Config.InitialAdminPassword == "" && !dependencies.Config.AdminSecureCookie && dependencies.Config.AdminExternalOrigin == nil && len(dependencies.Config.TrustedProxyCIDRs) == 0 && dependencies.Config.NVIDIABaseURL == nil && dependencies.Config.OpenCodeFreeBaseURL == nil && dependencies.Config.OpenCodeFreeAuthKey == "" && dependencies.Config.XKProxyURL == nil && dependencies.Config.XKProxyAuthKey == "" && dependencies.Config.XKPool == nil {
 		loaded, err := config.LoadFromEnv(config.LoadOptions{})
 		if err != nil {
 			return Dependencies{}, fmt.Errorf("load configuration: %w", err)

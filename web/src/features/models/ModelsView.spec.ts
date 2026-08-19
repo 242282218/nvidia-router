@@ -333,6 +333,47 @@ describe('ModelsView', () => {
     ])
   })
 
+  it('strips display-only candidate metadata before saving the whitelist', async () => {
+    vi.mocked(modelsApi.candidates).mockResolvedValue({
+      data: [{
+        public_id: 'opencodefree/model-free',
+        upstream_id: 'model-free',
+        display_name: 'Model Free',
+        kind: 'chat',
+        provider: 'opencodefree',
+        channel: 'opencodefree',
+        badge: 'OpenCodeFree',
+        status: 'pending',
+        capabilities: ['chat', 'free'],
+        supports_vision: false,
+        supports_tools: false,
+        supports_reasoning: false,
+      } as never],
+    })
+    vi.mocked(modelsApi.save).mockResolvedValue({ saved: 1 })
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="discover-models"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="candidate-table-opencodefree/model-free"]').setValue(true)
+    await wrapper.get('[data-testid="save-candidates"]').trigger('click')
+    await flushPromises()
+
+    expect(modelsApi.save).toHaveBeenCalledWith([{
+      public_id: 'opencodefree/model-free',
+      upstream_id: 'model-free',
+      display_name: 'Model Free',
+      kind: 'chat',
+      provider: 'opencodefree',
+      enabled: false,
+      supports_vision: false,
+      supports_tools: false,
+      supports_reasoning: false,
+      reasoning_wire_format: undefined,
+    }])
+  })
+
   it('saves model pricing from the table editor and reflects the patched response', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 3, public_id: 'chat-model', display_name: 'Chat' })] })
     vi.mocked(modelsApi.patch).mockResolvedValue({

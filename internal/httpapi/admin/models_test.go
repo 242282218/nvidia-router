@@ -2,7 +2,10 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -320,6 +323,61 @@ func TestModelAPIUsesFirstKeyAndEnforcesAudioVerification(t *testing.T) {
 	response = performAdminRequest(handler, http.MethodDelete, "/admin/api/key-model-blocks/5/9", "")
 	if response.Code != http.StatusOK || models.cleared != [2]int64{5, 9} || len(syncer.blocks) != 1 || syncer.blocks[0] != [3]int64{5, 9, 0} {
 		t.Fatalf("unblock status=%d cleared=%v blocks=%v body=%s", response.Code, models.cleared, syncer.blocks, response.Body.String())
+	}
+}
+
+func TestModelAPIExposesCandidateChannelMetadataAndPreservesProviderOnSave(t *testing.T) {
+	models := &fakeModels{candidates: []modelcatalog.Candidate{{
+		PublicID: "opencodefree/model-free", UpstreamID: "model-free", DisplayName: "Model Free",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree,
+		Channel: modelcatalog.ProviderOpenCodeFree, Badge: "OpenCodeFree", Status: "pending",
+		Capabilities: []string{"chat", "free"},
+	}}}
+	handler := NewModels(models, fakeCandidateKeys{id: 5}, &fakeStateSync{})
+
+	response := performAdminRequest(handler, http.MethodGet, "/admin/api/models/candidates", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("candidate status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data []struct {
+			PublicID     string   `json:"public_id"`
+			Provider     string   `json:"provider"`
+			Channel      string   `json:"channel"`
+			Badge        string   `json:"badge"`
+			Status       string   `json:"status"`
+			Capabilities []string `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode candidates: %v", err)
+	}
+	if len(envelope.Data) != 1 || envelope.Data[0].PublicID != "opencodefree/model-free" || envelope.Data[0].Provider != modelcatalog.ProviderOpenCodeFree || envelope.Data[0].Channel != modelcatalog.ProviderOpenCodeFree || envelope.Data[0].Badge != "OpenCodeFree" || envelope.Data[0].Status != "pending" {
+		t.Fatalf("candidate metadata = %+v", envelope.Data)
+	}
+	if strings.Join(envelope.Data[0].Capabilities, ",") != "chat,free" {
+		t.Fatalf("candidate capabilities = %v", envelope.Data[0].Capabilities)
+	}
+
+	response = performAdminRequest(handler, http.MethodPost, "/admin/api/models", `{"models":[{"public_id":"opencodefree/model-free","upstream_id":"model-free","display_name":"Model Free","kind":"chat","provider":"opencodefree","enabled":false}]}`)
+	if response.Code != http.StatusOK || len(models.saved) != 1 || models.saved[0].Provider != modelcatalog.ProviderOpenCodeFree {
+		t.Fatalf("save status = %d, saved = %+v, body = %s", response.Code, models.saved, response.Body.String())
+	}
+}
+
+type configuredOpenCodeFreeModels struct{ *fakeModels }
+
+func (*configuredOpenCodeFreeModels) OpenCodeFreeConfigured() bool { return true }
+
+func TestModelCandidatesFallsBackToOpenCodeFreeWhenNoNVIDIAKeyExists(t *testing.T) {
+	models := &configuredOpenCodeFreeModels{fakeModels: &fakeModels{candidates: []modelcatalog.Candidate{{
+		PublicID: "opencodefree/model-free", UpstreamID: "model-free", DisplayName: "Model Free", Kind: modelcatalog.KindChat,
+	}}}}
+	handler := NewModels(models, fakeCandidateKeys{err: fmt.Errorf("no enabled key: %w", sql.ErrNoRows)}, &fakeStateSync{})
+
+	response := performAdminRequest(handler, http.MethodGet, "/admin/api/models/candidates", "")
+	if response.Code != http.StatusOK || models.discoverKey != 0 {
+		t.Fatalf("fallback status = %d, discover key = %d, body = %s", response.Code, models.discoverKey, response.Body.String())
 	}
 }
 

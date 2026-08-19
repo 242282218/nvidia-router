@@ -33,6 +33,19 @@ func TestSaveSelectionRejectsInvalidModelFields(t *testing.T) {
 	}
 }
 
+func TestValidateNVIDIAKeyChecksSelectedCredentialWithoutCallingUpstream(t *testing.T) {
+	service, _, secrets, discoverer := newCatalogTestService(t)
+	if err := service.ValidateNVIDIAKey(context.Background(), 17); err != nil {
+		t.Fatalf("ValidateNVIDIAKey: %v", err)
+	}
+	if secrets.lastKeyID != 17 {
+		t.Fatalf("validated key id = %d, want 17", secrets.lastKeyID)
+	}
+	if discoverer.modelsCalls != 0 || discoverer.chatCalls != 0 {
+		t.Fatalf("credential validation called upstream: models=%d chat=%d", discoverer.modelsCalls, discoverer.chatCalls)
+	}
+}
+
 func TestModelPatchRejectsOpenAICompatibleProvider(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	result, err := service.SaveSelectionResult(context.Background(), []Selection{{

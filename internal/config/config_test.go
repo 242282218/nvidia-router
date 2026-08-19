@@ -73,6 +73,8 @@ func TestLoadFromEnv(t *testing.T) {
 				t.Setenv("NVIDIA_ROUTER_DATA_DIR", "data")
 				t.Setenv("NVIDIA_ROUTER_TEMP_DIR", "temp")
 				t.Setenv("NVIDIA_ROUTER_NVIDIA_BASE_URL", "https://example.com")
+				t.Setenv("NVIDIA_ROUTER_OPENCODEFREE_BASE_URL", "http://opencode-free-proxy:6020/v1")
+				t.Setenv("NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY", "entry-auth")
 			},
 			check: func(t *testing.T, cfg Config) {
 				if cfg.ListenAddress != "127.0.0.1:8080" || cfg.DataDir != "data" || cfg.TempDir != "temp" {
@@ -80,6 +82,9 @@ func TestLoadFromEnv(t *testing.T) {
 				}
 				if cfg.NVIDIABaseURL.String() != "https://example.com" {
 					t.Fatalf("NVIDIABaseURL = %q", cfg.NVIDIABaseURL)
+				}
+				if cfg.OpenCodeFreeBaseURL.String() != "http://opencode-free-proxy:6020/v1" || cfg.OpenCodeFreeAuthKey != "entry-auth" {
+					t.Fatalf("OpenCodeFree config = %v/%q", cfg.OpenCodeFreeBaseURL, cfg.OpenCodeFreeAuthKey)
 				}
 			},
 		},
@@ -289,7 +294,7 @@ func clearConfigEnv(t *testing.T) {
 	for _, name := range []string{
 		"NVIDIA_ROUTER_LISTEN_ADDR", "NVIDIA_ROUTER_DATA_DIR", "NVIDIA_ROUTER_TEMP_DIR", "NVIDIA_ROUTER_MASTER_KEY", "NVIDIA_ROUTER_MASTER_KEY_VERSION", "NVIDIA_ROUTER_LEGACY_MASTER_KEY", "NVIDIA_ROUTER_LEGACY_MASTER_KEY_VERSION",
 		"NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD", "NVIDIA_ROUTER_ADMIN_SECURE_COOKIE", "NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN",
-		"NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS", "NVIDIA_ROUTER_NVIDIA_BASE_URL",
+		"NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS", "NVIDIA_ROUTER_NVIDIA_BASE_URL", "NVIDIA_ROUTER_OPENCODEFREE_BASE_URL", "NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY",
 		"NVIDIA_ROUTER_XK_PROXY_URL", "NVIDIA_ROUTER_XK_PROXY_AUTH_KEY",
 		"NVIDIA_ROUTER_XK_UPSTREAM_URL", "NVIDIA_ROUTER_XK_VALIDATION_URL", "NVIDIA_ROUTER_XK_VALIDATION_STATUS",
 		"NVIDIA_ROUTER_XK_UPSTREAM_TIMEOUT", "NVIDIA_ROUTER_XK_VALIDATION_TIMEOUT", "NVIDIA_ROUTER_XK_COLLECT_INTERVAL",

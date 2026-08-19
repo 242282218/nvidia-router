@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strconv"
@@ -44,9 +45,15 @@ type Models struct {
 }
 
 type candidateDTO struct {
+	PublicID            string            `json:"public_id"`
 	UpstreamID          string            `json:"upstream_id"`
 	DisplayName         string            `json:"display_name"`
 	Kind                modelcatalog.Kind `json:"kind"`
+	Provider            string            `json:"provider"`
+	Channel             string            `json:"channel"`
+	Badge               string            `json:"badge"`
+	Status              string            `json:"status"`
+	Capabilities        []string          `json:"capabilities"`
 	SupportsVision      bool              `json:"supports_vision"`
 	SupportsTools       bool              `json:"supports_tools"`
 	SupportsReasoning   bool              `json:"supports_reasoning"`
@@ -78,6 +85,7 @@ type selectionDTO struct {
 	UpstreamID          string            `json:"upstream_id"`
 	DisplayName         string            `json:"display_name"`
 	Kind                modelcatalog.Kind `json:"kind"`
+	Provider            string            `json:"provider,omitempty"`
 	Enabled             bool              `json:"enabled"`
 	SupportsVision      bool              `json:"supports_vision"`
 	SupportsTools       bool              `json:"supports_tools"`
@@ -114,8 +122,12 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 func (h *Models) candidates(writer http.ResponseWriter, request *http.Request) {
 	keyID, err := h.keys.FirstEnabledID(request.Context())
 	if err != nil {
-		writeAdminError(writer, http.StatusServiceUnavailable, "no_available_keys", "No NVIDIA key is available for model discovery.", err)
-		return
+		if h.openCodeFreeConfigured() && errors.Is(err, sql.ErrNoRows) {
+			keyID = 0
+		} else {
+			writeAdminError(writer, http.StatusServiceUnavailable, "no_available_keys", "No NVIDIA key is available for model discovery.", err)
+			return
+		}
 	}
 	items, err := h.service.DiscoverCandidates(request.Context(), keyID)
 	if err != nil {
@@ -266,6 +278,14 @@ func (h *Models) writeModelError(writer http.ResponseWriter, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, modelcatalog.ErrNVIDIAKeyRequired):
+		writeAdminError(writer, http.StatusBadRequest, "nvidia_key_required", "A NVIDIA Key is required for this operation.", err)
+	case errors.Is(err, modelcatalog.ErrProviderNotConfigured):
+		writeAdminError(writer, http.StatusServiceUnavailable, "provider_not_configured", "The selected model provider is not configured.", err)
+	case errors.Is(err, modelcatalog.ErrProviderNotRoutable):
+		writeAdminError(writer, http.StatusBadRequest, "provider_not_routable", "The selected model provider is not available for production calls.", err)
+	case errors.Is(err, modelcatalog.ErrProviderMismatch):
+		writeAdminError(writer, http.StatusBadRequest, "provider_mismatch", "The model does not belong to the selected provider.", err)
 	case errors.Is(err, modelcatalog.ErrInvalidModelSelection):
 		writeAdminError(writer, http.StatusBadRequest, "invalid_request", "The model selection is invalid.", err)
 	case errors.Is(err, modelcatalog.ErrCapabilityUnverified):
@@ -281,7 +301,42 @@ func (h *Models) writeModelError(writer http.ResponseWriter, err error) {
 	}
 }
 func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
-	return candidateDTO{v.UpstreamID, v.DisplayName, v.Kind, v.SupportsVision, v.SupportsTools, v.SupportsReasoning, v.ReasoningWireFormat}
+	provider := v.Provider
+	if provider == "" {
+		provider = modelcatalog.ProviderNVIDIA
+	}
+	channel := v.Channel
+	if channel == "" {
+		channel = provider
+	}
+	badge := v.Badge
+	if badge == "" {
+		badge = "NVIDIA"
+		if provider == modelcatalog.ProviderOpenCodeFree {
+			badge = "OpenCodeFree"
+		}
+	}
+	status := v.Status
+	if status == "" {
+		status = "available"
+	}
+	capabilities := append([]string(nil), v.Capabilities...)
+	if len(capabilities) == 0 {
+		capabilities = append(capabilities, v.CapabilityTags...)
+	}
+	if len(capabilities) == 0 && v.Kind != "" {
+		capabilities = []string{string(v.Kind)}
+	}
+	publicID := v.PublicID
+	if publicID == "" {
+		publicID = v.UpstreamID
+	}
+	return candidateDTO{
+		PublicID: publicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind,
+		Provider: provider, Channel: channel, Badge: badge, Status: status, Capabilities: capabilities,
+		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning,
+		ReasoningWireFormat: v.ReasoningWireFormat,
+	}
 }
 func toModelDTO(v modelcatalog.Model) modelDTO {
 	provider := v.Provider
@@ -289,25 +344,30 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		provider = "nvidia"
 	}
 	return modelDTO{
-		ID:                   v.ID,
-		PublicID:             v.PublicID,
-		UpstreamID:           v.UpstreamID,
-		DisplayName:          v.DisplayName,
-		Kind:                 v.Kind,
-		Provider:             provider,
-		Enabled:              v.Enabled,
-		SupportsVision:       v.SupportsVision,
-		SupportsTools:        v.SupportsTools,
-		SupportsReasoning:    v.SupportsReasoning,
-		ReasoningWireFormat:  v.ReasoningWireFormat,
-		CapabilityVerifiedAt: v.CapabilityVerifiedAt,
+		ID:                        v.ID,
+		PublicID:                  v.PublicID,
+		UpstreamID:                v.UpstreamID,
+		DisplayName:               v.DisplayName,
+		Kind:                      v.Kind,
+		Provider:                  provider,
+		Enabled:                   v.Enabled,
+		SupportsVision:            v.SupportsVision,
+		SupportsTools:             v.SupportsTools,
+		SupportsReasoning:         v.SupportsReasoning,
+		ReasoningWireFormat:       v.ReasoningWireFormat,
+		CapabilityVerifiedAt:      v.CapabilityVerifiedAt,
 		StreamFirstTokenTimeoutMS: v.StreamFirstTokenTimeoutMS,
 		StreamIdleTimeoutMS:       v.StreamIdleTimeoutMS,
-		InputUSDPerMTok:      v.InputUSDPerMTok,
-		OutputUSDPerMTok:     v.OutputUSDPerMTok,
-		BlockedByKeyIDs:      v.BlockedByKeyIDs,
+		InputUSDPerMTok:           v.InputUSDPerMTok,
+		OutputUSDPerMTok:          v.OutputUSDPerMTok,
+		BlockedByKeyIDs:           v.BlockedByKeyIDs,
 	}
 }
 func (v selectionDTO) selection() modelcatalog.Selection {
-	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat}
+	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Provider: v.Provider, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat}
+}
+
+func (h *Models) openCodeFreeConfigured() bool {
+	configured, ok := h.service.(interface{ OpenCodeFreeConfigured() bool })
+	return ok && configured.OpenCodeFreeConfigured()
 }

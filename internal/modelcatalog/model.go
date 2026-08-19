@@ -11,7 +11,12 @@ var (
 	ErrInvalidModelSelection = errors.New("invalid model selection")
 )
 
-const defaultModelProvider = "nvidia"
+const (
+	ProviderNVIDIA       = "nvidia"
+	ProviderOpenCodeFree = "opencodefree"
+)
+
+const defaultModelProvider = ProviderNVIDIA
 
 type Kind string
 
@@ -61,9 +66,17 @@ type MutationResult struct {
 }
 
 type Candidate struct {
+	PublicID            string
 	UpstreamID          string
 	DisplayName         string
 	Kind                Kind
+	Provider            string
+	Channel             string
+	Badge               string
+	Status              string
+	Enabled             bool
+	Capabilities        []string
+	CapabilityTags      []string
 	SupportsVision      bool
 	SupportsTools       bool
 	SupportsReasoning   bool
@@ -75,6 +88,7 @@ type Selection struct {
 	UpstreamID           string
 	DisplayName          string
 	Kind                 Kind
+	Provider             string
 	Enabled              bool
 	SupportsVision       bool
 	SupportsTools        bool
@@ -120,7 +134,13 @@ func normalizeModelSelection(selection Selection) (Selection, error) {
 }
 
 func validateEnabledProvider(provider string, enabled bool) error {
-	if enabled && provider != "" && provider != defaultModelProvider {
+	if provider == "" {
+		provider = defaultModelProvider
+	}
+	if provider != ProviderNVIDIA && provider != ProviderOpenCodeFree {
+		return fmt.Errorf("%w: unsupported model provider %q", ErrInvalidModelSelection, provider)
+	}
+	if enabled && provider != ProviderNVIDIA {
 		return fmt.Errorf("%w: only NVIDIA provider models can be enabled", ErrInvalidModelSelection)
 	}
 	return nil
