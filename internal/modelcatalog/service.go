@@ -26,6 +26,11 @@ type ModelDiscoverer interface {
 	Models(context.Context, string) ([]string, error)
 }
 
+type OpenCodeFreeClient interface {
+	Models(context.Context) ([]string, error)
+	Chat(context.Context, runtimeconfig.Snapshot, []byte, bool) (*http.Response, error)
+}
+
 type chatModelTester interface {
 	Chat(context.Context, runtimeconfig.Snapshot, string, []byte, bool) (*http.Response, error)
 }
@@ -45,11 +50,12 @@ type ttsModelTester interface {
 const modelVerificationTimeout = 30 * time.Second
 
 type Service struct {
-	repository *Repository
-	secrets    SecretProvider
-	discoverer ModelDiscoverer
-	descriptor nvidia.Descriptor
-	clock      clock.Clock
+	repository   *Repository
+	secrets      SecretProvider
+	discoverer   ModelDiscoverer
+	descriptor   nvidia.Descriptor
+	clock        clock.Clock
+	opencodefree OpenCodeFreeClient
 }
 
 func NewService(repository *Repository, secrets SecretProvider, discoverer ModelDiscoverer, descriptor nvidia.Descriptor, source clock.Clock) *Service {
@@ -59,22 +65,44 @@ func NewService(repository *Repository, secrets SecretProvider, discoverer Model
 	return &Service{repository: repository, secrets: secrets, discoverer: discoverer, descriptor: descriptor, clock: source}
 }
 
+func (s *Service) WithOpenCodeFree(client OpenCodeFreeClient) *Service {
+	s.opencodefree = client
+	return s
+}
+
+func (s *Service) OpenCodeFreeConfigured() bool {
+	return s.opencodefree != nil
+}
+
 func (s *Service) DiscoverCandidates(ctx context.Context, keyID int64) ([]Candidate, error) {
-	var modelIDs []string
-	if err := s.secrets.WithSecret(ctx, keyID, func(secret []byte) error {
-		models, err := s.discoverer.Models(ctx, string(secret))
-		if err != nil {
-			return fmt.Errorf("discover NVIDIA models: %w", err)
+	candidates := make([]Candidate, 0)
+	if keyID > 0 {
+		var modelIDs []string
+		if err := s.secrets.WithSecret(ctx, keyID, func(secret []byte) error {
+			models, err := s.discoverer.Models(ctx, string(secret))
+			if err != nil {
+				return fmt.Errorf("discover NVIDIA models: %w", err)
+			}
+			modelIDs = models
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("discover model candidates: %w", err)
 		}
-		modelIDs = models
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("discover model candidates: %w", err)
+		for _, modelID := range modelIDs {
+			hint := s.descriptor.CapabilityHint(modelID)
+			candidates = append(candidates, candidateFromHint(modelID, hint))
+		}
+	} else if s.opencodefree == nil {
+		return nil, ErrNVIDIAKeyRequired
 	}
-	candidates := make([]Candidate, 0, len(modelIDs))
-	for _, modelID := range modelIDs {
-		hint := s.descriptor.CapabilityHint(modelID)
-		candidates = append(candidates, candidateFromHint(modelID, hint))
+	if s.opencodefree != nil {
+		modelIDs, err := s.opencodefree.Models(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("discover OpenCodeFree models: %w", err)
+		}
+		for _, modelID := range modelIDs {
+			candidates = append(candidates, candidateFromOpenCodeFree(modelID))
+		}
 	}
 	return candidates, nil
 }
@@ -108,20 +136,60 @@ func (s *Service) List(ctx context.Context) ([]Model, error) {
 	return models, nil
 }
 
+// ValidateNVIDIAKey checks that the selected encrypted credential is readable
+// without making an upstream request or changing key/model state.
+func (s *Service) ValidateNVIDIAKey(ctx context.Context, keyID int64) error {
+	if keyID <= 0 {
+		return ErrNVIDIAKeyRequired
+	}
+	return s.secrets.WithSecret(ctx, keyID, func([]byte) error { return nil })
+}
+
 func (s *Service) Patch(ctx context.Context, id int64, patch Patch) (Model, error) {
 	updated, _, err := s.PatchResult(ctx, id, patch)
 	return updated, err
 }
 
 func (s *Service) PatchResult(ctx context.Context, id int64, patch Patch) (Model, Kind, error) {
-	if patch.Provider != nil && *patch.Provider != "nvidia" {
-		return Model{}, "", fmt.Errorf("%w: provider must be nvidia", ErrInvalidModelSelection)
-	}
 	model, previousKind, err := s.repository.Patch(ctx, id, patch, s.clock.Now())
 	if err != nil {
 		return Model{}, "", fmt.Errorf("save model patch: %w", err)
 	}
 	return model, previousKind, nil
+}
+
+// TestModel performs one read-only endpoint probe. It never changes the
+// whitelist, capability verification, key-model blocks, or key health state.
+func (s *Service) TestModel(ctx context.Context, provider string, keyID, modelID int64) error {
+	model, err := s.repository.Get(ctx, modelID)
+	if err != nil {
+		return fmt.Errorf("load model for read-only test: %w", err)
+	}
+	if provider == "" {
+		provider = defaultModelProvider
+	}
+	if model.Provider == "" {
+		model.Provider = defaultModelProvider
+	}
+	if model.Provider != provider {
+		return fmt.Errorf("%w: model %q belongs to %s", ErrProviderMismatch, model.PublicID, model.Provider)
+	}
+	testCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeout)
+	defer cancel()
+	switch provider {
+	case ProviderNVIDIA:
+		if keyID <= 0 {
+			return ErrNVIDIAKeyRequired
+		}
+		return s.testTargetModel(testCtx, keyID, model)
+	case ProviderOpenCodeFree:
+		if keyID != 0 {
+			return fmt.Errorf("%w: OpenCodeFree does not use an NVIDIA key", ErrInvalidModelSelection)
+		}
+		return s.testOpenCodeFreeModel(testCtx, model)
+	default:
+		return fmt.Errorf("%w: %s", ErrProviderNotRoutable, provider)
+	}
 }
 
 func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (Model, error) {
@@ -235,6 +303,35 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 	})
 }
 
+func (s *Service) testOpenCodeFreeModel(ctx context.Context, model Model) error {
+	if s.opencodefree == nil {
+		return ErrProviderNotConfigured
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":      model.UpstreamID,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	})
+	if err != nil {
+		return err
+	}
+	response, err := s.opencodefree.Chat(ctx, runtimeconfig.Snapshot{}, body, false)
+	if err != nil {
+		return ErrManualTestRequired
+	}
+	if response == nil || response.Body == nil {
+		return ErrManualTestRequired
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return ErrManualTestRequired
+	}
+	if _, err := nvidia.ValidateNonstreamChat(response); err != nil {
+		return ErrManualTestRequired
+	}
+	return nil
+}
+
 // probeWAV is a minimal valid mono PCM WAV containing one silent sample. It is
 // deliberately generated in memory so verification never reads a caller file.
 func isAudioContentType(contentType string) bool {
@@ -258,13 +355,25 @@ func (s *Service) ListEnabled(ctx context.Context) ([]Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list enabled models: %w", err)
 	}
-	return models, nil
+	routable := make([]Model, 0, len(models))
+	for _, model := range models {
+		if model.Provider == "" || model.Provider == ProviderNVIDIA {
+			routable = append(routable, model)
+		}
+	}
+	return routable, nil
 }
 
 func (s *Service) Resolve(ctx context.Context, publicID string, requirements Requirements) (Model, error) {
 	model, err := s.repository.ResolveEnabled(ctx, publicID)
 	if err != nil {
 		return Model{}, fmt.Errorf("resolve model %q: %w", publicID, err)
+	}
+	if model.Provider == "" {
+		model.Provider = defaultModelProvider
+	}
+	if model.Provider != ProviderNVIDIA {
+		return Model{}, fmt.Errorf("resolve model %q: %w", publicID, ErrProviderNotRoutable)
 	}
 	if err := validateRequirements(model, requirements); err != nil {
 		return Model{}, fmt.Errorf("validate model %q capabilities: %w", publicID, err)
@@ -312,9 +421,15 @@ func (s *Service) DeleteModel(ctx context.Context, id int64) error {
 
 func candidateFromHint(modelID string, hint nvidia.CapabilityHint) Candidate {
 	return Candidate{
+		PublicID:                modelID,
 		UpstreamID:              modelID,
 		DisplayName:             modelID,
 		Kind:                    Kind(hint.Kind),
+		Provider:                ProviderNVIDIA,
+		Channel:                 ProviderNVIDIA,
+		Badge:                   "NVIDIA",
+		Status:                  "available",
+		Capabilities:            capabilityTags(Kind(hint.Kind), hint.SupportsVision, hint.SupportsTools, hint.SupportsReasoning),
 		SupportsVision:          hint.SupportsVision,
 		SupportsTools:           hint.SupportsTools,
 		SupportsReasoning:       hint.SupportsReasoning,
@@ -331,4 +446,32 @@ func defaultReasoningLevelsForCandidate(supported bool) []string {
 		return nil
 	}
 	return defaultReasoningLevels()
+}
+
+func candidateFromOpenCodeFree(modelID string) Candidate {
+	return Candidate{
+		PublicID:     ProviderOpenCodeFree + "/" + modelID,
+		UpstreamID:   modelID,
+		DisplayName:  modelID,
+		Kind:         KindChat,
+		Provider:     ProviderOpenCodeFree,
+		Channel:      ProviderOpenCodeFree,
+		Badge:        "OpenCodeFree",
+		Status:       "pending",
+		Capabilities: []string{"chat", "free"},
+	}
+}
+
+func capabilityTags(kind Kind, vision, tools, reasoning bool) []string {
+	tags := []string{string(kind)}
+	if vision {
+		tags = append(tags, "vision")
+	}
+	if tools {
+		tags = append(tags, "tools")
+	}
+	if reasoning {
+		tags = append(tags, "reasoning")
+	}
+	return tags
 }

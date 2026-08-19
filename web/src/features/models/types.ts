@@ -1,4 +1,14 @@
 export type ModelKind = 'chat' | 'embedding' | 'asr' | 'tts' | string
+export type ModelProvider = 'nvidia' | 'opencodefree' | string
+export type ModelTestMode = 'sequential' | 'concurrent'
+export type ModelTestJobStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'canceled'
+  | string
 
 export interface ModelCapabilities {
   supports_vision: boolean
@@ -11,11 +21,17 @@ export interface Candidate extends ModelCapabilities {
   upstream_id: string
   display_name: string
   kind: ModelKind
+  provider?: ModelProvider
+  channel?: string
+  badge?: string
+  status?: string
+  public_id?: string
+  capabilities?: string[]
 }
 
 export interface Model extends Candidate {
   id: number
-  provider?: string
+  provider?: ModelProvider
   public_id: string
   enabled: boolean
   capability_verified_at?: string
@@ -31,6 +47,50 @@ export interface Model extends Candidate {
 export interface SaveSelection extends Candidate {
   public_id: string
   enabled: boolean
+}
+
+export interface ModelTestCredential {
+  id: number
+  masked: string
+  enabled: boolean
+  auth_invalid?: boolean
+  cooldown_until?: string
+}
+
+export interface ModelTestCredentialsResponse {
+  data: ModelTestCredential[]
+}
+
+export interface ModelTestJobRequest {
+  provider: ModelProvider
+  credential_id?: number
+  model_ids: number[]
+  mode: ModelTestMode
+  concurrency: number
+}
+
+export interface ModelTestResult {
+  model_id: number
+  public_id?: string
+  status: string
+  duration_ms?: number
+  error?: string
+  started_at?: string
+  finished_at?: string
+}
+
+export interface ModelTestJob {
+  id: string | number
+  provider: ModelProvider
+  mode: ModelTestMode
+  status: ModelTestJobStatus
+  total: number
+  completed: number
+  results: ModelTestResult[]
+  error?: string
+  created_at?: string
+  started_at?: string
+  finished_at?: string
 }
 
 export interface ModelPatch {
@@ -54,4 +114,28 @@ export interface CandidatesResponse {
 
 export interface ModelsResponse {
   data: Model[]
+}
+
+export function normalizeProvider(provider?: string): ModelProvider {
+  return provider?.trim().toLowerCase() || 'nvidia'
+}
+
+export function candidatePublicId(candidate: Candidate): string {
+  if (candidate.public_id?.trim()) return candidate.public_id
+  const provider = normalizeProvider(candidate.provider)
+  return provider === 'opencodefree'
+    ? `opencodefree/${candidate.upstream_id}`
+    : candidate.upstream_id
+}
+
+export function candidateSelectionKey(candidate: Candidate): string {
+  return candidatePublicId(candidate)
+}
+
+export function capabilityLabels(model: ModelCapabilities & { capabilities?: string[] }): string[] {
+  const labels = [...(model.capabilities ?? [])]
+  if (model.supports_vision) labels.push('vision')
+  if (model.supports_tools) labels.push('tools')
+  if (model.supports_reasoning) labels.push('reasoning')
+  return [...new Set(labels.map((label) => label.trim()).filter(Boolean))]
 }

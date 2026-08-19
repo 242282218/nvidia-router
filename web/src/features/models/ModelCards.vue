@@ -1,13 +1,32 @@
 <script setup lang="ts">
 import UiBadge from '../../shared/ui/UiBadge.vue'
 import UiButton from '../../shared/ui/UiButton.vue'
-import type { Model } from './types'
+import {
+  candidatePublicId,
+  candidateSelectionKey,
+  capabilityLabels,
+  normalizeProvider,
+} from './types'
+import type { Candidate, Model } from './types'
 
-defineProps<{ models: Model[]; busyId: number | null }>()
+withDefaults(defineProps<{
+  models: Model[]
+  candidates?: Candidate[]
+  busyId: number | null
+  selectedModelIds?: ReadonlySet<number>
+  selectedCandidateKeys?: ReadonlySet<string>
+}>(), {
+  candidates: () => [],
+  selectedModelIds: () => new Set<number>(),
+  selectedCandidateKeys: () => new Set<string>(),
+})
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
   delete: [model: Model]
+  toggleTest: [model: Model, selected: boolean]
+  toggleCandidate: [candidate: Candidate, selected: boolean]
+  test: [model: Model]
 }>()
 
 function audioNeedsVerification(model: Model): boolean {
@@ -15,7 +34,24 @@ function audioNeedsVerification(model: Model): boolean {
 }
 
 function enablingIsBlocked(model: Model): boolean {
-  return !model.enabled && audioNeedsVerification(model)
+  return (!model.enabled && audioNeedsVerification(model))
+    || (normalizeProvider(model.provider) === 'opencodefree' && !model.enabled)
+}
+
+function providerLabel(provider?: string): string {
+  return normalizeProvider(provider) === 'opencodefree' ? 'OpenCodeFree' : 'NVIDIA'
+}
+
+function isPendingProvider(provider?: string): boolean {
+  return normalizeProvider(provider) === 'opencodefree'
+}
+
+function onCandidateChange(candidate: Candidate, event: globalThis.Event): void {
+  emit('toggleCandidate', candidate, (event.target as globalThis.HTMLInputElement).checked)
+}
+
+function onModelTestChange(model: Model, event: globalThis.Event): void {
+  emit('toggleTest', model, (event.target as globalThis.HTMLInputElement).checked)
 }
 </script>
 
@@ -25,28 +61,97 @@ function enablingIsBlocked(model: Model): boolean {
     class="space-y-3 md:hidden"
   >
     <article
+      v-for="candidate in candidates"
+      :key="`candidate-${candidateSelectionKey(candidate)}`"
+      class="card border-dashed p-4"
+    >
+      <div class="flex items-start gap-3">
+        <input
+          :checked="selectedCandidateKeys.has(candidateSelectionKey(candidate))"
+          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+          :data-testid="`candidate-${candidateSelectionKey(candidate)}`"
+          type="checkbox"
+          @change="onCandidateChange(candidate, $event)"
+        >
+        <div class="min-w-0 flex-1">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-sm font-medium text-[var(--color-text)]">
+                {{ candidate.display_name }}
+              </h3>
+              <p class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]">
+                {{ candidatePublicId(candidate) }}
+              </p>
+            </div>
+            <UiBadge
+              class="shrink-0"
+              :variant="isPendingProvider(candidate.provider) ? 'warning' : 'info'"
+              :label="providerLabel(candidate.provider)"
+            />
+          </div>
+          <div class="mt-2 flex flex-wrap gap-1.5 text-xs">
+            <UiBadge
+              variant="info"
+              :label="candidate.kind"
+              :dot="false"
+            />
+            <UiBadge
+              v-for="label in capabilityLabels(candidate)"
+              :key="label"
+              variant="success"
+              :label="label"
+              :dot="false"
+            />
+            <UiBadge
+              v-if="isPendingProvider(candidate.provider)"
+              variant="warning"
+              label="待接入"
+              :dot="false"
+            />
+          </div>
+          <p class="mt-2 text-xs text-[var(--color-text-muted)]">
+            发现候选 · 保存后保持停用，可参与只读测试
+          </p>
+        </div>
+      </div>
+    </article>
+    <article
       v-for="model in models"
       :key="model.id"
       class="card p-4"
     >
       <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <h3 class="text-sm font-medium text-[var(--color-text)]">
-            {{ model.display_name }}
-          </h3>
-          <p class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]">
-            {{ model.public_id }}
-          </p>
+        <div class="flex min-w-0 items-start gap-2">
+          <input
+            :checked="selectedModelIds.has(model.id)"
+            class="mt-0.5 h-4 w-4 shrink-0 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+            :data-testid="`test-model-card-${model.id}`"
+            type="checkbox"
+            @change="onModelTestChange(model, $event)"
+          >
+          <div class="min-w-0">
+            <h3 class="text-sm font-medium text-[var(--color-text)]">
+              {{ model.display_name }}
+            </h3>
+            <p class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]">
+              {{ model.public_id }}
+            </p>
+          </div>
         </div>
         <UiBadge
           class="shrink-0"
-          variant="info"
-          :label="model.kind"
+          :variant="isPendingProvider(model.provider) ? 'warning' : 'info'"
+          :label="providerLabel(model.provider)"
           :dot="false"
         />
       </div>
 
       <div class="mt-3 flex flex-wrap gap-1.5 text-xs">
+        <UiBadge
+          variant="info"
+          :label="model.kind"
+          :dot="false"
+        />
         <UiBadge
           :variant="model.supports_vision ? 'success' : 'muted'"
           :label="`Vision ${model.supports_vision ? '✓' : '—'}`"
@@ -66,9 +171,10 @@ function enablingIsBlocked(model: Model): boolean {
 
       <div class="mt-3 flex items-center justify-between">
         <UiBadge
-          :variant="model.enabled ? 'success' : 'muted'"
-          :label="model.enabled ? '启用' : '停用'"
+          :variant="isPendingProvider(model.provider) ? 'warning' : model.enabled ? 'success' : 'muted'"
+          :label="isPendingProvider(model.provider) ? '待接入' : model.enabled ? '启用' : '停用'"
         />
+        <span class="text-xs text-[var(--color-text-muted)]">勾选后参与{{ isPendingProvider(model.provider) ? ' OpenCodeFree ' : ' NVIDIA ' }}只读测试</span>
       </div>
 
       <p
@@ -105,6 +211,15 @@ function enablingIsBlocked(model: Model): boolean {
       </div>
 
       <div class="mt-4 flex gap-2">
+        <UiButton
+          :data-testid="`test-model-button-card-${model.id}`"
+          variant="ghost"
+          size="sm"
+          :disabled="busyId === model.id"
+          @click="emit('test', model)"
+        >
+          单测
+        </UiButton>
         <UiButton
           data-testid="model-card-toggle"
           variant="secondary"

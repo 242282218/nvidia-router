@@ -58,14 +58,20 @@ func (r *Repository) SaveSelectionsResult(ctx context.Context, selections []Sele
 }
 
 func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now time.Time) (Model, Kind, error) {
+	if selection.Provider == "" {
+		selection.Provider = defaultModelProvider
+	}
 	var previousProvider sql.NullString
 	var previousKind sql.NullString
 	var previousUpdatedAt sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT provider, kind, updated_at FROM models WHERE public_id = ?`, selection.PublicID).Scan(&previousProvider, &previousKind, &previousUpdatedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Model{}, "", fmt.Errorf("load existing model revision %q: %w", selection.PublicID, err)
 	}
-	if err := validateEnabledProvider(previousProvider.String, selection.Enabled); err != nil {
+	if err := validateEnabledProvider(selection.Provider, selection.Enabled); err != nil {
 		return Model{}, "", fmt.Errorf("validate model provider %q: %w", selection.PublicID, err)
+	}
+	if previousProvider.Valid && previousProvider.String != defaultModelProvider && selection.Enabled {
+		return Model{}, "", fmt.Errorf("validate existing model provider %q: %w", selection.PublicID, validateEnabledProvider(previousProvider.String, selection.Enabled))
 	}
 	if previousKind.Valid && Kind(previousKind.String) != selection.Kind {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM nvidia_key_model_blocks WHERE model_id = (SELECT id FROM models WHERE public_id = ?)`, selection.PublicID); err != nil {
@@ -77,15 +83,16 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	createdAt := formatTimestamp(now)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO models (
-			public_id, upstream_id, display_name, kind, enabled,
+			public_id, upstream_id, display_name, kind, provider, enabled,
 			supports_vision, supports_tools, supports_reasoning,
 			reasoning_wire_format, reasoning_levels, reasoning_min_budget, reasoning_max_budget,
 			reasoning_zero_allowed, reasoning_dynamic_allowed, capability_verified_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(public_id) DO UPDATE SET
 			upstream_id = excluded.upstream_id,
 			display_name = excluded.display_name,
 			kind = excluded.kind,
+			provider = excluded.provider,
 			enabled = excluded.enabled,
 			supports_vision = excluded.supports_vision,
 			supports_tools = excluded.supports_tools,
@@ -98,7 +105,7 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 			reasoning_dynamic_allowed = excluded.reasoning_dynamic_allowed,
 			capability_verified_at = excluded.capability_verified_at,
 			updated_at = excluded.updated_at
-	`, selection.PublicID, selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled),
+	`, selection.PublicID, selection.UpstreamID, selection.DisplayName, selection.Kind, selection.Provider, boolInt(selection.Enabled),
 		boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning),
 		selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget,
 		selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed),
@@ -146,6 +153,7 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 	if patch.Provider != nil {
 		provider = *patch.Provider
 	}
+	selection.Provider = provider
 	if model.Kind != selection.Kind {
 		selection.CapabilityVerifiedAt = nil
 		if _, err := tx.ExecContext(ctx, "DELETE FROM nvidia_key_model_blocks WHERE model_id = ?", id); err != nil {
@@ -502,7 +510,7 @@ const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, pro
 type rowScanner interface{ Scan(dest ...any) error }
 
 func selectionFromModel(model Model) Selection {
-	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
+	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Provider: model.Provider, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
 }
 
 func applyPatch(selection *Selection, patch Patch) {
@@ -511,6 +519,9 @@ func applyPatch(selection *Selection, patch Patch) {
 	}
 	if patch.Kind != nil {
 		selection.Kind = *patch.Kind
+	}
+	if patch.Provider != nil {
+		selection.Provider = *patch.Provider
 	}
 	if patch.Enabled != nil {
 		selection.Enabled = *patch.Enabled

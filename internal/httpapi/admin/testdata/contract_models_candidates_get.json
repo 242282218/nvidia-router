@@ -1,18 +1,34 @@
 {
   "data": [
     {
+      "badge": "NVIDIA",
+      "capabilities": [
+        "chat"
+      ],
+      "channel": "nvidia",
       "display_name": "Chat LLM",
       "kind": "chat",
+      "provider": "nvidia",
+      "public_id": "meta/llama-3.3-70b",
       "reasoning_wire_format": "chain_of_thought",
+      "status": "available",
       "supports_reasoning": true,
       "supports_tools": true,
       "supports_vision": true,
       "upstream_id": "meta/llama-3.3-70b"
     },
     {
+      "badge": "NVIDIA",
+      "capabilities": [
+        "embedding"
+      ],
+      "channel": "nvidia",
       "display_name": "Embedding QA",
       "kind": "embedding",
+      "provider": "nvidia",
+      "public_id": "nvidia/embed-qa-4",
       "reasoning_wire_format": "",
+      "status": "available",
       "supports_reasoning": false,
       "supports_tools": false,
       "supports_vision": false,

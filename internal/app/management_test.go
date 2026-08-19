@@ -137,6 +137,105 @@ func TestNVIDIAKeyAndModelManagementApplyPoolStateImmediately(t *testing.T) {
 	assertPoolAcquireFails(t, app, modelID)
 }
 
+func TestOpenCodeFreeDiscoveryAndReadOnlyTestJobAreWired(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/models":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"data":[{"id":"model-free"}]}`)
+		case "/v1/chat/completions":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"ok"}}]}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	baseURL, err := url.Parse(upstream.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	application, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			InitialAdminPassword: testInitialAdminPassword,
+			DataDir:              t.TempDir(),
+			TempDir:              t.TempDir(),
+			MasterKey:            [32]byte{1},
+			OpenCodeFreeBaseURL:  baseURL,
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	if _, err := application.db.Exec(`UPDATE admins SET must_change_password = 0 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("login: %s", readResponse(t, login))
+	}
+	session := responseSessionCookie(t, login)
+	_ = login.Body.Close()
+
+	candidates := authRequest(t, server.Client(), http.MethodGet, server.URL+"/admin/api/models/candidates", "", session, "")
+	if candidates.StatusCode != http.StatusOK {
+		t.Fatalf("candidates status=%d body=%s", candidates.StatusCode, readResponse(t, candidates))
+	}
+	if body := readResponse(t, candidates); !strings.Contains(body, `"public_id":"opencodefree/model-free"`) {
+		t.Fatalf("OpenCodeFree candidate missing: %s", body)
+	}
+
+	now := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	result, err := application.db.Exec(`INSERT INTO models(public_id,upstream_id,display_name,kind,provider,enabled,reasoning_wire_format,created_at,updated_at) VALUES(?,?,?,?,?,0,'none',?,?)`, "opencodefree/model-free", "model-free", "Model Free", "chat", "opencodefree", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/model-test-jobs", `{"provider":"opencodefree","model_ids":[`+itoa(modelID)+`],"mode":"sequential","concurrency":1}`, session, server.URL)
+	if created.StatusCode != http.StatusAccepted {
+		t.Fatalf("test job status=%d body=%s", created.StatusCode, readResponse(t, created))
+	}
+	var job struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&job); err != nil {
+		t.Fatal(err)
+	}
+	_ = created.Body.Close()
+	if job.ID == "" {
+		t.Fatal("test job response has no id")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := authRequest(t, server.Client(), http.MethodGet, server.URL+"/admin/api/model-test-jobs/"+job.ID, "", session, "")
+		var current struct {
+			Status  string `json:"status"`
+			Results []struct {
+				Status string `json:"status"`
+			} `json:"results"`
+		}
+		if err := json.NewDecoder(status.Body).Decode(&current); err != nil {
+			_ = status.Body.Close()
+			t.Fatal(err)
+		}
+		_ = status.Body.Close()
+		if len(current.Results) == 1 && current.Results[0].Status == "success" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("OpenCodeFree read-only test job did not complete successfully")
+}
+
 func assertPoolAcquireFails(t *testing.T, app *App, modelID int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

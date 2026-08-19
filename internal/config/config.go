@@ -19,10 +19,11 @@ const (
 )
 
 const (
-	defaultListenAddress = "0.0.0.0:3756"
-	defaultDataDir       = "/data"
-	defaultTempDir       = "/tmp"
-	defaultNVIDIABaseURL = "https://integrate.api.nvidia.com"
+	defaultListenAddress         = "0.0.0.0:3756"
+	defaultDataDir               = "/data"
+	defaultTempDir               = "/tmp"
+	defaultNVIDIABaseURL         = "https://integrate.api.nvidia.com"
+	maxOpenCodeFreeAuthKeyLength = 4096
 )
 
 type Config struct {
@@ -38,6 +39,8 @@ type Config struct {
 	AdminExternalOrigin    *url.URL
 	TrustedProxyCIDRs      []*net.IPNet
 	NVIDIABaseURL          *url.URL
+	OpenCodeFreeBaseURL    *url.URL
+	OpenCodeFreeAuthKey    string
 	XKProxyURL             *url.URL
 	XKProxyAuthKey         string
 	// XKPool enables the absorbed Xingkong collector when the XApi URL is set.
@@ -109,6 +112,14 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load NVIDIA base URL: %w", err)
 	}
+	opencodefreeBaseURL, err := loadOptionalUpstreamURL("NVIDIA_ROUTER_OPENCODEFREE_BASE_URL")
+	if err != nil {
+		return Config{}, err
+	}
+	opencodefreeAuthKey := strings.TrimSpace(os.Getenv("NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY"))
+	if len([]byte(opencodefreeAuthKey)) > maxOpenCodeFreeAuthKeyLength {
+		return Config{}, errors.New("NVIDIA_ROUTER_OPENCODEFREE_AUTH_KEY is too long")
+	}
 	var xkProxyURL *url.URL
 	var xkProxyAuthKey string
 	xkPool, err := loadXKPoolConfig()
@@ -135,10 +146,27 @@ func LoadFromEnv(opts LoadOptions) (Config, error) {
 		AdminExternalOrigin:    externalOrigin,
 		TrustedProxyCIDRs:      trustedProxyCIDRs,
 		NVIDIABaseURL:          nvidiaBaseURL,
+		OpenCodeFreeBaseURL:    opencodefreeBaseURL,
+		OpenCodeFreeAuthKey:    opencodefreeAuthKey,
 		XKProxyURL:             xkProxyURL,
 		XKProxyAuthKey:         xkProxyAuthKey,
 		XKPool:                 xkPool,
 	}, nil
+}
+
+func loadOptionalUpstreamURL(name string) (*url.URL, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: invalid URL", name)
+	}
+	if parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("%s: must be an absolute HTTP or HTTPS URL without credentials, query, or fragment", name)
+	}
+	return parsed, nil
 }
 
 func loadBool(name string, defaultValue bool) (bool, error) {

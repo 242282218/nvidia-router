@@ -11,7 +11,6 @@ compose() {
       -f docker-compose.yml -f docker-compose.public.yml "$@"
 }
 
-compose_config=""
 app_stopped=0
 previous_image=""
 require_ready=0
@@ -92,9 +91,6 @@ recover_on_exit() {
       echo "error: failed to restore the running app automatically" >&2
     fi
   fi
-  if [[ -n "$compose_config" ]]; then
-    rm -f -- "$compose_config"
-  fi
   exit "$status"
 }
 
@@ -106,10 +102,7 @@ if [[ ! -f .env ]]; then
 fi
 
 echo "==> validate Compose configuration"
-compose_config="$(mktemp "${TMPDIR:-/tmp}/nvidia-router-compose.XXXXXX.json")"
-env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME docker compose \
-  --project-directory "$PWD" -p nvidia-router \
-  -f docker-compose.yml -f docker-compose.public.yml config --format json >"$compose_config"
+compose config --quiet
 
 echo "==> verify image $NVIDIA_ROUTER_IMAGE"
 if ! docker image inspect "$NVIDIA_ROUTER_IMAGE" >/dev/null 2>&1; then

@@ -12,11 +12,22 @@ var (
 	ErrCapabilityUnsupported = errors.New("model capability is not supported")
 	ErrCapabilityUnverified  = errors.New("model capability is not verified")
 	ErrManualTestRequired    = errors.New("successful manual test is required")
+	ErrNVIDIAKeyRequired     = errors.New("an NVIDIA key is required")
+	ErrProviderMismatch      = errors.New("model provider does not match the selected test channel")
+	ErrProviderNotRoutable   = errors.New("model provider is not routable")
+	ErrProviderNotConfigured = errors.New("model provider is not configured")
 )
 
 func normalizeSelection(selection Selection) (Selection, error) {
 	if strings.TrimSpace(selection.PublicID) == "" || strings.TrimSpace(selection.UpstreamID) == "" || strings.TrimSpace(selection.DisplayName) == "" {
 		return Selection{}, errors.New("model IDs and display name are required")
+	}
+	selection.Provider = strings.TrimSpace(selection.Provider)
+	if selection.Provider == "" {
+		selection.Provider = defaultModelProvider
+	}
+	if err := validateEnabledProvider(selection.Provider, selection.Enabled); err != nil {
+		return Selection{}, err
 	}
 	if !validKind(selection.Kind) {
 		return Selection{}, fmt.Errorf("unsupported model kind %q", selection.Kind)

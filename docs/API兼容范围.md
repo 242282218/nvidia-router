@@ -1,6 +1,6 @@
 # API 兼容范围
 
-本文记录当前第一轮实现的 OpenAI-compatible API 边界。兼容性表示路由器当前代码能够接受、校验、转换并转发的范围，不代表 NVIDIA 账户对每个模型、endpoint 或参数都一定有权限。所有请求仍受管理员维护的全局模型白名单和 NVIDIA 上游能力限制。
+本文记录当前第一轮实现的 OpenAI-compatible API 边界。兼容性表示路由器当前代码能够接受、校验、转换并转发的范围，不代表 NVIDIA 账户对每个模型、endpoint 或参数都一定有权限。所有请求仍受管理员维护的全局模型白名单和 NVIDIA 上游能力限制。OpenCodeFree 目前只接入管理端候选发现和只读测试，不属于生产调用 provider。
 
 ## 状态定义
 
@@ -101,6 +101,8 @@ Audio 不能仅凭 `/v1/models` 列表、模型名称或 Mock 测试启用。只
 4. 成功请求完成后，使用真实成功时间设置对应模型的 `capability_verified_at`，随后才允许启用 ASR/TTS 模型。
 
 Audio 验证由管理 API 受审计完成：`POST /admin/api/models/<id>/test`，兼容别名为 `/admin/api/models/<id>/verify`。请求体严格为 `{"key_id": <positive integer>}`；未知字段（包括 `verified_at` 和 `capability_verified_at`）返回 `400 invalid_request`。服务端使用对应加密 NVIDIA Key 真实调用模型 endpoint，成功后生成 UTC `capability_verified_at`，并在事务中清除该 Key 与模型的 block；失败不写入时间、不清 block，调用者不能提交验证时间。
+
+模型白名单管理端支持配置 OpenCodeFree 网关的候选发现，以及按单渠道执行顺序、并发或单模型只读测试。OpenCodeFree 模型保存为停用项，不会进入 `/v1/models` 或任何生产解析路径；该功能不等同于 OpenCodeFree 生产调用支持。
 
 ASR/TTS 在验证时间为空时不能启用。验证成功后仍必须显式 `PATCH /admin/api/models/<id>`，提交 `{"enabled":true}`；验证接口不会自动启用模型。没有真实模型、endpoint、权限或音频素材时，Audio case 应明确记为 `SKIP`，`SKIP` 不是 `PASS`。
 
