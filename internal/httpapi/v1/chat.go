@@ -201,7 +201,31 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
-
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if msg == "" {
+			msg = fmt.Sprintf("OpenCodeFree upstream returned HTTP %d", response.StatusCode)
+		} else if len(msg) > 512 {
+			msg = msg[:512]
+		}
+		if response.StatusCode == http.StatusNotFound {
+			writeChatError(writer, &apierror.Error{
+				Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_model_not_found",
+				Message: msg,
+			})
+			return
+		}
+		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusGatewayTimeout {
+			writeChatError(writer, fault.New(response.StatusCode, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
+			return
+		}
+		writeChatError(writer, &apierror.Error{
+			Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_error",
+			Message: msg,
+		})
+		return
+	}
 	if stream {
 		// No Attempt budget exists on this path, so primeSSE's idle wrapper would
 		// get a zero window and tear the stream down immediately. Instead the
@@ -212,6 +236,14 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 	}
 	validated, err := nvidia.ValidateNonstreamChat(response)
 	if err != nil {
+		if errors.Is(err, nvidia.ErrEmptyResponse) {
+			writeChatError(writer, fault.EmptyResponse(err))
+			return
+		}
+		if errors.Is(err, nvidia.ErrProtocol) {
+			writeChatError(writer, fault.Protocol(err))
+			return
+		}
 		writeChatError(writer, err)
 		return
 	}
