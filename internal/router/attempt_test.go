@@ -288,6 +288,28 @@ func TestAttemptNon200StateWriteFailurePropagates(t *testing.T) {
 	lease.Release()
 }
 
+func TestAttemptDoesNotRetryWrittenFirstByteTimeout(t *testing.T) {
+	settings := &countingProvider{snapshot: attemptSettings()}
+	keyPool := newAttemptPool(settings, 1, 2)
+	attempt := NewAttempt(settings, keyPool, testSecrets{}, newAttemptStateWriter(time.Now()), keyPool, clock.RealClock{})
+	var calls int
+
+	_, err := attempt.Run(context.Background(), 1, false, func(context.Context, int64, []byte, *CommitState) (*http.Response, error) {
+		calls++
+		return nil, fmt.Errorf("proxy path: %w", fault.ErrFirstByteTimeout)
+	})
+	var classified fault.Fault
+	if !errors.As(err, &classified) {
+		t.Fatalf("Run error = %T %v, want timeout fault", err, err)
+	}
+	if classified.PublicCode != "upstream_timeout" || classified.Retryable {
+		t.Fatalf("fault = %+v, want non-retryable upstream_timeout", classified)
+	}
+	if calls != 1 {
+		t.Fatalf("execute calls = %d, want 1 (pre-commit timeout must not fan out)", calls)
+	}
+}
+
 func TestAttemptCommittedErrorDoesNotTryAnotherKey(t *testing.T) {
 	settings := &countingProvider{snapshot: attemptSettings()}
 	keyPool := newAttemptPool(settings, 1, 2)

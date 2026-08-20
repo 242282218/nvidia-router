@@ -20,8 +20,9 @@ const (
 type ReasoningWireFormat string
 
 const (
-	ReasoningWireNone   ReasoningWireFormat = "none"
-	ReasoningWireOpenAI ReasoningWireFormat = "openai"
+	ReasoningWireNone     ReasoningWireFormat = "none"
+	ReasoningWireOpenAI   ReasoningWireFormat = "openai"
+	ReasoningWireThinking ReasoningWireFormat = "thinking"
 )
 
 type Endpoint struct {
@@ -141,12 +142,22 @@ func reasoningHints() map[string]CapabilityHint {
 		"openai/o3-mini",
 		"openai/o4-mini",
 	}
-	hints := make(map[string]CapabilityHint, len(models))
+	hints := make(map[string]CapabilityHint, len(models)+2)
 	for _, model := range models {
 		hints[model] = CapabilityHint{
 			Kind:                KindChat,
 			SupportsReasoning:   true,
 			ReasoningWireFormat: ReasoningWireOpenAI,
+		}
+	}
+	for _, model := range []string{
+		"nvidia/nemotron-3-ultra-550b-a55b",
+		"stepfun-ai/step-3.7-flash",
+	} {
+		hints[model] = CapabilityHint{
+			Kind:                KindChat,
+			SupportsReasoning:   true,
+			ReasoningWireFormat: ReasoningWireThinking,
 		}
 	}
 	return hints
@@ -246,9 +257,9 @@ func validateHint(hint CapabilityHint) error {
 		if hint.SupportsReasoning {
 			return errors.New("reasoning models require a wire format")
 		}
-	case ReasoningWireOpenAI:
+	case ReasoningWireOpenAI, ReasoningWireThinking:
 		if !hint.SupportsReasoning {
-			return errors.New("OpenAI reasoning wire format requires reasoning support")
+			return errors.New("reasoning wire format requires reasoning support")
 		}
 	default:
 		return fmt.Errorf("unsupported reasoning wire format %q", hint.ReasoningWireFormat)

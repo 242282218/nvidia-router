@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -135,8 +136,7 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	_, _ = io.Copy(writer, result.Response.Body)
 }
 
-func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
-	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
 		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {
@@ -172,6 +172,16 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 		}
 		if present, chars := observability.ReasoningContentFromBody(validated.Body); present {
 			observability.SetReasoningResponse(ctx, present, chars)
+			// Protocol-valid but useless to the caller: reasoning ate the whole
+			// completion allowance and the answer came back empty. Nothing else in
+			// the pipeline flags it, so surface it here rather than let an empty
+			// string pass for a successful response.
+			if observability.ReasoningStarvedFromBody(validated.Body) {
+				slog.Warn("reasoning_starved_response",
+					"model", upstreamModelFromBody(body),
+					"reasoning_chars", chars,
+				)
+			}
 		}
 		markResponseComplete(response)
 		_ = response.Body.Close()
@@ -197,11 +207,11 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		})
 		return
 	}
-	// The gateway occasionally answers 502/503/504 on a transient upstream blip
+	// The gateway occasionally answers a transient 5xx/436 status on an upstream blip
 	// (observed in round-2 stability runs). Non-stream requests retry once after
 	// a short pause; streams never retry because headers may already be written.
 	for attempt := 0; ; attempt++ {
-		retryable := h.openCodeFreeOnce(writer, request, body, stream)
+		retryable := h.openCodeFreeOnce(writer, request, body, stream, attempt == 0)
 		if !retryable || attempt >= 1 || stream {
 			return
 		}
@@ -213,7 +223,7 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 	}
 }
 
-func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Request, body []byte, stream bool) (retryable bool) {
+func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Request, body []byte, stream, allowRetry bool) (retryable bool) {
 	ctx, cancel := context.WithTimeout(nvidia.WithForwardedHeaders(request.Context(), request.Header), openCodeFreeRequestTimeout)
 	defer cancel()
 	response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
@@ -237,14 +247,19 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 			})
 			return false
 		}
-		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusGatewayTimeout {
-			// 502/503/504 are transient; the non-stream caller retries once. 429 is
-			// the gateway's own concurrency limit — retrying would only add load —
-			// and a streamed response can never be retried, so both surface the
-			// error immediately.
-			retryable = !stream && response.StatusCode != http.StatusTooManyRequests
+		if response.StatusCode == http.StatusTooManyRequests || isOpenCodeFreeTransientStatus(response.StatusCode) {
+			// 5xx and the gateway's non-standard 436 are transient; the non-stream
+			// caller retries once. 429 is the gateway's own concurrency limit, so
+			// replaying would add load instead of relieving it. A retryable status is
+			// still written on the final attempt; otherwise net/http would turn the
+			// unwritten response into a misleading empty 200.
+			retryable = allowRetry && !stream && response.StatusCode != http.StatusTooManyRequests
 			if !retryable {
-				writeChatError(writer, fault.New(response.StatusCode, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
+				status := response.StatusCode
+				if status == 436 {
+					status = http.StatusBadGateway
+				}
+				writeChatError(writer, fault.New(status, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
 			}
 			return retryable
 		}
@@ -266,9 +281,9 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 	if err != nil {
 		if errors.Is(err, nvidia.ErrEmptyResponse) || errors.Is(err, nvidia.ErrProtocol) {
 			// A 200 response with an empty or malformed body can be a transient
-			// gateway/upstream blip. Retry non-stream requests before surfacing it;
+			// gateway/upstream blip. Retry once before surfacing the protocol error;
 			// streams cannot be replayed after headers may have been sent.
-			if !stream {
+			if allowRetry {
 				return true
 			}
 		}
@@ -292,6 +307,15 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 	writer.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(writer, response.Body)
 	return false
+}
+
+func isOpenCodeFreeTransientStatus(status int) bool {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529, 436:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
@@ -430,6 +454,19 @@ func applyModelTimeouts(ctx context.Context, model modelcatalog.Model) context.C
 	return runtimeconfig.WithModelTimeouts(ctx, hints)
 }
 
+// upstreamModelFromBody reads the model ID out of an already-marshaled upstream
+// request body. It runs only on the rare starved-response path, so the extra
+// parse never touches the hot path.
+func upstreamModelFromBody(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	return payload.Model
+}
+
 func modelError(err error) error {
 	if errors.Is(err, modelcatalog.ErrModelNotFound) {
 		return &apierror.Error{
@@ -513,7 +550,7 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 	if data == "[DONE]" {
 		return false, sse.ErrNoSemanticData
 	}
-	
+
 	// Fast path: check if the data contains any reasoning-related fields before
 	// full JSON parsing. This avoids expensive unmarshaling for most chunks that
 	// only contain content deltas.
@@ -522,7 +559,7 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 		bytes.Contains(dataBytes, []byte(`"reasoning"`)) ||
 		bytes.Contains(dataBytes, []byte(`"thinking"`)) ||
 		bytes.Contains(dataBytes, []byte(`"tool_calls"`))
-	
+
 	// If no reasoning fields are present, we only need to check for content
 	if !hasReasoningFields {
 		// Quick check for non-empty content field
@@ -531,7 +568,7 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 		}
 		return false, nil
 	}
-	
+
 	// Slow path: full JSON parsing when reasoning fields are present
 	var chunk struct {
 		Choices []struct {

@@ -25,6 +25,14 @@ var credentialErrorValues = map[string]struct{}{
 	"account_deactivated":  {},
 }
 
+// ErrFirstByteTimeout marks a request that was written to the upstream path but
+// never produced response headers before the pre-commit window ended.
+// Replaying such a request across every key is especially harmful for
+// model-wide slowdowns: each attempt burns the full first-byte window while the
+// client waits for a response that cannot arrive. Connection failures before a
+// request is written keep the normal retry path.
+var ErrFirstByteTimeout = errors.New("upstream first-byte timeout")
+
 func Classify(response *http.Response, requestErr error, modelsRequest bool, now time.Time) Fault {
 	if requestErr != nil {
 		return classifyRequestError(requestErr)
@@ -95,6 +103,9 @@ func classifyRequestError(err error) Fault {
 			HTTPStatus: 499, Scope: ScopeRequest, PublicType: "invalid_request_error",
 			PublicCode: "request_canceled", PublicMessage: "The request was canceled.", Cause: err,
 		}
+	}
+	if errors.Is(err, ErrFirstByteTimeout) {
+		return upstreamFault(http.StatusGatewayTimeout, false, "upstream_timeout", "The upstream request timed out before returning a client-visible response.", err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
 		return upstreamFault(http.StatusGatewayTimeout, true, "upstream_timeout", "The upstream request timed out.", err)

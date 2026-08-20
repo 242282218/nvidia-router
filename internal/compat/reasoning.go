@@ -63,7 +63,16 @@ type ReasoningProfile struct {
 	ZeroAllowed    bool
 	DynamicAllowed bool
 	WireFormat     string
+	// AdvisoryLevels marks upstreams that accept an effort string but do not act
+	// on its magnitude. Every enabled level then means the same thing, so the
+	// wire value is normalised to one standard level and only on/off is honest.
+	AdvisoryLevels bool
 }
+
+// advisoryOnLevel is the single standard effort sent to advisory upstreams when
+// reasoning is on. It must stay a value the OpenAI-compatible surface accepts —
+// "auto" is not one, so it cannot be used here.
+const advisoryOnLevel = ReasoningHigh
 
 type ReasoningDecision struct {
 	Requested       bool
@@ -165,11 +174,16 @@ func ApplyReasoning(fields map[string]json.RawMessage, decision ReasoningDecisio
 	}
 	wireFormat := strings.ToLower(profile.WireFormat)
 	preserveNativeThinking := decision.Source == "thinking" && (wireFormat == "" || wireFormat == "openai" || wireFormat == "thinking")
+	// The thinking budget is billed against the same completion allowance as the
+	// answer, so an unreconciled budget starves the content: upstreams happily
+	// spend every token on reasoning and return an empty message with
+	// finish_reason=length. Cap it before it reaches the wire.
+	budget := capThinkingBudget(decision.EffectiveBudget, outputTokenLimit(fields))
 	for _, name := range []string{"reasoning_effort", "reasoning", "thinking"} {
 		delete(fields, name)
 	}
 	if preserveNativeThinking {
-		encoded, err := marshalThinking(decision)
+		encoded, err := marshalThinking(decision, budget)
 		if err != nil {
 			return fmt.Errorf("marshal native thinking: %w", err)
 		}
@@ -178,13 +192,17 @@ func ApplyReasoning(fields map[string]json.RawMessage, decision ReasoningDecisio
 	}
 	switch wireFormat {
 	case "", "openai":
-		encoded, err := json.Marshal(string(decision.EffectiveLevel))
+		level := decision.EffectiveLevel
+		if profile.AdvisoryLevels && level != ReasoningNone {
+			level = advisoryOnLevel
+		}
+		encoded, err := json.Marshal(string(level))
 		if err != nil {
 			return fmt.Errorf("marshal reasoning effort: %w", err)
 		}
 		fields["reasoning_effort"] = encoded
 	case "thinking":
-		encoded, err := marshalThinking(decision)
+		encoded, err := marshalThinking(decision, budget)
 		if err != nil {
 			return fmt.Errorf("marshal thinking: %w", err)
 		}
@@ -197,14 +215,52 @@ func ApplyReasoning(fields map[string]json.RawMessage, decision ReasoningDecisio
 	return nil
 }
 
-func marshalThinking(decision ReasoningDecision) ([]byte, error) {
+// thinkingBudgetNumerator/Denominator bound the share of the completion
+// allowance reasoning may consume, leaving the remainder for the answer.
+const (
+	thinkingBudgetNumerator   = 3
+	thinkingBudgetDenominator = 4
+)
+
+// outputTokenLimit reports the completion allowance the client asked for, or 0
+// when it left the limit to the upstream default.
+func outputTokenLimit(fields map[string]json.RawMessage) int {
+	for _, name := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		raw, ok := fields[name]
+		if !ok {
+			continue
+		}
+		var value *int
+		if json.Unmarshal(raw, &value) != nil || value == nil || *value <= 0 {
+			continue
+		}
+		return *value
+	}
+	return 0
+}
+
+// capThinkingBudget keeps the reasoning budget inside the completion allowance.
+// A negative budget means "let the upstream decide" and stays untouched, as does
+// every budget when the client set no limit of its own.
+func capThinkingBudget(budget, limit int) int {
+	if budget <= 0 || limit <= 0 {
+		return budget
+	}
+	allowed := limit * thinkingBudgetNumerator / thinkingBudgetDenominator
+	if allowed <= 0 || budget <= allowed {
+		return budget
+	}
+	return allowed
+}
+
+func marshalThinking(decision ReasoningDecision, budget int) ([]byte, error) {
 	thinking := map[string]any{}
 	if decision.EffectiveLevel == ReasoningNone {
 		thinking["type"] = "disabled"
 	} else {
 		thinking["type"] = "enabled"
-		if decision.EffectiveBudget >= 0 {
-			thinking["budget_tokens"] = decision.EffectiveBudget
+		if budget >= 0 {
+			thinking["budget_tokens"] = budget
 		}
 	}
 	return json.Marshal(thinking)

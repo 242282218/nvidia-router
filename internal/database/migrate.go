@@ -34,7 +34,8 @@ type migration struct {
 
 // verifyMigrationsCache memoizes the embedded migration ledger: the embed FS is
 // immutable for the process lifetime, but /health/ready re-verifies migrations
-// on every probe, so re-reading and re-hashing 36 files per probe is wasted work.
+// on every probe, so re-reading and re-hashing the migration files per probe is
+// wasted work.
 var (
 	verifyMigrationsCacheOnce sync.Once
 	verifyMigrationsCacheList []migration

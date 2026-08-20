@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"nvidia-router/internal/fault"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/xkproxy"
 )
@@ -175,6 +176,27 @@ func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 		t.Fatalf("Acquire after deadline: %v", err)
 	}
 	handle.Release()
+}
+
+func TestClientMarksWrittenFirstByteTimeoutNonRetryable(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = io.WriteString(writer, `{"choices":[{}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newConnectProxy(t)
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
+	descriptor := DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = client.Chat(context.Background(), runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 20, FirstByteDeadline: time.Now().Add(20 * time.Millisecond)}, "same-key", []byte(`{"model":"vendor/model"}`), false)
+	if err == nil || !errors.Is(err, fault.ErrFirstByteTimeout) {
+		t.Fatalf("Chat error = %v, want ErrFirstByteTimeout", err)
+	}
 }
 
 func TestClientReusesProxyTransportAcrossSequentialResponses(t *testing.T) {

@@ -71,6 +71,15 @@ func TestDescriptorCapabilityHintsAreConservative(t *testing.T) {
 			t.Fatalf("hint for %s = %#v", modelID, hint)
 		}
 	}
+	for _, modelID := range []string{
+		"nvidia/nemotron-3-ultra-550b-a55b",
+		"stepfun-ai/step-3.7-flash",
+	} {
+		hint := descriptor.CapabilityHint(modelID)
+		if hint.Kind != KindChat || !hint.SupportsReasoning || hint.ReasoningWireFormat != ReasoningWireThinking {
+			t.Fatalf("native thinking hint for %s = %#v", modelID, hint)
+		}
+	}
 }
 
 func TestDescriptorWithBaseURLRewritesEveryEndpoint(t *testing.T) {

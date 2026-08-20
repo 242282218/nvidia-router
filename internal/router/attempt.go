@@ -114,12 +114,12 @@ func NewAttempt(
 		source = clock.RealClock{}
 	}
 	attempt := &Attempt{
-		settings:     settings,
-		keyPool:      keyPool,
-		secrets:      secrets,
-		states:       states,
-		stateSync:    stateSync,
-		clock:        source,
+		settings:      settings,
+		keyPool:       keyPool,
+		secrets:       secrets,
+		states:        states,
+		stateSync:     stateSync,
+		clock:         source,
 		failoverCache: make(map[string]fault.FailoverMatcher),
 	}
 	if len(latencyObservers) > 0 {
@@ -190,8 +190,10 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 		// The first-byte budget starts once a lease is acquired; queue time is
 		// bounded separately by the pool's queue-wait setting (queue_timeout).
 		attemptStarted := a.clock.Now()
-		executeCtx := withBudget(requestCtx, budget.forAttempt(a.clock.Now()))
+		attemptBudget := budget.forAttempt(a.clock.Now())
+		executeCtx, cancelAttempt := a.executeContext(requestCtx, attemptBudget, stream)
 		response, commit, currentFault, err := a.executeLease(executeCtx, requestCtx, modelID, lease, execute)
+		cancelAttempt()
 		if err != nil {
 			return AttemptResult{}, err
 		}
@@ -247,6 +249,13 @@ func (a *Attempt) Run(ctx context.Context, modelID int64, stream bool, execute E
 // on credential policy), and the matcher only ever adds status codes the
 // operator explicitly whitelisted for failover.
 func shouldRetry(currentFault *fault.Fault, matcher fault.FailoverMatcher) bool {
+	// A request that was already written and then timed out before a
+	// client-visible response is a model/target latency signal, not a key fault.
+	// Do not let the operator's broad 504 failover matcher turn it back into a
+	// fan-out retry; connection failures before write use the normal path.
+	if errors.Is(currentFault, fault.ErrFirstByteTimeout) {
+		return false
+	}
 	if currentFault.Retryable {
 		return true
 	}
@@ -295,6 +304,21 @@ func (a *Attempt) requestContext(ctx context.Context, budget Budget) (context.Co
 	return context.WithDeadline(ctx, budget.totalDeadline)
 }
 
+func (a *Attempt) executeContext(ctx context.Context, budget Budget, stream bool) (context.Context, context.CancelFunc) {
+	if stream {
+		// A committed stream must outlive the pre-commit retry window. Its first
+		// token deadline is enforced by primeSSE; its body is governed by the idle
+		// timeout and the client context instead.
+		return withBudget(ctx, budget), func() {}
+	}
+	deadline := budget.preCommitDeadline()
+	if deadline.IsZero() {
+		return withBudget(ctx, budget), func() {}
+	}
+	attemptCtx, cancel := context.WithDeadline(ctx, deadline)
+	return withBudget(attemptCtx, budget), cancel
+}
+
 func (a *Attempt) acquire(
 	ctx context.Context,
 	settings runtimeconfig.Snapshot,
@@ -305,16 +329,13 @@ func (a *Attempt) acquire(
 	if len(attempted) > 0 {
 		ctx = pool.WithNoAttemptedRelaxation(ctx)
 	}
-	// A stream carries no total deadline on its request context, so without an
-	// explicit bound here its queue wait would run for the whole pool queue-wait
-	// window even when the operator sets queue_wait_timeout_ms above the retry
-	// budget. Clamp the acquire context to the retry deadline: the queue is part
-	// of the pre-commit phase, and the loop's own retryDeadline check is
-	// unreachable while the request is parked in the queue.
-	if stream {
-		if budget, ok := BudgetFromContext(ctx); ok && !budget.retryDeadline.IsZero() {
+	// Acquire is part of the pre-commit phase for both request types. Clamp it
+	// to the retry/total deadline so a queue wait cannot consume the whole
+	// request after the retry window has already expired.
+	if budget, ok := BudgetFromContext(ctx); ok {
+		if deadline := budget.preCommitDeadline(); !deadline.IsZero() {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, budget.retryDeadline)
+			ctx, cancel = context.WithDeadline(ctx, deadline)
 			defer cancel()
 		}
 	}

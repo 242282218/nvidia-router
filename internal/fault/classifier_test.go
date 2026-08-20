@@ -71,6 +71,7 @@ func TestClassifierNetworkErrors(t *testing.T) {
 		code      string
 	}{
 		{name: "deadline", err: context.DeadlineExceeded, retryable: true, code: "upstream_timeout"},
+		{name: "written first-byte timeout", err: ErrFirstByteTimeout, retryable: false, code: "upstream_timeout"},
 		{name: "reset", err: &url.Error{Op: "Post", URL: "https://example.invalid", Err: syscall.ECONNRESET}, retryable: true, code: "upstream_connection_error"},
 		{name: "DNS", err: &net.DNSError{Err: "temporary DNS failure", Name: "example.invalid", IsTemporary: true}, retryable: true, code: "upstream_connection_error"},
 		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, retryable: true, code: "upstream_connection_error"},

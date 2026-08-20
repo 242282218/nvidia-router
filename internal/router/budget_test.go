@@ -71,7 +71,7 @@ func TestBudgetStreamTimeoutFallsBackToDocumentedDefaultsWhenUnset(t *testing.T)
 // budget accessor.
 func TestBudgetNonStreamFirstTokenDeadlineFallsBackToFirstByte(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	budget := newBudget(runtimeconfig.Snapshot{FirstByteTimeoutMS: 2000}, now, false)
+	budget := newBudget(runtimeconfig.Snapshot{FirstByteTimeoutMS: 2000, NonstreamTotalTimeoutMS: 5000}, now, false)
 	attempt := budget.forAttempt(now)
 	if got := attempt.FirstTokenDeadline(); !got.Equal(attempt.FirstByteDeadline()) {
 		t.Fatalf("non-stream FirstTokenDeadline = %v, want %v", got, attempt.FirstByteDeadline())
@@ -110,5 +110,30 @@ func TestBudgetFallsBackTo1sFloorWhenUnset(t *testing.T) {
 	}
 	if shortBudget.totalDeadline != now.Add(short) {
 		t.Fatalf("totalDeadline = %s, want %s for explicit small value", shortBudget.totalDeadline, now.Add(short))
+	}
+}
+
+func TestBudgetClampsAttemptDeadlinesToPreCommitBudget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	budget := newBudget(runtimeconfig.Snapshot{
+		FirstByteTimeoutMS:        5000,
+		NonstreamTotalTimeoutMS:   10000,
+		RetryBudgetMS:             2000,
+		StreamFirstTokenTimeoutMS: 5000,
+	}, now, false)
+	attempt := budget.forAttempt(now)
+	want := now.Add(2 * time.Second)
+	if !attempt.FirstByteDeadline().Equal(want) {
+		t.Fatalf("FirstByteDeadline = %v, want retry deadline %v", attempt.FirstByteDeadline(), want)
+	}
+
+	streamBudget := newBudget(runtimeconfig.Snapshot{
+		FirstByteTimeoutMS:        5000,
+		RetryBudgetMS:             2000,
+		StreamFirstTokenTimeoutMS: 5000,
+	}, now, true)
+	streamAttempt := streamBudget.forAttempt(now)
+	if !streamAttempt.FirstTokenDeadline().Equal(want) {
+		t.Fatalf("FirstTokenDeadline = %v, want retry deadline %v", streamAttempt.FirstTokenDeadline(), want)
 	}
 }

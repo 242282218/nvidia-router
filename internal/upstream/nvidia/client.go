@@ -28,6 +28,12 @@ import (
 
 const maxErrorBodyBytes = 8 << 10
 
+// proxyAcquireWaitBudget covers the collector's short empty-pool window. A
+// request should wait for a freshly published exit instead of failing in a few
+// milliseconds while the health gauge still reflects the previous pool, but a
+// dead exit must still return promptly so the router can switch keys.
+const proxyAcquireWaitBudget = 10 * time.Second
+
 // xkStickySessionHeader is the outer-CONNECT session header the pool reads to bind
 // every request of one NVIDIA key to the same exit IP. The pool strips it before it
 // can reach the target, and the TLS layer keeps it out of the NVIDIA request headers.
@@ -418,7 +424,13 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	if keyID, ok := stickySessionFrom(ctx); ok {
 		session = c.stickySessionLabelFor(keyID)
 	}
-	handle, err := c.proxy.Acquire(ctx, snapshot, session)
+	acquireCtx := ctx
+	cancelAcquire := func() {}
+	if !snapshot.FirstByteDeadline.IsZero() {
+		acquireCtx, cancelAcquire = context.WithDeadline(ctx, snapshot.FirstByteDeadline)
+	}
+	handle, err := xkproxy.AcquireWithWait(acquireCtx, c.proxy, snapshot, session, proxyAcquireWaitBudget)
+	cancelAcquire()
 	if err != nil {
 		return nil, false, false, err
 	}
@@ -492,10 +504,12 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	if err == nil {
 		err = errors.New("NVIDIA proxy transport returned no response")
 	}
+	firstByteTimedOut := firstByteTimer.Expired() && wrote.Load() && !errors.Is(ctx.Err(), context.Canceled)
 	if ctx.Err() != nil || wrote.Load() || firstByteTimer.Expired() {
-		if firstByteTimer.Expired() && wrote.Load() {
+		if firstByteTimedOut {
 			handle.ReportRequestFailure()
 			handle.Invalidate()
+			err = fmt.Errorf("%w: %w", fault.ErrFirstByteTimeout, err)
 		}
 		handle.Release()
 		return nil, wrote.Load(), false, err

@@ -108,6 +108,41 @@ func ReasoningContentFromBody(body []byte) (present bool, chars int64) {
 	return present, chars
 }
 
+// ReasoningStarvedFromBody reports whether a non-stream chat body is the
+// pathological shape where reasoning consumed the whole completion allowance:
+// empty assistant content, reasoning present, and the upstream stopping on the
+// token limit. The response is protocol-valid, so nothing else flags it, yet the
+// caller receives an empty answer.
+func ReasoningStarvedFromBody(body []byte) bool {
+	var chat struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				Thinking         json.RawMessage `json:"thinking"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &chat); err != nil {
+		return false
+	}
+	for _, choice := range chat.Choices {
+		if choice.FinishReason != "length" {
+			continue
+		}
+		if _, ok := firstReasoningLength(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking); !ok {
+			continue
+		}
+		if length, ok := firstReasoningLength(choice.Message.Content); ok && length > 0 {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // ReasoningDeltaChars reports whether a single SSE chat delta frame carries
 // reasoning_content, reasoning, or thinking and its character count (runes). Only the length is
 // returned; reasoning text is never retained.

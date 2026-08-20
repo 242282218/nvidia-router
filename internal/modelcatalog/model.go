@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"nvidia-router/internal/compat"
@@ -168,6 +169,11 @@ func (m Model) ReasoningProfile() compat.ReasoningProfile {
 		ZeroAllowed:    m.ReasoningZeroAllowed || len(m.ReasoningLevels) == 0,
 		DynamicAllowed: m.ReasoningDynamicAllowed || len(m.ReasoningLevels) == 0,
 		WireFormat:     m.ReasoningWireFormat,
+		// NVIDIA's OpenAI-compatible surface accepts an effort string but carries
+		// no budget, and measurement shows no gradient between low and max — only
+		// on versus off is real. Collapsing keeps behaviour deterministic instead
+		// of varying with a level the upstream ignores.
+		AdvisoryLevels: m.Provider == ProviderNVIDIA && strings.EqualFold(m.ReasoningWireFormat, "openai"),
 	}
 }
 

@@ -142,3 +142,30 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - 只读视觉检查可用 Playwright 注入模拟 `/admin/api/auth/session` 和 `/admin/api/model-health/summary` 响应，在 1440/768/375/320 宽度验证三列/单列卡片、移动抽屉、无横向溢出和频率控件；不要连接真实上游。
 - 摘要接口的事件、latest 和设置必须通过 `modelhealth.Repository.SummarySnapshot` 的同一只读事务读取；设置 PATCH 必须在写事务内读取当前行并应用字段级 patch，避免两个管理页面互相覆盖。
 - 频率控件使用可编辑数字输入而不是有限 preset，显示秒单位，前端与后端共同限制 10～3600；摘要聚合需单独返回 `stale_count`，不能把过期状态并入 `unchecked_count`。
+
+## 2026-08-20 全量审查 + 部署 20260820-full-review（= main bf409ce）
+
+- **在机联调法（最省事、无外网明文）**：Windows 用 paramiko + `hangzhou2-2/ssh_host_key`（无需密码）连 `114.55.25.190`，把探针 py 上传到远端 `/tmp` 用 `python3` 跑，命中 `127.0.0.1:3756`。管理 API 的**变更请求（POST/PATCH/DELETE）必须带 `Origin: http://127.0.0.1:3756`**（同源 CSRF 守卫），否则 403 `invalid_origin`。JSON 结构：`/admin/api/proxy-pool` 与 `/admin/api/models` 都在 `data` 键下；monitoring `range` **仅 24h/7d/30d**（`1h/6h` 是 model-health 的，打到 monitoring 会 400）。AccessKey：`POST /admin/api/access-keys {name}` → 201，明文在 `key` 字段（一次性）；测试后 `DELETE` + `logout`。
+- **代码健康结论**：`go vet`/`go build`/`go test ./...`/web lint+typecheck+test+build 全绿（修掉 1 个陈旧单测后）。全链路验证 OK：minimax-m3 经 下游→路由器→内置代理池→NVIDIA **797ms** 正确返回，流式 `[DONE]` 到达，思考强度 low/high 区分有效（deepseek reasoning_len 0→186）。
+- **55% 成功率是外部驱动，非路由器 bug**（测试方案要求分层归因）：① `deepseek-ai/deepseek-v4-flash-0731` NVIDIA 侧病态慢，reasoning_effort=none + max_tokens=24 仍需 **88–150s**（首字节远超客户端 60s → 记 499/失败），是该模型上游延迟不是路由器；② OpenCodeFree 网关阶段性整体宕机，所有模型返回非标准 `HTTP 638`，路由器正确映射 502 `upstream_error`（`serveOpenCodeFree` 未知≥300→502）；③ `z-ai/glm-5.2` 偶发 `upstream_proxy_unavailable` 502（97ms 快速失败），根因是 XApi 出口薄（qty=2 套餐上限）导致瞬时无健康出口，属 fail-safe 正确行为。
+- **`XK_EXPECTED_QTY` = XApi 请求的 `qty` 参数**（`upstream.go:119 query.Set("qty")`），当前套餐 `qty>2 → 506`，所以生产必须保持 `2`；memory 早前"推荐 4"与 506 现实冲突，**不要贸然调 4**（会致 fetch 全失败、池枯竭）。`XK_MAX_LATENCY` 未配=0（慢速门槛禁用）。
+- **日志级别坑**：`slog.Default()` 默认 INFO，`pool_updated`/`proxy_validation_failed` 是 **DEBUG（不可见）**，只有 `validation_all_failed`（整批失败）是 WARN。**不能因看不到 `pool_updated` 就断定"0 次成功验证"**；应以 `/metrics` 的 `nvidia_router_proxy_pool_healthy` 和实际请求成功率为准。诊断验证失败用远端直连复现：读容器 env 的 XApi/验证 URL（不回显），`curl --proxy http://ip:port --http2 <validation_url>` 期望 404——实测多数代理 0.6–2s 返回 404/h2 成功，偶发 CONNECT 失败（curl_exit=56）。
+- **改 admin 密码**：DB 已存在 admin 时 `INITIAL_ADMIN_PASSWORD` 无效，必须 CLI `admin reset-password`（app 必须先停、持进程锁、密码走 stdin）；`ResetPassword` 置 `must_change_password=0`，改完可直接登录且 `/health/ready` 保持就绪。部署顺序：停 app → **旧镜像** `db backup`（迁移前快照，`database.Open` 会跑迁移）→ **新镜像** `admin reset-password`（顺带应用迁移 037）→ `compose up` → 健康校验。孤儿容器 `nvidia-router-proxy-pool-1`（旧 release 20260811）与当前单体无关，属预期 warning。
+
+## 2026-08-20 模型审计与预提交超时
+
+- NVIDIA 真实矩阵确认 `nvidia/nemotron-3-ultra-550b-a55b` 与 `stepfun-ai/step-3.7-flash` 会输出 `reasoning_content`；若白名单仍标记 `supports_reasoning=false`，小 `max_tokens` 会被思考消耗并出现空内容/`length`。迁移 038 将两者回填为 `thinking` 原生线格式，descriptor 也必须同步能力提示。
+- 代理池请求在写出请求后等不到响应头属于目标/模型首字节超时，不应被默认 504 failover matcher 再次扩散到所有 Key；用 typed fault 覆盖 matcher，连接在写出前失败仍保留重试。
+- NVIDIA pooled Acquire 的短暂空池应复用 `AcquireWithWait`，但等待 context 必须绑定本次 `FirstByteDeadline`，不能让流式请求的补池等待越过 retry budget。
+- OpenCodeFree 网关曾返回非标准 436；非流式首次遇到 436/标准瞬时 5xx 可重试一次，最终必须写出 502 `upstream_unavailable`，不能留下空 200。
+
+## 2026-08-20 模型白名单多维审计与推理预算对账
+
+- 审计方法：`scripts/test/remote_exec.py` + `model_whitelist_audit_remote.py`（在机探针，密码走 stdin）→ `orchestrate_audit.py` 分阶段 → `aggregate_audit.py`（逐用例）/ `summarize_audit.py`（总分、失败分布、延迟分位）；渠道归因用 `channel_baseline_remote.py`。报告见 `docs/plans/2026-08-20-模型白名单多维审计报告.md`。
+- **`orchestrate_audit.py` 用 `capture_output=True`，阶段中途被杀会丢该阶段全部数据**（本次 stability 即如此）。需要中途可观察时改流式落盘。
+- **能力模型无运行时闭环**：`supports_reasoning` 只来自 `descriptor.go` 硬编码列表、SQL 迁移、管理端 PATCH；`reasoning_content` 只在 `internal/observability/reasoning.go` 记指标，从不回写 catalog；`modelcatalog/service.go:344` 的能力探测只测可达性。声明与上游实际行为漂移会直接变成用户可见故障。
+- **P0/P1 同源**：声明为 false 但实际会思考 → `chat.go:454-461` 返回 501（过度拒绝）；声明支持但级别无强制力 → 思考吃光预算返回空内容。两者都是"路由器推导的数与上游行为无因果连接"。**只修 P0 会把症状平移成 P1**，必须成对修。
+- **`openai` 线格式丢弃数值预算**（`compat/reasoning.go` 的 openai 分支只发裸 `reasoning_effort` 字符串），所以 NVIDIA openai 线格式模型的 low/medium/high **没有任何节流作用**；实测 m3、glm-5.2 各档 reasoning 长度非单调，只有 `none` / `thinking:disabled` 的关断是确定性的。据此新增 `ReasoningProfile.AdvisoryLevels`（`Provider==nvidia && wire==openai` 时为真），把所有启用档归一为标准值 `high`，只保留开/关语义。**不能归一到 `auto`——那不是 OpenAI 标准取值，上游可能 422。**
+- **`thinking` 线格式才有真实杠杆**：`ApplyReasoning` 现将 `budget_tokens` 压到 `max_tokens`（含 `max_completion_tokens`/`max_output_tokens` 拼写）的 3/4，为答案保留 1/4；无 `max_tokens` 时不压（无从对账），`auto`(-1) 与 `disabled` 不受影响。回归测试 `internal/compat/reasoning_budget_test.go`。
+- 测试 profile 坑：`ZeroAllowed=false` 时 `availableLevels` 会丢掉 `none`，`thinking:{"type":"disabled"}` 会被 `nearestLevel` 拉回 enabled。构造推理 profile 的单测必须显式设 `ZeroAllowed: true`。
+- 模型实测结论（NVIDIA 渠道，2026-08-20）：nemotron-3-ultra-550b 最均衡（94%，长文 14274 内容 / 236 思考）；glm-5.2 工具调用 6/6 全绿但流式最大空档 4.3s，客户端 idle 超时不应低于 10s；minimax-m3 长上下文预填充最快（8K 仅 3.9s）但长文生成会把预算全烧在思考上；step-3.7-flash 长任务能力弱（8K 预填充 191s，TTFT 可达 173s）。`deepseek-ai/deepseek-v4-flash-0731` 120s 无首字节，建议停用。

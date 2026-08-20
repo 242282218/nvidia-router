@@ -163,12 +163,30 @@ func (b Budget) MaxAttempts() int {
 
 func (b Budget) forAttempt(now time.Time) Budget {
 	b.firstByteDeadline = now.Add(b.firstByteTimeout)
+	if deadline := b.preCommitDeadline(); !deadline.IsZero() && deadline.Before(b.firstByteDeadline) {
+		b.firstByteDeadline = deadline
+	}
 	// Streams additionally pin the first-token deadline; the prime phase waits
 	// on this window instead of the transport-level first-byte window.
 	if b.streamFirstTokenTimeout > 0 {
 		b.firstTokenDeadline = now.Add(b.streamFirstTokenTimeout)
+		if deadline := b.preCommitDeadline(); !deadline.IsZero() && deadline.Before(b.firstTokenDeadline) {
+			b.firstTokenDeadline = deadline
+		}
 	}
 	return b
+}
+
+// preCommitDeadline is the earliest request deadline that may stop an attempt
+// before a response is committed. A non-stream request also has a total
+// deadline; retry_budget_ms is intentionally included because an in-flight
+// attempt must not continue after the retry window has expired.
+func (b Budget) preCommitDeadline() time.Time {
+	deadline := b.retryDeadline
+	if !b.totalDeadline.IsZero() && (deadline.IsZero() || b.totalDeadline.Before(deadline)) {
+		deadline = b.totalDeadline
+	}
+	return deadline
 }
 
 type budgetContextKey struct{}

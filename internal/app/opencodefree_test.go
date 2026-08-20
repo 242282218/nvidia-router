@@ -290,6 +290,85 @@ func TestOpenCodeFreeRetriesTransient502(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeRetriesTransient436(t *testing.T) {
+	var calls int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		if atomic.AddInt64(&calls, 1) == 1 {
+			w.WriteHeader(436)
+			_, _ = io.WriteString(w, `{"error":"temporary gateway capacity"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"ocf-436","object":"chat.completion","model":"free-model","choices":[{"index":0,"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "recovered") {
+		t.Fatalf("expected 436 retry success, status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if atomic.LoadInt64(&calls) != 2 {
+		t.Fatalf("gateway calls = %d, want 2", calls)
+	}
+}
+
+func TestOpenCodeFreeFinal436MapsToUnavailable(t *testing.T) {
+	var calls int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		atomic.AddInt64(&calls, 1)
+		w.WriteHeader(436)
+		_, _ = io.WriteString(w, `{"error":"temporary gateway capacity"}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "upstream_unavailable") {
+		t.Fatalf("final 436 = status %d body=%s, want 502 upstream_unavailable", resp.StatusCode, string(body))
+	}
+	if atomic.LoadInt64(&calls) != 2 {
+		t.Fatalf("gateway calls = %d, want 2 (initial + one retry)", calls)
+	}
+}
+
 func TestOpenCodeFreeRetriesMalformedSuccessResponse(t *testing.T) {
 	var calls int64
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
