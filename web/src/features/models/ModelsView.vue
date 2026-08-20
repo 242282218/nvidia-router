@@ -23,8 +23,6 @@ import {
 import type {
   Candidate,
   Model,
-  ModelProvider,
-  ModelTestCredential,
   ModelTestJob,
   ModelTestJobRequest,
   ModelTestMode,
@@ -49,13 +47,8 @@ const selectedCandidates = ref<Record<string, boolean>>({})
 const selectedTestModels = ref<Record<string, boolean>>({})
 const candidateSearch = ref('')
 const providerFilter = ref('all')
-const testProvider = ref<ModelProvider>('nvidia')
 const testMode = ref<ModelTestMode>('concurrent')
 const testConcurrency = ref(4)
-const testCredentials = ref<ModelTestCredential[]>([])
-const selectedCredentialId = ref('')
-const credentialLoading = ref(false)
-const credentialError = ref('')
 const testJob = ref<ModelTestJob | null>(null)
 const testJobError = ref('')
 const testJobLoading = ref(false)
@@ -80,12 +73,6 @@ const providerOptions = computed<string[]>(() => {
 
 const filteredCandidates = computed<Candidate[]>(() => candidates.value.filter((candidate) => matchesFilter(candidate)))
 const filteredModels = computed<Model[]>(() => modelList.value.filter((model) => matchesFilter(model)))
-const testProviderModels = computed<Model[]>(() => modelList.value.filter(
-  (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
-))
-const filteredTestModels = computed<Model[]>(() => filteredModels.value.filter(
-  (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
-))
 const selectedCandidateKeys = computed<ReadonlySet<string>>(() => new Set(
   Object.entries(selectedCandidates.value)
     .filter(([, selected]) => selected)
@@ -97,11 +84,10 @@ const selectedTestModelIds = computed<ReadonlySet<number>>(() => new Set(
     .map(([id]) => Number(id))
     .filter((id) => Number.isFinite(id)),
 ))
-const selectedTestModelList = computed<Model[]>(() => testProviderModels.value.filter(
+// One selection set spans every provider: the backend routes each model on its
+// own provider, so a batch may freely mix NVIDIA and OpenCodeFree models.
+const selectedTestModelList = computed<Model[]>(() => modelList.value.filter(
   (model) => selectedTestModelIds.value.has(model.id),
-))
-const testableSelectedModels = computed<Model[]>(() => selectedTestModelList.value.filter(
-  (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
 ))
 const candidateSelectedCount = computed(() => selectedCandidateKeys.value.size)
 const testProgress = computed(() => {
@@ -113,7 +99,7 @@ const testJobActive = computed(() => {
   const status = testJob.value?.status.toLowerCase()
   return status === 'queued' || status === 'running'
 })
-const canStartBatchTest = computed(() => testableSelectedModels.value.length > 0 && !testJobActive.value && !testJobLoading.value)
+const canStartBatchTest = computed(() => selectedTestModelList.value.length > 0 && !testJobActive.value && !testJobLoading.value)
 
 watch(modelList, (next) => {
   const previous = selectedTestModels.value
@@ -122,18 +108,13 @@ watch(modelList, (next) => {
     const key = String(model.id)
     nextSelection[key] = Object.prototype.hasOwnProperty.call(previous, key)
       ? previous[key] === true
-      : normalizeProvider(model.provider) === normalizeProvider(testProvider.value) && model.enabled
+      : model.enabled
   }
   selectedTestModels.value = nextSelection
 }, { immediate: true })
 
-watch(testProvider, () => {
-  selectedTestModels.value = {}
-}, { flush: 'sync' })
-
 onMounted(() => {
   void loadModels()
-  void loadCredentials()
 })
 
 onBeforeUnmount(() => {
@@ -185,20 +166,12 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
-function isCredential(value: unknown): value is ModelTestCredential {
-  return isRecord(value)
-    && isFiniteNumber(value.id)
-    && typeof value.masked === 'string'
-    && typeof value.enabled === 'boolean'
-    && (value.auth_invalid === undefined || typeof value.auth_invalid === 'boolean')
-    && (value.cooldown_until === undefined || typeof value.cooldown_until === 'string')
-}
-
 function isModelTestResult(value: unknown): value is ModelTestResult {
   return isRecord(value)
     && isFiniteNumber(value.model_id)
     && typeof value.status === 'string'
     && (value.public_id === undefined || typeof value.public_id === 'string')
+    && (value.provider === undefined || typeof value.provider === 'string')
     && (value.duration_ms === undefined || isFiniteNumber(value.duration_ms))
     && (value.error === undefined || typeof value.error === 'string')
     && (value.started_at === undefined || typeof value.started_at === 'string')
@@ -223,7 +196,6 @@ function readModelTestJob(value: unknown): ModelTestJob | null {
     : results.filter((result) => isTerminalResult(result.status)).length
   return {
     id,
-    provider: normalizeProvider(typeof nested.provider === 'string' ? nested.provider : undefined),
     mode,
     status,
     total,
@@ -296,31 +268,6 @@ function formatDuration(durationMs?: number): string {
   return `${(durationMs / 1000).toFixed(1)} s`
 }
 
-async function loadCredentials(): Promise<void> {
-  credentialLoading.value = true
-  credentialError.value = ''
-  try {
-    const response: unknown = await modelsApi.credentials()
-    if (isDisposed()) return
-    if (!isDataArrayResponse(response, isCredential)) {
-      throw new TypeError('Invalid model test credentials response.')
-    }
-    testCredentials.value = response.data
-    const current = Number(selectedCredentialId.value)
-    const currentExists = response.data.some((credential) => credential.id === current)
-    if (!currentExists) {
-      const preferred = response.data.find((credential) => credential.enabled && !credential.auth_invalid)
-        ?? response.data[0]
-      selectedCredentialId.value = preferred ? String(preferred.id) : ''
-    }
-  } catch (error) {
-    if (isDisposed()) return
-    credentialError.value = error instanceof ApiError ? error.message : 'NVIDIA Key 列表加载失败。'
-  } finally {
-    if (!isDisposed()) credentialLoading.value = false
-  }
-}
-
 async function discover(): Promise<void> {
   discovering.value = true
   candidateMessage.value = ''
@@ -374,12 +321,6 @@ function toggleCandidate(candidate: Candidate, selected: boolean): void {
 }
 
 function toggleTestModel(model: Model, selected: boolean): void {
-  const provider = normalizeProvider(model.provider)
-  if (selected && provider !== normalizeProvider(testProvider.value)) {
-    testProvider.value = provider
-    selectedTestModels.value = { [String(model.id)]: true }
-    return
-  }
   selectedTestModels.value = { ...selectedTestModels.value, [String(model.id)]: selected }
 }
 
@@ -392,19 +333,16 @@ function selectAllCandidates(): void {
 }
 
 function selectAllTestModels(): void {
-  const allSelected = filteredTestModels.value.length > 0
-    && filteredTestModels.value.every((model) => selectedTestModelIds.value.has(model.id))
+  const allSelected = filteredModels.value.length > 0
+    && filteredModels.value.every((model) => selectedTestModelIds.value.has(model.id))
   const next = { ...selectedTestModels.value }
-  for (const model of filteredTestModels.value) next[String(model.id)] = !allSelected
+  for (const model of filteredModels.value) next[String(model.id)] = !allSelected
   selectedTestModels.value = next
 }
 
 function selectEnabledTestModels(): void {
   const next = { ...selectedTestModels.value }
-  for (const model of modelList.value) {
-    next[String(model.id)] = normalizeProvider(model.provider) === normalizeProvider(testProvider.value)
-      && model.enabled
-  }
+  for (const model of filteredModels.value) next[String(model.id)] = model.enabled
   selectedTestModels.value = next
 }
 
@@ -528,7 +466,6 @@ function normalizedConcurrency(): number {
 }
 
 async function startSingleTest(model: Model): Promise<void> {
-  testProvider.value = normalizeProvider(model.provider)
   toggleTestModel(model, true)
   await startTest([model], 'sequential')
 }
@@ -539,31 +476,15 @@ async function startBatchTest(): Promise<void> {
 
 async function startTest(modelsToTest: Model[], mode: ModelTestMode): Promise<void> {
   if (testJobActive.value || testJobLoading.value) return
-  const provider = normalizeProvider(testProvider.value)
-  const targets = modelsToTest.filter((model) => normalizeProvider(model.provider) === provider)
-  if (targets.length === 0) {
-    testJobError.value = '请选择与当前测试渠道一致的模型。'
+  if (modelsToTest.length === 0) {
+    testJobError.value = '请先选择要测试的模型。'
     return
   }
-  if (provider === 'nvidia') {
-    if (!selectedCredentialId.value) {
-      testJobError.value = '请选择一个 NVIDIA Key。'
-      return
-    }
-    if (testCredentials.value.length === 0 && !credentialLoading.value) await loadCredentials()
-    if (isDisposed()) return
-    if (!testCredentials.value.some((credential) => credential.id === Number(selectedCredentialId.value))) {
-      testJobError.value = '所选 NVIDIA Key 不可用，请重新选择。'
-      return
-    }
-  }
   const request: ModelTestJobRequest = {
-    provider,
-    model_ids: targets.map((model) => model.id),
+    model_ids: modelsToTest.map((model) => model.id),
     mode,
     concurrency: mode === 'concurrent' ? normalizedConcurrency() : 1,
   }
-  if (provider === 'nvidia') request.credential_id = Number(selectedCredentialId.value)
   testJobLoading.value = true
   testJobError.value = ''
   clearJobPoll()
@@ -770,19 +691,19 @@ async function cancelCurrentTest(): Promise<void> {
               data-testid="select-enabled-test-models"
               variant="ghost"
               size="sm"
-              :disabled="testProviderModels.length === 0"
+              :disabled="filteredModels.length === 0"
               @click="selectEnabledTestModels"
             >
-              选中当前渠道启用模型
+              选中启用模型
             </UiButton>
             <UiButton
               data-testid="select-all-test-models"
               variant="ghost"
               size="sm"
-              :disabled="filteredTestModels.length === 0"
+              :disabled="filteredModels.length === 0"
               @click="selectAllTestModels"
             >
-              全选当前渠道模型
+              全选当前筛选模型
             </UiButton>
             <span class="text-xs text-[var(--color-text-muted)]">
               测试已选 {{ selectedTestModelList.length }} 项
@@ -835,7 +756,7 @@ async function cancelCurrentTest(): Promise<void> {
                   只读模型测试
                 </h3>
                 <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-                  每个任务固定一个渠道和凭据；勾选其他渠道模型时会切换当前渠道，不会启用模型、清除 block 或把结果当作生产调用能力。
+                  一个任务可混选任意渠道的模型：后端按每个模型自己的渠道选路，NVIDIA 随机取可用 Key、OpenCodeFree 换代理出口，失败会自动重试几次。测试不会启用模型、清除 block，也不代表生产调用能力。
                 </p>
               </div>
               <UiBadge
@@ -845,50 +766,7 @@ async function cancelCurrentTest(): Promise<void> {
               />
             </div>
 
-            <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <label class="block">
-                <span class="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">测试渠道</span>
-                <UiSelect
-                  v-model="testProvider"
-                  data-testid="model-test-provider"
-                  aria-label="测试渠道"
-                >
-                  <option
-                    v-for="provider in providerOptions"
-                    :key="provider"
-                    :value="provider"
-                  >
-                    {{ providerLabel(provider) }}
-                  </option>
-                </UiSelect>
-              </label>
-              <label
-                v-if="normalizeProvider(testProvider) === 'nvidia'"
-                class="block"
-              >
-                <span class="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">NVIDIA Key</span>
-                <UiSelect
-                  v-model="selectedCredentialId"
-                  data-testid="model-test-credential"
-                  aria-label="NVIDIA Key"
-                  :disabled="credentialLoading"
-                >
-                  <option value="">选择一个 Key</option>
-                  <option
-                    v-for="credential in testCredentials"
-                    :key="credential.id"
-                    :value="String(credential.id)"
-                  >
-                    #{{ credential.id }} · {{ credential.masked }}{{ credential.enabled ? '' : ' · 已停用' }}
-                  </option>
-                </UiSelect>
-              </label>
-              <div
-                v-else
-                class="panel-inset flex items-center px-3 py-2.5 text-xs text-[var(--color-text-muted)]"
-              >
-                OpenCodeFree 不需要凭据
-              </div>
+            <div class="mt-4 grid gap-3 sm:grid-cols-2">
               <label class="block">
                 <span class="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">执行方式</span>
                 <UiSelect
@@ -914,13 +792,6 @@ async function cancelCurrentTest(): Promise<void> {
                 >
               </label>
             </div>
-            <p
-              v-if="credentialError"
-              data-testid="model-test-credential-error"
-              class="mt-2 text-xs text-[var(--color-danger)]"
-            >
-              {{ credentialError }}
-            </p>
             <div class="mt-4 flex flex-wrap items-center gap-3">
               <UiButton
                 data-testid="start-model-test"
@@ -931,10 +802,10 @@ async function cancelCurrentTest(): Promise<void> {
                 :disabled="!canStartBatchTest"
                 @click="startBatchTest"
               >
-                测试 {{ testableSelectedModels.length }} 个模型
+                测试 {{ selectedTestModelList.length }} 个模型
               </UiButton>
               <span class="text-xs text-[var(--color-text-muted)]">
-                当前渠道可测 {{ testableSelectedModels.length }} / 已选 {{ selectedTestModelList.length }} 项
+                已选 {{ selectedTestModelList.length }} 项
               </span>
             </div>
             <p
@@ -957,7 +828,7 @@ async function cancelCurrentTest(): Promise<void> {
                     测试任务 #{{ testJob.id }} · {{ jobStatusLabel(testJob.status) }}
                   </p>
                   <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-                    {{ providerLabel(testJob.provider) }} · {{ testJob.mode === 'concurrent' ? `并发 ${testJob.total > 0 ? Math.min(8, Math.max(2, testConcurrency)) : 0}` : '顺序' }} · {{ testJob.completed }} / {{ testJob.total }} 完成
+                    {{ testJob.mode === 'concurrent' ? `并发 ${testJob.total > 0 ? Math.min(8, Math.max(2, testConcurrency)) : 0}` : '顺序' }} · {{ testJob.completed }} / {{ testJob.total }} 完成
                   </p>
                 </div>
                 <UiButton
@@ -999,6 +870,12 @@ async function cancelCurrentTest(): Promise<void> {
                         class="data-table-th"
                         scope="col"
                       >
+                        渠道
+                      </th>
+                      <th
+                        class="data-table-th"
+                        scope="col"
+                      >
                         状态
                       </th>
                       <th
@@ -1025,6 +902,9 @@ async function cancelCurrentTest(): Promise<void> {
                       <td class="data-table-td font-mono-data text-xs">
                         {{ result.public_id || modelList.find((model) => model.id === result.model_id)?.public_id || `#${result.model_id}` }}
                       </td>
+                      <td class="data-table-td text-xs text-[var(--color-text-secondary)]">
+                        {{ providerLabel(result.provider) }}
+                      </td>
                       <td class="data-table-td text-xs">
                         <UiBadge
                           :variant="result.status.toLowerCase() === 'success' || result.status.toLowerCase() === 'succeeded' ? 'success' : result.status.toLowerCase() === 'failed' || result.status.toLowerCase() === 'error' ? 'danger' : 'muted'"
@@ -1042,7 +922,7 @@ async function cancelCurrentTest(): Promise<void> {
                     <tr v-if="testJob.results.length === 0">
                       <td
                         class="data-table-td text-center text-xs text-[var(--color-text-muted)]"
-                        colspan="4"
+                        colspan="5"
                       >
                         任务已创建，等待逐项结果…
                       </td>

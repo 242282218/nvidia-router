@@ -67,6 +67,35 @@ func (r *Repository) List(ctx context.Context) ([]Key, error) {
 	return keys, nil
 }
 
+// AvailableIDs lists every key that may serve a request right now: enabled, not
+// known-invalid, and past any cooldown. Callers that need to spread load or
+// retry on a different credential use it instead of FirstEnabledID, which always
+// returns the same lowest id.
+func (r *Repository) AvailableIDs(ctx context.Context, now time.Time) ([]int64, error) {
+	rows, err := r.read().QueryContext(ctx, `
+		SELECT id FROM nvidia_keys
+		WHERE enabled = 1 AND auth_invalid = 0
+		  AND (cooldown_until IS NULL OR cooldown_until <= ?)
+		ORDER BY id
+	`, formatTimestamp(now))
+	if err != nil {
+		return nil, fmt.Errorf("list available NVIDIA keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan available NVIDIA key: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate available NVIDIA keys: %w", err)
+	}
+	return ids, nil
+}
+
 func (r *Repository) FirstEnabledID(ctx context.Context, now time.Time) (int64, error) {
 	var id int64
 	if err := r.read().QueryRowContext(ctx, `

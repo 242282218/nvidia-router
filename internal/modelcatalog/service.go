@@ -22,6 +22,9 @@ import (
 
 type SecretProvider interface {
 	WithSecret(context.Context, int64, func([]byte) error) error
+	// AvailableIDsShuffled lists the keys that may serve a probe right now, in
+	// the order they should be tried.
+	AvailableIDsShuffled(context.Context) ([]int64, error)
 }
 
 type ModelDiscoverer interface {
@@ -53,6 +56,10 @@ const (
 	modelVerificationTimeout    = 30 * time.Second
 	maxModelVerificationTimeout = 5 * time.Minute
 	modelProbeMaxTokens         = 16
+	// probeAttempts bounds how many NVIDIA keys one probe may try. A model that
+	// stays unreachable on three different credentials is a model or upstream
+	// problem, and more attempts would only burn quota.
+	probeAttempts = 3
 )
 
 func modelVerificationTimeoutFor(model Model) time.Duration {
@@ -140,6 +147,7 @@ func (s *Service) DiscoverCandidates(ctx context.Context, keyID int64) ([]Candid
 			candidates = append(candidates, candidateFromOpenCodeFree(modelID))
 		}
 	}
+	sortCandidates(candidates)
 	return candidates, nil
 }
 
@@ -226,6 +234,77 @@ func (s *Service) TestModel(ctx context.Context, provider string, keyID, modelID
 	default:
 		return fmt.Errorf("%w: %s", ErrProviderNotRoutable, provider)
 	}
+}
+
+// TestModelAuto probes one model without the caller naming a channel or a
+// credential: the provider comes from the model row itself and an NVIDIA probe
+// picks its own keys. Like TestModel it is read-only and never touches the
+// whitelist, capability verification, key health, blocks or request statistics.
+func (s *Service) TestModelAuto(ctx context.Context, modelID int64) error {
+	model, err := s.repository.Get(ctx, modelID)
+	if err != nil {
+		return fmt.Errorf("load model for read-only test: %w", err)
+	}
+	if model.Provider == "" {
+		model.Provider = defaultModelProvider
+	}
+	switch model.Provider {
+	case ProviderNVIDIA:
+		return s.probeNVIDIAModel(ctx, model)
+	case ProviderOpenCodeFree:
+		// The gateway client already retries across pooled exits, so a single
+		// attempt here is one attempt per healthy IP.
+		testCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeoutFor(model))
+		defer cancel()
+		return s.testOpenCodeFreeModel(testCtx, model)
+	default:
+		return fmt.Errorf("%w: %s", ErrProviderNotRoutable, model.Provider)
+	}
+}
+
+// probeNVIDIAModel tries the model on up to probeAttempts distinct keys, taken
+// in random order so a batch spreads across the fleet. Only a failure that could
+// plausibly clear on another credential is retried.
+func (s *Service) probeNVIDIAModel(ctx context.Context, model Model) error {
+	keyIDs, err := s.secrets.AvailableIDsShuffled(ctx)
+	if err != nil {
+		return fmt.Errorf("select NVIDIA key for read-only test: %w", err)
+	}
+	if len(keyIDs) == 0 {
+		return ErrNVIDIAKeyRequired
+	}
+	if len(keyIDs) > probeAttempts {
+		keyIDs = keyIDs[:probeAttempts]
+	}
+	var lastErr error
+	for _, keyID := range keyIDs {
+		testCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeoutFor(model))
+		err := s.testTargetModel(testCtx, keyID, model)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		lastErr = err
+		if !worthAnotherKey(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+// worthAnotherKey reports whether a failed probe may still succeed on a
+// different credential. Only an unreachable upstream or a proxy failure
+// qualifies: a model that answered 404, or answered with a malformed payload,
+// will answer the same way on every key.
+func worthAnotherKey(err error) bool {
+	var proxyErr *xkproxy.Error
+	if errors.As(err, &proxyErr) {
+		return true
+	}
+	return errors.Is(err, ErrUpstreamUnreachable)
 }
 
 func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (Model, error) {
@@ -316,14 +395,14 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 			if errors.As(err, &proxyErr) {
 				return err
 			}
-			return ErrManualTestRequired
+			return ErrUpstreamUnreachable
 		}
 		if response == nil || response.Body == nil {
-			return ErrManualTestRequired
+			return ErrUpstreamUnreachable
 		}
 		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return ErrManualTestRequired
+			return probeStatusError(response.StatusCode)
 		}
 		switch model.Kind {
 		case KindChat:
@@ -339,7 +418,7 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 			err = nvidia.PrimeAudioSpeech(ctx, response)
 		}
 		if err != nil {
-			return ErrManualTestRequired
+			return probeValidationError(err)
 		}
 		return nil
 	})
@@ -359,19 +438,50 @@ func (s *Service) testOpenCodeFreeModel(ctx context.Context, model Model) error 
 	}
 	response, err := s.opencodefree.Chat(ctx, runtimeconfig.Snapshot{}, body, false)
 	if err != nil {
-		return ErrManualTestRequired
+		var proxyErr *xkproxy.Error
+		if errors.As(err, &proxyErr) {
+			return err
+		}
+		return ErrUpstreamUnreachable
 	}
 	if response == nil || response.Body == nil {
-		return ErrManualTestRequired
+		return ErrUpstreamUnreachable
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return ErrManualTestRequired
+		return probeStatusError(response.StatusCode)
 	}
 	if _, err := nvidia.ValidateNonstreamChat(response); err != nil {
-		return ErrManualTestRequired
+		return probeValidationError(err)
 	}
 	return nil
+}
+
+// probeStatusError classifies a non-2xx probe answer. Throttling, request
+// timeouts and server-side failures may clear on another NVIDIA key or another
+// proxy exit, so they become retryable. Everything else (notably 404 for a
+// retired model and 401/403 for a bad credential) is a verdict about the target
+// itself: replaying it would only burn upstream quota.
+func probeStatusError(status int) error {
+	switch {
+	case status == http.StatusRequestTimeout, status == http.StatusTooManyRequests:
+		return ErrUpstreamUnreachable
+	case status >= http.StatusInternalServerError:
+		return ErrUpstreamUnreachable
+	default:
+		return ErrManualTestRequired
+	}
+}
+
+// probeValidationError keeps an empty completion retryable. The OpenCodeFree
+// gateway is known to answer HTTP 200 with no usable output during a network
+// hiccup, while a malformed payload is a protocol verdict that will not change
+// on a retry.
+func probeValidationError(err error) error {
+	if errors.Is(err, nvidia.ErrEmptyResponse) {
+		return ErrUpstreamUnreachable
+	}
+	return ErrManualTestRequired
 }
 
 // probeWAV is a minimal valid mono PCM WAV containing one silent sample. It is

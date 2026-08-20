@@ -13,6 +13,14 @@ var (
 	ErrCapabilityUnverified  = errors.New("model capability is not verified")
 	ErrManualTestRequired    = errors.New("successful manual test is required")
 	ErrNVIDIAKeyRequired     = errors.New("an NVIDIA key is required")
+	// ErrUpstreamUnreachable marks a probe that never got a usable answer from
+	// the upstream: a transport failure, a missing body, a throttled or 5xx
+	// answer, or an empty completion. It wraps ErrManualTestRequired so every
+	// existing caller keeps its behaviour, while the retry path can single it
+	// out as the only class worth another attempt through a different NVIDIA key
+	// or proxy exit. A 404/401/403 answer describes the model or the credential
+	// itself, so it deliberately stays a plain ErrManualTestRequired.
+	ErrUpstreamUnreachable = fmt.Errorf("%w: upstream did not return a usable answer", ErrManualTestRequired)
 	ErrProviderMismatch      = errors.New("model provider does not match the selected test channel")
 	ErrProviderNotRoutable   = errors.New("model provider is not routable")
 	ErrProviderNotConfigured = errors.New("model provider is not configured")

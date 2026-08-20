@@ -26,20 +26,19 @@ const (
 
 type modelTestRunner interface {
 	List(context.Context) ([]modelcatalog.Model, error)
-	TestModel(context.Context, string, int64, int64) error
+	TestModelAuto(context.Context, int64) error
 }
 
 type modelTestJobRequest struct {
-	Provider     string  `json:"provider"`
-	CredentialID *int64  `json:"credential_id,omitempty"`
-	ModelIDs     []int64 `json:"model_ids"`
-	Mode         string  `json:"mode"`
-	Concurrency  int     `json:"concurrency"`
+	ModelIDs    []int64 `json:"model_ids"`
+	Mode        string  `json:"mode"`
+	Concurrency int     `json:"concurrency"`
 }
 
 type modelTestJobResult struct {
 	ModelID    int64      `json:"model_id"`
 	PublicID   string     `json:"public_id"`
+	Provider   string     `json:"provider"`
 	Status     string     `json:"status"`
 	Duration   *int64     `json:"duration_ms,omitempty"`
 	Error      string     `json:"error,omitempty"`
@@ -49,8 +48,6 @@ type modelTestJobResult struct {
 
 type modelTestJob struct {
 	ID              string               `json:"id"`
-	Provider        string               `json:"provider"`
-	CredentialID    int64                `json:"-"`
 	Mode            string               `json:"mode"`
 	Concurrency     int                  `json:"concurrency"`
 	Status          string               `json:"status"`
@@ -96,38 +93,22 @@ func (h *ModelTestJobs) create(writer http.ResponseWriter, request *http.Request
 		writeInvalidRequest(writer, "The model test job request is invalid.", err)
 		return
 	}
-	provider, concurrency, err := validateModelTestJobRequest(input)
+	concurrency, err := validateModelTestJobRequest(input)
 	if err != nil {
 		writeInvalidRequest(writer, "The model test job request is invalid.", err)
 		return
-	}
-	if provider == modelcatalog.ProviderOpenCodeFree {
-		if configured, ok := h.runner.(interface{ OpenCodeFreeConfigured() bool }); ok && !configured.OpenCodeFreeConfigured() {
-			writeAdminError(writer, http.StatusServiceUnavailable, "provider_not_configured", "The selected model provider is not configured.", nil)
-			return
-		}
-	}
-	if provider == modelcatalog.ProviderNVIDIA && input.CredentialID != nil {
-		if validator, ok := h.runner.(interface {
-			ValidateNVIDIAKey(context.Context, int64) error
-		}); ok {
-			if err := validator.ValidateNVIDIAKey(request.Context(), *input.CredentialID); err != nil {
-				writeAdminError(writer, http.StatusBadRequest, "invalid_credential", "The selected NVIDIA Key is not available.", nil)
-				return
-			}
-		}
 	}
 	models, err := h.runner.List(request.Context())
 	if err != nil {
 		writeInternalError(writer, err)
 		return
 	}
-	refs, err := selectTestModels(models, provider, input.ModelIDs)
+	refs, err := selectTestModels(models, input.ModelIDs)
 	if err != nil {
-		writeInvalidRequest(writer, "The selected models are invalid for this test channel.", err)
+		writeInvalidRequest(writer, "The selected models are invalid.", err)
 		return
 	}
-	job, err := h.newJob(provider, input, concurrency, refs)
+	job, err := h.newJob(input, concurrency, refs)
 	if err != nil {
 		writeAdminError(writer, http.StatusTooManyRequests, "model_test_capacity", "Too many model test jobs are already running.", nil)
 		return
@@ -188,19 +169,19 @@ func (h *ModelTestJobs) cancel(writer http.ResponseWriter, request *http.Request
 type modelRef struct {
 	ID       int64
 	PublicID string
+	Provider string
 }
 
-func (h *ModelTestJobs) newJob(provider string, input modelTestJobRequest, concurrency int, refs []modelRef) (*modelTestJob, error) {
+func (h *ModelTestJobs) newJob(input modelTestJobRequest, concurrency int, refs []modelRef) (*modelTestJob, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	id := strconv.FormatUint(h.seq.Add(1), 10)
 	created := h.now().UTC()
 	results := make([]modelTestJobResult, 0, len(refs))
 	for _, ref := range refs {
-		results = append(results, modelTestJobResult{ModelID: ref.ID, PublicID: ref.PublicID, Status: "queued"})
+		results = append(results, modelTestJobResult{ModelID: ref.ID, PublicID: ref.PublicID, Provider: ref.Provider, Status: "queued"})
 	}
 	job := &modelTestJob{
-		ID: id, Provider: provider, CredentialID: dereferenceCredential(input.CredentialID),
-		Mode: input.Mode, Concurrency: concurrency, Status: "queued", CreatedAt: created,
+		ID: id, Mode: input.Mode, Concurrency: concurrency, Status: "queued", CreatedAt: created,
 		Total: len(refs), Results: results, Cancel: cancel, Context: ctx,
 	}
 	h.mu.Lock()
@@ -264,7 +245,7 @@ func (h *ModelTestJobs) runOne(job *modelTestJob, resultIndex int) {
 	h.mu.Unlock()
 
 	startedClock := time.Now()
-	err := h.runner.TestModel(job.Context, job.Provider, job.CredentialID, job.Results[resultIndex].ModelID)
+	err := h.runner.TestModelAuto(job.Context, job.Results[resultIndex].ModelID)
 	duration := time.Since(startedClock).Milliseconds()
 	finished := h.now().UTC()
 	h.mu.Lock()
@@ -356,76 +337,53 @@ func cloneModelTestJob(job *modelTestJob) modelTestJob {
 	return copyJob
 }
 
-func validateModelTestJobRequest(input modelTestJobRequest) (string, int, error) {
-	provider := strings.ToLower(strings.TrimSpace(input.Provider))
-	if provider != modelcatalog.ProviderNVIDIA && provider != modelcatalog.ProviderOpenCodeFree {
-		return "", 0, fmt.Errorf("unsupported test provider %q", input.Provider)
-	}
+func validateModelTestJobRequest(input modelTestJobRequest) (int, error) {
 	if len(input.ModelIDs) == 0 || len(input.ModelIDs) > modelTestMaxModels {
-		return "", 0, errors.New("model_ids must contain between 1 and 500 models")
+		return 0, errors.New("model_ids must contain between 1 and 500 models")
 	}
 	seen := make(map[int64]struct{}, len(input.ModelIDs))
 	for _, id := range input.ModelIDs {
 		if id <= 0 {
-			return "", 0, errors.New("model_ids must contain positive integers")
+			return 0, errors.New("model_ids must contain positive integers")
 		}
 		if _, exists := seen[id]; exists {
-			return "", 0, errors.New("model_ids must not contain duplicates")
+			return 0, errors.New("model_ids must not contain duplicates")
 		}
 		seen[id] = struct{}{}
 	}
 	if input.Mode != "sequential" && input.Mode != "concurrent" {
-		return "", 0, errors.New("mode must be sequential or concurrent")
-	}
-	if provider == modelcatalog.ProviderNVIDIA && (input.CredentialID == nil || *input.CredentialID <= 0) {
-		return "", 0, modelcatalog.ErrNVIDIAKeyRequired
-	}
-	if provider == modelcatalog.ProviderOpenCodeFree && input.CredentialID != nil && *input.CredentialID != 0 {
-		return "", 0, errors.New("OpenCodeFree does not accept a credential_id")
+		return 0, errors.New("mode must be sequential or concurrent")
 	}
 	if input.Mode == "sequential" {
-		return provider, 1, nil
+		return 1, nil
 	}
 	concurrency := input.Concurrency
 	if concurrency == 0 {
 		concurrency = modelTestDefaultLimit
 	}
 	if concurrency < modelTestMinLimit || concurrency > modelTestMaxLimit {
-		return "", 0, errors.New("concurrency must be between 2 and 8")
+		return 0, errors.New("concurrency must be between 2 and 8")
 	}
-	return provider, concurrency, nil
+	return concurrency, nil
 }
 
-func selectTestModels(models []modelcatalog.Model, provider string, ids []int64) ([]modelRef, error) {
+// selectTestModels resolves the requested ids against the whitelist. Models from
+// different providers may be mixed freely: each probe dispatches on the model's
+// own provider, so the caller no longer picks a channel.
+func selectTestModels(models []modelcatalog.Model, ids []int64) ([]modelRef, error) {
 	byID := make(map[int64]modelRef, len(models))
 	for _, model := range models {
-		modelProvider := model.Provider
-		if modelProvider == "" {
-			modelProvider = modelcatalog.ProviderNVIDIA
+		provider := model.Provider
+		if provider == "" {
+			provider = modelcatalog.ProviderNVIDIA
 		}
-		byID[model.ID] = modelRef{ID: model.ID, PublicID: model.PublicID}
-		if modelProvider != provider {
-			continue
-		}
-		byID[model.ID] = modelRef{ID: model.ID, PublicID: model.PublicID}
+		byID[model.ID] = modelRef{ID: model.ID, PublicID: model.PublicID, Provider: provider}
 	}
 	refs := make([]modelRef, 0, len(ids))
 	for _, id := range ids {
 		model, exists := byID[id]
 		if !exists {
 			return nil, fmt.Errorf("model %d was not found", id)
-		}
-		for _, candidate := range models {
-			if candidate.ID == id {
-				providerValue := candidate.Provider
-				if providerValue == "" {
-					providerValue = modelcatalog.ProviderNVIDIA
-				}
-				if providerValue != provider {
-					return nil, fmt.Errorf("model %d belongs to another provider", id)
-				}
-				break
-			}
 		}
 		refs = append(refs, model)
 	}
@@ -437,13 +395,13 @@ func safeModelTestError(err error) string {
 	case errors.Is(err, context.Canceled):
 		return "任务已取消"
 	case errors.Is(err, modelcatalog.ErrNVIDIAKeyRequired):
-		return "需要选择一个 NVIDIA Key"
+		return "没有可用的 NVIDIA Key"
 	case errors.Is(err, modelcatalog.ErrProviderNotConfigured):
 		return "OpenCodeFree 渠道未配置"
 	case errors.Is(err, modelcatalog.ErrProviderNotRoutable):
 		return "该渠道尚未接入生产调用"
-	case errors.Is(err, modelcatalog.ErrProviderMismatch):
-		return "模型与测试渠道不匹配"
+	case errors.Is(err, modelcatalog.ErrUpstreamUnreachable):
+		return "上游多次未返回可用响应"
 	}
 	var proxyErr *xkproxy.Error
 	if errors.As(err, &proxyErr) {
@@ -459,13 +417,6 @@ func isModelTestResultTerminal(status string) bool {
 	default:
 		return false
 	}
-}
-
-func dereferenceCredential(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
 }
 
 func modelTestJobID(path string) (string, bool) {

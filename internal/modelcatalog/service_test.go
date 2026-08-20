@@ -175,7 +175,9 @@ func TestDiscoverCandidatesDoesNotMutateWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverCandidates: %v", err)
 	}
-	if got := candidateIDs(candidates); !reflect.DeepEqual(got, []string{"model-b", "model-a"}) {
+	// Both are NVIDIA candidates with no encoded size, so they sort by vendor
+	// (ID prefix) rather than the upstream discovery order.
+	if got := candidateIDs(candidates); !reflect.DeepEqual(got, []string{"model-a", "model-b"}) {
 		t.Fatalf("candidate IDs = %v", got)
 	}
 	if secrets.lastKeyID != 11 || discoverer.lastToken != "secret-for-11" {
@@ -1022,24 +1024,40 @@ func newCatalogTestService(t *testing.T) (*Service, *sql.DB, *fakeSecrets, *fake
 	return NewService(NewRepository(db), secrets, discoverer, nvidia.DefaultDescriptor(), catalogClock{}), db, secrets, discoverer
 }
 
-type fakeSecrets struct{ lastKeyID int64 }
+type fakeSecrets struct {
+	lastKeyID    int64
+	usedKeyIDs   []int64
+	availableIDs []int64
+	availableErr error
+}
 
 func (s *fakeSecrets) WithSecret(_ context.Context, keyID int64, callback func([]byte) error) error {
 	s.lastKeyID = keyID
+	s.usedKeyIDs = append(s.usedKeyIDs, keyID)
 	secret := []byte("secret-for-" + strconv.FormatInt(keyID, 10))
 	return callback(secret)
 }
 
+func (s *fakeSecrets) AvailableIDsShuffled(context.Context) ([]int64, error) {
+	if s.availableErr != nil {
+		return nil, s.availableErr
+	}
+	return append([]int64(nil), s.availableIDs...), nil
+}
+
 type fakeDiscoverer struct {
-	models                  []string
-	modelsErr               error
-	lastToken               string
-	modelsCalls             int
-	chatCalls               int
-	chatBodies              [][]byte
-	chatSnapshots           []runtimeconfig.Snapshot
-	chatResponse            string
-	chatErr                 error
+	models        []string
+	modelsErr     error
+	lastToken     string
+	modelsCalls   int
+	chatCalls     int
+	chatBodies    [][]byte
+	chatSnapshots []runtimeconfig.Snapshot
+	chatResponse  string
+	chatErr       error
+	// chatStatuses replays one HTTP status per call so a test can make an early
+	// probe attempt fail and a later one succeed.
+	chatStatuses []int
 	asrCalls                int
 	ttsCalls                int
 	asrResponse             string
@@ -1076,7 +1094,12 @@ func (d *fakeDiscoverer) Chat(_ context.Context, snapshot runtimeconfig.Snapshot
 	if body == "" {
 		body = `{"choices":[]}`
 	}
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	status := http.StatusOK
+	if len(d.chatStatuses) > 0 {
+		status = d.chatStatuses[0]
+		d.chatStatuses = d.chatStatuses[1:]
+	}
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 }
 
 func (d *fakeDiscoverer) AudioTranscriptions(_ context.Context, _ runtimeconfig.Snapshot, _ string, body []byte, contentType string) (*http.Response, error) {

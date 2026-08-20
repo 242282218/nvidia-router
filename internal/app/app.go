@@ -165,6 +165,9 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 			proxySettings.Close()
 			return nil, closeAfterInitializationError(db, reader, fmt.Errorf("initialize OpenCodeFree client: %w", err))
 		}
+		// The gateway is reached through the same pooled exits as NVIDIA so the
+		// router's own address stays off the wire on both providers.
+		openCodeFreeClient.WithProxy(proxy)
 	}
 	nvidiaKeys := nvidiakey.NewService(keyRepository, keys, nvidiaClient, resolved.Clock)
 	healthChecker := nvidiakey.NewHealthChecker(keyRepository, resolved.Clock, nvidiakey.HealthCheckerOptions{

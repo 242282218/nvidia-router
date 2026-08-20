@@ -6,8 +6,6 @@ import type {
   ModelsResponse,
   SaveSelection,
   CandidatesResponse,
-  ModelTestCredential,
-  ModelTestCredentialsResponse,
   ModelTestJob,
   ModelTestJobRequest,
 } from './types'
@@ -19,7 +17,6 @@ export interface ModelsApi {
   patch(id: number, patch: ModelPatch): Promise<Model>
   unblock(keyId: number, modelId: number): Promise<Model>
   delete(id: number): Promise<void>
-  credentials(): Promise<ModelTestCredentialsResponse>
   createTestJob(request: ModelTestJobRequest): Promise<ModelTestJob>
   getTestJob(id: string | number): Promise<ModelTestJob>
   cancelTestJob(id: string | number): Promise<ModelTestJob | void>
@@ -44,9 +41,6 @@ export const modelsApi: ModelsApi = {
   delete(id) {
     return apiRequest(`/admin/api/models/${id}`, { method: 'DELETE' })
   },
-  credentials() {
-    return apiRequest('/admin/api/nvidia-keys')
-  },
   createTestJob(request) {
     return apiRequest('/admin/api/model-test-jobs', { method: 'POST', body: request })
   },
@@ -62,7 +56,6 @@ export type {
   Candidate,
   Model,
   ModelPatch,
-  ModelTestCredential,
   ModelTestJob,
   ModelTestJobRequest,
   SaveSelection,

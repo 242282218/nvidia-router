@@ -49,21 +49,9 @@ export interface SaveSelection extends Candidate {
   enabled: boolean
 }
 
-export interface ModelTestCredential {
-  id: number
-  masked: string
-  enabled: boolean
-  auth_invalid?: boolean
-  cooldown_until?: string
-}
-
-export interface ModelTestCredentialsResponse {
-  data: ModelTestCredential[]
-}
-
+// One job may mix providers: the backend dispatches each model on its own
+// provider and picks the credential or proxy exit itself.
 export interface ModelTestJobRequest {
-  provider: ModelProvider
-  credential_id?: number
   model_ids: number[]
   mode: ModelTestMode
   concurrency: number
@@ -72,6 +60,7 @@ export interface ModelTestJobRequest {
 export interface ModelTestResult {
   model_id: number
   public_id?: string
+  provider?: ModelProvider
   status: string
   duration_ms?: number
   error?: string
@@ -81,7 +70,6 @@ export interface ModelTestResult {
 
 export interface ModelTestJob {
   id: string | number
-  provider: ModelProvider
   mode: ModelTestMode
   status: ModelTestJobStatus
   total: number

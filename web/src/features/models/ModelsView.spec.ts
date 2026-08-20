@@ -13,7 +13,6 @@ vi.mock('./api', () => ({
     patch: vi.fn(),
     unblock: vi.fn(),
     delete: vi.fn(),
-    credentials: vi.fn(),
     createTestJob: vi.fn(),
     getTestJob: vi.fn(),
     cancelTestJob: vi.fn(),
@@ -275,7 +274,7 @@ describe('ModelsView', () => {
     expect(wrapper.get('[data-testid="model-enable"]').text()).toContain('启用')
   })
 
-  it('keeps batch test selection scoped to the selected provider', async () => {
+  it('tests models from every provider in one batch', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       data: [
         makeModel({ id: 1, public_id: 'nvidia/chat', enabled: true }),
@@ -287,17 +286,16 @@ describe('ModelsView', () => {
         }),
       ],
     })
-    vi.mocked(modelsApi.credentials).mockResolvedValue({
-      data: [{ id: 11, masked: 'nvapi-…tail', enabled: true }],
-    })
     vi.mocked(modelsApi.createTestJob).mockResolvedValue({
       id: 'job-1',
-      provider: 'nvidia',
       mode: 'concurrent',
       status: 'completed',
-      total: 1,
-      completed: 1,
-      results: [],
+      total: 2,
+      completed: 2,
+      results: [
+        { model_id: 1, public_id: 'nvidia/chat', provider: 'nvidia', status: 'success' },
+        { model_id: 2, public_id: 'opencodefree/chat', provider: 'opencodefree', status: 'failed', error: '上游多次未返回可用响应' },
+      ],
     })
     const wrapper = mount(ModelsView)
     await flushPromises()
@@ -305,17 +303,22 @@ describe('ModelsView', () => {
     await wrapper.get('[data-testid="select-enabled-test-models"]').trigger('click')
     await flushPromises()
 
+    // Both providers stay selected: the backend routes each model on its own.
     expect((wrapper.get('[data-testid="test-model-1"]').element as HTMLInputElement).checked).toBe(true)
-    expect((wrapper.get('[data-testid="test-model-2"]').element as HTMLInputElement).checked).toBe(false)
-    expect(wrapper.get('[data-testid="start-model-test"]').text()).toContain('测试 1 个模型')
+    expect((wrapper.get('[data-testid="test-model-2"]').element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.get('[data-testid="start-model-test"]').text()).toContain('测试 2 个模型')
 
-    await wrapper.get('[data-testid="test-model-2"]').setValue(true)
+    await wrapper.get('[data-testid="start-model-test"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="model-test-provider"]').element).toHaveProperty('value', 'opencodefree')
-    expect((wrapper.get('[data-testid="test-model-1"]').element as HTMLInputElement).checked).toBe(false)
-    expect((wrapper.get('[data-testid="test-model-2"]').element as HTMLInputElement).checked).toBe(true)
-    expect(wrapper.get('[data-testid="start-model-test"]').text()).toContain('测试 1 个模型')
+    expect(modelsApi.createTestJob).toHaveBeenCalledWith({
+      model_ids: [1, 2],
+      mode: 'concurrent',
+      concurrency: 4,
+    })
+    const job = wrapper.get('[data-testid="model-test-job"]')
+    expect(job.text()).toContain('NVIDIA')
+    expect(job.text()).toContain('OpenCodeFree')
   })
 
   it.each([

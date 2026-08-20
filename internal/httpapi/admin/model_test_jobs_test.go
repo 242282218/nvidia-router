@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,17 +14,31 @@ import (
 
 type modelTestJobRunnerFake struct {
 	models []modelcatalog.Model
+	mu     sync.Mutex
+	tested []int64
+	fail   map[int64]error
 }
 
 func (f *modelTestJobRunnerFake) List(context.Context) ([]modelcatalog.Model, error) {
 	return append([]modelcatalog.Model(nil), f.models...), nil
 }
 
-func (*modelTestJobRunnerFake) TestModel(context.Context, string, int64, int64) error { return nil }
+func (f *modelTestJobRunnerFake) TestModelAuto(_ context.Context, modelID int64) error {
+	f.mu.Lock()
+	f.tested = append(f.tested, modelID)
+	f.mu.Unlock()
+	return f.fail[modelID]
+}
+
+func (f *modelTestJobRunnerFake) testedIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.tested...)
+}
 
 func TestModelTestJobResponseUsesLowercasePublicFieldsAndOmitsCredentialID(t *testing.T) {
 	handler := NewModelTestJobs(&modelTestJobRunnerFake{models: []modelcatalog.Model{{ID: 1, PublicID: "model"}}})
-	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"provider":"nvidia","credential_id":7,"model_ids":[1],"mode":"sequential","concurrency":1}`)
+	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"model_ids":[1],"mode":"sequential","concurrency":1}`)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -33,50 +46,88 @@ func TestModelTestJobResponseUsesLowercasePublicFieldsAndOmitsCredentialID(t *te
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode job response: %v", err)
 	}
-	for _, field := range []string{"id", "provider", "mode", "status", "results"} {
+	for _, field := range []string{"id", "mode", "status", "results"} {
 		if _, ok := payload[field]; !ok {
 			t.Fatalf("job response missing %q: %s", field, response.Body.String())
 		}
 	}
-	for _, forbidden := range []string{"ID", "Provider", "CredentialID", "credential_id", "Cancel", "Context", "CancelRequested"} {
+	for _, forbidden := range []string{"ID", "Provider", "provider", "CredentialID", "credential_id", "Cancel", "Context", "CancelRequested"} {
 		if _, ok := payload[forbidden]; ok {
 			t.Fatalf("job response exposes internal field %q: %s", forbidden, response.Body.String())
 		}
 	}
 }
 
-type modelTestJobRunnerWithChecks struct {
-	*modelTestJobRunnerFake
-	configured    bool
-	credentialErr error
-}
-
-func (f *modelTestJobRunnerWithChecks) OpenCodeFreeConfigured() bool { return f.configured }
-
-func (f *modelTestJobRunnerWithChecks) ValidateNVIDIAKey(context.Context, int64) error {
-	return f.credentialErr
-}
-
-func TestModelTestJobRejectsUnconfiguredOpenCodeFreeBeforeCreatingTask(t *testing.T) {
-	runner := &modelTestJobRunnerWithChecks{modelTestJobRunnerFake: &modelTestJobRunnerFake{
-		models: []modelcatalog.Model{{ID: 1, PublicID: "opencodefree/model", Provider: modelcatalog.ProviderOpenCodeFree}},
-	}}
+// A single job may mix providers now: the probe dispatches on each model's own
+// provider, so the operator never picks a channel.
+func TestModelTestJobRunsMixedProvidersAndReportsProviderPerResult(t *testing.T) {
+	runner := &modelTestJobRunnerFake{
+		models: []modelcatalog.Model{
+			{ID: 1, PublicID: "nvidia/model", Provider: modelcatalog.ProviderNVIDIA},
+			{ID: 2, PublicID: "opencodefree/model", Provider: modelcatalog.ProviderOpenCodeFree},
+		},
+		fail: map[int64]error{2: modelcatalog.ErrUpstreamUnreachable},
+	}
 	handler := NewModelTestJobs(runner)
-	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"provider":"opencodefree","model_ids":[1],"mode":"sequential","concurrency":1}`)
-	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "provider_not_configured") {
+	created := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"model_ids":[1,2],"mode":"sequential"}`)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var job struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+
+	final := awaitModelTestJob(t, handler, job.ID)
+	if final.Status != "failed" {
+		t.Fatalf("job status = %q, want failed", final.Status)
+	}
+	if len(final.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(final.Results))
+	}
+	if final.Results[0].Provider != modelcatalog.ProviderNVIDIA || final.Results[0].Status != "success" {
+		t.Fatalf("nvidia result = %+v", final.Results[0])
+	}
+	if final.Results[1].Provider != modelcatalog.ProviderOpenCodeFree || final.Results[1].Status != "failed" {
+		t.Fatalf("opencodefree result = %+v", final.Results[1])
+	}
+	if final.Results[1].Error != "上游多次未返回可用响应" {
+		t.Fatalf("opencodefree error = %q", final.Results[1].Error)
+	}
+	if tested := runner.testedIDs(); len(tested) != 2 {
+		t.Fatalf("tested models = %v, want both", tested)
+	}
+}
+
+func TestModelTestJobRejectsUnknownModel(t *testing.T) {
+	handler := NewModelTestJobs(&modelTestJobRunnerFake{models: []modelcatalog.Model{{ID: 1, PublicID: "model"}}})
+	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"model_ids":[99],"mode":"sequential"}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "The selected models are invalid.") {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
-func TestModelTestJobRejectsUnknownNVIDIACredentialBeforeCreatingTask(t *testing.T) {
-	runner := &modelTestJobRunnerWithChecks{
-		modelTestJobRunnerFake: &modelTestJobRunnerFake{models: []modelcatalog.Model{{ID: 1, PublicID: "model"}}},
-		credentialErr:          errors.New("credential not found"),
-	}
-	handler := NewModelTestJobs(runner)
-	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"provider":"nvidia","credential_id":7,"model_ids":[1],"mode":"sequential","concurrency":1}`)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_credential") {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+func awaitModelTestJob(t *testing.T, handler *ModelTestJobs, id string) modelTestJob {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		response := performAdminRequest(handler, http.MethodGet, "/admin/api/model-test-jobs/"+id, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("get job status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var snapshot modelTestJob
+		if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+			t.Fatalf("decode job snapshot: %v", err)
+		}
+		if snapshot.Status != "queued" && snapshot.Status != "running" {
+			return snapshot
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("job %s did not finish, status = %q", id, snapshot.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -88,7 +139,7 @@ type blockingModelTestJobRunner struct {
 	count   int
 }
 
-func (f *blockingModelTestJobRunner) TestModel(ctx context.Context, _ string, _ int64, _ int64) error {
+func (f *blockingModelTestJobRunner) TestModelAuto(ctx context.Context, _ int64) error {
 	f.mu.Lock()
 	f.count++
 	f.mu.Unlock()
@@ -110,7 +161,7 @@ func TestModelTestJobsLimitActiveTasks(t *testing.T) {
 	handler := NewModelTestJobs(runner)
 	ids := make([]string, 0, modelTestMaxActiveJobs)
 	for index := 0; index < modelTestMaxActiveJobs; index++ {
-		response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"provider":"nvidia","credential_id":7,"model_ids":[1],"mode":"sequential","concurrency":1}`)
+		response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"model_ids":[1],"mode":"sequential","concurrency":1}`)
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("job %d status = %d, body = %s", index, response.Code, response.Body.String())
 		}
@@ -122,7 +173,7 @@ func TestModelTestJobsLimitActiveTasks(t *testing.T) {
 		}
 		ids = append(ids, job.ID)
 	}
-	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"provider":"nvidia","credential_id":7,"model_ids":[1],"mode":"sequential","concurrency":1}`)
+	response := performAdminRequest(handler, http.MethodPost, "/admin/api/model-test-jobs", `{"model_ids":[1],"mode":"sequential","concurrency":1}`)
 	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), "model_test_capacity") {
 		t.Fatalf("capacity status = %d, body = %s", response.Code, response.Body.String())
 	}

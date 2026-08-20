@@ -120,6 +120,7 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - OpenCodeFree 已由后端允许启用，模型表格和卡片不能再用 provider 条件禁用停用模型的启用按钮；音频模型的能力验证门禁仍保留。
 - 页面级验证应等待 URL 离开 `/admin/login`，不能用宽泛的 `/admin/*` 正则（该正则会立即匹配登录页）；登录响应、会话、模型 API 和可见复选框需分别核对。
 - 离线 CLI 操作受应用进程锁保护：运行 `db backup` 或 `admin reset-password` 前先停止 app；备份目录若由 root 创建，临时 Compose 容器使用应用 UID 10001 时需先调整目录属主，备份文件保持 0600。密码仅通过 stdin 注入。
+- 候选发现排序约定（`internal/modelcatalog/candidate_sort.go` 的 `sortCandidates`）：OpenCodeFree `-free` 模型最前（按 ID 字母序）→ NVIDIA 按参数量（`(\d+)b` 正则，如 550b/120b/31b）从大到小，识别不出大小的按厂商前缀（`/` 前的 vendor）分组排序 → 其余非 free 的 OpenCodeFree 模型最后。排序在后端 `DiscoverCandidates` 完成，前端按返回顺序直出。
 
 ## 2026-08-20 观测批量写入外键修复与部署
 
