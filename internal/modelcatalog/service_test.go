@@ -1057,7 +1057,7 @@ type fakeDiscoverer struct {
 	chatErr       error
 	// chatStatuses replays one HTTP status per call so a test can make an early
 	// probe attempt fail and a later one succeed.
-	chatStatuses []int
+	chatStatuses            []int
 	asrCalls                int
 	ttsCalls                int
 	asrResponse             string
@@ -1068,6 +1068,9 @@ type fakeDiscoverer struct {
 	ttsContentTypeHeaderSet bool
 	chatStarted             chan struct{}
 	chatRelease             chan struct{}
+	// chatCompletion, when set, wraps the probe body so a test can observe
+	// whether the probe declared semantic completion before closing it.
+	chatCompletion *probeCompletion
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
@@ -1099,7 +1102,11 @@ func (d *fakeDiscoverer) Chat(_ context.Context, snapshot runtimeconfig.Snapshot
 		status = d.chatStatuses[0]
 		d.chatStatuses = d.chatStatuses[1:]
 	}
-	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	var reader io.ReadCloser = io.NopCloser(strings.NewReader(body))
+	if d.chatCompletion != nil {
+		reader = probeCompletionBody{ReadCloser: reader, tracker: d.chatCompletion}
+	}
+	return &http.Response{StatusCode: status, Body: reader, Header: make(http.Header)}, nil
 }
 
 func (d *fakeDiscoverer) AudioTranscriptions(_ context.Context, _ runtimeconfig.Snapshot, _ string, body []byte, contentType string) (*http.Response, error) {

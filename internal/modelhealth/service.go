@@ -331,7 +331,25 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	}
 	close(jobs)
 	workers.Wait()
+	s.pruneProbeHistory(ctx)
 	return errors.Join(runErrors...)
+}
+
+// pruneProbeHistory drops probe rows past the readable window. It runs once per
+// cycle rather than per probe, and a failure only leaves history in place, so it
+// never fails the run that produced fresh data.
+func (s *Service) pruneProbeHistory(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	deleted, err := s.repository.DeleteProbesBefore(ctx, s.clock.Now().UTC().Add(-probeRetention))
+	if err != nil {
+		s.logger.Warn("model health probe cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		s.logger.Info("model health probe cleanup completed", "deleted", deleted)
+	}
 }
 
 func (s *Service) selectNVIDIAKey(ctx context.Context, models []modelcatalog.Model) (int64, error) {

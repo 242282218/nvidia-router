@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -96,5 +97,31 @@ func insertOpenCodeFreeModel(t *testing.T, db *sql.DB, publicID string) {
 		VALUES (?, ?, ?, 'chat', ?, 1, '2026-07-30T04:00:00Z', '2026-07-30T04:00:00Z')
 	`, publicID, "vendor/"+publicID, publicID, ProviderOpenCodeFree); err != nil {
 		t.Fatalf("insert OpenCodeFree model: %v", err)
+	}
+}
+
+// probeCompletion records whether the probe told the upstream body that the
+// answer completed. Non-stream bodies defer their EOF verdict until a validator
+// confirms the payload, so a probe that forgets this charges a request failure
+// against the pooled exit that served a perfectly good 200.
+type probeCompletion struct{ marked bool }
+
+type probeCompletionBody struct {
+	io.ReadCloser
+	tracker *probeCompletion
+}
+
+func (b probeCompletionBody) MarkComplete() { b.tracker.marked = true }
+
+func TestModelProbeDeclaresCompletionOnSuccess(t *testing.T) {
+	service, _, discoverer, modelID := probeService(t, "complete-chat", 11)
+	tracker := &probeCompletion{}
+	discoverer.chatCompletion = tracker
+
+	if err := service.TestModelAuto(context.Background(), modelID); err != nil {
+		t.Fatalf("TestModelAuto: %v", err)
+	}
+	if !tracker.marked {
+		t.Fatal("a validated probe must mark completion, otherwise the exit that served it is charged a failure")
 	}
 }

@@ -39,7 +39,12 @@ func NewRouter(
 	if len(additionalAdmin) > 3 && additionalAdmin[3] != nil {
 		eventStream = additionalAdmin[3]
 	}
-	root.Handle("/metrics", NoStoreMiddleware(metrics))
+	// Metrics expose key-pool size, cooldown counts, proxy-pool health and
+	// request outcomes — enough for an unauthenticated observer on the listener
+	// to tell when the pool is exhausted and time an attack. They carry the same
+	// management gate as the admin surface (see the deployment design note that
+	// ready/admin/metrics stay authenticated).
+	root.Handle("/metrics", NoStoreMiddleware(security.RequireManagement(metrics)))
 	securedManagement := NoStoreMiddleware(security.RequireManagement(newAdminRouter(management, settings, runtimeSummary, stats, monitoring, eventStream)))
 	root.Handle("/admin/api", securedManagement)
 	root.Handle("/admin/api/", securedManagement)
@@ -53,6 +58,9 @@ func newAdminRouter(management, settings, runtimeSummary, stats, monitoring, eve
 	mux.Handle("/admin/api/settings", settings)
 	mux.Handle("/admin/api/runtime/summary", runtimeSummary)
 	mux.Handle("/admin/api/stats", stats)
+	// Without this the cost panel's request falls through to the management
+	// handler, which has no such route and answers 404.
+	mux.Handle("/admin/api/stats/cost", stats)
 	mux.Handle("/admin/api/errors", stats)
 	mux.Handle("/admin/api/monitoring/", monitoring)
 	mux.Handle("/admin/api/events/stream", eventStream)

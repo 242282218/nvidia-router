@@ -94,3 +94,32 @@ func containsChatError(err error, code, param string) bool {
 	}
 	return true
 }
+
+// The fast path returns the original bytes verbatim. Parse rewrites legacy
+// message shapes into fields["messages"], so taking that path after a rewrite
+// would ship the un-normalised payload and the upstream would reject it.
+func TestFastPathDoesNotDiscardMessageNormalization(t *testing.T) {
+	payload := []byte(`{"model":"vendor/model","messages":[` +
+		`{"role":"user","content":"weather?"},` +
+		`{"role":"assistant","function_call":{"name":"lookup","arguments":{"city":"NYC"}}},` +
+		`{"role":"function","name":"lookup","content":[{"type":"output_text","text":"sunny"}]}]}`)
+	request, err := Parse(payload)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// PublicID == UpstreamID is the normal NVIDIA shape and is exactly what arms
+	// the fast path.
+	encoded, err := request.MarshalFor(modelcatalog.Model{PublicID: "vendor/model", UpstreamID: "vendor/model", Kind: modelcatalog.KindChat, Enabled: true})
+	if err != nil {
+		t.Fatalf("MarshalFor: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(`"function_call"`)) {
+		t.Fatalf("legacy function_call survived normalization: %s", encoded)
+	}
+	if !bytes.Contains(encoded, []byte(`"tool_calls"`)) {
+		t.Fatalf("normalized tool_calls missing: %s", encoded)
+	}
+	if !bytes.Contains(encoded, []byte(`"tool_call_id"`)) {
+		t.Fatalf("normalized tool_call_id missing: %s", encoded)
+	}
+}

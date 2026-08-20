@@ -253,8 +253,13 @@ function isMonitoringSummary(value: unknown): boolean {
     || !isNonNegativeNumber(completionTokens)
     || (firstTokenP50 !== undefined && !isNonNegativeNumber(firstTokenP50))
     || (firstTokenP95 !== undefined && !isNonNegativeNumber(firstTokenP95))) return false
+  // Canceled requests (client disconnects, 499) are counted in their own column
+  // and are neither a success nor a failure, so they have to be added back for
+  // the totals to reconcile. Reasoning models routinely produce them, and
+  // without this the whole view would fall into its error state.
+  const canceledCount = isNonNegativeNumber(value.canceled_count) ? value.canceled_count : 0
   return successRate <= 100
-    && successCount + failureCount === requestCount
+    && successCount + failureCount + canceledCount === requestCount
 }
 
 function isNonNegativeNumber(value: unknown): value is number {
@@ -271,6 +276,7 @@ function isMonitoringSeriesPoint(value: unknown): value is MonitoringSeriesPoint
     request_count: requestCount,
     success_count: successCount,
     failure_count: failureCount,
+    canceled_count: value.canceled_count,
     success_rate: requestCount === 0 ? 0 : (successCount / requestCount) * 100,
     average_duration_ms: value.average_duration_ms,
     average_first_byte_ms: value.average_first_byte_ms,

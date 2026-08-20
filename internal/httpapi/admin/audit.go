@@ -132,8 +132,13 @@ func accessKeyAction(segments []string, method string) string {
 		case http.MethodPatch:
 			return "access_keys.update_policy"
 		case http.MethodDelete:
-			return "access_keys.revoke"
+			// A hard delete, not a revoke: the row is removed. Recording it as a
+			// revoke made the trail claim the key still exists.
+			return "access_keys.delete"
 		}
+	}
+	if len(segments) == 2 && idSegment.MatchString(segments[0]) && segments[1] == "revoke" && method == http.MethodPost {
+		return "access_keys.revoke"
 	}
 	return "access_keys." + strings.ToLower(method)
 }

@@ -221,6 +221,26 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(wrapper.text()).not.toContain('response body')
   })
 
+  // Canceled requests are their own bucket server-side, so success + failure is
+  // legitimately less than request_count. Reasoning models produce them
+  // routinely; rejecting the payload would blank the whole view in production.
+  it('accepts payloads that contain canceled requests', async () => {
+    const withCanceled: MonitoringSnapshot = {
+      ...snapshot,
+      summary: { ...snapshot.summary, request_count: 1250, canceled_count: 16 },
+      series: snapshot.series.map(point => ({
+        ...point,
+        request_count: point.request_count + 5,
+        canceled_count: 5,
+      })),
+    }
+    vi.mocked(statisticsApi.getSummary).mockResolvedValueOnce({ data: withCanceled } as never)
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="monitoring-summary-error"]').exists()).toBe(false)
+  })
+
   it('keeps the last good data during a reload and flags stale background polls', async () => {
     vi.useFakeTimers()
     try {

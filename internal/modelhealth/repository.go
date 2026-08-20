@@ -207,6 +207,28 @@ func (r *Repository) nextConsecutiveFailures(ctx context.Context, tx *sql.Tx, mo
 	return previous + 1, nil
 }
 
+// probeRetention is how long individual probe rows are kept. The widest view
+// the summary can ask for is 7 days, so anything older is unreadable weight on
+// the same SQLite file the request path writes through. Double the window
+// leaves room for a report that straddles the boundary.
+const probeRetention = 14 * 24 * time.Hour
+
+// DeleteProbesBefore prunes probe history. Without it the table grows without
+// bound: at the 10s minimum interval and a catalog of 50 models it adds more
+// than 400k rows a day, none of which can ever be read back.
+func (r *Repository) DeleteProbesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx,
+		`DELETE FROM model_health_probes WHERE created_at < ?`, formatTimestamp(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("delete model health probes: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted model health probes: %w", err)
+	}
+	return deleted, nil
+}
+
 func (r *Repository) ListEvents(ctx context.Context, from, to time.Time) ([]ProbeEvent, error) {
 	return listEvents(ctx, r.read(), from, to)
 }

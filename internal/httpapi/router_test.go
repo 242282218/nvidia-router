@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	v1 "nvidia-router/internal/httpapi/v1"
@@ -196,4 +197,30 @@ func (fakeAdminSecurity) RequireManagement(next http.Handler) http.Handler {
 		writer.Header().Set("X-Admin-Guard", "applied")
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// Metrics expose pool size, cooldown counts and request outcomes: enough for an
+// unauthenticated observer to tell when the key or proxy pool is exhausted.
+func TestRouterProtectsMetrics(t *testing.T) {
+	notFound := http.NotFoundHandler()
+	metrics := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("nvidia_router_proxy_pool_healthy 3\n"))
+	})
+	router := NewRouter(
+		notFound, notFound, notFound, notFound, notFound, notFound, notFound, v1.Unsupported,
+		fakeAdminSecurity{}, notFound, notFound, notFound, notFound,
+		notFound, notFound, metrics,
+	)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	// Assert the metrics handler itself ran: the guard sets its header even when
+	// it fronts a NotFound handler, so the header alone proves nothing.
+	if !strings.Contains(response.Body.String(), "nvidia_router_proxy_pool_healthy") {
+		t.Fatalf("metrics handler not wired, body = %q", response.Body.String())
+	}
+	if response.Header().Get("X-Admin-Guard") != "applied" {
+		t.Fatal("/metrics bypassed the management guard")
+	}
 }

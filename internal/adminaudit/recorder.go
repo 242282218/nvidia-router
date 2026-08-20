@@ -35,6 +35,9 @@ func (r *Recorder) Record(ctx context.Context, action, targetType, targetID stri
 		TargetType: targetType,
 		TargetID:   targetID,
 		Detail:     MarshalDetail(detail),
+		// Insert writes this column explicitly, so leaving it zero stamps every
+		// row with the zero time and the audit trail loses its ordering.
+		CreatedAt: time.Now().UTC(),
 	}
 	if principal, ok := adminauth.PrincipalFromContext(ctx); ok {
 		entry.SessionID = &principal.SessionID

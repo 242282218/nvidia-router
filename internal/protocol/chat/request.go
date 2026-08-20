@@ -24,6 +24,11 @@ type Request struct {
 	toolChoiceSet bool
 	reasoning     compat.ReasoningSpec
 	raw           []byte
+	// messagesNormalized records that Parse rewrote the message array (legacy
+	// function_call/call_id shapes, object tool arguments, array tool results).
+	// The raw payload no longer represents the request, so the fast path below
+	// must not hand it to the upstream.
+	messagesNormalized bool
 }
 
 func Parse(payload []byte) (Request, error) {
@@ -45,7 +50,8 @@ func Parse(payload []byte) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	if needsChatMessageNormalization(fields["messages"]) {
+	messagesNormalized := needsChatMessageNormalization(fields["messages"])
+	if messagesNormalized {
 		normalizedMessages, err := normalizeChatMessages(fields["messages"])
 		if err != nil {
 			return Request{}, err
@@ -92,7 +98,7 @@ func Parse(payload []byte) (Request, error) {
 		},
 		tools: normalizedTools, toolChoice: normalizedChoice,
 		toolChoiceSet: fields["tool_choice"] != nil, reasoning: reasoning,
-		raw: payload,
+		raw: payload, messagesNormalized: messagesNormalized,
 	}, nil
 }
 
@@ -135,7 +141,8 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	// Fast path: 80% of requests have no tool/reasoning mutation and the
 	// upstream model equals the public model — reuse the original payload
 	// without clone+sort+marshal.
-	if model.UpstreamID == r.publicModel && len(r.tools) == 0 && !r.toolChoiceSet && (!r.reasoning.Requested || !model.SupportsReasoning) {
+	if model.UpstreamID == r.publicModel && len(r.tools) == 0 && !r.toolChoiceSet && !r.messagesNormalized &&
+		(!r.reasoning.Requested || !model.SupportsReasoning) {
 		if _, hasComp := r.fields["max_completion_tokens"]; !hasComp || isJSONNull(r.fields["max_completion_tokens"]) {
 			if _, hasTokens := r.fields["max_tokens"]; hasTokens && isJSONNull(r.fields["max_tokens"]) {
 				// max_tokens is null — still needs normalization, fall through

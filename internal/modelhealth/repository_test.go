@@ -169,3 +169,35 @@ func insertModelHealthModel(t *testing.T, db *sql.DB, id int64, publicID string)
 func boolPointer(value bool) *bool { return &value }
 
 func intPointer(value int) *int { return &value }
+
+// The summary can only ever read a 7-day window, so older probe rows are weight
+// on the same file the request path writes through. Without pruning the table
+// grows without bound.
+func TestRepositoryDeleteProbesBeforePrunesOnlyOldRows(t *testing.T) {
+	db := openModelHealthTestDB(t)
+	insertModelHealthModel(t, db, 7, "model-7")
+	repository := NewRepository(db)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+
+	for _, age := range []time.Duration{40 * 24 * time.Hour, 20 * 24 * time.Hour, time.Hour} {
+		event := ProbeEvent{ModelID: 7, Outcome: OutcomeSuccess, DurationMS: 5, CreatedAt: now.Add(-age)}
+		if err := repository.Record(context.Background(), event); err != nil {
+			t.Fatalf("Record(age=%s): %v", age, err)
+		}
+	}
+
+	deleted, err := repository.DeleteProbesBefore(context.Background(), now.Add(-probeRetention))
+	if err != nil {
+		t.Fatalf("DeleteProbesBefore: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2 (both rows older than the retention window)", deleted)
+	}
+	events, err := repository.ListEvents(context.Background(), now.Add(-probeRetention), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("remaining events = %d, want the one inside the window", len(events))
+	}
+}

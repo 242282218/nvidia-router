@@ -420,8 +420,24 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 		if err != nil {
 			return probeValidationError(err)
 		}
+		markProbeComplete(response)
 		return nil
 	})
+}
+
+// markProbeComplete tells the upstream body that a validated non-stream answer
+// really did complete. Without it the pooled exit that served a perfectly good
+// 200 is charged a request failure on Close, because non-stream bodies defer the
+// EOF verdict until a validator confirms the payload. A read-only probe that
+// silently demotes healthy exits would invert the pool's quality ranking for
+// real traffic.
+func markProbeComplete(response *http.Response) {
+	if response == nil || response.Body == nil {
+		return
+	}
+	if marker, ok := response.Body.(interface{ MarkComplete() }); ok {
+		marker.MarkComplete()
+	}
 }
 
 func (s *Service) testOpenCodeFreeModel(ctx context.Context, model Model) error {
