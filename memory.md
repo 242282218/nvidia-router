@@ -169,3 +169,13 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **`thinking` 线格式才有真实杠杆**：`ApplyReasoning` 现将 `budget_tokens` 压到 `max_tokens`（含 `max_completion_tokens`/`max_output_tokens` 拼写）的 3/4，为答案保留 1/4；无 `max_tokens` 时不压（无从对账），`auto`(-1) 与 `disabled` 不受影响。回归测试 `internal/compat/reasoning_budget_test.go`。
 - 测试 profile 坑：`ZeroAllowed=false` 时 `availableLevels` 会丢掉 `none`，`thinking:{"type":"disabled"}` 会被 `nearestLevel` 拉回 enabled。构造推理 profile 的单测必须显式设 `ZeroAllowed: true`。
 - 模型实测结论（NVIDIA 渠道，2026-08-20）：nemotron-3-ultra-550b 最均衡（94%，长文 14274 内容 / 236 思考）；glm-5.2 工具调用 6/6 全绿但流式最大空档 4.3s，客户端 idle 超时不应低于 10s；minimax-m3 长上下文预填充最快（8K 仅 3.9s）但长文生成会把预算全烧在思考上；step-3.7-flash 长任务能力弱（8K 预填充 191s，TTFT 可达 173s）。`deepseek-ai/deepseek-v4-flash-0731` 120s 无首字节，建议停用。
+
+## 2026-08-20 OpenCodeFree 502 根因与代理边界
+
+- **内网网关不能走出口代理**：网关是 Compose 服务别名（单标签主机名，端口 6020），只有本机网络可达；`opencodefree/client.go` 的 `do()` 原先在代理已配置时把每次调用都送去外部 XApi 出口，出口无路由到私有地址，返回**非标准状态 638**，被映射成 502 `upstream_error`，看起来像整渠道宕机。属 `c0cafc7`「代理池接入」的回归。修复：`NewClient` 用 `isLocalHost` 判定回环/私有网段/链路本地/未指定地址/不含点的单标签名 → 直连。**判断代理是否该介入的准则：代理只为对公网端点隐藏来源地址；目标只有本机可达时，代理既不可行也无意义。**
+- **638 会污染代理池**：`attemptThroughProxy` 对 `status>=500` 调 `ReportHTTPFailure`，于是这个配置层错误把健康出口按 HTTP 失败隔离，持续劣化质量排序。排查代理池异常时，先确认是否有非标准状态在被当作真实上游失败上报。
+- **诊断方法（网关容器无 curl/wget/python3，但有 node）**：`docker exec -i <gateway> node -e <script>`，Key 从 app 容器 `printenv` 读取后经 **stdin** 注入 node（不进 argv、不进宿主机进程表），并在输出前 `replace(key,'[redacted]')`。脚本 `scripts/test/opencodefree_{diagnose,authed_probe,model_probe}_remote.py` 可复用：分别覆盖路由器侧、网关侧直连、单模型多形态。
+- **区分"渠道故障"与"链路故障"的通用手法**：同一时刻做两侧对照——经路由器探测 vs 从上游容器内用同一把 Key 直连。两侧结论不一致即说明故障在中间链路，不要凭路由器侧的 5xx 就判定上游宕机。
+- **`muse-spark-1.2-contributor-free` 不可用**：网关返回 403 `RegionError`「This model is not available in your country.」，非流式/流式/长推理三形态稳定复现。出站由网关自身发起、不经路由器出口池，且 XApi 出口本身即国内，换出口无效。**已决定不支持**。网关另有 `mimo-v2.5-free`、`nemotron-3.5-lightning-free`、`laguna-s-2.1-free` 及一批 claude/gemini 模型未纳入白名单，纳入前必须逐个实测而非只看 `/v1/models` 列表。
+- **代理错误 reason 此前完全不可观测**：`xkproxy` 四种 `ErrorReason` 中 `TransportFailed` 与 `ProxyRejected` 共用 502 与完全相同的公开文案，`Error()` 返回常量字符串不含 reason，全链路无一处记录。已在 `attempt.go` 补 `slog.Warn("proxy_error", reason, cause_type, key_id)`——只记 cause 的**类型名**，不记文本（可能内嵌出口地址）。
+- **反查代理失败类型的特征表**（不依赖日志时可用）：`ReasonNoHealthyProxy` → **503** +「upstream proxy **pool** is temporarily unavailable」；`ReasonTransportFailed` → **502** +「upstream proxy is temporarily unavailable」；`ReasonProxyRejected` → 经 `writeChatError` → **502** + 同一文案。另：NVIDIA 与 OCF 路径都接了 `AcquireWithWait`，空池会轮询等待，**首个 tick 250ms**——失败快于 250ms 即可排除"池空"。
