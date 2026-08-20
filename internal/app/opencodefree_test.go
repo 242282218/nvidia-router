@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -289,6 +290,49 @@ func TestOpenCodeFreeRetriesTransient502(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeRetriesMalformedSuccessResponse(t *testing.T) {
+	var calls int64
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		if atomic.AddInt64(&calls, 1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `not-json`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"ocf-protocol-retry","object":"chat.completion","model":"free-model","choices":[{"index":0,"message":{"role":"assistant","content":"protocol retry ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"hi"}],"max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "protocol retry ok") {
+		t.Fatalf("expected protocol retry success, status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if atomic.LoadInt64(&calls) != 2 {
+		t.Fatalf("gateway calls = %d, want 2 (1 malformed + 1 retry)", atomic.LoadInt64(&calls))
+	}
+}
+
 func TestOpenCodeFreeDoesNotRetry429(t *testing.T) {
 	// 429 is the gateway's own concurrency limit; retrying would only add load.
 	var calls int64
@@ -323,5 +367,61 @@ func TestOpenCodeFreeDoesNotRetry429(t *testing.T) {
 	}
 	if atomic.LoadInt64(&calls) != 1 {
 		t.Fatalf("gateway calls = %d, want 1 (no retry on 429)", atomic.LoadInt64(&calls))
+	}
+}
+
+func TestOpenCodeFreePreservesRequestedReasoningEffort(t *testing.T) {
+	var calls int64
+	var bodies []map[string]json.RawMessage
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[{"id":"free-model"}]}`)
+			return
+		}
+		atomic.AddInt64(&calls, 1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read gateway body: %v", err)
+		}
+		fields := map[string]json.RawMessage{}
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Fatalf("decode gateway body: %v", err)
+		}
+		bodies = append(bodies, fields)
+		if got := string(fields["reasoning_effort"]); got != `"low"` {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"reasoning_effort must be low"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"ocf-reasoning","object":"chat.completion","model":"free-model","choices":[{"index":0,"message":{"role":"assistant","content":"reasoning preserved"},"finish_reason":"stop"}]}`)
+	}))
+	defer gateway.Close()
+
+	application, accessToken := newOpenCodeFreeTestApp(t, gateway.URL)
+	seedChatModelWithProvider(t, application, "pub-free", "free-model", modelcatalog.ProviderOpenCodeFree)
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"pub-free","messages":[{"role":"user","content":"think"}],"reasoning_effort":"low","max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "reasoning preserved") {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+	if atomic.LoadInt64(&calls) != 1 || len(bodies) != 1 {
+		t.Fatalf("gateway calls = %d bodies = %d, want 1", atomic.LoadInt64(&calls), len(bodies))
+	}
+	if got := string(bodies[0]["reasoning_effort"]); got != `"low"` {
+		t.Fatalf("reasoning_effort = %s, want low; bodies=%#v", got, bodies)
 	}
 }

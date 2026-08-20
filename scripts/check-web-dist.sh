@@ -40,6 +40,14 @@ if [[ "${NVIDIA_ROUTER_WEB_DIST_SELF_TEST:-0}" == "1" ]]; then
   printf 'x' >"$scratch/stale/assets/app-old.js"
   run_case stale-asset fail "$scratch/stale"
 
+  mkdir -p "$scratch/nested/assets/chunks"
+  printf '<script src="/assets/app-ddd.js"></script>' >"$scratch/nested/index.html"
+  printf 'assets/chunks/chunk-ddd.js' >"$scratch/nested/assets/app-ddd.js"
+  printf 'x' >"$scratch/nested/assets/chunks/chunk-ddd.js"
+  run_case nested-reachable pass "$scratch/nested"
+  printf 'x' >"$scratch/nested/assets/chunks/chunk-old.js"
+  run_case nested-stale fail "$scratch/nested"
+
   printf 'Embedded frontend dist gate self-test passed.\n'
   exit 0
 fi
@@ -56,32 +64,70 @@ from pathlib import Path
 import re
 import sys
 
-entry = Path(sys.argv[1])
+entry = Path(sys.argv[1]).resolve()
 root = entry.parent
-html = entry.read_text(encoding="utf-8")
-references = re.findall(r'(?:src|href)=["\']([^"\']+)["\']', html)
+assets = root / "assets"
+asset_files = {
+    path.relative_to(root).as_posix(): path.resolve()
+    for path in assets.rglob("*")
+    if path.is_file()
+}
+
+if not assets.is_dir():
+    raise SystemExit(f"Missing embedded frontend assets directory: {assets}")
+
+def asset_reference(value: str, base: Path) -> Path | None:
+    value = value.split("?", 1)[0].split("#", 1)[0]
+    if value.startswith(("http://", "https://", "data:", "#")):
+        return None
+    if value.startswith("/"):
+        return (root / value.lstrip("/")).resolve()
+    if value.startswith("assets/"):
+        return (root / value).resolve()
+    if value.startswith("./"):
+        return (base.parent / value[2:]).resolve()
+    return None
+
+reference_patterns = (
+    re.compile(r'(?:src|href)=["\']([^"\']+)["\']'),
+    re.compile(r'import\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'(?:from|import)\s*["\']([^"\']+)["\']'),
+    re.compile(r'url\(\s*["\']?([^"\')]+)'),
+)
 
 reachable = set()
-missing = []
-for reference in references:
-    if reference.startswith(("http://", "https://", "data:", "#")):
+missing = set()
+pending = [entry]
+while pending:
+    current = pending.pop()
+    if current in reachable or not current.is_file():
         continue
-    target = root / reference.lstrip("/")
-    if target.is_file():
-        reachable.add(target.resolve())
-    else:
-        missing.append(reference)
+    reachable.add(current)
+    content = current.read_text(encoding="utf-8")
+
+    for pattern in reference_patterns:
+        for reference in pattern.findall(content):
+            target = asset_reference(reference, current)
+            if target is None:
+                continue
+            if target.is_file():
+                pending.append(target)
+            else:
+                missing.add(reference)
+
+    # Vite writes lazy chunks into the entry's dependency map. Follow every
+    # exact fingerprinted filename mentioned by a reachable asset, including
+    # nested assets, while normal relative imports are handled above.
+    for name, target in asset_files.items():
+        if name in content and target not in reachable:
+            pending.append(target)
+
 if missing:
-    raise SystemExit("Missing embedded frontend assets: " + ", ".join(missing))
+    raise SystemExit("Missing embedded frontend assets: " + ", ".join(sorted(missing)))
 
 # Stale fingerprinted files still get embedded by //go:embed all:dist and bloat
 # the binary, so treat any unreferenced asset as a build-output drift failure.
-assets = root / "assets"
-orphans = sorted(
-    path.name
-    for path in assets.glob("*")
-    if path.is_file() and path.resolve() not in reachable
-) if assets.is_dir() else []
+orphans = sorted(path.name for path in asset_files.values() if path not in reachable)
 if orphans:
     raise SystemExit(
         "Stale embedded frontend assets (rerun 'pnpm --dir web run build'): "

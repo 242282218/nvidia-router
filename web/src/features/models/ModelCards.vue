@@ -34,8 +34,7 @@ function audioNeedsVerification(model: Model): boolean {
 }
 
 function enablingIsBlocked(model: Model): boolean {
-  return (!model.enabled && audioNeedsVerification(model))
-    || (normalizeProvider(model.provider) === 'opencodefree' && !model.enabled)
+  return !model.enabled && audioNeedsVerification(model)
 }
 
 function providerLabel(provider?: string): string {
@@ -171,8 +170,8 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
 
       <div class="mt-3 flex items-center justify-between">
         <UiBadge
-          :variant="isPendingProvider(model.provider) ? 'warning' : model.enabled ? 'success' : 'muted'"
-          :label="isPendingProvider(model.provider) ? '待接入' : model.enabled ? '启用' : '停用'"
+          :variant="model.enabled ? 'success' : 'muted'"
+          :label="model.enabled ? '启用' : '停用'"
         />
         <span class="text-xs text-[var(--color-text-muted)]">勾选后参与{{ isPendingProvider(model.provider) ? ' OpenCodeFree ' : ' NVIDIA ' }}只读测试</span>
       </div>

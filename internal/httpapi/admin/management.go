@@ -20,5 +20,8 @@ func NewManagement(nvidiaKeys, accessKeys, models, proxyPool, auditLogs, provide
 		mux.Handle("/admin/api/model-test-jobs", additional[0])
 		mux.Handle("/admin/api/model-test-jobs/", additional[0])
 	}
+	if len(additional) > 1 && additional[1] != nil {
+		mux.Handle("/admin/api/model-health/", additional[1])
+	}
 	return mux
 }

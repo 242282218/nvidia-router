@@ -236,6 +236,64 @@ func TestOpenCodeFreeDiscoveryAndReadOnlyTestJobAreWired(t *testing.T) {
 	t.Fatal("OpenCodeFree read-only test job did not complete successfully")
 }
 
+func TestModelHealthManagementIsWiredAndPersistsFrequency(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.NotFound(writer, request)
+	}))
+	t.Cleanup(upstream.Close)
+	baseURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(context.Background(), Dependencies{
+		Config: config.Config{
+			InitialAdminPassword: testInitialAdminPassword,
+			DataDir:              t.TempDir(),
+			TempDir:              t.TempDir(),
+			MasterKey:            [32]byte{1},
+			NVIDIABaseURL:        baseURL,
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	if _, err := application.db.Exec(`UPDATE admins SET must_change_password = 0 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	if _, err := application.db.Exec(`
+		INSERT INTO models(public_id, upstream_id, display_name, kind, enabled, reasoning_wire_format, created_at, updated_at)
+		VALUES('health-model', 'vendor/health-model', 'Health Model', 'chat', 1, 'none', ?, ?)
+	`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	login := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/auth/login", `{"username":"admin","password":"test-initial-admin-password"}`, nil, server.URL)
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("login: %s", readResponse(t, login))
+	}
+	session := responseSessionCookie(t, login)
+	_ = login.Body.Close()
+
+	summary := authRequest(t, server.Client(), http.MethodGet, server.URL+"/admin/api/model-health/summary?range=6h", "", session, "")
+	body := readResponse(t, summary)
+	if summary.StatusCode != http.StatusOK || !strings.Contains(body, `"public_id":"health-model"`) || !strings.Contains(body, `"buckets"`) {
+		t.Fatalf("summary status=%d body=%s", summary.StatusCode, body)
+	}
+
+	patched := authRequest(t, server.Client(), http.MethodPatch, server.URL+"/admin/api/model-health/settings", `{"enabled":false,"interval_seconds":300,"concurrency":3}`, session, server.URL)
+	if patched.StatusCode != http.StatusOK || !strings.Contains(readResponse(t, patched), `"interval_seconds":300`) {
+		t.Fatalf("settings patch status=%d", patched.StatusCode)
+	}
+	run := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/model-health/run", "", session, server.URL)
+	if run.StatusCode != http.StatusAccepted {
+		t.Fatalf("manual run status=%d body=%s", run.StatusCode, readResponse(t, run))
+	}
+}
+
 func assertPoolAcquireFails(t *testing.T, app *App, modelID int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

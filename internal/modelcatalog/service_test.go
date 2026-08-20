@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -617,6 +618,75 @@ func TestManualUnblockUsesTargetChatEndpoint(t *testing.T) {
 	assertBlockCount(t, db, 0)
 }
 
+func TestModelVerificationTimeoutUsesModelFirstTokenWindow(t *testing.T) {
+	defaultTimeout := modelVerificationTimeoutFor(Model{})
+	if defaultTimeout != 30*time.Second {
+		t.Fatalf("default verification timeout = %s, want 30s", defaultTimeout)
+	}
+
+	slowWindow := 120000
+	if got := modelVerificationTimeoutFor(Model{StreamFirstTokenTimeoutMS: &slowWindow}); got != 120*time.Second {
+		t.Fatalf("slow-model verification timeout = %s, want 120s", got)
+	}
+
+	tooLarge := 30 * 60 * 1000
+	if got := modelVerificationTimeoutFor(Model{StreamFirstTokenTimeoutMS: &tooLarge}); got != maxModelVerificationTimeout {
+		t.Fatalf("verification timeout cap = %s, want %s", got, maxModelVerificationTimeout)
+	}
+}
+
+func TestChatModelProbeUsesValidMinimumOutputBudget(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "probe-budget", UpstreamID: "vendor/probe-budget", DisplayName: "Probe Budget", Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	modelID := modelIDByPublicID(t, db, "probe-budget")
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+
+	if err := service.TestModel(context.Background(), ProviderNVIDIA, keyID, modelID); err != nil {
+		t.Fatalf("TestModel: %v", err)
+	}
+	if len(discoverer.chatBodies) != 1 {
+		t.Fatalf("chat probe calls = %d, want 1", len(discoverer.chatBodies))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(discoverer.chatBodies[0], &payload); err != nil {
+		t.Fatalf("decode chat probe: %v", err)
+	}
+	if got := payload["max_tokens"]; got != float64(modelProbeMaxTokens) {
+		t.Fatalf("chat probe max_tokens = %v, want %d", got, modelProbeMaxTokens)
+	}
+}
+
+func TestChatModelProbePassesModelVerificationWindowToTransport(t *testing.T) {
+	service, db, _, discoverer := newCatalogTestService(t)
+	keyID := insertNVIDIAKey(t, db)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "probe-timeout", UpstreamID: "vendor/probe-timeout", DisplayName: "Probe Timeout", Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	modelID := modelIDByPublicID(t, db, "probe-timeout")
+	slowWindow := 300000
+	if _, err := service.Patch(context.Background(), modelID, Patch{StreamFirstTokenTimeoutMS: &slowWindow}); err != nil {
+		t.Fatalf("Patch timeout: %v", err)
+	}
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+
+	if err := service.TestModel(context.Background(), ProviderNVIDIA, keyID, modelID); err != nil {
+		t.Fatalf("TestModel: %v", err)
+	}
+	if len(discoverer.chatSnapshots) != 1 {
+		t.Fatalf("chat probe snapshots = %d, want 1", len(discoverer.chatSnapshots))
+	}
+	if got := discoverer.chatSnapshots[0].FirstByteTimeoutMS; got != slowWindow {
+		t.Fatalf("chat probe first-byte timeout = %d, want %d", got, slowWindow)
+	}
+}
+
 func TestVerifyAndUnblockAudioModelsMarksVerificationAndClearsBlock(t *testing.T) {
 	service, db, _, discoverer := newCatalogTestService(t)
 	keyID := insertNVIDIAKey(t, db)
@@ -966,6 +1036,8 @@ type fakeDiscoverer struct {
 	lastToken               string
 	modelsCalls             int
 	chatCalls               int
+	chatBodies              [][]byte
+	chatSnapshots           []runtimeconfig.Snapshot
 	chatResponse            string
 	chatErr                 error
 	asrCalls                int
@@ -989,8 +1061,10 @@ func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, erro
 	return append([]string(nil), d.models...), nil
 }
 
-func (d *fakeDiscoverer) Chat(_ context.Context, _ runtimeconfig.Snapshot, _ string, _ []byte, _ bool) (*http.Response, error) {
+func (d *fakeDiscoverer) Chat(_ context.Context, snapshot runtimeconfig.Snapshot, _ string, probeBody []byte, _ bool) (*http.Response, error) {
 	d.chatCalls++
+	d.chatBodies = append(d.chatBodies, append([]byte(nil), probeBody...))
+	d.chatSnapshots = append(d.chatSnapshots, snapshot)
 	if d.chatErr != nil {
 		return nil, d.chatErr
 	}

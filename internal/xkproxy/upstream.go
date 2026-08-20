@@ -82,8 +82,9 @@ type UpstreamClient struct {
 	URL     string
 	timeout time.Duration
 
-	mu     sync.Mutex
-	client *http.Client
+	mu            sync.Mutex
+	client        *http.Client
+	unsafeForTest bool
 }
 
 func NewUpstreamClient(rawURL string, timeout time.Duration, expectedQty ...int) *UpstreamClient {
@@ -96,6 +97,14 @@ func NewUpstreamClient(rawURL string, timeout time.Duration, expectedQty ...int)
 		URL:     rawURL,
 		timeout: timeout,
 	}
+}
+
+// NewUpstreamClientForTest creates a client that allows connections to private IPs
+// for testing purposes only. NEVER use this in production.
+func NewUpstreamClientForTest(rawURL string, timeout time.Duration, expectedQty ...int) *UpstreamClient {
+	c := NewUpstreamClient(rawURL, timeout, expectedQty...)
+	c.unsafeForTest = true
+	return c
 }
 
 func upstreamURLWithQuantity(rawURL string, quantity int) string {
@@ -126,7 +135,7 @@ func (c *UpstreamClient) httpClient() *http.Client {
 	if c.client == nil {
 		c.client = &http.Client{
 			Transport: &http.Transport{
-				DialContext:         (&net.Dialer{Timeout: c.timeout}).DialContext,
+				DialContext:         safeDialContext(c.timeout, c.unsafeForTest),
 				TLSHandshakeTimeout: c.timeout,
 				MaxIdleConns:        2,
 				MaxIdleConnsPerHost: 2,
@@ -139,6 +148,90 @@ func (c *UpstreamClient) httpClient() *http.Client {
 		}
 	}
 	return c.client
+}
+
+// safeDialContext returns a DialContext that rejects private/loopback/metadata IPs
+// at connection time, mitigating DNS rebinding attacks where a public hostname
+// resolves to a private IP at dial time.
+func safeDialContext(timeout time.Duration, allowPrivateForTest bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if allowPrivateForTest {
+			return dialer.DialContext(ctx, network, addr)
+		}
+
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("parse dial address: %w", err)
+		}
+
+		// Resolve the hostname to IP addresses
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", host, err)
+		}
+
+		// Check all resolved IPs - reject if any are private/loopback/metadata
+		for _, ipAddr := range ips {
+			if isPrivateOrMetadataIP(ipAddr.IP) {
+				return nil, fmt.Errorf("dial %s: resolved to private/loopback/metadata IP %s", host, ipAddr.IP)
+			}
+		}
+
+		// All IPs are safe, proceed with dial
+		return dialer.DialContext(ctx, network, addr)
+	}
+}
+
+// isPrivateOrMetadataIP checks if an IP is private, loopback, link-local, or metadata service
+func isPrivateOrMetadataIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+
+	// Standard checks from net package
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	// Go 1.17+ has IsPrivate, but also check explicit ranges for robustness
+	if ip.IsPrivate() {
+		return true
+	}
+
+	// Explicit metadata service IPs (AWS, GCP, Azure, etc.)
+	metadataIPs := []string{
+		"169.254.169.254/32", // AWS/Azure/GCP metadata
+		"fd00:ec2::254/128",  // AWS IPv6 metadata
+	}
+
+	for _, cidrStr := range metadataIPs {
+		_, cidr, _ := net.ParseCIDR(cidrStr)
+		if cidr != nil && cidr.Contains(ip) {
+			return true
+		}
+	}
+
+	// Explicit private ranges (redundant with IsPrivate in Go 1.17+, but defensive)
+	privateCIDRs := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"fc00::/7",
+		"fe80::/10",
+		"::1/128",
+	}
+
+	for _, cidrStr := range privateCIDRs {
+		_, cidr, _ := net.ParseCIDR(cidrStr)
+		if cidr != nil && cidr.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *UpstreamClient) Close() {

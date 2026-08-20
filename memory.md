@@ -36,6 +36,7 @@
 - **410 Gone**：裸 `deepseek-v4-flash` 已 410，迁移 015 映射到 `deepseek-ai/deepseek-v4-flash-0731`；白名单发现与 gateway 同步缺口会导致已下线 free 模型仍 enabled（需 `opencodefree.Client.Models` 定时禁用）。
 - **Race**：无 CGO 时 `go test -race` 不可用，依赖锁结构与并发测试覆盖；`go vet` 必过。
 - **多实例**：限流与池状态为内存态，不跨实例共享，需 Redis 才可多实例（当前不做）。
+- **部署镜像行已参数化**（`docker-compose.deploy.yml` 的 image 行 = `${NVIDIA_ROUTER_IMAGE:-nvidia-router:local}`）：构建/启动直接注入 `NVIDIA_ROUTER_IMAGE=nvidia-router:deploy-<tag>` 即可，不要再用 sed 改镜像行；`git archive HEAD` 打包后 `cp` 旧 release 的 `.env`（chmod 600）+ `docker-compose.deploy.yml`，无新增迁移时 DB 直接兼容。
 - **性能基线（2026-08-20 两轮优化后）**：详见 `docs/plans/2026-08-20-性能优化调研与实施.md` 与调研底稿 `docs/代码全量调研与优化建议.md`（含逐条状态）。要点：不需要换语言（Go 最优，Rust 仅窄模块 15% 收益）；热点对照表（crypto GCM 实例缓存、eventhub O(1) 环形、SSE AfterFunc 去 goroutine、MarshalFor raw 快路径、collector worker 池、validator keep-alive、manager RWMutex+Clone 外移、SQLite 035/036 索引）可直接复用；前端改动必须重建并提交 `internal/web/dist`（go:embed）。
 - **SQLite 迁移命名坑**：`CREATE INDEX IF NOT EXISTS` 同名已存在时是 no-op，升级索引必须换新名字（035 的 model/access 部分索引因与 002 同名失效，036 用 `_v2` 后缀重建，`docs/代码全量调研与优化建议.md` #6）。新增迁移前先核对 `002_indexes.sql` 已有索引名。
 - **opencodefree 请求体零拷贝**：`client.go:79` 已由 `strings.NewReader(string(body))` 改 `bytes.NewReader(body)`，25MiB 上限场景省全量拷贝。
@@ -104,3 +105,39 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
   - 后台 goroutine 无 panic recover（collector.go:116,382,405）；`manager.Close`/`settings.Update` 锁内长阻塞（wg.Wait 上限 ~27s）。
 - **已知坑**：`035_perf_indexes.sql` 部分索引因同名 no-op 未生效（002 已有同名索引）；`pool.go StickyGet` 双重 Unlock panic（死代码，启用即崩）；`ShouldBackOff` 未接入采集退避。
 - **对标结论**：架构已覆盖通用方案（transport 池化、换 Key 重试防重放、读写池分离、SSE 硬上限）；可借鉴：出口 backup 分级、冷却渐进恢复、按错误类型分冷却阈值、重试/冷却事件指标、保池策略（healthy<expected 提前采集）、限流标准响应头。
+
+## 9. 2026-08-20 OpenCodeFree 协议重试与真实模型矩阵
+
+- `nearestLevel` 的 tie-break 根因：请求了具体 reasoning level 时，若它与 `auto` 的预算距离相同，旧排序可能先选 `auto`，导致 `low` 被错误归一化。修复顺序为精确请求值优先，其次非 `auto` 值之间按预算距离和较小预算排序；回归测试覆盖 concrete `low` 不降级。
+- OpenCodeFree 非流式请求遇到 HTTP 200 但空响应或 malformed JSON 时，仅在响应尚未交付给客户端前重试一次；429 和流式请求不重试，避免放大网关限流或重放不可重放的流。
+- `scripts/test/live-model-matrix.py` 的 `strength`、`low_repeat`、`output`、`repeat` profile 可复用；运行时只从 `NVIDIA_ROUTER_ADMIN_PASSWORD` 读取密码，并通过 `hangzhou2-2` 的 SSH 配置执行，不能把密码、Key 或完整上游地址写入参数、输出或记忆。
+- 本轮 OpenCodeFree 三个白名单模型已覆盖 reasoning low/none、low/medium/high、native thinking、流式、工具、长输入、输出预算和重复稳定性；`hy3` 在 reasoning 消耗输出预算时可能以 `finish_reason=length` 结束，属于预算现象，不应误判为协议失败。
+- 外部限制：OpenCodeFree DeepSeek 可能进入约 30 秒的上游 `429` 限流窗口，等待后恢复；该现象应单列为上游限流，不归因于路由器重试逻辑。`thinking disabled` 的 reasoning 输出在不同上游模型间不一致，现有 preserve-native-thinking 契约暂不改动。
+
+## 8. 2026-08-20 模型白名单 UI 修复
+
+- 测试任务后端按单一 provider 校验模型 ID，因此前端测试选择也必须按当前渠道维护：批量“选中启用模型/全选”只作用于当前渠道，切换渠道清空旧选择，勾选其他渠道模型时自动切换渠道并保留该模型。
+- OpenCodeFree 已由后端允许启用，模型表格和卡片不能再用 provider 条件禁用停用模型的启用按钮；音频模型的能力验证门禁仍保留。
+- 页面级验证应等待 URL 离开 `/admin/login`，不能用宽泛的 `/admin/*` 正则（该正则会立即匹配登录页）；登录响应、会话、模型 API 和可见复选框需分别核对。
+- 离线 CLI 操作受应用进程锁保护：运行 `db backup` 或 `admin reset-password` 前先停止 app；备份目录若由 root 创建，临时 Compose 容器使用应用 UID 10001 时需先调整目录属主，备份文件保持 0600。密码仅通过 stdin 注入。
+
+## 2026-08-20 观测批量写入外键修复与部署
+
+- 根因：请求观测异步缓冲中的 `RequestRecord` 可能在 AccessKey/NVIDIAKey 删除后才刷盘；SQLite 的 `ON DELETE SET NULL` 只处理已落库行，不能处理队列中的旧 ID，导致整批 `RecordBatch` 因外键约束回滚。
+- 修复：`internal/observability/repository.go` 在插入批次的同一事务内核对两个外键表，将已删除引用归一化为 `NULL`；`internal/observability/buffer_test.go` 增加删除后批量写入回归测试。
+- 本地验证：观测模块测试、`go vet ./...`、`go test ./...` 通过；远端 `live-nvidia.sh` 的 `bash -n` 与 parser self-test 通过。
+- 发布：`/opt/nvidia-router-releases/20260820-observability-fk-fix`，镜像 `nvidia-router:deploy-20260820-observability-fk-fix`；切换前 `nvr-data` 备份保存在该 release 的 `backups/`，权限为 `600`。回滚需使用同一基础 Compose + deploy override，保留外部 `nvr-data` 与 `router-internal`。
+- 真实回归：创建临时 AccessKey，调用 `/v1/models` 和 OpenCodeFree Chat，立即删除 Key，等待超过默认 `BufferRecorder` 的 30 秒 flush interval；请求日志继续落库，删除后的 `access_key_id` 为 `NULL`，无新的 FK/flush/panic/fatal 错误。临时 Key 已清理。
+- 认证教训：登录探针必须从运行时 Secret 注入目标密码；本地环境变量与目标值不一致会产生误导性的 401。CLI 密码重置必须停 app、备份数据卷并通过 stdin 注入，密码不落盘、不写入日志或记忆。
+- 限制：目标机没有 Go，`live-nvidia.sh` 完整 Go live suite 不能仅凭远端 parser self-test 宣称通过；完整模型矩阵仍需具备运行时模型/Key 的条件，不能把 `SKIP` 当作 `PASS`。
+
+## 2026-08-20 渠道状态 / 模型健康度
+
+- 管理页面入口位于“资源接入”分组、代理池之后，用户可见标题为“渠道状态”，路由为 `/admin/channel-status`；内部接口保持 `/admin/api/model-health/*`，统一经过管理会话和 Origin 校验。
+- 模型健康检测默认关闭，频率默认 60 秒、允许 10～3600 秒，并发默认 2、允许 1～8；启用后立即触发首轮，后续按持久化频率调度。立即检测只入队，不阻塞管理请求。
+- 扫描使用模型白名单的完整列表（包括停用模型）；NVIDIA 模型使用当前可用 Key，OpenCodeFree 不传 NVIDIA Key。探测复用只读 `modelcatalog.TestModel`，不修改白名单、Key 状态、封禁状态或请求监控统计。
+- 探测记录独立存储在 `model_health_probes` / `model_health_latest`，用安全错误类别和成功/失败/超时/跳过/取消状态展示；页面固定 60 段时间格，必须同时提供文字状态/详情，不能只依赖颜色。
+- 前端生产构建后必须运行 `scripts/check-web-dist.sh`；Vite 路由懒加载的 JS/CSS 资源由入口 JS 的依赖图间接引用，检查器需要递归追踪依赖，否则会误报 stale asset。Windows 可用 `D:\Program Files\Git\bin\bash.exe scripts/check-web-dist.sh`。
+- 只读视觉检查可用 Playwright 注入模拟 `/admin/api/auth/session` 和 `/admin/api/model-health/summary` 响应，在 1440/768/375/320 宽度验证三列/单列卡片、移动抽屉、无横向溢出和频率控件；不要连接真实上游。
+- 摘要接口的事件、latest 和设置必须通过 `modelhealth.Repository.SummarySnapshot` 的同一只读事务读取；设置 PATCH 必须在写事务内读取当前行并应用字段级 patch，避免两个管理页面互相覆盖。
+- 频率控件使用可编辑数字输入而不是有限 preset，显示秒单位，前端与后端共同限制 10～3600；摘要聚合需单独返回 `stale_count`，不能把过期状态并入 `unchecked_count`。

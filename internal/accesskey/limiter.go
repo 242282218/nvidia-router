@@ -21,7 +21,15 @@ type budgetError struct{}
 
 func (*budgetError) Error() string { return "access key token budget exceeded" }
 
+const numShards = 256
+
+// limiter uses sharded locks to reduce contention when multiple access keys
+// are used concurrently. Each shard protects a subset of key buckets.
 type limiter struct {
+	shards [numShards]limiterShard
+}
+
+type limiterShard struct {
 	mu      sync.Mutex
 	buckets map[int64]*limitBucket
 }
@@ -35,15 +43,27 @@ type limitBucket struct {
 	seeded      bool
 }
 
-func newLimiter() *limiter { return &limiter{buckets: make(map[int64]*limitBucket)} }
+func newLimiter() *limiter {
+	l := &limiter{}
+	for i := range l.shards {
+		l.shards[i].buckets = make(map[int64]*limitBucket)
+	}
+	return l
+}
+
+// shardFor returns the shard index for a given key ID.
+func (l *limiter) shardFor(id int64) *limiterShard {
+	return &l.shards[uint64(id)%numShards]
+}
 
 func (l *limiter) begin(id int64, rpm, tpm, maxConcurrent int, budget, persisted int64, now time.Time) error {
 	if l == nil || (rpm <= 0 && tpm <= 0 && maxConcurrent <= 0 && budget <= 0) {
 		return nil
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	bucket := l.bucketLocked(id, now)
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	bucket := l.bucketLocked(shard, id, now)
 	if !bucket.seeded {
 		// First touch in this process seeds the budget from the last persisted
 		// value so a restart does not reset a half-spent budget to zero.
@@ -74,9 +94,10 @@ func (l *limiter) charge(id int64, tpm int, prompt, completion int64, now time.T
 		return
 	}
 	added := maxInt64(prompt, 0) + maxInt64(completion, 0)
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	bucket := l.bucketLocked(id, now)
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	bucket := l.bucketLocked(shard, id, now)
 	if tpm > 0 {
 		bucket.tokens += added
 	}
@@ -91,9 +112,10 @@ func (l *limiter) consumedTotal(id int64) int64 {
 	if l == nil {
 		return 0
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if bucket := l.buckets[id]; bucket != nil {
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if bucket := shard.buckets[id]; bucket != nil {
 		return bucket.consumed
 	}
 	return 0
@@ -103,9 +125,10 @@ func (l *limiter) release(id int64) {
 	if l == nil {
 		return
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if bucket := l.buckets[id]; bucket != nil && bucket.concurrent > 0 {
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if bucket := shard.buckets[id]; bucket != nil && bucket.concurrent > 0 {
 		bucket.concurrent--
 	}
 }
@@ -116,16 +139,17 @@ func (l *limiter) remove(id int64) {
 	if l == nil {
 		return
 	}
-	l.mu.Lock()
-	delete(l.buckets, id)
-	l.mu.Unlock()
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	delete(shard.buckets, id)
+	shard.mu.Unlock()
 }
 
-func (l *limiter) bucketLocked(id int64, now time.Time) *limitBucket {
-	bucket := l.buckets[id]
+func (l *limiter) bucketLocked(shard *limiterShard, id int64, now time.Time) *limitBucket {
+	bucket := shard.buckets[id]
 	if bucket == nil {
 		bucket = &limitBucket{windowStart: now}
-		l.buckets[id] = bucket
+		shard.buckets[id] = bucket
 		return bucket
 	}
 	if now.Before(bucket.windowStart) || now.Sub(bucket.windowStart) >= time.Minute {
@@ -144,4 +168,26 @@ func maxInt64(value, floor int64) int64 {
 		return floor
 	}
 	return value
+}
+
+// For testing: getBucket returns the bucket for a key ID, if it exists.
+func (l *limiter) getBucket(id int64) *limitBucket {
+	if l == nil {
+		return nil
+	}
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	return shard.buckets[id]
+}
+
+// For testing: setBucket sets the bucket for a key ID.
+func (l *limiter) setBucket(id int64, bucket *limitBucket) {
+	if l == nil {
+		return
+	}
+	shard := l.shardFor(id)
+	shard.mu.Lock()
+	shard.buckets[id] = bucket
+	shard.mu.Unlock()
 }

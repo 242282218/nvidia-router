@@ -1,4 +1,4 @@
-package xkproxy
+﻿package xkproxy
 
 import (
 	"context"
@@ -24,7 +24,7 @@ type blockingCollectorUpstream struct {
 }
 
 func TestNewCollectorUsesExpectedQtyInUpstreamURL(t *testing.T) {
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:     "https://api.example.test/XApi?apikey=fixture&qty=1",
 		UpstreamTimeout: time.Second,
 		ExpectedQty:     7,
@@ -80,7 +80,7 @@ func TestCollectorStartIdempotentAndCloseSafe(t *testing.T) {
 	}))
 	defer server.Close()
 
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:     server.URL,
 		UpstreamTimeout: 200 * time.Millisecond,
 		Interval:        time.Hour,
@@ -115,7 +115,7 @@ func TestCollectorCloseWaitsForManualRefresh(t *testing.T) {
 		resourceClosed: make(chan struct{}),
 	}
 
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamTimeout: time.Second,
 		Interval:        time.Hour,
 		ProxyTTL:        time.Minute,
@@ -157,7 +157,7 @@ func TestCollectorConcurrentCloseWaitsForResources(t *testing.T) {
 		refreshDone:    refreshDone,
 		resourceClosed: make(chan struct{}),
 	}
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamTimeout: time.Second,
 		Interval:        time.Hour,
 		ProxyTTL:        time.Minute,
@@ -215,7 +215,7 @@ func TestCollectorConcurrentCloseWaitsForResources(t *testing.T) {
 // TestCollectorNormalizesZeroConcurrency proves a zero/negative Concurrency
 // config cannot hang every validation goroutine on an empty semaphore.
 func TestCollectorNormalizesZeroConcurrency(t *testing.T) {
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		Interval: time.Hour,
 		ProxyTTL: time.Minute,
 	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -246,7 +246,7 @@ func TestCollectorValidationAllFailedExtendsLiveProxies(t *testing.T) {
 		ValidatedAt: now,
 	}})
 
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:       upstream.URL,
 		UpstreamTimeout:   500 * time.Millisecond,
 		ValidationURL:     closedURL,
@@ -282,7 +282,7 @@ func TestCollectorValidationAllFailedKeepsLastSuccessEmpty(t *testing.T) {
 	closed.Close() // validation target unreachable
 
 	pool := NewPool()
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:       upstream.URL,
 		UpstreamTimeout:   500 * time.Millisecond,
 		ValidationURL:     closedURL,
@@ -340,7 +340,7 @@ func TestCollectorRefetchesAfterValidationAllFailed(t *testing.T) {
 	defer upstream.Close()
 
 	pool := NewPool()
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:       upstream.URL,
 		UpstreamTimeout:   500 * time.Millisecond,
 		ValidationURL:     valid.URL,
@@ -378,7 +378,7 @@ func (u *codeUpstream) Close() {}
 // straight to the deepest level so a throttled upstream is not polled at the
 // base interval.
 func TestCollectorRateLimitCodeJumpsBackoff(t *testing.T) {
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:     "https://fixture.invalid/",
 		UpstreamTimeout: time.Second,
 	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -402,7 +402,7 @@ func TestCollectorRateLimitCodeJumpsBackoff(t *testing.T) {
 // rate-limit/account code) still grow the backoff one level per failure instead
 // of jumping to the cap.
 func TestCollectorPlainErrorBacksOffGradually(t *testing.T) {
-	collector := NewCollector(CollectorConfig{
+	collector := NewCollectorForTest(CollectorConfig{
 		UpstreamURL:     "https://fixture.invalid/",
 		UpstreamTimeout: time.Second,
 	}, NewPool(), slog.New(slog.NewTextHandler(io.Discard, nil)))

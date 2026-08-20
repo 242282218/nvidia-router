@@ -80,6 +80,12 @@ const providerOptions = computed<string[]>(() => {
 
 const filteredCandidates = computed<Candidate[]>(() => candidates.value.filter((candidate) => matchesFilter(candidate)))
 const filteredModels = computed<Model[]>(() => modelList.value.filter((model) => matchesFilter(model)))
+const testProviderModels = computed<Model[]>(() => modelList.value.filter(
+  (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
+))
+const filteredTestModels = computed<Model[]>(() => filteredModels.value.filter(
+  (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
+))
 const selectedCandidateKeys = computed<ReadonlySet<string>>(() => new Set(
   Object.entries(selectedCandidates.value)
     .filter(([, selected]) => selected)
@@ -91,7 +97,9 @@ const selectedTestModelIds = computed<ReadonlySet<number>>(() => new Set(
     .map(([id]) => Number(id))
     .filter((id) => Number.isFinite(id)),
 ))
-const selectedTestModelList = computed<Model[]>(() => modelList.value.filter((model) => selectedTestModelIds.value.has(model.id)))
+const selectedTestModelList = computed<Model[]>(() => testProviderModels.value.filter(
+  (model) => selectedTestModelIds.value.has(model.id),
+))
 const testableSelectedModels = computed<Model[]>(() => selectedTestModelList.value.filter(
   (model) => normalizeProvider(model.provider) === normalizeProvider(testProvider.value),
 ))
@@ -114,10 +122,14 @@ watch(modelList, (next) => {
     const key = String(model.id)
     nextSelection[key] = Object.prototype.hasOwnProperty.call(previous, key)
       ? previous[key] === true
-      : model.enabled
+      : normalizeProvider(model.provider) === normalizeProvider(testProvider.value) && model.enabled
   }
   selectedTestModels.value = nextSelection
 }, { immediate: true })
+
+watch(testProvider, () => {
+  selectedTestModels.value = {}
+}, { flush: 'sync' })
 
 onMounted(() => {
   void loadModels()
@@ -362,6 +374,12 @@ function toggleCandidate(candidate: Candidate, selected: boolean): void {
 }
 
 function toggleTestModel(model: Model, selected: boolean): void {
+  const provider = normalizeProvider(model.provider)
+  if (selected && provider !== normalizeProvider(testProvider.value)) {
+    testProvider.value = provider
+    selectedTestModels.value = { [String(model.id)]: true }
+    return
+  }
   selectedTestModels.value = { ...selectedTestModels.value, [String(model.id)]: selected }
 }
 
@@ -374,16 +392,19 @@ function selectAllCandidates(): void {
 }
 
 function selectAllTestModels(): void {
-  const allSelected = filteredModels.value.length > 0
-    && filteredModels.value.every((model) => selectedTestModelIds.value.has(model.id))
+  const allSelected = filteredTestModels.value.length > 0
+    && filteredTestModels.value.every((model) => selectedTestModelIds.value.has(model.id))
   const next = { ...selectedTestModels.value }
-  for (const model of filteredModels.value) next[String(model.id)] = !allSelected
+  for (const model of filteredTestModels.value) next[String(model.id)] = !allSelected
   selectedTestModels.value = next
 }
 
 function selectEnabledTestModels(): void {
   const next = { ...selectedTestModels.value }
-  for (const model of modelList.value) next[String(model.id)] = model.enabled
+  for (const model of modelList.value) {
+    next[String(model.id)] = normalizeProvider(model.provider) === normalizeProvider(testProvider.value)
+      && model.enabled
+  }
   selectedTestModels.value = next
 }
 
@@ -749,19 +770,19 @@ async function cancelCurrentTest(): Promise<void> {
               data-testid="select-enabled-test-models"
               variant="ghost"
               size="sm"
-              :disabled="modelList.length === 0"
+              :disabled="testProviderModels.length === 0"
               @click="selectEnabledTestModels"
             >
-              选中启用模型
+              选中当前渠道启用模型
             </UiButton>
             <UiButton
               data-testid="select-all-test-models"
               variant="ghost"
               size="sm"
-              :disabled="filteredModels.length === 0"
+              :disabled="filteredTestModels.length === 0"
               @click="selectAllTestModels"
             >
-              全选当前模型
+              全选当前渠道模型
             </UiButton>
             <span class="text-xs text-[var(--color-text-muted)]">
               测试已选 {{ selectedTestModelList.length }} 项
@@ -814,7 +835,7 @@ async function cancelCurrentTest(): Promise<void> {
                   只读模型测试
                 </h3>
                 <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-                  每个任务固定一个渠道和凭据；不会启用模型、清除 block 或把结果当作生产调用能力。
+                  每个任务固定一个渠道和凭据；勾选其他渠道模型时会切换当前渠道，不会启用模型、清除 block 或把结果当作生产调用能力。
                 </p>
               </div>
               <UiBadge

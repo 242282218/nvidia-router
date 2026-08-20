@@ -264,6 +264,14 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 	}
 	validated, err := nvidia.ValidateNonstreamChat(response)
 	if err != nil {
+		if errors.Is(err, nvidia.ErrEmptyResponse) || errors.Is(err, nvidia.ErrProtocol) {
+			// A 200 response with an empty or malformed body can be a transient
+			// gateway/upstream blip. Retry non-stream requests before surfacing it;
+			// streams cannot be replayed after headers may have been sent.
+			if !stream {
+				return true
+			}
+		}
 		if errors.Is(err, nvidia.ErrEmptyResponse) {
 			writeChatError(writer, fault.EmptyResponse(err))
 			return false
@@ -505,6 +513,26 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 	if data == "[DONE]" {
 		return false, sse.ErrNoSemanticData
 	}
+	
+	// Fast path: check if the data contains any reasoning-related fields before
+	// full JSON parsing. This avoids expensive unmarshaling for most chunks that
+	// only contain content deltas.
+	dataBytes := []byte(data)
+	hasReasoningFields := bytes.Contains(dataBytes, []byte(`"reasoning_content"`)) ||
+		bytes.Contains(dataBytes, []byte(`"reasoning"`)) ||
+		bytes.Contains(dataBytes, []byte(`"thinking"`)) ||
+		bytes.Contains(dataBytes, []byte(`"tool_calls"`))
+	
+	// If no reasoning fields are present, we only need to check for content
+	if !hasReasoningFields {
+		// Quick check for non-empty content field
+		if bytes.Contains(dataBytes, []byte(`"content"`)) {
+			return true, nil
+		}
+		return false, nil
+	}
+	
+	// Slow path: full JSON parsing when reasoning fields are present
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
@@ -516,7 +544,7 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 			} `json:"delta"`
 		} `json:"choices"`
 	}
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+	if err := json.Unmarshal(dataBytes, &chunk); err != nil {
 		return false, fmt.Errorf("decode upstream chat event: %w", err)
 	}
 	for _, choice := range chunk.Choices {

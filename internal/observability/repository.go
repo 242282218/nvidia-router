@@ -92,6 +92,10 @@ func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) e
 		return fmt.Errorf("begin request batch transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	records, err = nullDeletedForeignKeys(ctx, tx, records)
+	if err != nil {
+		return err
+	}
 
 	insertStmt, err := tx.PrepareContext(ctx, insertRequestLogQuery)
 	if err != nil {
@@ -119,6 +123,76 @@ func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) e
 		return fmt.Errorf("commit request batch transaction: %w", err)
 	}
 	return nil
+}
+
+func nullDeletedForeignKeys(ctx context.Context, tx *sql.Tx, records []RequestRecord) ([]RequestRecord, error) {
+	accessIDs := make([]int64, 0, len(records))
+	nvidiaIDs := make([]int64, 0, len(records))
+	for _, record := range records {
+		if record.AccessKeyID != nil {
+			accessIDs = append(accessIDs, *record.AccessKeyID)
+		}
+		if record.NVIDIAKeyID != nil {
+			nvidiaIDs = append(nvidiaIDs, *record.NVIDIAKeyID)
+		}
+	}
+	existingAccessIDs, err := existingForeignKeyIDs(ctx, tx, "access_keys", accessIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load existing access key references: %w", err)
+	}
+	existingNVIDIAIDs, err := existingForeignKeyIDs(ctx, tx, "nvidia_keys", nvidiaIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load existing NVIDIA key references: %w", err)
+	}
+
+	normalized := append([]RequestRecord(nil), records...)
+	for index := range normalized {
+		if id := normalized[index].AccessKeyID; id != nil {
+			if _, ok := existingAccessIDs[*id]; !ok {
+				normalized[index].AccessKeyID = nil
+			}
+		}
+		if id := normalized[index].NVIDIAKeyID; id != nil {
+			if _, ok := existingNVIDIAIDs[*id]; !ok {
+				normalized[index].NVIDIAKeyID = nil
+			}
+		}
+	}
+	return normalized, nil
+}
+
+func existingForeignKeyIDs(ctx context.Context, tx *sql.Tx, table string, ids []int64) (map[int64]struct{}, error) {
+	existing := make(map[int64]struct{}, len(ids))
+	if len(ids) == 0 {
+		return existing, nil
+	}
+	unique := make(map[int64]struct{}, len(ids))
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := unique[id]; ok {
+			continue
+		}
+		unique[id] = struct{}{}
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM "+table+" WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		existing[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return existing, nil
 }
 
 // cleanupBatchSize bounds each DELETE pass. A single unbatched DELETE of a

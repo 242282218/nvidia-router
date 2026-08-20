@@ -49,7 +49,25 @@ type ttsModelTester interface {
 	AudioSpeech(context.Context, runtimeconfig.Snapshot, string, []byte) (*http.Response, error)
 }
 
-const modelVerificationTimeout = 30 * time.Second
+const (
+	modelVerificationTimeout    = 30 * time.Second
+	maxModelVerificationTimeout = 5 * time.Minute
+	modelProbeMaxTokens         = 16
+)
+
+func modelVerificationTimeoutFor(model Model) time.Duration {
+	timeout := modelVerificationTimeout
+	if model.StreamFirstTokenTimeoutMS != nil && *model.StreamFirstTokenTimeoutMS > 0 {
+		configured := time.Duration(*model.StreamFirstTokenTimeoutMS) * time.Millisecond
+		if configured > timeout {
+			timeout = configured
+		}
+	}
+	if timeout > maxModelVerificationTimeout {
+		return maxModelVerificationTimeout
+	}
+	return timeout
+}
 
 type Service struct {
 	repository   *Repository
@@ -192,7 +210,7 @@ func (s *Service) TestModel(ctx context.Context, provider string, keyID, modelID
 	if model.Provider != provider {
 		return fmt.Errorf("%w: model %q belongs to %s", ErrProviderMismatch, model.PublicID, model.Provider)
 	}
-	testCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeout)
+	testCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeoutFor(model))
 	defer cancel()
 	switch provider {
 	case ProviderNVIDIA:
@@ -215,7 +233,7 @@ func (s *Service) VerifyAndUnblock(ctx context.Context, keyID, modelID int64) (M
 	if err != nil {
 		return Model{}, fmt.Errorf("load model before manual test: %w", err)
 	}
-	verifyCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeout)
+	verifyCtx, cancel := context.WithTimeout(ctx, modelVerificationTimeoutFor(model))
 	defer cancel()
 	if err := s.testTargetModel(verifyCtx, keyID, model); err != nil {
 		return Model{}, fmt.Errorf("manual model test: %w", err)
@@ -231,14 +249,20 @@ func (s *Service) testTargetModel(ctx context.Context, keyID int64, model Model)
 	return s.secrets.WithSecret(ctx, keyID, func(secret []byte) error {
 		var response *http.Response
 		var err error
-		snapshot := runtimeconfig.Snapshot{}
+		// Keep the transport-level first-byte deadline aligned with the
+		// verification context. Otherwise a slow model can be cancelled by the
+		// fleet-wide request timeout before its model-specific verification window
+		// has a chance to take effect.
+		snapshot := runtimeconfig.Snapshot{
+			FirstByteTimeoutMS: int(modelVerificationTimeoutFor(model) / time.Millisecond),
+		}
 		switch model.Kind {
 		case KindChat:
 			tester, ok := s.discoverer.(chatModelTester)
 			if !ok {
 				return ErrManualTestRequired
 			}
-			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "messages": []map[string]string{{"role": "user", "content": "ping"}}, "max_tokens": 1})
+			body, marshalErr := json.Marshal(map[string]any{"model": model.UpstreamID, "messages": []map[string]string{{"role": "user", "content": "ping"}}, "max_tokens": modelProbeMaxTokens})
 			if marshalErr != nil {
 				return marshalErr
 			}

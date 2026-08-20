@@ -32,6 +32,7 @@ type Validator struct {
 	validationStatus int
 	timeout          time.Duration
 	maxLatency       time.Duration
+	allowPrivateForTest bool
 
 	mu         sync.Mutex
 	transports map[string]*cachedValidationTransport
@@ -51,11 +52,37 @@ func NewValidator(validationURL string, validationStatus int, timeout time.Durat
 // round-trip exceeds maxLatency. A zero maxLatency disables the slow-proxy gate.
 func NewValidatorWithMaxLatency(validationURL string, validationStatus int, timeout time.Duration, maxLatency time.Duration) *Validator {
 	return &Validator{
-		validationURL:    validationURL,
-		validationStatus: validationStatus,
-		timeout:          timeout,
-		maxLatency:       maxLatency,
-		transports:       make(map[string]*cachedValidationTransport),
+		validationURL:       validationURL,
+		validationStatus:    validationStatus,
+		timeout:             timeout,
+		maxLatency:          maxLatency,
+		allowPrivateForTest: false,
+		transports:          make(map[string]*cachedValidationTransport),
+	}
+}
+
+// NewValidatorForTest creates a validator that allows private IPs for testing.
+// Production code must not use this constructor.
+func NewValidatorForTest(validationURL string, validationStatus int, timeout time.Duration) *Validator {
+	return &Validator{
+		validationURL:       validationURL,
+		validationStatus:    validationStatus,
+		timeout:             timeout,
+		maxLatency:          0,
+		allowPrivateForTest: true,
+		transports:          make(map[string]*cachedValidationTransport),
+	}
+}
+
+// NewValidatorWithMaxLatencyForTest creates a validator with max latency that allows private IPs for testing.
+func NewValidatorWithMaxLatencyForTest(validationURL string, validationStatus int, timeout time.Duration, maxLatency time.Duration) *Validator {
+	return &Validator{
+		validationURL:       validationURL,
+		validationStatus:    validationStatus,
+		timeout:             timeout,
+		maxLatency:          maxLatency,
+		allowPrivateForTest: true,
+		transports:          make(map[string]*cachedValidationTransport),
 	}
 }
 
@@ -148,9 +175,9 @@ func (v *Validator) transportForWithURL(proxy Proxy, proxyURL *url.URL, dialTime
 		delete(v.transports, key)
 	}
 
-	transport := &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
-		TLSHandshakeTimeout: dialTimeout,
+		transport := &http.Transport{
+			DialContext:         safeDialContext(dialTimeout, v.allowPrivateForTest),
+			TLSHandshakeTimeout: dialTimeout,
 		// Keep-alives enabled with bounded idle pool so a proxy validated
 		// every 5s reuses its CONNECT tunnel instead of paying TCP+TLS
 		// handshake each cycle. MaxIdleConnsPerHost is raised from the

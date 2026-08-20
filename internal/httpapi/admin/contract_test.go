@@ -13,6 +13,7 @@ import (
 
 	"nvidia-router/internal/accesskey"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/modelhealth"
 	"nvidia-router/internal/nvidiakey"
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
@@ -127,6 +128,33 @@ func TestAdminAPIContractSnapshots(t *testing.T) {
 			name:    "monitoring_logs_get",
 			handler: NewMonitoring(monitoring, fixedAdminClock{now: now}),
 			method:  http.MethodGet, path: "/admin/api/monitoring/logs?range=7d&page=1&page_size=50",
+		},
+		{
+			name: "model_health_summary_get",
+			handler: NewModelHealth(&modelHealthServiceFake{
+				summary: contractModelHealthSummary(now),
+			}),
+			method: http.MethodGet, path: "/admin/api/model-health/summary?range=6h&group=default&sort=availability",
+		},
+		{
+			name: "model_health_settings_get",
+			handler: NewModelHealth(&modelHealthServiceFake{
+				settings: contractModelHealthSettings(now),
+			}),
+			method: http.MethodGet, path: "/admin/api/model-health/settings",
+		},
+		{
+			name: "model_health_settings_patch",
+			handler: NewModelHealth(&modelHealthServiceFake{
+				settings: contractModelHealthSettings(now),
+			}),
+			method: http.MethodPatch, path: "/admin/api/model-health/settings",
+			body: `{"enabled":true,"interval_seconds":300,"concurrency":4}`,
+		},
+		{
+			name:    "model_health_run_post",
+			handler: NewModelHealth(&modelHealthServiceFake{}),
+			method:  http.MethodPost, path: "/admin/api/model-health/run",
 		},
 	}
 	for _, test := range tests {
@@ -304,3 +332,39 @@ func contractMonitoringLogs() observability.RequestLogsPage {
 func timePointer(value time.Time) *time.Time { return &value }
 
 func contractInt64Pointer(value int64) *int64 { return &value }
+
+func contractModelHealthSettings(now time.Time) modelhealth.Settings {
+	return modelhealth.Settings{
+		Enabled:         false,
+		IntervalSeconds: 60,
+		Concurrency:     2,
+		UpdatedAt:       now,
+	}
+}
+
+func contractModelHealthSummary(now time.Time) modelhealth.Summary {
+	from := now.Add(-6 * time.Hour)
+	lastProbe := now.Add(-2 * time.Minute)
+	duration := int64(840)
+	return modelhealth.Summary{
+		Range: "6h",
+		From:  from,
+		To:    now,
+		Models: []modelhealth.ModelSummary{
+			{
+				ModelID: 1, PublicID: "chat-llm", DisplayName: "Chat LLM", Kind: "chat", Provider: "nvidia", Enabled: true,
+				Status: modelhealth.StatusHealthy, SuccessRate: 100, ProbeCount: 1, SuccessCount: 1,
+				FailureCount: 0, TimeoutCount: 0, SkippedCount: 0, LastProbeAt: &lastProbe,
+				LastDurationMS: &duration, ConsecutiveFailures: 0,
+				Buckets: []modelhealth.Bucket{{
+					Start: from, End: from.Add(6 * time.Minute), Outcome: modelhealth.OutcomeSuccess,
+					ProbeCount: 1, SuccessCount: 1, AverageMS: 840,
+				}},
+			},
+		},
+		TotalModels: 1,
+		Healthy:     1,
+		Stale:       0,
+		Settings:    contractModelHealthSettings(now),
+	}
+}

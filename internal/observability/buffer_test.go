@@ -261,6 +261,39 @@ func TestBufferRecorderRecordBatchPersistsMultipleRecords(t *testing.T) {
 	}
 }
 
+func TestRepositoryRecordBatchNullsDeletedForeignKeys(t *testing.T) {
+	db := openObservabilityDB(t)
+	accessKeyID := insertAccessKey(t, db)
+	nvidiaKeyID := insertNVIDIAKey(t, db)
+	if _, err := db.Exec("DELETE FROM access_keys WHERE id = ?", accessKeyID); err != nil {
+		t.Fatalf("delete access key: %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM nvidia_keys WHERE id = ?", nvidiaKeyID); err != nil {
+		t.Fatalf("delete NVIDIA key: %v", err)
+	}
+
+	record := RequestRecord{
+		RequestID: "deleted-foreign-keys", Endpoint: "/v1/chat/completions",
+		AccessKeyID: &accessKeyID, NVIDIAKeyID: &nvidiaKeyID,
+		HTTPStatus: 200, Outcome: OutcomeSuccess, DurationMS: 1, AttemptCount: 1,
+		CreatedAt: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+	}
+	if err := NewRepository(db).RecordBatch(context.Background(), []RequestRecord{record}); err != nil {
+		t.Fatalf("RecordBatch after foreign-key deletion: %v", err)
+	}
+
+	var nullReferences int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM request_logs
+		WHERE request_id = ? AND access_key_id IS NULL AND nvidia_key_id IS NULL
+	`, record.RequestID).Scan(&nullReferences); err != nil {
+		t.Fatalf("count null foreign keys: %v", err)
+	}
+	if nullReferences != 1 {
+		t.Fatalf("null foreign-key request rows = %d, want 1", nullReferences)
+	}
+}
+
 func TestBufferRecorderEmptyBatchIsNoop(t *testing.T) {
 	db := openObservabilityDB(t)
 	if err := NewRepository(db).RecordBatch(context.Background(), nil); err != nil {

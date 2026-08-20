@@ -2,6 +2,7 @@ package nvidia
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,5 +67,36 @@ func TestDirectTransportPoolReusesByTimeoutKey(t *testing.T) {
 	other := pool.Get(runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 9999})
 	if other == first {
 		t.Fatal("different first-byte timeout reused the same transport")
+	}
+}
+
+func TestDirectTransportPoolConcurrentGet(t *testing.T) {
+	pool := newDirectTransportPool(http.DefaultTransport)
+	defer pool.Close()
+
+	const (
+		workers    = 32
+		iterations = 200
+	)
+	settings := runtimeconfig.Snapshot{ConnectTimeoutMS: 1000, FirstByteTimeoutMS: 2000}
+	pool.Get(settings)
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	group.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer group.Done()
+			<-start
+			for iteration := 0; iteration < iterations; iteration++ {
+				pool.Get(settings)
+			}
+		}()
+	}
+	close(start)
+	group.Wait()
+
+	wantClock := uint64(1 + workers*iterations)
+	if got := pool.clock.Load(); got != wantClock {
+		t.Fatalf("access clock = %d, want %d after %d concurrent hits", got, wantClock, workers*iterations)
 	}
 }

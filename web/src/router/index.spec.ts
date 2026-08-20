@@ -78,6 +78,20 @@ vi.mock('../features/proxy/api', () => ({
   },
 }))
 
+vi.mock('../features/model-health/api', () => ({
+  modelHealthApi: {
+    getSummary: vi.fn().mockResolvedValue({ data: {
+      range: '6h', from: '', to: '', models: [], total_models: 0,
+      healthy_count: 0, degraded_count: 0, unavailable_count: 0,
+      unchecked_count: 0, unconfigured_count: 0,
+      settings: { enabled: false, interval_seconds: 60, concurrency: 2 },
+    } }),
+    getSettings: vi.fn().mockResolvedValue({ data: { enabled: false, interval_seconds: 60, concurrency: 2 } }),
+    updateSettings: vi.fn(),
+    runNow: vi.fn(),
+  },
+}))
+
 function createSession(state: SessionState): SessionStore {
   return {
     changePassword: vi.fn(),
@@ -200,6 +214,7 @@ describe('application router integration', () => {
     ['nav-models', '/models', '模型白名单'],
     ['nav-access-keys', '/access-keys', 'Access Key'],
     ['nav-proxy-pool', '/proxy-pool', '代理池'],
+    ['nav-model-health', '/channel-status', '渠道状态'],
     ['nav-system', '/system', '系统与观测'],
   ])('navigates from AppShell through %s', async (testId, expectedPath, expectedHeading) => {
     const session = createSession({ kind: 'authenticated', mustChangePassword: false })
@@ -251,6 +266,7 @@ describe('management routes', () => {
     expect(paths).toContain('/models')
     expect(paths).toContain('/access-keys')
     expect(paths).toContain('/proxy-pool')
+    expect(paths).toContain('/channel-status')
     expect(paths).toContain('/system')
   })
 

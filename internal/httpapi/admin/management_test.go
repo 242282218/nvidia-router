@@ -37,3 +37,36 @@ func TestManagementRoutesProxyPoolStatusThroughMux(t *testing.T) {
 		t.Fatalf("proxy-pool handler saw %v, want /admin/api/proxy-pool/status handled", seen)
 	}
 }
+
+func TestManagementRoutesModelHealthSubpathsThroughMux(t *testing.T) {
+	seen := make(map[string]int)
+	modelHealth := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seen[request.URL.Path]++
+		writer.WriteHeader(http.StatusOK)
+	})
+	handler := NewManagement(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), // model-test-jobs
+		modelHealth,
+	)
+
+	for _, path := range []string{
+		"/admin/api/model-health/summary",
+		"/admin/api/model-health/settings",
+		"/admin/api/model-health/run",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, response.Code)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("model health paths seen = %+v, want 3 paths", seen)
+	}
+}

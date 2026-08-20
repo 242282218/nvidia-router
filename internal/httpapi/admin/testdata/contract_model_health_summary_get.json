@@ -1,0 +1,52 @@
+{
+  "data": {
+    "degraded_count": 0,
+    "from": "2026-08-02T02:00:00Z",
+    "healthy_count": 1,
+    "models": [
+      {
+        "buckets": [
+          {
+            "average_duration_ms": 840,
+            "end": "2026-08-02T02:06:00Z",
+            "failure_count": 0,
+            "outcome": "success",
+            "probe_count": 1,
+            "start": "2026-08-02T02:00:00Z",
+            "success_count": 1,
+            "timeout_count": 0
+          }
+        ],
+        "consecutive_failures": 0,
+        "display_name": "Chat LLM",
+        "enabled": true,
+        "failure_count": 0,
+        "kind": "chat",
+        "last_duration_ms": 840,
+        "last_probe_at": "2026-08-02T07:58:00Z",
+        "model_id": 1,
+        "probe_count": 1,
+        "provider": "nvidia",
+        "public_id": "chat-llm",
+        "skipped_count": 0,
+        "status": "healthy",
+        "success_count": 1,
+        "success_rate": 100,
+        "timeout_count": 0
+      }
+    ],
+    "range": "6h",
+    "settings": {
+      "concurrency": 2,
+      "enabled": false,
+      "interval_seconds": 60,
+      "updated_at": "2026-08-02T08:00:00Z"
+    },
+    "stale_count": 0,
+    "to": "2026-08-02T08:00:00Z",
+    "total_models": 1,
+    "unavailable_count": 0,
+    "unchecked_count": 0,
+    "unconfigured_count": 0
+  }
+}

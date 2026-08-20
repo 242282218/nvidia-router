@@ -119,6 +119,26 @@ func TestResolveReasoningAutoPrefersAutoLevelOverNone(t *testing.T) {
 	}
 }
 
+func TestResolveReasoningConcreteLevelPrefersRequestedLevelOverAuto(t *testing.T) {
+	spec, err := ParseReasoning(map[string]json.RawMessage{"reasoning_effort": json.RawMessage(`"low"`)})
+	if err != nil {
+		t.Fatalf("ParseReasoning: %v", err)
+	}
+	decision, err := ResolveReasoning(spec, ReasoningProfile{
+		Supported: true, Levels: []ReasoningLevel{ReasoningNone, ReasoningAuto, ReasoningLow, ReasoningMedium},
+		ZeroAllowed: true, DynamicAllowed: true, WireFormat: "openai",
+	})
+	if err != nil {
+		t.Fatalf("ResolveReasoning: %v", err)
+	}
+	if decision.EffectiveLevel != ReasoningLow || decision.EffectiveBudget != 1024 {
+		t.Fatalf("decision = %+v, want low/1024", decision)
+	}
+	if decision.Downgraded {
+		t.Fatal("exact concrete level was marked as downgraded")
+	}
+}
+
 func TestToolCallAccumulatorPairsStreamingArgumentsByIndex(t *testing.T) {
 	var accumulator ToolCallAccumulator
 	for _, delta := range []ToolCallDelta{
