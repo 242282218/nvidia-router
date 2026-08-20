@@ -16,6 +16,22 @@ diff-trans.txt
 /console.log*
 /nul*
 
+# Runtime secrets: .env holds the master key, admin password and XApi URL.
+# Never commit it; .env.example stays tracked as the template.
+.env
+!/.env.example
+
+# Local SQLite databases and their WAL sidecars (runtime data, may hold secrets).
+*.db
+*.db-wal
+*.db-shm
+
+# Editor/OS backup copies of the built binary (e.g. nvidia-router.exe~).
+*.exe~
+
+# Stale embedded-frontend snapshots left by dist rebuilds.
+/internal/web/dist.stale-*/
+
 # Local credential dumps (NVIDIA keys, account exports). Never commit.
 /key/
 

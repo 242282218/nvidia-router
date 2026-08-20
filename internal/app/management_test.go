@@ -199,7 +199,11 @@ func TestOpenCodeFreeDiscoveryAndReadOnlyTestJobAreWired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/model-test-jobs", `{"provider":"opencodefree","model_ids":[`+itoa(modelID)+`],"mode":"sequential","concurrency":1}`, session, server.URL)
+	// The unified cross-channel refactor removed the per-request "provider"
+	// selector: each probe now dispatches on the model's own provider, so the
+	// request body carries only model_ids/mode/concurrency (matching the
+	// frontend ModelTestJobRequest contract).
+	created := authRequest(t, server.Client(), http.MethodPost, server.URL+"/admin/api/model-test-jobs", `{"model_ids":[`+itoa(modelID)+`],"mode":"sequential","concurrency":1}`, session, server.URL)
 	if created.StatusCode != http.StatusAccepted {
 		t.Fatalf("test job status=%d body=%s", created.StatusCode, readResponse(t, created))
 	}
