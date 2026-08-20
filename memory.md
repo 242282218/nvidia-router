@@ -179,3 +179,14 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **`muse-spark-1.2-contributor-free` 不可用**：网关返回 403 `RegionError`「This model is not available in your country.」，非流式/流式/长推理三形态稳定复现。出站由网关自身发起、不经路由器出口池，且 XApi 出口本身即国内，换出口无效。**已决定不支持**。网关另有 `mimo-v2.5-free`、`nemotron-3.5-lightning-free`、`laguna-s-2.1-free` 及一批 claude/gemini 模型未纳入白名单，纳入前必须逐个实测而非只看 `/v1/models` 列表。
 - **代理错误 reason 此前完全不可观测**：`xkproxy` 四种 `ErrorReason` 中 `TransportFailed` 与 `ProxyRejected` 共用 502 与完全相同的公开文案，`Error()` 返回常量字符串不含 reason，全链路无一处记录。已在 `attempt.go` 补 `slog.Warn("proxy_error", reason, cause_type, key_id)`——只记 cause 的**类型名**，不记文本（可能内嵌出口地址）。
 - **反查代理失败类型的特征表**（不依赖日志时可用）：`ReasonNoHealthyProxy` → **503** +「upstream proxy **pool** is temporarily unavailable」；`ReasonTransportFailed` → **502** +「upstream proxy is temporarily unavailable」；`ReasonProxyRejected` → 经 `writeChatError` → **502** + 同一文案。另：NVIDIA 与 OCF 路径都接了 `AcquireWithWait`，空池会轮询等待，**首个 tick 250ms**——失败快于 250ms 即可排除"池空"。
+
+## 2026-08-21 全量审查、发布 main 与部署 20260821-full-audit
+
+- **部署脚本**：`scripts/deploy/deploy_remote.py <tag>`，一条命令完成打包→上传→继承 `.env`/`docker-compose.deploy.yml`→构建→停 app→旧镜像备份→新镜像启动→健康校验，失败即停且打印回滚坐标。线上结构固定为：release 目录 `/opt/nvidia-router-releases/<tag>`、镜像 `nvidia-router:deploy-<tag>`、compose 用 `docker-compose.yml + docker-compose.deploy.yml`、数据卷 `nvr-data`（external）。
+- **国内构建必须传 GOPROXY**：目标机访问不了 `proxy.golang.org`，`docker build` 必须带 `--build-arg GOPROXY=https://goproxy.cn,direct`（Dockerfile 第 27-28 行已注明）。漏了会在 `go mod download` 卡 90s 后超时失败。
+- **审查方法**：按包分域并行下发子代理（router/pool、xkproxy/upstream、httpapi/安全、database、protocol/sse/app），要求每条结论给 file:line + 具体失败场景 + 标注未验证项。34.5k 行代码一轮产出 24 项发现，其中约 1/3 是真缺陷。
+- **甄别纪律（本轮两次主动回退）**：子代理报的"缺陷"若与**带理据注释的既有测试**冲突，先判断是不是有意设计，不要单方面推翻。`xkproxy` 系统性故障期计数饱和（`http_failure_test.go` 断言 audit H8 有意为之）与 `Retry-After` 归零冷却（`TestClassifierPreservesPastRetryAfterAsZeroCooldown`，HTTP-date 传输途中过期时立即重试是对的）两项都已回退，留作待决。
+- **回归测试必须能失败**：每个修复都用「临时注掉修复行 → 测试必须失败 → 恢复 → 必须通过」验证过。曾写出一个空转测试（断言守卫响应头，但该头由包装器设置、与内层 handler 无关），必须额外断言内层 handler 的实际产物。
+- 本轮修复的真缺陷：`MarshalFor` 快路径丢弃消息归一化（P0，legacy 工具历史请求被上游 422）；`/metrics` 无鉴权（P0）；模型测试探针未 `MarkComplete` 导致健康出口被记失败、颠倒整池质量排序（P1）；前端契约要求 `success+failure==request_count` 但 canceled 单列，一个 499 即让统计页全空（P1）；`adminaudit.Recorder` 从不设 `CreatedAt` 导致审计时间戳恒为零值（P1）；`model_health_probes` 只写不删而摘要最宽只读 7 天（P1）；`/admin/api/stats/cost` 未注册导致成本面板 404、审计把硬删除记成 revoke（P2）。
+- **上线后验证的最小集**：`/metrics` 匿名必须 401、带会话 200；能力位是否随迁移落库（`GET /admin/api/models` 查 `supports_reasoning`/`reasoning_wire_format`）；此前 501 的模型改为 200；小 `max_tokens` + high 档下 `content_chars > 0`。脚本 `scripts/test/post_deploy_verify_remote.py`。
+- **注意**：`AdvisoryLevels`（openai 线格式档位归一）当前对线上四个 chat 模型**空转**，因为它们都已是 `thinking` 线格式。真正生效的是预算对账。
