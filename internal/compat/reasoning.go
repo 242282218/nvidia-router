@@ -395,7 +395,14 @@ func nearestLevel(requested ReasoningLevel, requestedBudget int, levels []Reason
 			continue
 		}
 		distance := int64(absInt(budget - requestedBudget))
-		if distance < bestDistance || distance == bestDistance && budget < budgetForLevel(best) {
+		tieBreak := level == requested && best != requested
+		if !tieBreak && best == ReasoningAuto && level != ReasoningAuto {
+			tieBreak = true
+		}
+		if !tieBreak && level != ReasoningAuto && best != ReasoningAuto {
+			tieBreak = budget < budgetForLevel(best)
+		}
+		if distance < bestDistance || distance == bestDistance && tieBreak {
 			best, bestDistance = level, distance
 		}
 	}

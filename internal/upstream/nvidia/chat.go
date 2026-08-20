@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nvidia-router/internal/runtimeconfig"
@@ -112,14 +113,23 @@ type directTransportPool struct {
 	mu    sync.RWMutex
 	base  http.RoundTripper
 	items map[directTransportKey]*pooledTransport
-	clock uint64
+	clock atomic.Uint64
 }
 
 type pooledTransport struct {
 	transport http.RoundTripper
 	// lastUsed is a monotonic counter, not a wall-clock timestamp, so LRU
 	// ordering is exact even when several requests land in the same nanosecond.
-	lastUsed uint64
+	lastUsed atomic.Uint64
+}
+
+func (p *pooledTransport) markUsed(sequence uint64) {
+	for {
+		previous := p.lastUsed.Load()
+		if previous >= sequence || p.lastUsed.CompareAndSwap(previous, sequence) {
+			return
+		}
+	}
 }
 
 func newDirectTransportPool(base http.RoundTripper) *directTransportPool {
@@ -146,8 +156,7 @@ func (p *directTransportPool) Get(snapshot runtimeconfig.Snapshot) http.RoundTri
 	p.mu.RLock()
 	item, ok := p.items[key]
 	if ok {
-		p.clock++
-		item.lastUsed = p.clock
+		item.markUsed(p.clock.Add(1))
 		p.mu.RUnlock()
 		return item.transport
 	}
@@ -158,13 +167,13 @@ func (p *directTransportPool) Get(snapshot runtimeconfig.Snapshot) http.RoundTri
 	// Double-check: another goroutine may have created the entry between the
 	// read-lock miss and the write-lock acquisition.
 	if item, ok = p.items[key]; ok {
-		p.clock++
-		item.lastUsed = p.clock
+		item.markUsed(p.clock.Add(1))
 		return item.transport
 	}
 	transport, _ := newAttemptTransport(p.base, snapshot)
-	p.clock++
-	item = &pooledTransport{transport: transport, lastUsed: p.clock}
+	sequence := p.clock.Add(1)
+	item = &pooledTransport{transport: transport}
+	item.lastUsed.Store(sequence)
 	p.items[key] = item
 	if len(p.items) > maxPooledDirectTransports {
 		p.evictLeastRecentlyUsed()
@@ -176,9 +185,10 @@ func (p *directTransportPool) evictLeastRecentlyUsed() {
 	var oldestKey directTransportKey
 	var oldest uint64
 	for key, item := range p.items {
-		if oldest == 0 || item.lastUsed < oldest {
+		lastUsed := item.lastUsed.Load()
+		if oldest == 0 || lastUsed < oldest {
 			oldestKey = key
-			oldest = item.lastUsed
+			oldest = lastUsed
 		}
 	}
 	closeIdleConnections(p.items[oldestKey].transport)

@@ -273,6 +273,60 @@ const requestLog = object({
   created_at: scalar('string'),
 })
 
+const modelHealthSettings = object({
+  enabled: scalar('boolean'),
+  interval_seconds: scalar('number'),
+  concurrency: scalar('number'),
+  updated_at: optional(scalar('string')),
+})
+
+const modelHealthBucket = object({
+  start: scalar('string'),
+  end: scalar('string'),
+  outcome: scalar('string'),
+  probe_count: scalar('number'),
+  success_count: scalar('number'),
+  failure_count: scalar('number'),
+  timeout_count: scalar('number'),
+  average_duration_ms: scalar('number'),
+})
+
+const modelHealthModel = object({
+  model_id: scalar('number'),
+  public_id: scalar('string'),
+  display_name: scalar('string'),
+  kind: scalar('string'),
+  provider: scalar('string'),
+  enabled: scalar('boolean'),
+  status: scalar('string'),
+  success_rate: scalar('number'),
+  probe_count: scalar('number'),
+  success_count: scalar('number'),
+  failure_count: scalar('number'),
+  timeout_count: scalar('number'),
+  skipped_count: scalar('number'),
+  last_probe_at: optional(scalar('string')),
+  last_duration_ms: optional(scalar('number')),
+  last_error_code: optional(scalar('string')),
+  consecutive_failures: scalar('number'),
+  buckets: array(modelHealthBucket),
+})
+
+const modelHealthSummary = object({
+  range: scalar('string'),
+  from: scalar('string'),
+  to: scalar('string'),
+  models: array(modelHealthModel),
+  total_models: scalar('number'),
+  healthy_count: scalar('number'),
+  degraded_count: scalar('number'),
+  unavailable_count: scalar('number'),
+  unchecked_count: scalar('number'),
+  stale_count: scalar('number'),
+  unconfigured_count: scalar('number'),
+  settings: modelHealthSettings,
+})
+
 const cases: Array<{ snapshot: string; typeName: string; payload: ShapeSpec }> = [
   { snapshot: 'settings_get', typeName: 'RuntimeSettings', payload: object({ data: runtimeSettings }) },
   { snapshot: 'settings_patch', typeName: 'RuntimeSettings', payload: object({ data: runtimeSettings }) },
@@ -314,6 +368,26 @@ const cases: Array<{ snapshot: string; typeName: string; payload: ShapeSpec }> =
         has_more: scalar('boolean'),
       }),
     }),
+  },
+  {
+    snapshot: 'model_health_summary_get',
+    typeName: 'ModelHealthSummaryResponse',
+    payload: object({ data: modelHealthSummary }),
+  },
+  {
+    snapshot: 'model_health_settings_get',
+    typeName: 'ModelHealthSettingsResponse',
+    payload: object({ data: modelHealthSettings }),
+  },
+  {
+    snapshot: 'model_health_settings_patch',
+    typeName: 'ModelHealthSettingsResponse',
+    payload: object({ data: modelHealthSettings }),
+  },
+  {
+    snapshot: 'model_health_run_post',
+    typeName: 'ModelHealthRunResponse',
+    payload: object({ data: object({ accepted: scalar('boolean') }) }),
   },
 ]
 

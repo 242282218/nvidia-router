@@ -1,0 +1,8 @@
+{
+  "data": {
+    "concurrency": 4,
+    "enabled": true,
+    "interval_seconds": 300,
+    "updated_at": "2026-08-02T08:00:00Z"
+  }
+}

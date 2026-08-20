@@ -16,6 +16,7 @@ const ProvidersView = () => import('../features/providers/ProvidersView.vue')
 const ModelsView = () => import('../features/models/ModelsView.vue')
 const AccessKeysView = () => import('../features/access-keys/AccessKeysView.vue')
 const ProxyPoolView = () => import('../features/proxy/ProxyPoolView.vue')
+const ModelHealthView = () => import('../features/model-health/ModelHealthView.vue')
 const ObservabilityView = () => import('../features/observability/ObservabilityView.vue')
 
 // 导航元信息：侧栏分组、图标、排序、测试锚点全部登记在路由上。
@@ -74,6 +75,11 @@ export function createAppRouter(
             component: ProxyPoolView,
             path: 'proxy-pool',
             meta: { title: '代理池', nav: { group: '资源接入', icon: 'proxy', order: 50, testId: 'nav-proxy-pool' } },
+          },
+          {
+            component: ModelHealthView,
+            path: 'channel-status',
+            meta: { title: '渠道状态', nav: { group: '资源接入', icon: 'pulse', order: 55, testId: 'nav-model-health' } },
           },
           {
             component: ObservabilityView,

@@ -88,8 +88,7 @@ function audioNeedsVerification(model: Model): boolean {
 }
 
 function enablingIsBlocked(model: Model): boolean {
-  return (!model.enabled && audioNeedsVerification(model))
-    || (normalizeProvider(model.provider) === 'opencodefree' && !model.enabled)
+  return !model.enabled && audioNeedsVerification(model)
 }
 
 function providerLabel(provider?: string): string {
@@ -388,8 +387,8 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             </td>
             <td class="data-table-td">
               <UiBadge
-                :variant="isPendingProvider(model.provider) ? 'warning' : model.enabled ? 'success' : 'muted'"
-                :label="isPendingProvider(model.provider) ? '待接入' : model.enabled ? '启用' : '停用'"
+                :variant="model.enabled ? 'success' : 'muted'"
+                :label="model.enabled ? '启用' : '停用'"
               />
               <p
                 v-if="model.capability_verified_at"
