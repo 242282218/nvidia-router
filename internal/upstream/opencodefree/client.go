@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -50,6 +51,9 @@ type Client struct {
 	// the current one fails or its lease expires. The label is random per process
 	// so the proxy vendor cannot correlate our sessions across restarts.
 	session string
+	// local marks a gateway that only this host or its private network can
+	// reach, which no exit proxy can dial. See isLocalHost.
+	local bool
 }
 
 func NewClient(httpClient *http.Client, baseURL *url.URL, authKey string) (*Client, error) {
@@ -68,7 +72,31 @@ func NewClient(httpClient *http.Client, baseURL *url.URL, authKey string) (*Clie
 		baseURL:    strings.TrimRight(baseURL.String(), "/"),
 		authKey:    strings.TrimSpace(authKey),
 		session:    hex.EncodeToString(session),
+		local:      isLocalHost(baseURL.Hostname()),
 	}, nil
+}
+
+// isLocalHost reports whether the gateway lives on this host or inside the
+// private network the router itself runs in. An exit proxy exists to hide our
+// origin address from a public endpoint; pointing one at an address only
+// reachable from here cannot work — the exit has no route to it — and the
+// vendor answers with its own non-standard status, which the router would then
+// report as a broken gateway while also penalising a perfectly healthy exit.
+func isLocalHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return true
+	}
+	if address := net.ParseIP(host); address != nil {
+		return address.IsLoopback() || address.IsPrivate() ||
+			address.IsLinkLocalUnicast() || address.IsUnspecified()
+	}
+	// A single-label name (no dot) is not resolvable on the public internet: it
+	// is a container or LAN alias, e.g. a Compose service name.
+	return !strings.Contains(host, ".")
 }
 
 // WithProxy routes every gateway call through the built-in proxy pool. Without
@@ -114,7 +142,7 @@ func (c *Client) Chat(ctx context.Context, snapshot runtimeconfig.Snapshot, body
 // that already reached the gateway is never replayed: the gateway may have
 // accepted it and a second copy would double the call.
 func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, method, path string, body []byte, stream bool) (*http.Response, error) {
-	if c.proxy == nil || !c.proxy.Configured() {
+	if c.local || c.proxy == nil || !c.proxy.Configured() {
 		request, err := c.newRequest(ctx, method, path, body, stream)
 		if err != nil {
 			return nil, err

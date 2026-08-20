@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	randv2 "math/rand/v2"
 	"net/http"
 	"strings"
@@ -408,6 +409,16 @@ func (a *Attempt) executeLease(
 		var proxyErr *xkproxy.Error
 		if errors.As(executeErr, &proxyErr) {
 			closeResponse(response)
+			// Every reason below leaves the client with the same 502/503 and the
+			// same public message, and Error() carries no reason of its own, so
+			// without this line an operator cannot tell an empty pool from a dead
+			// exit from a proxy that refused the request. The cause may embed the
+			// exit address, so only its type is recorded.
+			slog.Warn("proxy_error",
+				"reason", string(proxyErr.Reason()),
+				"cause_type", fmt.Sprintf("%T", errors.Unwrap(proxyErr)),
+				"key_id", lease.KeyID(),
+			)
 			switch proxyErr.Reason() {
 			case xkproxy.ReasonNoHealthyProxy:
 				// A momentarily empty proxy pool is not a key fault: the request never
