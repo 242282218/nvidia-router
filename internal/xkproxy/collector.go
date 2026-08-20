@@ -104,6 +104,32 @@ func NewCollector(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collect
 	}
 }
 
+// NewCollectorForTest creates a collector that allows private IPs for testing.
+func NewCollectorForTest(cfg CollectorConfig, pool *Pool, logger *slog.Logger) *Collector {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = 5 * time.Second
+	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 1
+	}
+	return &Collector{
+		upstream:       NewUpstreamClientForTest(cfg.UpstreamURL, cfg.UpstreamTimeout, cfg.ExpectedQty),
+		validator:      NewValidatorWithMaxLatencyForTest(cfg.ValidationURL, cfg.ValidationStatus, cfg.ValidationTimeout, cfg.MaxLatency),
+		pool:           pool,
+		logger:         logger,
+		interval:       cfg.Interval,
+		proxyTTL:       cfg.ProxyTTL,
+		expectedQty:    cfg.ExpectedQty,
+		concurrency:    cfg.Concurrency,
+		ejectionPolicy: cfg.EjectionPolicy,
+		done:           make(chan struct{}),
+		closeDone:      make(chan struct{}),
+	}
+}
+
 func (c *Collector) Start(ctx context.Context) {
 	c.mu.Lock()
 	if c.closed || c.started {

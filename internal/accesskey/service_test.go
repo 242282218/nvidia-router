@@ -167,9 +167,7 @@ func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
 	service.pending[created.Key.ID] = struct{}{}
 	service.usageMu.Unlock()
 	// Seed a rate-limit bucket so revocation must clean it up too.
-	service.limiter.mu.Lock()
-	service.limiter.buckets[created.Key.ID] = &limitBucket{windowStart: time.Now(), rpmCount: 3}
-	service.limiter.mu.Unlock()
+	service.limiter.setBucket(created.Key.ID, &limitBucket{windowStart: time.Now(), rpmCount: 3})
 
 	if err := service.Revoke(context.Background(), created.Key.ID); err != nil {
 		t.Fatalf("Revoke: %v", err)
@@ -183,9 +181,7 @@ func TestRevokeDropsUsageTrackingEntries(t *testing.T) {
 	if _, ok := service.pending[created.Key.ID]; ok {
 		t.Fatal("Revoke left a pending entry")
 	}
-	service.limiter.mu.Lock()
-	defer service.limiter.mu.Unlock()
-	if _, ok := service.limiter.buckets[created.Key.ID]; ok {
+	if bucket := service.limiter.getBucket(created.Key.ID); bucket != nil {
 		t.Fatal("Revoke left a rate-limit bucket")
 	}
 }
@@ -200,9 +196,7 @@ func TestDeleteDropsUsageTrackingEntriesAndDeletesRow(t *testing.T) {
 	service.lastRecorded[created.Key.ID] = time.Now()
 	service.pending[created.Key.ID] = struct{}{}
 	service.usageMu.Unlock()
-	service.limiter.mu.Lock()
-	service.limiter.buckets[created.Key.ID] = &limitBucket{windowStart: time.Now(), rpmCount: 3}
-	service.limiter.mu.Unlock()
+	service.limiter.setBucket(created.Key.ID, &limitBucket{windowStart: time.Now(), rpmCount: 3})
 
 	if err := service.Delete(context.Background(), created.Key.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -216,9 +210,7 @@ func TestDeleteDropsUsageTrackingEntriesAndDeletesRow(t *testing.T) {
 	if _, ok := service.pending[created.Key.ID]; ok {
 		t.Fatal("Delete left a pending entry")
 	}
-	service.limiter.mu.Lock()
-	defer service.limiter.mu.Unlock()
-	if _, ok := service.limiter.buckets[created.Key.ID]; ok {
+	if bucket := service.limiter.getBucket(created.Key.ID); bucket != nil {
 		t.Fatal("Delete left a rate-limit bucket")
 	}
 

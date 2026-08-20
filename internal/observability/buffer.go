@@ -59,6 +59,9 @@ type BufferRecorder struct {
 	// admin observability surface; increments must be atomic since Record runs on
 	// many request goroutines while flusher reads periodically.
 	dropped atomic.Int64
+	// flushFailed counts batches that failed to persist. Incremented by the
+	// flusher goroutine; read by admin surfaces.
+	flushFailed atomic.Int64
 
 	runOnce        sync.Once
 	stop           chan struct{}
@@ -140,6 +143,19 @@ func (b *BufferRecorder) Record(_ context.Context, record RequestRecord) error {
 // buffer against real traffic.
 func (b *BufferRecorder) Dropped() int64 {
 	return b.dropped.Load()
+}
+
+// FlushFailed returns the cumulative count of batch flush failures since the
+// recorder started. Non-zero indicates persistent database write problems.
+func (b *BufferRecorder) FlushFailed() int64 {
+	return b.flushFailed.Load()
+}
+
+// Depth returns the current number of records buffered in the channel waiting
+// to be flushed. High depth indicates flush throughput cannot keep up with
+// record production.
+func (b *BufferRecorder) Depth() int {
+	return len(b.records)
 }
 
 // Run starts the flusher loop. It blocks until ctx is cancelled (or Stop is
@@ -349,7 +365,12 @@ func (b *BufferRecorder) flushBatch(ctx context.Context, batch []RequestRecord) 
 		return
 	}
 	if err := b.recorder.RecordBatch(ctx, batch); err != nil {
-		b.logger.Error("flush request batch failed", "batch_size", len(batch), "error", err)
+		failed := b.flushFailed.Add(1)
+		b.logger.Error("flush request batch failed",
+			"batch_size", len(batch),
+			"error", err,
+			"flush_failed_total", failed,
+		)
 		return
 	}
 	if b.logger.Enabled(ctx, slog.LevelDebug) {

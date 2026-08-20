@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -53,40 +54,113 @@ func (a *App) resolveShutdownGrace() time.Duration {
 }
 
 func (a *App) finishShutdown() error {
+	start := time.Now()
+	logger := a.getLogger()
+	logger.Info("shutdown_started")
+	
 	var shutdownErr error
 	if a.Server != nil {
+		componentStart := time.Now()
 		shutdownErr = a.Server.Shutdown(context.Background())
+		logger.Info("shutdown_component",
+			"component", "http_server",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+			"error", shutdownErr != nil,
+		)
 	}
+	
 	if a.recorderCancel != nil {
 		// Stop recording only after HTTP has drained; handlers may enqueue their
 		// final request log while they are unwinding during Server.Shutdown.
+		componentStart := time.Now()
 		a.recorderCancel()
+		if a.recorderDone != nil {
+			<-a.recorderDone
+		}
+		logger.Info("shutdown_component",
+			"component", "observability_recorder",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+		)
 	}
+	
 	if a.shutdownTimer != nil {
 		a.shutdownTimer.Stop()
 	}
 	if a.rootCancel != nil {
 		a.rootCancel()
 	}
+	
+	if a.modelHealthDone != nil {
+		componentStart := time.Now()
+		<-a.modelHealthDone
+		logger.Info("shutdown_component",
+			"component", "model_health",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+		)
+	}
+	
 	if a.nvidiaClient != nil {
+		componentStart := time.Now()
 		a.nvidiaClient.Close()
+		logger.Info("shutdown_component",
+			"component", "nvidia_client",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+		)
 	}
+	
 	if a.cleanupDone != nil {
+		componentStart := time.Now()
 		<-a.cleanupDone
+		logger.Info("shutdown_component",
+			"component", "cleanup_worker",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+		)
 	}
-	if a.recorderDone != nil {
-		<-a.recorderDone
-	}
+	
 	if a.healthDone != nil {
+		componentStart := time.Now()
 		<-a.healthDone
+		logger.Info("shutdown_component",
+			"component", "health_checker",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+		)
 	}
+	
 	// Close the reader pool before the writer: readers hold WAL read locks that
 	// would otherwise make the writer's final checkpoint contend.
 	if a.dbReader != nil {
-		shutdownErr = errors.Join(shutdownErr, a.dbReader.Close())
+		componentStart := time.Now()
+		err := a.dbReader.Close()
+		shutdownErr = errors.Join(shutdownErr, err)
+		logger.Info("shutdown_component",
+			"component", "database_reader",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+			"error", err != nil,
+		)
 	}
-	if a.db == nil {
-		return shutdownErr
+	
+	if a.db != nil {
+		componentStart := time.Now()
+		err := a.db.Close()
+		shutdownErr = errors.Join(shutdownErr, err)
+		logger.Info("shutdown_component",
+			"component", "database_writer",
+			"duration_ms", time.Since(componentStart).Milliseconds(),
+			"error", err != nil,
+		)
 	}
-	return errors.Join(shutdownErr, a.db.Close())
+	
+	logger.Info("shutdown_completed",
+		"total_duration_ms", time.Since(start).Milliseconds(),
+		"error", shutdownErr != nil,
+	)
+	
+	return shutdownErr
+}
+
+func (a *App) getLogger() *slog.Logger {
+	if a.Dependencies.Logger != nil {
+		return a.Dependencies.Logger
+	}
+	return slog.Default()
 }

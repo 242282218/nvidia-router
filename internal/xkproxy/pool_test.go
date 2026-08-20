@@ -348,12 +348,12 @@ func TestValidatorRejectsSlowProxy(t *testing.T) {
 
 	// Without the gate the proxy is considered valid (it returns the expected
 	// status); with a 20ms cap it must be rejected as too slow.
-	permissive := NewValidator(validation.URL, http.StatusNotFound, 2*time.Second)
+	permissive := NewValidatorForTest(validation.URL, http.StatusNotFound, 2*time.Second)
 	if _, err := permissive.ValidateWithLatency(context.Background(), slow); err != nil {
 		t.Fatalf("permissive ValidateWithLatency: %v (want success, slow gate disabled)", err)
 	}
 
-	strict := NewValidatorWithMaxLatency(validation.URL, http.StatusNotFound, 2*time.Second, 20*time.Millisecond)
+	strict := NewValidatorWithMaxLatencyForTest(validation.URL, http.StatusNotFound, 2*time.Second, 20*time.Millisecond)
 	_, err = strict.ValidateWithLatency(context.Background(), slow)
 	if !errors.Is(err, ErrSlowProxy) {
 		t.Fatalf("strict ValidateWithLatency error = %v, want ErrSlowProxy", err)

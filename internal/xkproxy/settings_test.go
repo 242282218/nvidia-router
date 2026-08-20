@@ -575,7 +575,7 @@ func TestUpstreamClientFetchUsesConfiguredExpectedQty(t *testing.T) {
 		_, _ = writer.Write([]byte("203.0.113.10:8080"))
 	}))
 	t.Cleanup(server.Close)
-	client := NewUpstreamClient(server.URL+"?apikey=fixture", time.Second, 7)
+	client := NewUpstreamClientForTest(server.URL+"?apikey=fixture", time.Second, 7)
 	t.Cleanup(client.Close)
 	if _, _, err := client.Fetch(context.Background()); err != nil {
 		t.Fatalf("Fetch: %v", err)

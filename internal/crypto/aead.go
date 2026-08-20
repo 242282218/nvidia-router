@@ -86,10 +86,3 @@ func (keys *KeySet) gcm(version int) (cipher.AEAD, error) {
 	keys.gcmMu.Unlock()
 	return gcm, nil
 }
-
-// InvalidateGCMCache clears the GCM cache. Called after rotation where a
-// version's key material changes, ensuring no stale AEAD is reused.
-func InvalidateGCMCache() {
-	// Global helper kept for compatibility; per-instance cache is cleared lazily
-	// via rotation which creates a new KeySet. No global state to clear.
-}

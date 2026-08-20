@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ import (
 	metricsapi "nvidia-router/internal/httpapi/metrics"
 	v1 "nvidia-router/internal/httpapi/v1"
 	"nvidia-router/internal/modelcatalog"
+	"nvidia-router/internal/modelhealth"
 	"nvidia-router/internal/nvidiakey"
 	"nvidia-router/internal/observability"
 	"nvidia-router/internal/pool"
@@ -71,6 +73,7 @@ type App struct {
 	recorderDone     chan struct{}
 	healthCancel     context.CancelFunc
 	healthDone       chan struct{}
+	modelHealthDone  <-chan struct{}
 	rootCancel       context.CancelFunc
 	shutdownOnce     sync.Once
 	shutdownGrace    time.Duration
@@ -85,6 +88,10 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	
+	// Check for insecure production configurations
+	checkProductionSecurity(resolved.Config, resolved.Logger)
+	
 	var dbLock *processlock.Lock
 	lockTransferred := false
 	if resolved.DB == nil {
@@ -173,6 +180,8 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	healthChecker.WireCooldownExpiry(keyRepository.EarliestCooldownExpiry)
 	models := modelcatalog.NewService(modelRepository, nvidiaKeys, nvidiaClient, descriptor, resolved.Clock)
 	models.WithOpenCodeFree(openCodeFreeClient)
+	modelHealthRepository := modelhealth.NewRepository(db).WithReader(reader)
+	modelHealth := modelhealth.NewService(modelHealthRepository, models, models, nvidiaKeys, resolved.Clock, resolved.Logger)
 	accessKeys := accesskey.NewService(accesskey.NewRepository(db).WithReader(reader), keys, resolved.Clock)
 	adminRepository := adminauth.NewRepository(db, resolved.Clock)
 	originPolicy := adminauth.OriginPolicy{ExternalOrigin: resolved.Config.AdminExternalOrigin, TrustedProxies: resolved.Config.TrustedProxyCIDRs}
@@ -188,6 +197,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		adminapi.NewAuditLogs(auditRepository),
 		adminapi.NewProviderCredentials(providerCredentialRepository),
 		adminapi.NewModelTestJobs(models),
+		adminapi.NewModelHealth(modelHealth),
 	)
 	attempts := router.NewAttempt(settings, keyPool, nvidiaKeys, nvidiaKeys, keyPool, resolved.Clock, keyPool)
 	observabilityRepository := observability.NewRepository(db).WithReader(reader)
@@ -254,6 +264,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		healthCancel: healthCancel, healthDone: healthDone,
 		rootCancel: rootCancel,
 	}
+	app.modelHealthDone = modelHealth.Start(rootCtx)
 	unsupported := observe(v1.Unsupported)
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
@@ -442,6 +453,55 @@ func closeAfterInitializationError(db *sql.DB, reader *sql.DB, operationErr erro
 		return fmt.Errorf("initialize application and close database: %w", errors.Join(operationErr, joined))
 	}
 	return operationErr
+}
+
+// checkProductionSecurity logs warnings when the configuration may expose
+// sensitive data or management endpoints without proper protection.
+func checkProductionSecurity(cfg config.Config, logger *slog.Logger) {
+	// Check if listening on non-loopback without HTTPS protection
+	isLoopback := cfg.ListenAddress == "127.0.0.1" || 
+		cfg.ListenAddress == "localhost" || 
+		cfg.ListenAddress == "::1" ||
+		cfg.ListenAddress == "" // empty defaults to localhost in most cases
+
+	if !isLoopback {
+		// Listening on non-loopback - check for security configurations
+		if !cfg.AdminSecureCookie {
+			logger.Warn(
+				"SECURITY: AdminSecureCookie is disabled while listening on non-loopback address",
+				"listen_address", cfg.ListenAddress,
+				"recommendation", "Set NVIDIA_ROUTER_ADMIN_SECURE_COOKIE=true and use HTTPS reverse proxy",
+			)
+		}
+
+		if cfg.AdminExternalOrigin == nil {
+			logger.Warn(
+				"SECURITY: AdminExternalOrigin is not configured while listening on non-loopback address",
+				"listen_address", cfg.ListenAddress,
+				"recommendation", "Set NVIDIA_ROUTER_ADMIN_EXTERNAL_ORIGIN to your HTTPS origin (e.g., https://example.com)",
+			)
+		}
+
+		if len(cfg.TrustedProxyCIDRs) == 0 {
+			logger.Warn(
+				"SECURITY: TrustedProxyCIDRs is not configured while listening on non-loopback address",
+				"listen_address", cfg.ListenAddress,
+				"recommendation", "Set NVIDIA_ROUTER_TRUSTED_PROXY_CIDRS to your reverse proxy IP range",
+			)
+		}
+
+		// Check for completely public binding
+		if cfg.ListenAddress == "0.0.0.0" || cfg.ListenAddress == "::" || 
+		   strings.HasPrefix(cfg.ListenAddress, "0.0.0.0:") || 
+		   strings.HasPrefix(cfg.ListenAddress, ":::") {
+			logger.Warn(
+				"SECURITY: Listening on all interfaces without reverse proxy exposes plaintext HTTP",
+				"listen_address", cfg.ListenAddress,
+				"risk", "Access Keys, admin credentials, prompts, and responses will be transmitted in plaintext",
+				"recommendation", "Use HTTPS reverse proxy (nginx, Caddy) or bind to loopback only",
+			)
+		}
+	}
 }
 
 func (a *App) Serve(ctx context.Context) error {
