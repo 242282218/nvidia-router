@@ -239,3 +239,14 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
   4. P2 `chat/request.go:144-155` raw 快路径把重复顶层键原样转发上游（慢路径 `marshalFields` 从 map 重建天然去重），"校验看到的字节"与"转发的字节"不是同一份。
   5. P3 拼错的 `reasoning_effort`（如 `"hgih"`）在 `!DynamicAllowed` 时被最近邻拉到 `none`，用户以为开了最高强度、实际关闭思考且无任何告警。
 - **重启后立刻探测 NVIDIA 渠道会得到假 502**：容器重启会把 XApi 出口池清空重建，采集+验证完成前 NVIDIA 渠道返回 502 `upstream_proxy_unavailable`（OpenCodeFree 渠道不经出口池，同一时刻全 200，正好是天然对照组）。**部署后验证必须先读 `/metrics` 的 `proxy_pool_healthy` 再判定渠道故障**，否则会把预热期误报成回归。脚本 `scripts/test/pool_warmup_check_remote.py`（读池 gauge + 间隔重试 5 次）。本轮实测：预热后 healthy=23，NVIDIA 连续 5/5 全 200。
+
+## 2026-08-22 前端全量重构「暖纸工作室 Warm Studio」（6cb85c2..0cb8ba4，五阶段）
+
+- **五阶段提交链**：①地基 token/图标/图表/表格 → ②壳层 → ③高频页 → ④资源页 → ⑤观测页。设计文档 `docs/plans/2026-08-21-前端全量重构-design.md`；对比度 74→88 配对全过（新增 canvas-deep/surface-raised 两层）。
+- **依赖**：`motion-v@2.4.0` + `@lucide/vue@1.33.0`（lucide-vue-next 已 deprecated 换官方继任包）。图标走 `shared/ui/icons.ts` curated 映射 + `<UiIcon name>` 不变；UiIcon 用 style width/height 而非 size prop（lucide 的 size 类型是 number）。lucide 新命名：Filter→Funnel、CircleHelp→CircleQuestionMark、History→FileClock。
+- **pnpm store 坑**：本机 node_modules 曾由 store v11 链接而 pnpm 10.28.2 只认 v10；`CI=true pnpm install --store-dir D:\tmp\pnpm-store` 重链接即可，esbuild build-script 忽略警告不影响 vite。
+- **PowerShell 往返写坏 UTF-8**：`(Get-Content) -replace | Set-Content` 会按 GBK 读中文再写坏（spec 文件曾损坏靠 git checkout 恢复）。批量替换一律用 `python -c io.open(encoding='utf-8')` 或 Edit 工具。
+- **既有测试是行为契约**：CreateAccessKeyDialog 的 legacy copy（textarea+execCommand）测试带理据——管理面板可能跑在 HTTP 明文下 navigator.clipboard 不可用。换 UiCopyField 时必须把降级逻辑收进组件而不是删测试；复制成功/失败要有可见文字反馈。
+- **组件契约红线**：`[data-testid="key-table"]` 的响应式类（hidden md:block）也被断言；视图加 useRoute/useRouter 后 bare mount 的 spec 要补 memory-history router（ProxyPoolView 先例）；emit 多参数处理器参数顺序必须与 emits 声明一致。
+- **动效策略落地**：关键弹层（命令面板）保留 Vue Transition + 过冲 bezier `cubic-bezier(0.34,1.4,0.64,1)`（避免双动画系统），Motion/motion-v 用于批量操作条、AuthLayout 入场；reduced-motion 全局 CSS 守卫 + `useReducedMotion()` 显式判空双保险。
+- **明确放弃项（记录防重复劳动）**：表格虚拟滚动不做（全部表格已分页 ≤200 行/页，语义化 table 结构优先）；ModelsView(899 行) 拆 composables 未做（风险大于收益，本轮只做视觉统一），后续单独任务再做。

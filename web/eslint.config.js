@@ -12,7 +12,9 @@ export default tseslint.config(
       globals: {
         AbortController: 'readonly',
         clearInterval: 'readonly',
+        clearTimeout: 'readonly',
         setInterval: 'readonly',
+        setTimeout: 'readonly',
       },
       parserOptions: {
         parser: tseslint.parser,
@@ -28,7 +30,7 @@ export default tseslint.config(
     files: ['**/*.vue'],
     rules: {
       'vue/attribute-hyphenation': ['error', 'always', {
-        ignore: ['loadingLabel', 'emptyLabel', 'emptyHint', 'retryLabel', 'errorTestId', 'retryTestId', 'showLabel'],
+        ignore: ['loadingLabel', 'emptyLabel', 'emptyHint', 'retryLabel', 'errorTestId', 'retryTestId', 'showLabel', 'ariaLabel'],
       }],
     },
   },

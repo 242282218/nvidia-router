@@ -47,10 +47,11 @@ export default defineConfig({
       'text-accent-indigo': 'text-[var(--color-info)]',
     },
     /* ── 按钮：四 variant × 两密度。btn-base 承载形状与动效，variant 只描述颜色。
-       pointer-coarse 下触控目标提升到 44px（媒介/web P1#1 + 触控尺寸表硬约束）。 ── */
+       pointer-coarse 下触控目标提升到 44px（媒介/web P1#1 + 触控尺寸表硬约束）。
+       btn-primary 带暖琥珀环境光晕（Warm Studio 光效通道）。 ── */
     {
       'btn-base': 'inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] px-3.5 text-sm font-medium transition-[background-color,border-color,box-shadow,color,transform] duration-[var(--duration-micro)] active:translate-y-px disabled:cursor-not-allowed disabled:border disabled:border-[var(--color-disabled-border)] disabled:bg-[var(--color-disabled-background)] disabled:text-[var(--color-disabled-foreground)] disabled:opacity-100 disabled:shadow-none focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
-      'btn-primary': 'btn-base bg-[var(--color-accent-background)] font-semibold text-[var(--color-accent-foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-xs)] hover:bg-[var(--color-accent-background-hover)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-sm)] active:bg-[var(--color-accent-background)]',
+      'btn-primary': 'btn-base bg-[var(--color-accent-background)] font-semibold text-[var(--color-accent-foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-xs),0_4px_16px_var(--glow-accent)] hover:bg-[var(--color-accent-background-hover)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-sm),0_6px_24px_var(--glow-accent-strong)] active:bg-[var(--color-accent-background)]',
       'btn-secondary': 'btn-base border border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] shadow-[var(--shadow-xs)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] hover:shadow-[var(--shadow-sm)] active:bg-[var(--color-active)]',
       'btn-ghost': 'btn-base px-3 text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]',
       'btn-danger': 'btn-base border border-[var(--color-danger-text)] bg-transparent text-[var(--color-danger-text)] hover:border-[var(--color-danger-background)] hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)] active:bg-[var(--color-danger-background)]',
@@ -71,6 +72,8 @@ export default defineConfig({
     {
       'card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)]',
       'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)] transition-[border-color,box-shadow,transform] duration-200 hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5',
+      // Warm Studio 卡片：发丝高光 + hover 渐变描边流光（材质类在 theme.css）
+      'card-studio': 'card hairline-top card-glow relative',
       'panel-inset': 'rounded-[var(--radius-control)] bg-[var(--color-sunken)]',
       'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-xs)] transition-[border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-sm)]',
       // Static metric tile (no hover affordance — it is read-only telemetry,
