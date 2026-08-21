@@ -36,7 +36,13 @@ declare module 'vue-router' {
 }
 
 const NotFoundView = {
-  template: '<div class="page-container"><div class="content-wrapper"><h1 class="type-title">页面不存在</h1><p class="page-subtitle">请检查地址后重试。</p></div></div>',
+  template: `<div class="page-container"><div class="content-wrapper">
+    <div class="card-studio mt-16 mx-auto max-w-md p-10 text-center">
+      <p class="font-mono-data text-5xl font-semibold text-[var(--color-text-subtle)]">404</p>
+      <h1 class="type-title mt-4">页面不存在</h1>
+      <p class="page-subtitle mt-2">请检查地址后重试，或从侧边导航前往其他页面。</p>
+    </div>
+  </div></div>`,
 }
 
 export function createAppRouter(

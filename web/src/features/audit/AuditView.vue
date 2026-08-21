@@ -98,6 +98,21 @@ function parseDetail(raw: string | undefined): string {
     return raw
   }
 }
+
+// 操作语义 → 时间线节点色：删除/撤销 danger、创建/导入 success、认证 info、其余 accent。
+function actionTone(action: string): 'danger' | 'success' | 'info' | 'accent' {
+  if (action.includes('delete') || action.includes('revoke')) return 'danger'
+  if (action.includes('create') || action.includes('import')) return 'success'
+  if (action.includes('login') || action.includes('logout') || action.includes('password')) return 'info'
+  return 'accent'
+}
+
+const toneDotClass: Record<string, string> = {
+  danger: 'border-[var(--color-danger)]',
+  success: 'border-[var(--color-success)]',
+  info: 'border-[var(--color-info)]',
+  accent: 'border-[var(--color-accent)]',
+}
 </script>
 
 <template>
@@ -223,98 +238,74 @@ function parseDetail(raw: string | undefined): string {
           variant="table"
           :lines="6"
         />
-        <!-- min-w keeps the table from squeezing on narrow screens; the wrapper
-             scrolls horizontally instead (mobile-friendly overflow pattern). -->
+        <!-- 竖向时间线：管理操作按时间自上而下，节点色承载操作语义 -->
         <div
           v-else
-          class="overflow-x-auto"
+          class="p-5"
         >
-          <table class="data-table min-w-[640px]">
-            <caption class="sr-only">
-              审计日志，当前第 {{ page }} 页
-            </caption>
-            <thead>
-              <tr>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  时间
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  操作
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  目标
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  来源 IP
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  详情
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="items.length === 0">
-                <td
-                  class="data-table-td text-center text-[var(--color-text-muted)]"
-                  colspan="5"
-                >
-                  <template v-if="hasLoaded">
-                    暂无审计记录。可调整操作类型或刷新。
-                  </template>
-                  <template v-else>
-                    暂无审计记录
-                  </template>
-                </td>
-              </tr>
-              <tr
-                v-for="entry in items"
-                v-else
-                :key="entry.id"
-                class="data-table-row"
-              >
-                <td class="data-table-td font-mono-data text-xs">
-                  {{ formatDate(entry.created_at, { seconds: true }) }}
-                </td>
-                <td class="data-table-td">
+          <p
+            v-if="items.length === 0"
+            class="py-8 text-center text-sm text-[var(--color-text-muted)]"
+          >
+            <template v-if="hasLoaded">
+              暂无审计记录。可调整操作类型或刷新。
+            </template>
+            <template v-else>
+              暂无审计记录
+            </template>
+          </p>
+          <ol
+            v-else
+            class="relative space-y-5"
+            :aria-label="`审计日志，共 ${total} 条`"
+          >
+            <li
+              v-for="(entry, index) in items"
+              :key="entry.id"
+              class="relative flex gap-4 pl-7"
+            >
+              <!-- 连接线：最后一项不画 -->
+              <span
+                v-if="index < items.length - 1"
+                class="absolute left-[7px] top-4 bottom-[-20px] w-px bg-[var(--color-border)]"
+                aria-hidden="true"
+              />
+              <span
+                class="absolute left-0 top-1.5 h-3.5 w-3.5 rounded-full border-2 bg-[var(--color-surface)]"
+                :class="toneDotClass[actionTone(entry.action)]"
+                aria-hidden="true"
+              />
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <span class="rounded bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] px-2 py-0.5 font-mono-data text-xs font-medium text-[var(--color-accent-text)]">
                     {{ entry.action }}
                   </span>
-                </td>
-                <td class="data-table-td text-xs">
+                  <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
+                    {{ formatDate(entry.created_at, { seconds: true }) }}
+                  </span>
+                  <span
+                    v-if="entry.client_ip"
+                    class="font-mono-data text-xs text-[var(--color-text-subtle)]"
+                  >
+                    {{ entry.client_ip }}
+                  </span>
+                </div>
+                <p class="mt-1 text-xs text-[var(--color-text-secondary)]">
                   <template v-if="entry.target_id">
                     {{ entry.target_type }} #{{ entry.target_id }}
                   </template>
                   <template v-else>
                     {{ entry.target_type || '—' }}
                   </template>
-                </td>
-                <td class="data-table-td font-mono-data text-xs">
-                  {{ entry.client_ip || '—' }}
-                </td>
-                <td class="data-table-td max-w-[280px]">
                   <span
-                    :title="parseDetail(entry.detail) || undefined"
-                    class="block truncate font-mono-data text-xs text-[var(--color-text-subtle)]"
-                  >{{ parseDetail(entry.detail) || '—' }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    v-if="parseDetail(entry.detail)"
+                    class="ml-2 inline-block max-w-[280px] truncate align-bottom font-mono-data text-[var(--color-text-subtle)]"
+                    :title="parseDetail(entry.detail)"
+                  >{{ parseDetail(entry.detail) }}</span>
+                </p>
+              </div>
+            </li>
+          </ol>
         </div>
       </div>
 
