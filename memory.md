@@ -250,3 +250,13 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **组件契约红线**：`[data-testid="key-table"]` 的响应式类（hidden md:block）也被断言；视图加 useRoute/useRouter 后 bare mount 的 spec 要补 memory-history router（ProxyPoolView 先例）；emit 多参数处理器参数顺序必须与 emits 声明一致。
 - **动效策略落地**：关键弹层（命令面板）保留 Vue Transition + 过冲 bezier `cubic-bezier(0.34,1.4,0.64,1)`（避免双动画系统），Motion/motion-v 用于批量操作条、AuthLayout 入场；reduced-motion 全局 CSS 守卫 + `useReducedMotion()` 显式判空双保险。
 - **明确放弃项（记录防重复劳动）**：表格虚拟滚动不做（全部表格已分页 ≤200 行/页，语义化 table 结构优先）；ModelsView(899 行) 拆 composables 未做（风险大于收益，本轮只做视觉统一），后续单独任务再做。
+
+## 2026-08-22 Warm Restraint 精炼克制（a52825a..c5fd8bc，四批）
+
+- 设计文档 `docs/plans/2026-08-22-warm-restraint-design.md`（用户逐节批准：暖纸奢华进化/Linear 式克制；样板间=监控+渠道+代理池）。四批提交：①token v4+细线图标 ②壳层 ③三仪表 ④embed 产物。
+- **UiMenu 新原语**（`shared/ui/UiMenu.vue` + spec）：触发钮+上浮/下挂面板，slot props 暴露 `close()`；Esc 关闭归还焦点、document capture pointerdown 关外部点击。菜单项用共享 shortcut `menu-item`。`.vue` 内 `document`/`HTMLElement` 必须写 `globalThis.*`（eslint no-undef 老坑再现）。
+- **happy-dom × motion-v 陷阱**：Motion 面板停在 initial opacity:0，`isVisible()` 会误报不可见——单测断言用 `exists()` 不用 `isVisible()`。
+- **SVG pathLength=1 会把 stroke-dasharray 单位归一化**：虚线第二编码（失败趋势 '6 4'）在 pathLength 下变成实线。生长动画与 dashed 互斥：`:pathLength="dashed ? undefined : 1"` + `.chart-line-static` 关动画。
+- **控件收进菜单的测试适配模式**：e2e 直接 `getByTestId` 点按钮的（如 logout 收进侧栏「账户操作」菜单），先点 `getByRole('button', { name: '<菜单名>' })` 展开；单测同理由 `wrapper.get('button[aria-haspopup="menu"][aria-label=…]')` 进入。testid 保持不变是契约。
+- token v4 要点：`--color-border #ece8e0`（装饰无对比度义务，calc_contrast 只断言 border-strong）；双层柔影 shadow-sm；tracking 变量 display/-0.02em、title/+0.01em（font 简写不含字距需独立变量）；卡片留白整体升一档（card p-6/metric-card p-5）；count-up 加 >5% 变化阈值防空跳。
+- 本地 E2E 可跑：Git Bash 在 `D:\Program Files\Git\bin\bash.exe`（memory 早前"未安装"已过时），`& "D:\Program Files\Git\bin\bash.exe" tests/e2e/run.sh` 一条命令起 harness+playwright，8/8 通过含移动端响应式。
