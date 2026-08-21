@@ -9,8 +9,13 @@
 
   /* ── 底色层级：暖纸底 → 纯白卡片浮于其上，形成柔和的纵向层次 ── */
   --color-canvas: #faf9f7;
+  /* Warm Studio v3：页面基底比卡片深一档，让表面真正"浮"起来；
+     文本只允许 text 及以上层级落在其上（subtle 禁止，见对比度表）。 */
+  --color-canvas-deep: #f2efe9;
   --color-surface: #ffffff;
   --color-elevated: #ffffff;
+  /* 悬浮层（popover/命令面板/批量操作条）：比 elevated 再亮半档的暖白 */
+  --color-surface-raised: #fffefb;
   --color-sunken: #f5f2ee;
   --color-hover: #f3f0eb;
   --color-active: #eae6df;
@@ -85,6 +90,16 @@
   --shadow-overlay: 0 8px 24px rgba(28, 25, 23, 0.10), 0 24px 64px rgba(28, 25, 23, 0.14);
   --color-overlay: rgba(28, 25, 23, 0.42);
 
+  /* ── Warm Studio 光效：暖琥珀环境光晕 + 卡片顶部发丝高光 + hover 渐变描边。
+     全部为装饰性通道（非文本/非控件边界），无对比度义务，登记于配对表备注。 ── */
+  --glow-accent: rgba(217, 165, 63, 0.22);
+  --glow-accent-strong: rgba(217, 165, 63, 0.34);
+  --hairline: rgba(255, 255, 255, 0.85);
+  --border-glow-from: rgba(217, 165, 63, 0.55);
+  --border-glow-to: rgba(118, 185, 0, 0.40);
+  /* 纸纹噪点：feTurbulence 平铺，极低透明度铺满视口 */
+  --grain-opacity: 0.032;
+
   /* ── 间距刻度（4px 基网） ── */
   --space-1: 4px;
   --space-2: 8px;
@@ -111,8 +126,10 @@
   color-scheme: dark;
 
   --color-canvas: #141210;
+  --color-canvas-deep: #100e0c;
   --color-surface: #1c1917;
   --color-elevated: #242120;
+  --color-surface-raised: #272422;
   --color-sunken: #171514;
   --color-hover: #262220;
   --color-active: #2e2926;
@@ -171,6 +188,14 @@
   --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.42), 0 24px 64px rgba(0, 0, 0, 0.52);
   --color-overlay: rgba(8, 6, 5, 0.62);
 
+  /* Warm Studio 光效（暗色）：光晕压暗、发丝线降为微光、渐变描边提亮 */
+  --glow-accent: rgba(217, 165, 63, 0.14);
+  --glow-accent-strong: rgba(217, 165, 63, 0.22);
+  --hairline: rgba(255, 255, 255, 0.07);
+  --border-glow-from: rgba(217, 165, 63, 0.45);
+  --border-glow-to: rgba(118, 185, 0, 0.38);
+  --grain-opacity: 0.05;
+
   --scrollbar-thumb: rgba(168, 162, 158, 0.28);
   --scrollbar-thumb-hover: rgba(168, 162, 158, 0.46);
 }
@@ -204,10 +229,11 @@ html {
 body {
   margin: 0;
   overflow-x: hidden;
-  /* 暖白氛围：右上角一抹极淡的暖光，落在纸感底色之上 */
+  /* Warm Studio 氛围：更深的暖纸基底，右上暖光 + 左下极淡品牌绿回声 */
   background:
-    radial-gradient(1100px 520px at 85% -8%, rgba(255, 242, 220, 0.55), transparent 62%),
-    var(--color-canvas);
+    radial-gradient(1100px 520px at 85% -8%, rgba(255, 242, 220, 0.60), transparent 62%),
+    radial-gradient(900px 480px at 6% 106%, rgba(118, 185, 0, 0.05), transparent 58%),
+    var(--color-canvas-deep);
   background-attachment: fixed;
   color: var(--color-text);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -218,12 +244,25 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 纸纹噪点：feTurbulence 平铺铺满视口，pointer-events 直通。
+   盖在最上层（含弹层）是刻意的——胶片颗粒式全局材质，透明度极低不扰内容。 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
 /* 暗色氛围：暖橙余晖 + 一缕品牌绿极光，透明度压到不干扰内容 */
 [data-theme='dark'] body {
   background:
-    radial-gradient(1100px 520px at 85% -8%, rgba(217, 165, 63, 0.07), transparent 62%),
-    radial-gradient(900px 480px at 8% 108%, rgba(118, 185, 0, 0.05), transparent 60%),
-    var(--color-canvas);
+    radial-gradient(1100px 520px at 85% -8%, rgba(217, 165, 63, 0.08), transparent 62%),
+    radial-gradient(900px 480px at 8% 108%, rgba(118, 185, 0, 0.06), transparent 60%),
+    var(--color-canvas-deep);
 }
 
 button,
@@ -263,19 +302,22 @@ summary:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── 路由级页面过渡：新页轻浮起 + 淡入，旧页快速让位 ── */
+/* ── 路由级页面过渡：旧页 blur+上移让位，新页轻浮起 + 淡入 ── */
 .page-enter-active {
-  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
+  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter), filter var(--duration-local) var(--ease-enter);
 }
 .page-leave-active {
-  transition: opacity var(--duration-micro) var(--ease-exit);
+  transition: opacity var(--duration-micro) var(--ease-exit), transform var(--duration-micro) var(--ease-exit), filter var(--duration-micro) var(--ease-exit);
 }
 .page-enter-from {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(10px) scale(0.998);
+  filter: blur(3px);
 }
 .page-leave-to {
   opacity: 0;
+  transform: translateY(-4px) scale(0.996);
+  filter: blur(2px);
 }
 
 /* ── 骨架屏微光：骨架块扫过一道暖色高光，比 spinner 更克制 ── */
@@ -339,6 +381,83 @@ summary:focus-visible {
 .stagger-item {
   animation: stagger-enter var(--duration-local) var(--ease-enter) both;
   animation-delay: calc(min(var(--stagger-index, 0), 12) * 30ms);
+}
+
+/* ── Warm Studio 组件级材质 ── */
+
+/* 卡片顶部发丝高光：玻璃/纸面受光的暗示，配合 elevated 底色使用 */
+.hairline-top {
+  position: relative;
+}
+.hairline-top::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--hairline) 18%, var(--hairline) 82%, transparent);
+  pointer-events: none;
+}
+
+/* hover 渐变描边流光：mask 挖空只留 1px 描边环，暖琥珀→品牌绿 */
+.card-glow {
+  transition: box-shadow var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
+}
+.card-glow::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--border-glow-from), var(--border-glow-to));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity var(--duration-local) var(--ease-enter);
+  pointer-events: none;
+}
+.card-glow:hover::after,
+.card-glow:focus-within::after {
+  opacity: 1;
+}
+.card-glow:hover {
+  box-shadow: var(--shadow-md);
+}
+
+/* 键盘按键芯片：快捷键提示专用 */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  background: var(--color-sunken);
+  color: var(--color-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 浮动提示面板：UiTooltip / 帮助浮层共用表面 */
+.tooltip-surface {
+  z-index: 70;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: var(--shadow-md);
 }
 
 @media (prefers-reduced-motion: reduce) {

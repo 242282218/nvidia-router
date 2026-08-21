@@ -18,8 +18,10 @@ import sys
 
 # Raw values from web/src/styles/theme.css (Warm Paper 暖白 / Light). Keep in sync.
 CANVAS = "#faf9f7"
+CANVAS_DEEP = "#f2efe9"
 SURFACE = "#ffffff"
 ELEVATED = "#ffffff"
+SURFACE_RAISED = "#fffefb"
 SUNKEN = "#f5f2ee"
 
 TEXT = "#1c1917"
@@ -57,8 +59,10 @@ BORDER_STRONG = "#8a8378"
 
 # Raw values from web/src/styles/theme.css [data-theme='dark'] (暖调深色). Keep in sync.
 D_CANVAS = "#141210"
+D_CANVAS_DEEP = "#100e0c"
 D_SURFACE = "#1c1917"
 D_ELEVATED = "#242120"
+D_SURFACE_RAISED = "#272422"
 
 D_TEXT = "#f7f5f3"
 D_TEXT_SECONDARY = "#d9d4cf"
@@ -104,16 +108,23 @@ D_INFO_BACKGROUND = _tint_on_surface(D_INFO, 15)
 PAIRS: list[tuple[str, str, str, float]] = [
     # body text roles, 4.5:1
     ("text on canvas", TEXT, CANVAS, 4.5),
+    ("text on canvas-deep", TEXT, CANVAS_DEEP, 4.5),
     ("text on surface", TEXT, SURFACE, 4.5),
     ("text on elevated", TEXT, ELEVATED, 4.5),
+    ("text on surface-raised", TEXT, SURFACE_RAISED, 4.5),
     ("text-secondary on canvas", TEXT_SECONDARY, CANVAS, 4.5),
+    ("text-secondary on canvas-deep", TEXT_SECONDARY, CANVAS_DEEP, 4.5),
     ("text-secondary on surface", TEXT_SECONDARY, SURFACE, 4.5),
     ("text-secondary on elevated", TEXT_SECONDARY, ELEVATED, 4.5),
+    ("text-secondary on surface-raised", TEXT_SECONDARY, SURFACE_RAISED, 4.5),
     ("text-muted on canvas", TEXT_MUTED, CANVAS, 4.5),
+    ("text-muted on canvas-deep", TEXT_MUTED, CANVAS_DEEP, 4.5),
     ("text-muted on surface", TEXT_MUTED, SURFACE, 4.5),
     ("text-muted on elevated", TEXT_MUTED, ELEVATED, 4.5),
+    ("text-muted on surface-raised", TEXT_MUTED, SURFACE_RAISED, 4.5),
     ("text-subtle on surface", TEXT_SUBTLE, SURFACE, 4.5),
     ("text-subtle on elevated", TEXT_SUBTLE, ELEVATED, 4.5),
+    ("text-subtle on surface-raised", TEXT_SUBTLE, SURFACE_RAISED, 4.5),
     # accent roles, 4.5:1 for text usage
     ("accent-text on canvas", ACCENT, CANVAS, 4.5),
     ("accent-text on surface", ACCENT, SURFACE, 4.5),
@@ -154,16 +165,23 @@ PAIRS: list[tuple[str, str, str, float]] = [
     ("chart info on canvas", INFO, CANVAS, 3.0),
     # ── Dark theme ([data-theme='dark']) ──
     ("dark text on canvas", D_TEXT, D_CANVAS, 4.5),
+    ("dark text on canvas-deep", D_TEXT, D_CANVAS_DEEP, 4.5),
     ("dark text on surface", D_TEXT, D_SURFACE, 4.5),
     ("dark text on elevated", D_TEXT, D_ELEVATED, 4.5),
+    ("dark text on surface-raised", D_TEXT, D_SURFACE_RAISED, 4.5),
     ("dark text-secondary on canvas", D_TEXT_SECONDARY, D_CANVAS, 4.5),
+    ("dark text-secondary on canvas-deep", D_TEXT_SECONDARY, D_CANVAS_DEEP, 4.5),
     ("dark text-secondary on surface", D_TEXT_SECONDARY, D_SURFACE, 4.5),
     ("dark text-secondary on elevated", D_TEXT_SECONDARY, D_ELEVATED, 4.5),
+    ("dark text-secondary on surface-raised", D_TEXT_SECONDARY, D_SURFACE_RAISED, 4.5),
     ("dark text-muted on canvas", D_TEXT_MUTED, D_CANVAS, 4.5),
+    ("dark text-muted on canvas-deep", D_TEXT_MUTED, D_CANVAS_DEEP, 4.5),
     ("dark text-muted on surface", D_TEXT_MUTED, D_SURFACE, 4.5),
     ("dark text-muted on elevated", D_TEXT_MUTED, D_ELEVATED, 4.5),
+    ("dark text-muted on surface-raised", D_TEXT_MUTED, D_SURFACE_RAISED, 4.5),
     ("dark text-subtle on surface", D_TEXT_SUBTLE, D_SURFACE, 4.5),
     ("dark text-subtle on elevated", D_TEXT_SUBTLE, D_ELEVATED, 4.5),
+    ("dark text-subtle on surface-raised", D_TEXT_SUBTLE, D_SURFACE_RAISED, 4.5),
     ("dark accent-text on canvas", D_ACCENT, D_CANVAS, 4.5),
     ("dark accent-text on surface", D_ACCENT, D_SURFACE, 4.5),
     ("dark accent-foreground on accent", D_ACCENT_FOREGROUND, D_ACCENT, 4.5),
