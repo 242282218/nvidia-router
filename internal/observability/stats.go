@@ -128,7 +128,8 @@ func (r *Repository) ListDailyCosts(ctx context.Context, since, until time.Time)
 	return costs, nil
 }
 
-func (r *Repository) ListRecentErrors(ctx context.Context, limit int) ([]RecentError, error) {	if limit < 1 {
+func (r *Repository) ListRecentErrors(ctx context.Context, limit int) ([]RecentError, error) {
+	if limit < 1 {
 		limit = 1
 	}
 	if limit > maxRecentErrors {

@@ -74,26 +74,26 @@ type MutationResult struct {
 }
 
 type Candidate struct {
-	PublicID                  string
-	UpstreamID                string
-	DisplayName               string
-	Kind                      Kind
-	Provider                  string
-	Channel                   string
-	Badge                     string
-	Status                    string
-	Enabled                   bool
-	Capabilities              []string
-	CapabilityTags            []string
-	SupportsVision            bool
-	SupportsTools             bool
-	SupportsReasoning         bool
-	ReasoningWireFormat       string
-	ReasoningLevels           []string
-	ReasoningMinBudget        int
-	ReasoningMaxBudget        int
-	ReasoningZeroAllowed      bool
-	ReasoningDynamicAllowed   bool
+	PublicID                string
+	UpstreamID              string
+	DisplayName             string
+	Kind                    Kind
+	Provider                string
+	Channel                 string
+	Badge                   string
+	Status                  string
+	Enabled                 bool
+	Capabilities            []string
+	CapabilityTags          []string
+	SupportsVision          bool
+	SupportsTools           bool
+	SupportsReasoning       bool
+	ReasoningWireFormat     string
+	ReasoningLevels         []string
+	ReasoningMinBudget      int
+	ReasoningMaxBudget      int
+	ReasoningZeroAllowed    bool
+	ReasoningDynamicAllowed bool
 }
 
 type Selection struct {

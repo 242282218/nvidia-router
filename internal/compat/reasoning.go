@@ -55,6 +55,32 @@ type ReasoningSpec struct {
 	Source    string
 }
 
+// RequiresReasoning reports whether the caller asked the model to actually spend
+// reasoning tokens. Requested alone does not mean that: reasoning_effort:"none",
+// thinking:false and thinking:{"type":"disabled"} all parse as Requested because
+// the caller did name the parameter, yet they ask for reasoning to stay off —
+// something a model without the capability already satisfies. Treating them as a
+// capability requirement made every non-reasoning model answer 501
+// not_implemented to clients that send a reasoning parameter as a global default.
+func (s ReasoningSpec) RequiresReasoning() bool {
+	return s.Requested && s.Level != ReasoningNone
+}
+
+// reasoningAliasFields are the mutually redundant request fields that can carry a
+// reasoning instruction. Any rewrite has to clear all three, otherwise a stale
+// alias contradicts the form actually written.
+var reasoningAliasFields = [3]string{"reasoning_effort", "reasoning", "thinking"}
+
+// StripReasoning removes every reasoning alias from a request payload. It is for
+// upstreams that cannot reason at all: the fields carry no instruction they could
+// act on, and NIM validates the chat schema strictly enough to answer 422 for
+// parameters outside it.
+func StripReasoning(fields map[string]json.RawMessage) {
+	for _, name := range reasoningAliasFields {
+		delete(fields, name)
+	}
+}
+
 type ReasoningProfile struct {
 	Supported      bool
 	Levels         []ReasoningLevel
@@ -179,9 +205,7 @@ func ApplyReasoning(fields map[string]json.RawMessage, decision ReasoningDecisio
 	// spend every token on reasoning and return an empty message with
 	// finish_reason=length. Cap it before it reaches the wire.
 	budget := capThinkingBudget(decision.EffectiveBudget, outputTokenLimit(fields))
-	for _, name := range []string{"reasoning_effort", "reasoning", "thinking"} {
-		delete(fields, name)
-	}
+	StripReasoning(fields)
 	if preserveNativeThinking {
 		encoded, err := marshalThinking(decision, budget)
 		if err != nil {

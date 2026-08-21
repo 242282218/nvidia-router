@@ -149,7 +149,7 @@ func TestDecoderRejectsManySmallLinesExceedingEventSize(t *testing.T) {
 
 func TestDecoderAllowsLargeButUnderCapMultiLineEvent(t *testing.T) {
 	line := ":" + strings.Repeat("y", 100) + "\n"
-	count := MaxEventSize/len(line)/2
+	count := MaxEventSize / len(line) / 2
 	var builder strings.Builder
 	for i := 0; i < count; i++ {
 		builder.WriteString(line)

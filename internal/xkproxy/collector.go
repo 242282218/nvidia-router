@@ -27,12 +27,12 @@ type Collector struct {
 	concurrency    int
 	ejectionPolicy EjectionPolicy
 
-	mu         sync.Mutex
-	fetchMu    sync.Mutex
-	closed     bool
-	started    bool
-	done       chan struct{}
-	closeDone  chan struct{}
+	mu        sync.Mutex
+	fetchMu   sync.Mutex
+	closed    bool
+	started   bool
+	done      chan struct{}
+	closeDone chan struct{}
 	// closeCalls is a test-only observation hook (production never sets it; the
 	// nil-channel guard keeps Close a no-op for it). It lets the lifecycle test
 	// observe concurrent Close entry without a public callback.

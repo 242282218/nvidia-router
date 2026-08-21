@@ -20,7 +20,7 @@ var (
 	// out as the only class worth another attempt through a different NVIDIA key
 	// or proxy exit. A 404/401/403 answer describes the model or the credential
 	// itself, so it deliberately stays a plain ErrManualTestRequired.
-	ErrUpstreamUnreachable = fmt.Errorf("%w: upstream did not return a usable answer", ErrManualTestRequired)
+	ErrUpstreamUnreachable   = fmt.Errorf("%w: upstream did not return a usable answer", ErrManualTestRequired)
 	ErrProviderMismatch      = errors.New("model provider does not match the selected test channel")
 	ErrProviderNotRoutable   = errors.New("model provider is not routable")
 	ErrProviderNotConfigured = errors.New("model provider is not configured")

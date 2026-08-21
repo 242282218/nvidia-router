@@ -32,8 +32,8 @@ func (p *queueLimitPool) AcquireWithSnapshot(ctx context.Context, _ int64, _ map
 	return nil, ctx.Err()
 }
 
-func (p *queueLimitPool) ApplySuccess(int64)                                                     {}
-func (p *queueLimitPool) ApplyFailure(int64, int64, fault.Fault, keystate.KeySnapshot)          {}
+func (p *queueLimitPool) ApplySuccess(int64)                                           {}
+func (p *queueLimitPool) ApplyFailure(int64, int64, fault.Fault, keystate.KeySnapshot) {}
 
 type testLease struct{ keyID int64 }
 

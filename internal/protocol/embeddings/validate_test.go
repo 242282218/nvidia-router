@@ -9,7 +9,7 @@ import (
 
 func TestParseRejectsOversizedBody(t *testing.T) {
 	payload := `{"model":"m","input":"x"}`
-	oversized := "[" + payload + "," + `"`+string(make([]byte, MaxRequestBytes))+`"` + "]"
+	oversized := "[" + payload + "," + `"` + string(make([]byte, MaxRequestBytes)) + `"` + "]"
 	if _, err := Parse([]byte(oversized)); err == nil {
 		t.Fatal("expected error for oversized body")
 	}

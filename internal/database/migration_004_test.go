@@ -66,9 +66,9 @@ func TestMigration004NormalizesLegacyTimestamps(t *testing.T) {
 	}
 
 	if err := migrateFS(db, fstest.MapFS{
-		"migrations/001_initial.sql":           &fstest.MapFile{Data: initial},
-		"migrations/002_indexes.sql":           &fstest.MapFile{Data: indexes},
-		"migrations/003_xk_proxy_settings.sql": &fstest.MapFile{Data: xkProxy},
+		"migrations/001_initial.sql":               &fstest.MapFile{Data: initial},
+		"migrations/002_indexes.sql":               &fstest.MapFile{Data: indexes},
+		"migrations/003_xk_proxy_settings.sql":     &fstest.MapFile{Data: xkProxy},
 		"migrations/004_observability_indexes.sql": &fstest.MapFile{Data: normalize},
 	}); err != nil {
 		t.Fatalf("migrateFS migration 004: %v", err)

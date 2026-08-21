@@ -57,7 +57,7 @@ func (a *App) finishShutdown() error {
 	start := time.Now()
 	logger := a.getLogger()
 	logger.Info("shutdown_started")
-	
+
 	var shutdownErr error
 	if a.Server != nil {
 		componentStart := time.Now()
@@ -68,7 +68,7 @@ func (a *App) finishShutdown() error {
 			"error", shutdownErr != nil,
 		)
 	}
-	
+
 	if a.recorderCancel != nil {
 		// Stop recording only after HTTP has drained; handlers may enqueue their
 		// final request log while they are unwinding during Server.Shutdown.
@@ -82,14 +82,14 @@ func (a *App) finishShutdown() error {
 			"duration_ms", time.Since(componentStart).Milliseconds(),
 		)
 	}
-	
+
 	if a.shutdownTimer != nil {
 		a.shutdownTimer.Stop()
 	}
 	if a.rootCancel != nil {
 		a.rootCancel()
 	}
-	
+
 	if a.modelHealthDone != nil {
 		componentStart := time.Now()
 		<-a.modelHealthDone
@@ -98,7 +98,7 @@ func (a *App) finishShutdown() error {
 			"duration_ms", time.Since(componentStart).Milliseconds(),
 		)
 	}
-	
+
 	if a.nvidiaClient != nil {
 		componentStart := time.Now()
 		a.nvidiaClient.Close()
@@ -107,7 +107,7 @@ func (a *App) finishShutdown() error {
 			"duration_ms", time.Since(componentStart).Milliseconds(),
 		)
 	}
-	
+
 	if a.cleanupDone != nil {
 		componentStart := time.Now()
 		<-a.cleanupDone
@@ -116,7 +116,7 @@ func (a *App) finishShutdown() error {
 			"duration_ms", time.Since(componentStart).Milliseconds(),
 		)
 	}
-	
+
 	if a.healthDone != nil {
 		componentStart := time.Now()
 		<-a.healthDone
@@ -125,7 +125,7 @@ func (a *App) finishShutdown() error {
 			"duration_ms", time.Since(componentStart).Milliseconds(),
 		)
 	}
-	
+
 	// Close the reader pool before the writer: readers hold WAL read locks that
 	// would otherwise make the writer's final checkpoint contend.
 	if a.dbReader != nil {
@@ -138,7 +138,7 @@ func (a *App) finishShutdown() error {
 			"error", err != nil,
 		)
 	}
-	
+
 	if a.db != nil {
 		componentStart := time.Now()
 		err := a.db.Close()
@@ -149,12 +149,12 @@ func (a *App) finishShutdown() error {
 			"error", err != nil,
 		)
 	}
-	
+
 	logger.Info("shutdown_completed",
 		"total_duration_ms", time.Since(start).Milliseconds(),
 		"error", shutdownErr != nil,
 	)
-	
+
 	return shutdownErr
 }
 

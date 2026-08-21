@@ -28,10 +28,10 @@ var (
 const maxValidationBodyBytes = 1 << 20
 
 type Validator struct {
-	validationURL    string
-	validationStatus int
-	timeout          time.Duration
-	maxLatency       time.Duration
+	validationURL       string
+	validationStatus    int
+	timeout             time.Duration
+	maxLatency          time.Duration
 	allowPrivateForTest bool
 
 	mu         sync.Mutex
@@ -175,9 +175,9 @@ func (v *Validator) transportForWithURL(proxy Proxy, proxyURL *url.URL, dialTime
 		delete(v.transports, key)
 	}
 
-		transport := &http.Transport{
-			DialContext:         safeDialContext(dialTimeout, v.allowPrivateForTest),
-			TLSHandshakeTimeout: dialTimeout,
+	transport := &http.Transport{
+		DialContext:         safeDialContext(dialTimeout, v.allowPrivateForTest),
+		TLSHandshakeTimeout: dialTimeout,
 		// Keep-alives enabled with bounded idle pool so a proxy validated
 		// every 5s reuses its CONNECT tunnel instead of paying TCP+TLS
 		// handshake each cycle. MaxIdleConnsPerHost is raised from the

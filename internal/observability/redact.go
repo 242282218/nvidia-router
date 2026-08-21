@@ -64,8 +64,8 @@ func RedactAuthorizationHeader(header http.Header) http.Header {
 // this function exists so the redaction surface is consistent before it's
 // needed.
 var tokenQueryKeys = map[string]struct{}{
-	"key":    {},
-	"apikey": {},
+	"key":     {},
+	"apikey":  {},
 	"api_key": {},
 }
 

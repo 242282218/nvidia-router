@@ -136,7 +136,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	_, _ = io.Copy(writer, result.Response.Body)
 }
 
-func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
+func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
+	return func(ctx context.Context, keyID int64, secret []byte, _ *router.CommitState) (*http.Response, error) {
 		ctx = nvidia.WithStickySession(ctx, keyID)
 		response, err := h.client.Chat(ctx, snapshotFromBudget(ctx), string(secret), body, stream)
 		if err != nil {

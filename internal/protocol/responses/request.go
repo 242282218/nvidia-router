@@ -130,7 +130,7 @@ func Parse(body []byte) (Request, error) {
 			Kind:      modelcatalog.KindChat,
 			Vision:    inputReq.vision,
 			Tools:     inputReq.tools || len(normalizedTools) > 0 || normalizedChoice.Mode == "function" || normalizedChoice.Mode == "required",
-			Reasoning: reasoning.Requested,
+			Reasoning: reasoning.RequiresReasoning(),
 		},
 		tools: normalizedTools, toolChoice: normalizedChoice,
 		toolChoiceSet: len(fields["tool_choice"]) > 0 && !isJSONNull(fields["tool_choice"]), reasoning: reasoning,
@@ -191,6 +191,13 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 		if err := compat.ApplyReasoning(chat, decision, model.ReasoningProfile()); err != nil {
 			return nil, reasoningResponseModelError(err)
 		}
+	} else if r.reasoning.Requested && !r.reasoning.RequiresReasoning() {
+		// mapReasoning deliberately forwards a reasoning request to a model the local
+		// catalog marks as non-reasoning and lets the upstream decide. An explicit
+		// reasoning-off is different: Requirements no longer rejects it, and the
+		// aliases carry nothing this upstream can act on, so forwarding them only
+		// risks a 422 from NIM's strict chat schema.
+		compat.StripReasoning(chat)
 	}
 	encodedModel, _ := json.Marshal(model.UpstreamID)
 	chat["model"] = encodedModel

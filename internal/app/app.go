@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -88,10 +89,10 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Check for insecure production configurations
 	checkProductionSecurity(resolved.Config, resolved.Logger)
-	
+
 	var dbLock *processlock.Lock
 	lockTransferred := false
 	if resolved.DB == nil {
@@ -458,14 +459,44 @@ func closeAfterInitializationError(db *sql.DB, reader *sql.DB, operationErr erro
 	return operationErr
 }
 
+// listenExposure classifies a listen address for the startup security audit.
+// config.ListenAddress is a host:port string (the default is "0.0.0.0:3756"), so
+// the host has to be split out before it can be compared against a loopback or
+// wildcard address; comparing the whole value matches neither, which silently
+// turned the audit into three false warnings for the loopback default and let the
+// bare ":port" wildcard form past the public-binding check.
+func listenExposure(address string) (loopback, wildcard bool) {
+	host := address
+	if split, _, err := net.SplitHostPort(address); err == nil {
+		host = split
+	}
+	if host == "" {
+		// ":3756" and "" both bind every interface: net treats a missing host as
+		// the unspecified address, not as loopback.
+		return false, true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true, false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A hostname that is not resolved here; report it as exposed so the audit
+		// errs toward warning rather than staying silent.
+		return false, false
+	}
+	return ip.IsLoopback(), ip.IsUnspecified()
+}
+
 // checkProductionSecurity logs warnings when the configuration may expose
 // sensitive data or management endpoints without proper protection.
 func checkProductionSecurity(cfg config.Config, logger *slog.Logger) {
-	// Check if listening on non-loopback without HTTPS protection
-	isLoopback := cfg.ListenAddress == "127.0.0.1" || 
-		cfg.ListenAddress == "localhost" || 
-		cfg.ListenAddress == "::1" ||
-		cfg.ListenAddress == "" // empty defaults to localhost in most cases
+	if cfg.ListenAddress == "" {
+		// config.Load always substitutes the default, so an empty address means the
+		// caller builds Config by hand and serves through its own listener (the
+		// in-process test harness). There is no socket to audit.
+		return
+	}
+	isLoopback, isWildcard := listenExposure(cfg.ListenAddress)
 
 	if !isLoopback {
 		// Listening on non-loopback - check for security configurations
@@ -494,9 +525,7 @@ func checkProductionSecurity(cfg config.Config, logger *slog.Logger) {
 		}
 
 		// Check for completely public binding
-		if cfg.ListenAddress == "0.0.0.0" || cfg.ListenAddress == "::" || 
-		   strings.HasPrefix(cfg.ListenAddress, "0.0.0.0:") || 
-		   strings.HasPrefix(cfg.ListenAddress, ":::") {
+		if isWildcard {
 			logger.Warn(
 				"SECURITY: Listening on all interfaces without reverse proxy exposes plaintext HTTP",
 				"listen_address", cfg.ListenAddress,

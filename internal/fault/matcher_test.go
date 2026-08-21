@@ -55,14 +55,14 @@ func TestFailoverMatcherRejectsBadInput(t *testing.T) {
 	bad := []string{
 		"abc",
 		"4xx",
-		"500-499",     // reversed
-		"200",          // success code in spec
-		"200-299",      // success range
-		"99",           // below HTTP code floor
-		"600",          // above HTTP code ceiling
-		"500-700",      // range exceeds ceiling
-		"429,-502",     // empty token between tokens after split: actually empty handled, but ",-" parses wrongly
-		", ,",          // all empty tokens
+		"500-499",  // reversed
+		"200",      // success code in spec
+		"200-299",  // success range
+		"99",       // below HTTP code floor
+		"600",      // above HTTP code ceiling
+		"500-700",  // range exceeds ceiling
+		"429,-502", // empty token between tokens after split: actually empty handled, but ",-" parses wrongly
+		", ,",      // all empty tokens
 	}
 	for _, spec := range bad {
 		t.Run(spec, func(t *testing.T) {

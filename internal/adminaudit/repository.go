@@ -55,10 +55,10 @@ type ListQuery struct {
 }
 
 type Page struct {
-	Items    []Entry
-	Total    int
-	HasMore  bool
-	Next     *int
+	Items   []Entry
+	Total   int
+	HasMore bool
+	Next    *int
 }
 
 // List returns audit entries newest-first within an optional action filter.

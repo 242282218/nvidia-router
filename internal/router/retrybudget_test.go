@@ -308,14 +308,14 @@ func TestBackoffRespectsRetryAfter(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected failure after the attempt cap")
 			}
-				wantDelays := 1
-				if tt.retryAfter != "" {
-					wantDelays = 2
-				}
-				if len(source.delays) != wantDelays {
-					t.Fatalf("backoff delays = %v, want %d", source.delays, wantDelays)
-				}
-				delay := source.delays[0]
+			wantDelays := 1
+			if tt.retryAfter != "" {
+				wantDelays = 2
+			}
+			if len(source.delays) != wantDelays {
+				t.Fatalf("backoff delays = %v, want %d", source.delays, wantDelays)
+			}
+			delay := source.delays[0]
 			if delay < tt.wantMin {
 				t.Fatalf("backoff delay %s < %s (Retry-After %q)", delay, tt.wantMin, tt.retryAfter)
 			}

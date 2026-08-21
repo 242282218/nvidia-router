@@ -60,11 +60,11 @@ func RotateDatabase(ctx context.Context, db *sql.DB, oldKeys, newKeys *KeySet) (
 }
 
 type RotationResult struct {
-	NVIDIAKeys         int
-	ProxyKey           bool
+	NVIDIAKeys          int
+	ProxyKey            bool
 	ProviderCredentials int
-	Sentinel           bool
-	LegacyDigests      int
+	Sentinel            bool
+	LegacyDigests       int
 }
 
 func countLegacyDigests(ctx context.Context, tx *sql.Tx, activeVersion int, result *RotationResult) error {
@@ -165,7 +165,8 @@ func rotateProviderCredentials(ctx context.Context, tx *sql.Tx, oldKeys, newKeys
 	return nil
 }
 
-func rotateProxyKey(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet, result *RotationResult) error {	var ciphertext, nonce []byte
+func rotateProxyKey(ctx context.Context, tx *sql.Tx, oldKeys, newKeys *KeySet, result *RotationResult) error {
+	var ciphertext, nonce []byte
 	var version int
 	err := tx.QueryRowContext(ctx, "SELECT auth_key_ciphertext, auth_key_nonce, key_version FROM proxy_pool_settings WHERE id = 1 AND auth_key_ciphertext IS NOT NULL").Scan(&ciphertext, &nonce, &version)
 	if errors.Is(err, sql.ErrNoRows) {

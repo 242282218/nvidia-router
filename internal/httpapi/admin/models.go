@@ -351,7 +351,7 @@ func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
 		Provider: provider, Channel: channel, Badge: badge, Status: status, Capabilities: capabilities,
 		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning,
 		ReasoningWireFormat: v.ReasoningWireFormat,
-		ReasoningLevels: v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget,
+		ReasoningLevels:     v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget,
 		ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed,
 		ReasoningDynamicAllowed: v.ReasoningDynamicAllowed,
 	}

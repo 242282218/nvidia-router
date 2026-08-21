@@ -63,6 +63,18 @@ jobs:
           pnpm --dir web run build
           bash scripts/check-web-dist.sh
 
+      # golangci-lint runs without a config file, and its v2 defaults leave the
+      # gofmt linter off, so nothing was checking Go formatting: 26 files had
+      # drifted before this gate was added.
+      - name: Check Go formatting
+        run: |
+          drift="$(gofmt -l .)"
+          if [ -n "$drift" ]; then
+            echo "gofmt drift, run 'gofmt -w' on:" >&2
+            echo "$drift" >&2
+            exit 1
+          fi
+
       - name: Run Go tests
         run: go test ./...
 

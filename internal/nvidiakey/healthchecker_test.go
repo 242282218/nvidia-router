@@ -31,10 +31,10 @@ func (s *stubHealthRepository) ListKeysForHealthCheck(_ context.Context) ([]keys
 
 // stubWriter captures MarkSuccess calls; failures can be injected via failOn.
 type stubWriter struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	recovered []int64
-	failOn   int64
-	failErr  error
+	failOn    int64
+	failErr   error
 }
 
 func (w *stubWriter) MarkSuccess(_ context.Context, keyID int64) (keystate.KeySnapshot, error) {
@@ -330,7 +330,7 @@ func TestHealthCheckerNextDelayFallsBackToIntervalWithoutHook(t *testing.T) {
 
 type fakeHealthClock struct{ now time.Time }
 
-func (c fakeHealthClock) Now() time.Time                   { return c.now }
+func (c fakeHealthClock) Now() time.Time                     { return c.now }
 func (c fakeHealthClock) NewTimer(time.Duration) *time.Timer { return time.NewTimer(time.Hour) }
 func (c fakeHealthClock) AfterFunc(time.Duration, func()) *time.Timer {
 	return time.NewTimer(time.Hour)

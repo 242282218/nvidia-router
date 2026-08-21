@@ -372,11 +372,11 @@ func TestPoolDoesNotResurrectPermanentlyEjectedProxy(t *testing.T) {
 	policy := EjectionPolicy{FailureLimit: 2, BaseDuration: 10 * time.Second, MaxDuration: 60 * time.Second, MaxEjections: 2}
 
 	// Exceed MaxEjections: 2 ejections plus a final failure removes the proxy.
-	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
-	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → ejected (EjectionCount=1)
-	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
-	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → ejected (EjectionCount=2)
-	pool.ReportFailure(proxy.Address, now, policy) // HealthFails=1
+	pool.ReportFailure(proxy.Address, now, policy)            // HealthFails=1
+	pool.ReportFailure(proxy.Address, now, policy)            // HealthFails=2 → ejected (EjectionCount=1)
+	pool.ReportFailure(proxy.Address, now, policy)            // HealthFails=1
+	pool.ReportFailure(proxy.Address, now, policy)            // HealthFails=2 → ejected (EjectionCount=2)
+	pool.ReportFailure(proxy.Address, now, policy)            // HealthFails=1
 	outcome := pool.ReportFailure(proxy.Address, now, policy) // HealthFails=2 → EjectionCount=3 > 2 → removed
 	if outcome != OutcomeRemoved {
 		t.Fatalf("final ReportFailure outcome = %v, want OutcomeRemoved", outcome)

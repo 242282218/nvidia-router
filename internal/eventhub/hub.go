@@ -28,8 +28,8 @@ type Hub struct {
 }
 
 type subscriber struct {
-	ch       chan Event
-	closed   chan struct{}
+	ch        chan Event
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 

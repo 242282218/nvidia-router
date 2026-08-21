@@ -1,4 +1,4 @@
-﻿package xkproxy
+package xkproxy
 
 import (
 	"context"

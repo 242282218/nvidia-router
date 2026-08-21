@@ -330,4 +330,3 @@ func TestPoolGraceCapAnchoredToValidatedAt(t *testing.T) {
 		t.Fatalf("Grace extended = %d, want 0 (stale exit past maxLifetime since ValidatedAt)", extended)
 	}
 }
-

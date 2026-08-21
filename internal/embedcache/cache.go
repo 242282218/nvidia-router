@@ -23,7 +23,7 @@ const (
 // Cache is a goroutine-safe LRU keyed by a request fingerprint. It stores the
 // serialized embedding response body for exact-repeat requests.
 type Cache struct {
-	mu       sync.Mutex
+	mu sync.Mutex
 	// max is atomic so Resize can skip work (and avoid the mutex) when the
 	// runtime setting is unchanged, which is the per-request steady state.
 	max      atomic.Int32
