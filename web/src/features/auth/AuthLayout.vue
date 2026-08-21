@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Motion, useReducedMotion } from 'motion-v'
 
 import UiIcon from '../../shared/ui/UiIcon.vue'
+import { springSoft } from '../../shared/motion'
 
 // 认证页共享骨架：极光氛围 + 网格纹理 + 玻璃拟态卡片。
 // 登录与强制改密两个场景视觉完全同构，骨架只维护这一份。
@@ -16,6 +18,8 @@ withDefaults(defineProps<{
 }>(), { badgeTone: 'brand', badgeText: 'N' })
 
 const isPlainHttp = computed(() => globalThis.location.protocol === 'http:')
+const reducedMotion = useReducedMotion()
+const entrance = computed(() => (reducedMotion.value ? { duration: 0 } : springSoft))
 </script>
 
 <template>
@@ -31,7 +35,13 @@ const isPlainHttp = computed(() => globalThis.location.protocol === 'http:')
       <div class="auth-glow auth-glow-c absolute left-1/2 top-1/3 h-72 w-72 -translate-x-1/2 rounded-full blur-3xl" />
     </div>
 
-    <section class="relative w-full max-w-sm animate-fade-in">
+    <Motion
+      tag="section"
+      class="relative w-full max-w-sm"
+      :initial="reducedMotion ? { opacity: 0 } : { opacity: 0, y: 18, scale: 0.985 }"
+      :animate="{ opacity: 1, y: 0, scale: 1 }"
+      :transition="entrance"
+    >
       <div class="mb-8 text-center">
         <div
           class="relative mx-auto flex h-14 w-14 items-center justify-center rounded-2xl text-lg font-bold"
@@ -72,7 +82,7 @@ const isPlainHttp = computed(() => globalThis.location.protocol === 'http:')
       </div>
 
       <!-- 玻璃拟态卡片：半透明表面 + 背景模糊 + 高光描边 -->
-      <div class="relative animate-slide-up rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-elevated)_82%,transparent)] p-6 shadow-[var(--shadow-overlay)] backdrop-blur-xl">
+      <div class="relative rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-elevated)_82%,transparent)] p-6 shadow-[var(--shadow-overlay)] backdrop-blur-xl">
         <!-- 顶部高光发丝线：玻璃质感的点睛之笔 -->
         <div
           class="glass-highlight pointer-events-none absolute inset-x-6 top-0 h-px"
@@ -80,7 +90,7 @@ const isPlainHttp = computed(() => globalThis.location.protocol === 'http:')
         />
         <slot />
       </div>
-    </section>
+    </Motion>
   </div>
 </template>
 

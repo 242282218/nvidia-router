@@ -3,9 +3,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter, type Router } from 'vue-router'
 
 import UiIcon from '../ui/UiIcon.vue'
+import UiKbd from '../ui/UiKbd.vue'
 import type { IconName } from '../ui'
 import { toggleTheme } from '../useTheme'
 import { useCommandPalette } from '../useCommandPalette'
+import { peekExtraCommands } from '../composables/useCommandRegistry'
 import { useSession } from '../../features/auth/useSession'
 
 defineOptions({ name: 'AppCommandPalette' })
@@ -47,7 +49,44 @@ function navCommands(routerInstance: Router): CommandItem[] {
   return items.sort((a, b) => a.id.localeCompare(b.id))
 }
 
+// 深链操作命令：目标视图在挂载时解析 query 参数并自动打开对应弹窗/动作。
+const quickActions = computed<CommandItem[]>(() => [
+  {
+    id: 'action:access-key-create',
+    label: '新建 Access Key',
+    group: '快捷操作',
+    icon: 'plus',
+    keywords: 'create access key 新建 创建 密钥 下游',
+    run: () => void router.push('/access-keys?create=1'),
+  },
+  {
+    id: 'action:nvidia-keys-import',
+    label: '批量导入 NVIDIA Key',
+    group: '快捷操作',
+    icon: 'upload',
+    keywords: 'import batch nvidia key 导入 批量 上游',
+    run: () => void router.push('/nvidia-keys?import=1'),
+  },
+  {
+    id: 'action:proxy-collect',
+    label: '立即采集代理池',
+    group: '快捷操作',
+    icon: 'refresh',
+    keywords: 'collect proxy pool 采集 代理 星空 出口',
+    run: () => void router.push('/proxy-pool?collect=1'),
+  },
+  {
+    id: 'action:live-stream',
+    label: '查看实时请求流',
+    group: '快捷操作',
+    icon: 'pulse',
+    keywords: 'live stream realtime 实时 流 请求',
+    run: () => void router.push('/live'),
+  },
+])
+
 const staticCommands = computed<CommandItem[]>(() => [
+  ...quickActions.value,
   {
     id: 'action:theme',
     label: '切换亮 / 暗主题',
@@ -96,7 +135,10 @@ function fuzzyScore(text: string, q: string): number {
 }
 
 const filteredGroups = computed<Array<{ group: string, items: CommandItem[] }>>(() => {
-  const all = [...navCommands(router), ...staticCommands.value]
+  // peekExtraCommands 是普通数组：注册表变化时通过 open/watch 触发重算即可，
+  // 面板打开瞬间取最新快照。
+  const all = [...navCommands(router), ...staticCommands.value, ...peekExtraCommands()]
+    .filter((item, index, list) => list.findIndex((other) => other.id === item.id) === index)
   const matched = query.value.trim()
     ? all
       .map((item) => ({ item, score: fuzzyScore(`${item.label} ${item.keywords ?? ''}`, query.value.trim()) }))
@@ -195,7 +237,7 @@ onBeforeUnmount(() => {
         @click.self="hide"
       >
         <div
-          class="w-full max-w-xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] shadow-[var(--shadow-overlay)] animate-scale-in"
+          class="w-full max-w-xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] shadow-[var(--shadow-overlay)] hairline-top"
           data-testid="command-palette"
         >
           <div class="flex items-center gap-3 border-b border-[var(--color-border)] px-4">
@@ -217,7 +259,9 @@ onBeforeUnmount(() => {
               :aria-activedescendant="flatResults[activeIndex] ? `command-option-${activeIndex}` : undefined"
               @keydown="onKeydown"
             >
-            <kbd class="hidden shrink-0 rounded border border-[var(--color-border)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-subtle)] sm:block">esc</kbd>
+            <UiKbd class="hidden shrink-0 sm:inline-flex">
+              esc
+            </UiKbd>
           </div>
 
           <div
@@ -281,9 +325,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="flex items-center gap-4 border-t border-[var(--color-border)] px-4 py-2.5 text-[11px] text-[var(--color-text-subtle)]">
-            <span class="flex items-center gap-1"><kbd class="rounded border border-[var(--color-border)] bg-[var(--color-sunken)] px-1">↑↓</kbd> 选择</span>
-            <span class="flex items-center gap-1"><kbd class="rounded border border-[var(--color-border)] bg-[var(--color-sunken)] px-1">↵</kbd> 打开</span>
-            <span class="ml-auto hidden items-center gap-1 sm:flex"><kbd class="rounded border border-[var(--color-border)] bg-[var(--color-sunken)] px-1">⌘K</kbd> 唤起</span>
+            <span class="flex items-center gap-1"><UiKbd>↑</UiKbd><UiKbd>↓</UiKbd> 选择</span>
+            <span class="flex items-center gap-1"><UiKbd>↵</UiKbd> 打开</span>
+            <span class="ml-auto hidden items-center gap-1 sm:flex"><UiKbd>Ctrl</UiKbd><UiKbd>K</UiKbd> 唤起</span>
           </div>
         </div>
       </div>
@@ -300,8 +344,17 @@ onBeforeUnmount(() => {
   transition: opacity var(--duration-micro) cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* 面板本体：轻微过冲的 spring 感曲线（视觉等效小位移弹簧，避免双动画系统） */
+.palette-enter-active :deep([data-testid='command-palette']) {
+  transition: transform var(--duration-overlay) cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
 .palette-enter-from,
 .palette-leave-to {
   opacity: 0;
+}
+
+.palette-enter-from :deep([data-testid='command-palette']) {
+  transform: translateY(10px) scale(0.975);
 }
 </style>

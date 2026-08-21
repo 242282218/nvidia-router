@@ -16,6 +16,8 @@ const password = ref('')
 const showPassword = ref(false)
 const formError = ref('')
 const submitting = ref(false)
+// 每次失败自增，作为 :key 重触发抖动动画
+const errorTick = ref(0)
 
 async function submit(): Promise<void> {
   formError.value = ''
@@ -29,6 +31,7 @@ async function submit(): Promise<void> {
   } catch (error) {
     formError.value =
       error instanceof ApiError ? error.message : '登录失败，请检查网络连接后重试。'
+    errorTick.value += 1
   } finally {
     password.value = ''
     submitting.value = false
@@ -99,7 +102,8 @@ async function submit(): Promise<void> {
 
       <p
         v-if="formError"
-        class="rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-danger)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_5%,transparent)] px-3 py-2 text-sm text-[var(--color-danger)]"
+        :key="errorTick"
+        class="animate-shake rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-danger)_20%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_5%,transparent)] px-3 py-2 text-sm text-[var(--color-danger)]"
         data-testid="form-error"
         role="alert"
       >

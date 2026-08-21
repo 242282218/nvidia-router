@@ -6,7 +6,9 @@ import { useSession } from '../../features/auth/useSession'
 import UiIcon from '../ui/UiIcon.vue'
 import type { IconName } from '../ui'
 import AppCommandPalette from './AppCommandPalette.vue'
+import ShortcutHelpOverlay from './ShortcutHelpOverlay.vue'
 import { useCommandPalette } from '../useCommandPalette'
+import { registerHotkey } from '../composables/useHotkeys'
 import { toggleTheme, useTheme } from '../useTheme'
 
 defineOptions({ name: 'AppShell' })
@@ -32,6 +34,30 @@ const menuButton = ref<globalThis.HTMLButtonElement | null>(null)
 const sidebar = ref<globalThis.HTMLElement | null>(null)
 const palette = useCommandPalette()
 const theme = useTheme()
+
+// ── 桌面图标栏模式：折叠后只留图标（68px），偏好持久化。
+// 仅影响 lg+ 布局；移动端抽屉始终全宽。 ──
+const RAIL_KEY = 'nvr-rail'
+const railCollapsed = ref(globalThis.localStorage?.getItem(RAIL_KEY) === '1')
+
+function toggleRail(): void {
+  railCollapsed.value = !railCollapsed.value
+  if (railCollapsed.value) {
+    globalThis.localStorage?.setItem(RAIL_KEY, '1')
+  } else {
+    globalThis.localStorage?.removeItem(RAIL_KEY)
+  }
+  void nextTick(syncIndicator)
+}
+
+// '/' 全局聚焦搜索：打开命令面板（列表页可注册同名热键覆盖为页内筛选）
+registerHotkey({
+  id: 'global.focus-search',
+  combo: '/',
+  description: '打开命令面板',
+  group: '通用',
+  handler: () => { palette.show() },
+})
 // The sidebar is a full-time navigation rail on desktop; the mobile drawer is
 // only focus-managed (inert when closed, focus moved in/out) below lg.
 const isMobile = ref(false)
@@ -230,15 +256,21 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       id="admin-sidebar"
       ref="sidebar"
       class="fixed inset-y-0 left-0 z-40 flex w-60 -translate-x-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
-      :class="sidebarOpen ? 'translate-x-0' : ''"
+      :class="[sidebarOpen ? 'translate-x-0' : '', railCollapsed ? 'lg:w-[68px]' : '']"
       :inert="isMobile && !sidebarOpen"
       aria-label="管理侧栏"
     >
-      <div class="flex h-16 items-center gap-3 px-5">
-        <div class="flex h-8 w-8 items-center justify-center rounded-[10px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)] shadow-[var(--shadow-xs)]">
+      <div
+        class="flex h-16 items-center gap-3 px-5"
+        :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
+      >
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)] shadow-[0_2px_12px_rgba(118,185,0,0.35)]">
           N
         </div>
-        <div class="min-w-0">
+        <div
+          v-if="!railCollapsed"
+          class="min-w-0"
+        >
           <p class="truncate text-sm font-semibold">
             NVIDIA Router
           </p>
@@ -249,20 +281,31 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       </div>
 
       <!-- 命令面板入口：伪装成搜索框的按钮，桌面端主入口 -->
-      <div class="px-5 pb-1 pt-4">
+      <div
+        class="px-5 pb-1 pt-4"
+        :class="railCollapsed ? 'lg:px-3' : ''"
+      >
         <button
           class="flex h-9 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
           type="button"
           data-testid="open-command-palette"
-          aria-label="打开命令面板（Ctrl+K）"
+          :aria-label="railCollapsed ? '打开命令面板（Ctrl+K）' : '打开命令面板（Ctrl+K）'"
+          title="搜索（Ctrl+K）"
           @click="palette.show()"
         >
           <UiIcon
             name="search"
             :size="15"
           />
-          <span class="flex-1 text-left">搜索…</span>
-          <kbd class="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] leading-none">⌘K</kbd>
+          <span
+            v-if="!railCollapsed"
+            class="flex-1 text-left"
+          >搜索…</span>
+          <kbd
+            v-if="!railCollapsed"
+            class="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] leading-none"
+          >⌘K</kbd>
         </button>
       </div>
 
@@ -277,7 +320,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           <!-- 滑动激活指示器：跟随当前项平移，而非逐项切换背景 -->
           <div
             v-if="indicator.visible"
-            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] shadow-[var(--shadow-xs)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] shadow-[var(--shadow-xs)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
             :style="{ transform: `translateY(${indicator.top}px)`, height: `${indicator.height}px` }"
             aria-hidden="true"
           />
@@ -285,7 +328,10 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
             v-for="(group, groupIndex) in navGroups"
             :key="group.label"
           >
-            <p class="nav-group-label">
+            <p
+              v-if="!railCollapsed"
+              class="nav-group-label"
+            >
               {{ group.label }}
             </p>
             <div class="space-y-0.5">
@@ -295,18 +341,22 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
                 :to="item.path"
                 :data-testid="item.testId"
                 class="stagger-item relative"
-                :class="isActive(item.path)
+                :class="[isActive(item.path)
                   ? 'nav-link font-medium text-[var(--color-text)]'
-                  : 'nav-link'"
+                  : 'nav-link', railCollapsed ? 'lg:justify-center lg:px-0' : '']"
                 :style="{ '--stagger-index': groupIndex * 3 + group.items.indexOf(item) }"
                 :aria-current="isActive(item.path) ? 'page' : undefined"
+                :title="item.label"
               >
                 <UiIcon
                   :name="item.icon"
                   :size="16"
                   class="relative z-10 shrink-0"
                 />
-                <span class="relative z-10">{{ item.label }}</span>
+                <span
+                  v-if="!railCollapsed"
+                  class="relative z-10"
+                >{{ item.label }}</span>
               </RouterLink>
             </div>
           </div>
@@ -314,8 +364,14 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       </nav>
 
       <!-- 用户区块：会话状态 + 账户操作（修改密码此前无入口，只能手输地址） -->
-      <div class="border-t border-[var(--color-border)] p-3">
-        <div class="flex items-center gap-2.5 rounded-[var(--radius-control)] px-2 py-1.5">
+      <div
+        class="border-t border-[var(--color-border)] p-3"
+        :class="railCollapsed ? 'lg:px-2' : ''"
+      >
+        <div
+          class="flex items-center gap-2.5 rounded-[var(--radius-control)] px-2 py-1.5"
+          :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
+        >
           <div
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-sunken)] text-[var(--color-text-muted)]"
             aria-hidden="true"
@@ -325,7 +381,10 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               :size="16"
             />
           </div>
-          <div class="min-w-0 flex-1">
+          <div
+            v-if="!railCollapsed"
+            class="min-w-0 flex-1"
+          >
             <p class="truncate text-[13px] font-medium text-[var(--color-text-secondary)]">
               管理员
             </p>
@@ -337,6 +396,52 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               会话有效
             </p>
           </div>
+          <template v-if="!railCollapsed">
+            <button
+              class="icon-btn-sm"
+              type="button"
+              :aria-label="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
+              data-testid="theme-toggle"
+              :title="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
+              @click="onThemeToggle($event)"
+            >
+              <UiIcon
+                :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
+                :size="15"
+              />
+            </button>
+            <RouterLink
+              class="icon-btn-sm"
+              to="/change-password"
+              aria-label="修改管理员密码"
+              title="修改密码"
+            >
+              <UiIcon
+                name="settings"
+                :size="15"
+              />
+            </RouterLink>
+            <button
+              data-testid="logout"
+              class="icon-btn-sm"
+              type="button"
+              :disabled="loggingOut"
+              aria-label="退出登录"
+              title="退出登录"
+              @click="logout"
+            >
+              <UiIcon
+                name="logout"
+                :size="15"
+              />
+            </button>
+          </template>
+        </div>
+        <!-- 折叠模式下的纵向操作列 -->
+        <div
+          v-if="railCollapsed"
+          class="mt-2 hidden flex-col items-center gap-1 lg:flex"
+        >
           <button
             class="icon-btn-sm"
             type="button"
@@ -377,9 +482,27 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           </button>
         </div>
       </div>
+
+      <!-- 折叠开关：仅桌面显示 -->
+      <button
+        class="absolute -right-3 top-[72px] hidden h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] shadow-[var(--shadow-sm)] transition-[background-color,color,transform] duration-[var(--duration-micro)] hover:text-[var(--color-text)] lg:flex"
+        type="button"
+        data-testid="toggle-rail"
+        :aria-label="railCollapsed ? '展开侧栏' : '折叠侧栏'"
+        :title="railCollapsed ? '展开侧栏' : '折叠侧栏'"
+        @click="toggleRail"
+      >
+        <UiIcon
+          :name="railCollapsed ? 'panel-left-open' : 'panel-left-close'"
+          :size="13"
+        />
+      </button>
     </aside>
 
-    <main class="min-w-0 pt-14 lg:pl-60 lg:pt-0">
+    <main
+      class="min-w-0 pt-14 lg:pt-0 transition-[padding] duration-300"
+      :class="railCollapsed ? 'lg:pl-[68px]' : 'lg:pl-60'"
+    >
       <RouterView v-slot="{ Component }">
         <Transition
           name="page"
@@ -394,6 +517,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     </main>
 
     <AppCommandPalette />
+    <ShortcutHelpOverlay />
   </div>
 </template>
 
