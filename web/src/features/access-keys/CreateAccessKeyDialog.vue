@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 
 import { ApiError } from '../../shared/api/client'
 import UiButton from '../../shared/ui/UiButton.vue'
+import UiCopyField from '../../shared/ui/UiCopyField.vue'
 import UiField from '../../shared/ui/UiField.vue'
 import UiIcon from '../../shared/ui/UiIcon.vue'
 import UiModal from '../../shared/ui/UiModal.vue'
@@ -17,7 +18,6 @@ const emit = defineEmits<{
 const name = ref('')
 const plaintext = ref('')
 const errorMessage = ref('')
-const copyMessage = ref('')
 const submitting = ref(false)
 
 watch(() => props.open, (open) => {
@@ -44,36 +44,6 @@ async function createKey(): Promise<void> {
   }
 }
 
-async function copyKey(): Promise<void> {
-  if (!plaintext.value) return
-  try {
-    if (globalThis.navigator.clipboard) {
-      await globalThis.navigator.clipboard.writeText(plaintext.value)
-    } else {
-      legacyCopy(plaintext.value)
-    }
-    copyMessage.value = '已复制。'
-  } catch {
-    copyMessage.value = '复制失败，请手动复制。'
-  }
-}
-
-function legacyCopy(value: string): void {
-  const input = globalThis.document.createElement('textarea')
-  input.value = value
-  input.style.position = 'fixed'
-  input.style.opacity = '0'
-  globalThis.document.body.append(input)
-  try {
-    input.select()
-    const copied = globalThis.document.execCommand('copy')
-    if (!copied) throw new Error('legacy copy failed')
-  } finally {
-    input.value = ''
-    input.remove()
-  }
-}
-
 function close(): void {
   clearSensitiveState()
   emit('close')
@@ -83,7 +53,6 @@ function clearSensitiveState(): void {
   name.value = ''
   plaintext.value = ''
   errorMessage.value = ''
-  copyMessage.value = ''
 }
 </script>
 
@@ -109,27 +78,14 @@ function clearSensitiveState(): void {
           明文仅显示这一次。关闭后无法恢复，请立即复制并安全保存。
         </p>
       </div>
-      <div class="panel-inset border border-[var(--color-border)]">
-        <code
-          data-testid="created-access-key"
-          class="block break-all p-4 font-mono-data text-sm text-[var(--color-info)]"
-        >{{ plaintext }}</code>
-      </div>
-      <p
-        v-if="copyMessage"
-        class="text-center text-sm text-[var(--color-text-secondary)]"
-      >
-        {{ copyMessage }}
-      </p>
-      <div class="flex justify-end gap-2">
-        <UiButton
-          data-testid="copy-created-access-key"
-          variant="secondary"
-          icon="copy"
-          @click="copyKey"
-        >
-          复制
-        </UiButton>
+      <UiCopyField
+        :value="plaintext"
+        label="新创建的 Access Key 明文"
+        copy-test-id="copy-created-access-key"
+        data-testid="created-access-key"
+        class="panel-inset border border-[var(--color-border)] px-3 py-2.5"
+      />
+      <div class="flex justify-end">
         <UiButton
           data-testid="close-created-access-key"
           variant="primary"

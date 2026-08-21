@@ -14,14 +14,20 @@ const props = withDefaults(defineProps<{
   secret?: boolean
   /** 揭示前的占位符。 */
   maskChar?: string
+  /** 复制按钮的 data-testid（用于 e2e/单测兼容）。 */
+  copyTestId?: string
 }>(), {
   label: undefined,
   secret: false,
   maskChar: '•',
+  copyTestId: undefined,
 })
 
 const copied = ref(false)
 const revealed = ref(false)
+// 复制结果反馈：clipboard API 不可用（HTTP 明文环境）时走 legacy 降级，
+// 成功/失败都要给可见文字（无障碍红线：不能只靠图标变色）。
+const copyMessage = ref('')
 
 const display = computed(() => {
   if (!props.secret || revealed.value) return props.value
@@ -30,12 +36,33 @@ const display = computed(() => {
 
 async function copy(): Promise<void> {
   try {
-    await globalThis.navigator.clipboard.writeText(props.value)
+    if (globalThis.navigator.clipboard) {
+      await globalThis.navigator.clipboard.writeText(props.value)
+    } else {
+      legacyCopy(props.value)
+    }
     copied.value = true
+    copyMessage.value = '已复制。'
     globalThis.setTimeout(() => { copied.value = false }, 1600)
   }
   catch {
-    // 剪贴板不可用（非安全上下文/权限拒绝）时静默失败，不打断流程
+    copyMessage.value = '复制失败，请手动复制。'
+  }
+}
+
+function legacyCopy(value: string): void {
+  const input = globalThis.document.createElement('textarea')
+  input.value = value
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  globalThis.document.body.append(input)
+  try {
+    input.select()
+    const copiedOk = globalThis.document.execCommand('copy')
+    if (!copiedOk) throw new Error('legacy copy failed')
+  } finally {
+    input.value = ''
+    input.remove()
   }
 }
 
@@ -45,7 +72,7 @@ function toggleReveal(): void {
 </script>
 
 <template>
-  <div class="flex min-w-0 items-center gap-1.5">
+  <div class="flex min-w-0 flex-wrap items-center gap-1.5">
     <code
       class="font-mono-data min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-secondary)]"
       :class="secret && !revealed ? 'select-none' : ''"
@@ -76,6 +103,7 @@ function toggleReveal(): void {
       <button
         type="button"
         class="icon-btn-sm"
+        :data-testid="copyTestId"
         :aria-label="copied ? '已复制到剪贴板' : '复制到剪贴板'"
         @click="copy"
       >
@@ -86,5 +114,12 @@ function toggleReveal(): void {
         />
       </button>
     </UiTooltip>
+    <p
+      v-if="copyMessage"
+      class="w-full text-center text-xs text-[var(--color-text-secondary)]"
+      role="status"
+    >
+      {{ copyMessage }}
+    </p>
   </div>
 </template>

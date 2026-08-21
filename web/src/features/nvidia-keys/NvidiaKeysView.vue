@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { toastError, toastInfo, toastSuccess } from '../../shared/toast'
@@ -59,10 +60,25 @@ const testDialogOpen = ref(false)
 const busyId = ref<number | null>(null)
 // 删除确认：对话框持有待删目标，confirm 才真正执行。
 const pendingDelete = ref<NVIDIAKey | null>(null)
+// 批量删除走独立确认：消息按数量生成，避免误删一批。
+const pendingBatchDelete = ref<NVIDIAKey[] | null>(null)
 const deleting = ref(false)
+const batchBusy = ref(false)
+
+const route = (() => {
+  try { return useRoute() } catch { return null as unknown as ReturnType<typeof useRoute> }
+})()
+const router = (() => {
+  try { return useRouter() } catch { return null as unknown as ReturnType<typeof useRouter> }
+})()
 
 onMounted(() => {
   void loadKeys()
+  // 命令面板深链：/nvidia-keys?import=1
+  if (route?.query.import === '1') {
+    batchOpen.value = true
+    void router?.replace({ query: { ...(route.query as Record<string, string>), import: undefined } })
+  }
 })
 
 function isNvidiaKey(value: unknown): value is NVIDIAKey {
@@ -190,6 +206,49 @@ async function confirmDelete(): Promise<void> {
     if (!isDisposed()) deleting.value = false
   }
 }
+
+// 批量启停：逐条调用，失败不中断整批，最后汇总成功数。
+async function batchToggle(enabled: boolean, targets: NVIDIAKey[]): Promise<void> {
+  if (batchBusy.value || targets.length === 0) return
+  batchBusy.value = true
+  let ok = 0
+  for (const key of targets) {
+    try {
+      await nvidiaKeysApi.setEnabled(key.id, enabled)
+      ok += 1
+    } catch (error) {
+      if (isDisposed()) break
+      toastError(errorMessage(error, `更新 Key ${key.masked} 状态失败。`))
+    }
+  }
+  await loadKeys()
+  if (!isDisposed()) {
+    toastSuccess(`已${enabled ? '启用' : '停用'} ${ok}/${targets.length} 个 Key。`)
+    batchBusy.value = false
+  }
+}
+
+async function confirmBatchDelete(): Promise<void> {
+  const targets = pendingBatchDelete.value
+  if (!targets || targets.length === 0 || deleting.value) return
+  deleting.value = true
+  let ok = 0
+  for (const key of targets) {
+    try {
+      await nvidiaKeysApi.remove(key.id)
+      ok += 1
+    } catch (error) {
+      if (isDisposed()) break
+      toastError(errorMessage(error, `删除 Key ${key.masked} 失败。`))
+    }
+  }
+  pendingBatchDelete.value = null
+  await loadKeys()
+  if (!isDisposed()) {
+    toastSuccess(`已删除 ${ok}/${targets.length} 个 Key。`)
+    deleting.value = false
+  }
+}
 </script>
 
 <template>
@@ -301,6 +360,8 @@ async function confirmDelete(): Promise<void> {
             @toggle="toggleKey"
             @test="testKey"
             @remove="pendingDelete = $event"
+            @batch-toggle="batchToggle"
+            @batch-remove="pendingBatchDelete = $event"
           />
           <KeyCards
             :keys="keyList"
@@ -334,6 +395,15 @@ async function confirmDelete(): Promise<void> {
       cancel-test-id="cancel-delete-key"
       @confirm="confirmDelete"
       @cancel="pendingDelete = null"
+    />
+    <UiConfirmDialog
+      :open="pendingBatchDelete !== null"
+      title="批量删除 NVIDIA Key"
+      :message="pendingBatchDelete ? `将永久删除选中的 ${pendingBatchDelete.length} 个 Key。删除后这些凭据立即退出轮询池，正在排队的请求会切换到其他可用 Key。` : ''"
+      confirm-label="全部删除"
+      :busy="deleting || batchBusy"
+      @confirm="confirmBatchDelete"
+      @cancel="pendingBatchDelete = null"
     />
   </div>
 </template>

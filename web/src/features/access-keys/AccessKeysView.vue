@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError, isDataArrayResponse, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { toastError, toastSuccess } from '../../shared/toast'
@@ -36,8 +37,19 @@ const busyId = ref<number | null>(null)
 const pendingAction = ref<{ type: 'revoke' | 'delete'; key: AccessKey } | null>(null)
 const acting = ref(false)
 
+const route = (() => {
+  try { return useRoute() } catch { return null as unknown as ReturnType<typeof useRoute> }
+})()
+const router = (() => {
+  try { return useRouter() } catch { return null as unknown as ReturnType<typeof useRouter> }
+})()
+
 onMounted(() => {
   void loadKeys()
+  if (route?.query.create === '1') {
+    dialogOpen.value = true
+    void router?.replace({ query: { ...(route.query as Record<string, string>), create: undefined } })
+  }
 })
 
 function errorMessage(error: unknown, fallback: string): string {

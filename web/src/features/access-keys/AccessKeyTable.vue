@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import UiBadge from '../../shared/ui/UiBadge.vue'
 import UiButton from '../../shared/ui/UiButton.vue'
+import type { DataTableColumn } from '../../shared/ui/dataTable'
+import UiDataTable from '../../shared/ui/UiDataTable.vue'
 import { budgetUsagePercent, formatKeyValue, formatTokens, keyState } from './state'
 import type { AccessKey } from './types'
 
@@ -14,155 +16,111 @@ const emit = defineEmits<{
   revoke: [key: AccessKey]
   delete: [key: AccessKey]
 }>()
+
+const columns: DataTableColumn<AccessKey>[] = [
+  { key: 'name', label: '名称', sortable: true, value: (row) => row.name },
+  { key: 'prefix', label: '前缀' },
+  { key: 'created_at', label: '创建时间', sortable: true, value: (row) => row.created_at },
+  { key: 'last_used_at', label: '最后使用', sortable: true, value: (row) => row.last_used_at ?? '' },
+  { key: 'budget', label: 'Token 预算', sortable: true, value: (row) => budgetUsagePercent(row) },
+  { key: 'state', label: '状态' },
+  { key: 'actions', label: '操作', align: 'right' },
+]
 </script>
 
 <template>
   <div
     data-testid="access-key-table"
-    class="hidden overflow-x-auto md:block"
-    tabindex="0"
-    role="region"
-    aria-label="Access Key 表，可横向滚动"
+    class="hidden md:block"
   >
-    <table class="data-table min-w-full">
-      <caption class="sr-only">
-        Access Key 列表，共 {{ keys.length }} 条
-      </caption>
-      <thead>
-        <tr>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            名称
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            前缀
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            创建时间
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            最后使用
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            Token 预算
-          </th>
-          <th
-            class="data-table-th"
-            scope="col"
-          >
-            状态
-          </th>
-          <th
-            class="data-table-th text-right"
-            scope="col"
-          >
-            操作
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="key in keys"
-          :key="key.id"
-          class="data-table-row"
+    <UiDataTable
+      :caption="`Access Key 列表，共 ${keys.length} 条`"
+      :columns="columns"
+      :rows="keys"
+      :row-key="(row) => row.id"
+      max-height="560px"
+    >
+      <template #cell-name="{ row }">
+        <span class="font-medium text-[var(--color-text)]">{{ row.name }}</span>
+      </template>
+      <template #cell-prefix="{ row }">
+        <span class="font-mono-data text-[var(--color-info)]">{{ row.key_prefix }}</span>
+      </template>
+      <template #cell-created_at="{ row }">
+        {{ formatKeyValue(row.created_at) }}
+      </template>
+      <template #cell-last_used_at="{ row }">
+        {{ formatKeyValue(row.last_used_at) }}
+      </template>
+      <template #cell-budget="{ row }">
+        <div
+          v-if="row.token_budget > 0"
+          class="w-32"
+          :data-testid="`access-key-budget-${row.id}`"
         >
-          <td class="data-table-td font-medium text-[var(--color-text)]">
-            {{ key.name }}
-          </td>
-          <td class="data-table-td font-mono-data text-[var(--color-info)]">
-            {{ key.key_prefix }}
-          </td>
-          <td class="data-table-td text-[var(--color-text-secondary)]">
-            {{ formatKeyValue(key.created_at) }}
-          </td>
-          <td class="data-table-td text-[var(--color-text-secondary)]">
-            {{ formatKeyValue(key.last_used_at) }}
-          </td>
-          <td class="data-table-td">
+          <div class="flex justify-between font-mono-data text-xs text-[var(--color-text-muted)]">
+            <span>{{ formatTokens(row.consumed_tokens) }} / {{ formatTokens(row.token_budget) }}</span>
+            <span>{{ budgetUsagePercent(row) }}%</span>
+          </div>
+          <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
             <div
-              v-if="key.token_budget > 0"
-              class="w-32"
-              :data-testid="`access-key-budget-${key.id}`"
-            >
-              <div class="flex justify-between font-mono-data text-xs text-[var(--color-text-muted)]">
-                <span>{{ formatTokens(key.consumed_tokens) }} / {{ formatTokens(key.token_budget) }}</span>
-                <span>{{ budgetUsagePercent(key) }}%</span>
-              </div>
-              <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-border)]">
-                <div
-                  class="h-full rounded-full transition-[width] duration-300"
-                  :class="budgetUsagePercent(key) >= 90 ? 'bg-[var(--color-danger)]' : budgetUsagePercent(key) >= 60 ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'"
-                  :style="{ width: `${budgetUsagePercent(key)}%` }"
-                />
-              </div>
-            </div>
-            <span
-              v-else
-              class="text-xs text-[var(--color-text-subtle)]"
-            >
-              不限
-            </span>
-          </td>
-          <td class="data-table-td">
-            <UiBadge
-              :variant="keyState(key).variant"
-              :label="keyState(key).label"
+              class="h-full rounded-full transition-[width] duration-300"
+              :class="budgetUsagePercent(row) >= 90 ? 'bg-[var(--color-danger)]' : budgetUsagePercent(row) >= 60 ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'"
+              :style="{ width: `${budgetUsagePercent(row)}%` }"
             />
-            <span
-              v-if="key.expires_at && keyState(key).label !== '已过期'"
-              class="mt-1.5 block text-xs text-[var(--color-text-subtle)]"
-            >
-              {{ formatKeyValue(key.expires_at) }} 过期
-            </span>
-          </td>
-          <td class="data-table-td">
-            <div class="flex justify-end gap-1.5">
-              <UiButton
-                :data-testid="`edit-access-key-policy-${key.id}`"
-                variant="secondary"
-                size="sm"
-                :disabled="Boolean(key.revoked_at)"
-                @click="emit('edit', key)"
-              >
-                编辑策略
-              </UiButton>
-              <UiButton
-                v-if="!key.revoked_at"
-                :data-testid="`revoke-access-key-${key.id}`"
-                variant="ghost"
-                size="sm"
-                :disabled="busyId === key.id"
-                @click="emit('revoke', key)"
-              >
-                撤销
-              </UiButton>
-              <UiButton
-                :data-testid="`delete-access-key-${key.id}`"
-                variant="danger"
-                size="sm"
-                :disabled="busyId === key.id"
-                @click="emit('delete', key)"
-              >
-                删除
-              </UiButton>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+          </div>
+        </div>
+        <span
+          v-else
+          class="text-xs text-[var(--color-text-subtle)]"
+        >
+          不限
+        </span>
+      </template>
+      <template #cell-state="{ row }">
+        <UiBadge
+          :variant="keyState(row).variant"
+          :label="keyState(row).label"
+        />
+        <span
+          v-if="row.expires_at && keyState(row).label !== '已过期'"
+          class="mt-1.5 block text-xs text-[var(--color-text-subtle)]"
+        >
+          {{ formatKeyValue(row.expires_at) }} 过期
+        </span>
+      </template>
+      <template #cell-actions="{ row }">
+        <div class="flex justify-end gap-1.5">
+          <UiButton
+            :data-testid="`edit-access-key-policy-${row.id}`"
+            variant="secondary"
+            size="sm"
+            :disabled="Boolean(row.revoked_at)"
+            @click="emit('edit', row)"
+          >
+            编辑策略
+          </UiButton>
+          <UiButton
+            v-if="!row.revoked_at"
+            :data-testid="`revoke-access-key-${row.id}`"
+            variant="ghost"
+            size="sm"
+            :disabled="busyId === row.id"
+            @click="emit('revoke', row)"
+          >
+            撤销
+          </UiButton>
+          <UiButton
+            :data-testid="`delete-access-key-${row.id}`"
+            variant="danger"
+            size="sm"
+            :disabled="busyId === row.id"
+            @click="emit('delete', row)"
+          >
+            删除
+          </UiButton>
+        </div>
+      </template>
+    </UiDataTable>
   </div>
 </template>

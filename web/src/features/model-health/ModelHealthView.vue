@@ -411,9 +411,11 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
             </div>
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               <ModelHealthCard
-                v-for="model in section.models"
+                v-for="(model, index) in section.models"
                 :key="model.model_id"
                 :model="model"
+                class="stagger-item"
+                :style="{ '--stagger-index': index }"
               />
             </div>
           </div>
