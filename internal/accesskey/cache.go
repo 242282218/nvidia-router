@@ -77,6 +77,19 @@ func (c *cache) invalidate() {
 	c.entries = make(map[string]cacheEntry)
 }
 
+// drop removes a single entry. Used where the digest is already in hand — one
+// client looping with an expired key must not flush every other key's identity
+// and push the whole instance back onto the writer-contended database read that
+// this cache exists to avoid.
+func (c *cache) drop(digest []byte) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, string(digest))
+}
+
 func (c *cache) size() int {
 	if c == nil {
 		return 0

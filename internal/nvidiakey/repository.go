@@ -321,13 +321,20 @@ func (r *Repository) ListKeysForHealthCheck(ctx context.Context) ([]keystate.Key
 // expires, so a recovered key is probed promptly instead of waiting out the
 // fixed sweep interval (the half-open gap: cooldown expired ⇒ key is eligible
 // again, but nothing probes it until the next full sweep).
-func (r *Repository) EarliestCooldownExpiry(ctx context.Context) (*time.Time, error) {
+//
+// Only cooldowns still in the future count. cooldown_until is cleared solely by
+// markSuccess, so a key that keeps failing its probe keeps a past timestamp
+// forever; returning that made nextDelay answer 0 on every iteration and turned
+// the sweep loop into a back-to-back spin that burns the NVIDIA /v1/models quota
+// this repository's ListKeysForHealthCheck filter exists to protect.
+func (r *Repository) EarliestCooldownExpiry(ctx context.Context, now time.Time) (*time.Time, error) {
 	var raw sql.NullString
 	if err := r.read().QueryRowContext(ctx, `
 		SELECT MIN(cooldown_until)
 		FROM nvidia_keys
 		WHERE enabled = 1 AND auth_invalid = 0 AND cooldown_until IS NOT NULL
-	`).Scan(&raw); err != nil {
+			AND cooldown_until > ?
+	`, formatTimestamp(now)).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("query earliest NVIDIA key cooldown expiry: %w", err)
 	}
 	if !raw.Valid || raw.String == "" {

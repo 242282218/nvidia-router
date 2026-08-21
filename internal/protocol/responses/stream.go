@@ -50,7 +50,16 @@ func (s *streamState) Convert(source ChatDeltaSource, emit Emitter, responseID, 
 		switch srcErr {
 		case nil:
 			if err := s.applyDelta(delta, emit, responseID); err != nil {
-				return false, err
+				// Same invariant as the default branch below: the response is
+				// already committed, so a conversion failure must still emit a
+				// terminal event. Returning bare left the client waiting on
+				// response.completed and [DONE] until its idle timeout. finalize is
+				// idempotent via s.finalized, so no duplicate terminal is possible.
+				finalErr := s.finalize(emit, responseID, model, true)
+				if finalErr != nil {
+					return false, fmt.Errorf("apply chat delta: %w; finalize stream: %v", err, finalErr)
+				}
+				return false, fmt.Errorf("apply chat delta: %w", err)
 			}
 		case ErrStreamCompleted:
 			return false, s.finalize(emit, responseID, model, false)

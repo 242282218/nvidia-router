@@ -156,3 +156,47 @@ func TestCacheRespectsMaxEntriesWithAllLive(t *testing.T) {
 		t.Fatal("newest entry c was not admitted")
 	}
 }
+
+// An expired identity found in the cache used to call invalidate(), which rebuilds
+// the whole map. One client looping with an expired key therefore evicted every
+// other key's identity and pushed the entire instance back onto the DB read this
+// cache exists to remove.
+func TestExpiredCachedKeyDropsOnlyItsOwnEntry(t *testing.T) {
+	source := newManualClock(time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC))
+	service, db := newTestServiceWithClock(t, filepath.Join(t.TempDir(), "router.db"), source)
+
+	expiring, err := service.Create(context.Background(), "expiring")
+	if err != nil {
+		t.Fatalf("Create expiring: %v", err)
+	}
+	survivor, err := service.Create(context.Background(), "survivor")
+	if err != nil {
+		t.Fatalf("Create survivor: %v", err)
+	}
+	// The key must lapse while its cache entry is still live, otherwise the 30s
+	// cache TTL — not the branch under test — is what empties the map.
+	expires := source.Now().Add(10 * time.Second)
+	zero := int64(0)
+	if err := service.UpdatePolicy(context.Background(), expiring.Key.ID, &expires, 0, 0, 0, &zero); err != nil {
+		t.Fatalf("UpdatePolicy: %v", err)
+	}
+	for _, plaintext := range []string{expiring.Plaintext, survivor.Plaintext} {
+		if _, err := service.Authenticate(context.Background(), plaintext); err != nil {
+			t.Fatalf("seed cache: %v", err)
+		}
+	}
+	source.Advance(15 * time.Second)
+	// Cache hit whose identity has lapsed: this is the branch that used to flush
+	// the entire map.
+	if _, err := service.Authenticate(context.Background(), expiring.Plaintext); !errors.Is(err, ErrInvalidAccessKey) {
+		t.Fatalf("expired Authenticate error = %v, want ErrInvalidAccessKey", err)
+	}
+
+	// Deleting the row proves the survivor is still answered from the cache.
+	if _, err := db.Exec("DELETE FROM access_keys WHERE id = ?", survivor.Key.ID); err != nil {
+		t.Fatalf("delete survivor row: %v", err)
+	}
+	if _, err := service.Authenticate(context.Background(), survivor.Plaintext); err != nil {
+		t.Fatalf("survivor lost its cache entry: %v", err)
+	}
+}

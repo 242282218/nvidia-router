@@ -297,7 +297,7 @@ func TestHealthCheckerNextDelayShortensToCooldownExpiry(t *testing.T) {
 		Logger:   discardHealthLogger(),
 	})
 	expiry := now.Add(2 * time.Minute)
-	checker.WireCooldownExpiry(func(context.Context) (*time.Time, error) { return &expiry, nil })
+	checker.WireCooldownExpiry(func(context.Context, time.Time) (*time.Time, error) { return &expiry, nil })
 
 	if delay := checker.nextDelay(context.Background()); delay != 2*time.Minute+500*time.Millisecond {
 		t.Fatalf("nextDelay = %s, want 2m0.5s", delay)
@@ -311,7 +311,7 @@ func TestHealthCheckerNextDelaySweepsImmediatelyWhenExpired(t *testing.T) {
 		Logger:   discardHealthLogger(),
 	})
 	past := now.Add(-time.Minute)
-	checker.WireCooldownExpiry(func(context.Context) (*time.Time, error) { return &past, nil })
+	checker.WireCooldownExpiry(func(context.Context, time.Time) (*time.Time, error) { return &past, nil })
 
 	if delay := checker.nextDelay(context.Background()); delay != 0 {
 		t.Fatalf("nextDelay = %s, want 0 (already expired)", delay)

@@ -1303,3 +1303,43 @@ func TestPatchStreamTimeoutsPersistsAndRoundsTrips(t *testing.T) {
 		t.Fatalf("StreamFirstTokenTimeoutMS after display-only patch = %v, want preserved %d", again.StreamFirstTokenTimeoutMS, firstToken)
 	}
 }
+
+// Re-validating the STORED provider wrapped validateEnabledProvider's result with
+// %w unconditionally, and %w on a nil error still yields a non-nil error. Since
+// that function accepts both providers, re-saving an existing OpenCodeFree model
+// as enabled always failed — and SaveSelectionsResult runs one transaction, so
+// unrelated models in the same batch were rolled back with it.
+func TestSaveSelectionsReenablesStoredOpenCodeFreeModelWithBatchPeer(t *testing.T) {
+	_, db, _, _ := newCatalogTestService(t)
+	repository := NewRepository(db)
+	now := time.Date(2026, 8, 21, 4, 0, 0, 0, time.UTC)
+	gateway := Selection{
+		PublicID: "opencode-free/batch-probe", UpstreamID: "batch-probe",
+		DisplayName: "Batch probe", Kind: KindChat, Provider: ProviderOpenCodeFree,
+		Enabled: true, ReasoningWireFormat: "none",
+	}
+	if _, err := repository.SaveSelectionsResult(context.Background(), []Selection{gateway}, now); err != nil {
+		t.Fatalf("seed OpenCodeFree model: %v", err)
+	}
+
+	peer := Selection{
+		PublicID: "vendor/batch-peer", UpstreamID: "vendor/batch-peer",
+		DisplayName: "Batch peer", Kind: KindChat, Provider: ProviderNVIDIA,
+		Enabled: true, ReasoningWireFormat: "none",
+	}
+	if _, err := repository.SaveSelectionsResult(context.Background(), []Selection{gateway, peer}, now); err != nil {
+		t.Fatalf("re-save stored OpenCodeFree model: %v", err)
+	}
+
+	// The peer proves the failure took the whole transaction down, not just its
+	// own row.
+	for _, publicID := range []string{gateway.PublicID, peer.PublicID} {
+		var enabled int
+		if err := db.QueryRow("SELECT enabled FROM models WHERE public_id = ?", publicID).Scan(&enabled); err != nil {
+			t.Fatalf("load %q: %v", publicID, err)
+		}
+		if enabled != 1 {
+			t.Fatalf("model %q enabled = %d, want 1", publicID, enabled)
+		}
+	}
+}

@@ -87,8 +87,16 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	if err := validateEnabledProvider(selection.Provider, selection.Enabled); err != nil {
 		return Model{}, "", fmt.Errorf("validate model provider %q: %w", selection.PublicID, err)
 	}
+	// Enabling a row whose stored provider is not one this build supports would let
+	// the upsert below silently rewrite it to the incoming provider. The check must
+	// only fire on an actual error: it used to wrap the result with %w
+	// unconditionally, and %w on a nil error still yields a non-nil error, so a
+	// stored OpenCodeFree model — which validateEnabledProvider accepts — could
+	// never be re-enabled, and the whole batch transaction rolled back with it.
 	if previousProvider.Valid && previousProvider.String != defaultModelProvider && selection.Enabled {
-		return Model{}, "", fmt.Errorf("validate existing model provider %q: %w", selection.PublicID, validateEnabledProvider(previousProvider.String, selection.Enabled))
+		if err := validateEnabledProvider(previousProvider.String, selection.Enabled); err != nil {
+			return Model{}, "", fmt.Errorf("validate existing model provider %q: %w", selection.PublicID, err)
+		}
 	}
 	if previousKind.Valid && Kind(previousKind.String) != selection.Kind {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM nvidia_key_model_blocks WHERE model_id = (SELECT id FROM models WHERE public_id = ?)`, selection.PublicID); err != nil {

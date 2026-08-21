@@ -765,3 +765,42 @@ func allZero(value []byte) bool {
 	}
 	return true
 }
+
+// cooldown_until is cleared only by markSuccess, so a key that keeps failing its
+// probe holds a past timestamp indefinitely. Reporting that as the earliest
+// pending expiry made HealthChecker.nextDelay return 0 forever and spin the sweep
+// loop against NVIDIA's free /v1/models quota.
+func TestEarliestCooldownExpiryIgnoresAlreadyExpiredCooldowns(t *testing.T) {
+	_, db, _ := newNVIDIAKeyTestService(t, newFakeValidator())
+	repository := NewRepository(db)
+	stale := insertKeyForDiscoveryTest(t, db)
+	now := time.Date(2026, 7, 30, 3, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`UPDATE nvidia_keys SET cooldown_until = ? WHERE id = ?`,
+		formatTimestamp(now.Add(-time.Minute)), stale); err != nil {
+		t.Fatalf("set expired cooldown: %v", err)
+	}
+
+	expiry, err := repository.EarliestCooldownExpiry(context.Background(), now)
+	if err != nil {
+		t.Fatalf("EarliestCooldownExpiry: %v", err)
+	}
+	if expiry != nil {
+		t.Fatalf("expired cooldown must not schedule a sweep, got %s", expiry)
+	}
+
+	// A cooldown still in the future is what the hook exists for, and it must win
+	// over the stale row that MIN() would otherwise pick.
+	cooling := insertKeyForDiscoveryTest(t, db)
+	want := now.Add(2 * time.Minute)
+	if _, err := db.Exec(`UPDATE nvidia_keys SET cooldown_until = ? WHERE id = ?`,
+		formatTimestamp(want), cooling); err != nil {
+		t.Fatalf("set future cooldown: %v", err)
+	}
+	expiry, err = repository.EarliestCooldownExpiry(context.Background(), now)
+	if err != nil {
+		t.Fatalf("EarliestCooldownExpiry: %v", err)
+	}
+	if expiry == nil || !expiry.Equal(want) {
+		t.Fatalf("EarliestCooldownExpiry = %v, want %s", expiry, want)
+	}
+}

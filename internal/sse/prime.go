@@ -38,7 +38,14 @@ func PrimeUntil(ctx context.Context, response *http.Response, accept func(Event)
 	// body when ctx is cancelled, unblocking Decode's Read (which then returns
 	// error and we map it to ctx.Err). Saves 1 goroutine + channel per SSE
 	// stream (1k streams = 1k goroutines saved).
-	stop := context.AfterFunc(ctx, func() { _ = response.Body.Close() })
+	//
+	// The closure captures the original body in a local, not the response.Body
+	// field: the field is reassigned below on the accepted path, and the AfterFunc
+	// goroutine reading it concurrently would both race and risk closing the
+	// replacement instead of the upstream connection — leaking it out of the
+	// transport pool.
+	upstreamBody := response.Body
+	stop := context.AfterFunc(ctx, func() { _ = upstreamBody.Close() })
 	defer stop()
 
 	decoder := NewDecoder(captured)

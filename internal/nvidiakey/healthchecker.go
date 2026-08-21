@@ -67,7 +67,7 @@ type HealthChecker struct {
 	// cooldownExpiry, when wired, lets Run shorten the wait so a sweep fires
 	// right after the earliest cooldown expires (half-open recovery). The
 	// default sweep interval still bounds it.
-	cooldownExpiry func(ctx context.Context) (*time.Time, error)
+	cooldownExpiry func(ctx context.Context, now time.Time) (*time.Time, error)
 }
 
 type healthRepository interface {
@@ -142,8 +142,10 @@ func (c *HealthChecker) WireSync(sync func(keyID int64)) {
 // WireCooldownExpiry injects a hook returning the earliest pending cooldown
 // expiry. When wired (and no test waitFn is set), the checker shortens its
 // next wait to fire shortly after that expiry so half-open keys are probed
-// promptly instead of waiting out the full sweep interval.
-func (c *HealthChecker) WireCooldownExpiry(fn func(ctx context.Context) (*time.Time, error)) {
+// promptly instead of waiting out the full sweep interval. The hook receives the
+// checker's own clock reading so the "still cooling" cut-off and the remaining
+// wait below are computed against one time source.
+func (c *HealthChecker) WireCooldownExpiry(fn func(ctx context.Context, now time.Time) (*time.Time, error)) {
 	c.cooldownExpiry = fn
 }
 
@@ -156,11 +158,12 @@ func (c *HealthChecker) nextDelay(ctx context.Context) time.Duration {
 	if c.cooldownExpiry == nil || c.waitFn != nil {
 		return c.interval
 	}
-	expiry, err := c.cooldownExpiry(ctx)
+	now := c.clock.Now()
+	expiry, err := c.cooldownExpiry(ctx, now)
 	if err != nil || expiry == nil {
 		return c.interval
 	}
-	remaining := expiry.Sub(c.clock.Now())
+	remaining := expiry.Sub(now)
 	if remaining <= 0 {
 		// Already expired: sweep now to close the half-open gap.
 		return 0

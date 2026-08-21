@@ -144,11 +144,12 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 		// to the watchdog alone instead of failing the stream.
 		if err := SetWriteDeadline(writer, opts.WriteIdleTimeout); err != nil {
 			if errors.Is(err, ErrWriteDeadlineUnsupported) {
+				// Keep the watchdog: it captured its own timeout at construction
+				// and is independent of opts, so it is exactly the "downgrade to
+				// the watchdog alone" fallback described above. Stopping it here
+				// left a stalled client with no bound at all and made the
+				// ErrWriteDeadlineUnsupported branch below unreachable.
 				opts.WriteIdleTimeout = 0
-				if watchdog != nil {
-					watchdog.Stop()
-					watchdog = nil
-				}
 			} else {
 				return err
 			}

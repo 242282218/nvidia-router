@@ -725,3 +725,46 @@ func TestStreamStopFinishReasonStaysCompleted(t *testing.T) {
 		t.Fatal("response.incomplete should not appear when finish_reason=stop")
 	}
 }
+
+// rejectingEmitter fails only for one event name, so a failure can be injected
+// inside applyDelta while the terminal events finalize emits are still observable.
+type rejectingEmitter struct {
+	events []EmittedEvent
+	reject string
+	err    error
+}
+
+func (r *rejectingEmitter) Emit(event EmittedEvent) error {
+	if event.Event == r.reject {
+		return r.err
+	}
+	r.events = append(r.events, event)
+	return nil
+}
+
+func (r *rejectingEmitter) Commit() error { return nil }
+
+// applyDelta returning an error used to abort Convert without a terminal event,
+// so a client that had already seen response.created/in_progress waited for
+// response.completed and [DONE] until its idle timeout (180s in production). The
+// default branch of the same switch documents the invariant this restores.
+func TestStreamApplyDeltaFailureStillEmitsTerminal(t *testing.T) {
+	expected := errors.New("emit refused")
+	source := &fakeSource{deltas: []ChatDelta{{Content: "partial answer"}}}
+	emit := &rejectingEmitter{reject: "response.output_text.delta", err: expected}
+
+	_, err := newStreamState().Convert(source, emit, "resp_apply", "public-chat")
+	if err == nil || !strings.Contains(err.Error(), "emit refused") {
+		t.Fatalf("Convert err = %v, want wrapped emit refused", err)
+	}
+	if !strings.Contains(err.Error(), "apply chat delta") {
+		t.Fatalf("Convert err = %v, want it to name the apply stage", err)
+	}
+	if terminalCount(emit.events, "response.failed") != 1 || terminalCount(emit.events, "done") != 1 {
+		t.Fatalf("terminals = failed=%d done=%d, want one each",
+			terminalCount(emit.events, "response.failed"), terminalCount(emit.events, "done"))
+	}
+	if terminalCount(emit.events, "response.completed") != 0 {
+		t.Fatal("a failed conversion must not report completed")
+	}
+}

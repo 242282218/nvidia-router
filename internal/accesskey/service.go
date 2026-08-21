@@ -107,7 +107,7 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (AccessKey
 	activeDigest := digests[activeVersion]
 	if identity, ok := s.cache.lookup(activeDigest, now); ok {
 		if identity.ExpiresAt != nil && !now.Before(*identity.ExpiresAt) {
-			s.cache.invalidate()
+			s.cache.drop(activeDigest)
 			return AccessKeyIdentity{}, ErrInvalidAccessKey
 		}
 		return identity, nil

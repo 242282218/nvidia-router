@@ -598,7 +598,11 @@ func validateDataImage(source, param string) error {
 	// alphabet/padding and length, but io.Copy(Discard) previously re-decoded
 	// the entire image (CPU×2). Decode once into a pooled buffer instead.
 	bufPtr := imageDecodePool.Get().(*[]byte)
-	defer imageDecodePool.Put(bufPtr)
+	// Deferred in a closure: bufPtr is reassigned below when the pooled buffer is
+	// too small, and `defer Put(bufPtr)` would have evaluated the argument at the
+	// defer statement and returned the old small buffer — so the grown one was
+	// never pooled and every large image reallocated the full decode space.
+	defer func() { imageDecodePool.Put(bufPtr) }()
 	if cap(*bufPtr) < decodedBytes {
 		nb := make([]byte, decodedBytes)
 		bufPtr = &nb
