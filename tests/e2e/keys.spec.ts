@@ -69,8 +69,11 @@ test.describe('management resources', () => {
 
     await page.goto('/admin/models')
     await page.getByTestId('discover-models').click()
-    await expect(page.getByTestId('candidate-meta/llama-3.1-8b-instruct')).toBeVisible()
-    await page.getByTestId('candidate-meta/llama-3.1-8b-instruct').check()
+    // Desktop viewport renders ModelTable (hidden md:block); its candidate
+    // checkboxes carry the candidate-table- prefix, unlike the mobile cards.
+    const candidate = page.getByTestId('candidate-table-meta/llama-3.1-8b-instruct')
+    await expect(candidate).toBeVisible()
+    await candidate.check()
     await page.getByTestId('save-candidates').click()
     await expect(page.getByTestId('model-table')).toBeVisible()
     await expect(page.getByTestId('model-cards')).toBeHidden()
@@ -135,7 +138,9 @@ test.describe('management resources', () => {
     await page.getByTestId('nav-system').click()
     await page.getByTestId('tab-audit').click()
     await expect(page).toHaveURL(/\/admin\/system\?tab=audit$/)
-    // Check for access_keys.create in the audit log table (not the filter dropdown)
-    await expect(page.locator('table').getByText('access_keys.create').first()).toBeVisible()
+    // The audit view renders a vertical timeline (ol), not a table; scope to
+    // the list so the action filter dropdown can never satisfy this probe.
+    const timeline = page.getByRole('list', { name: /审计日志/ })
+    await expect(timeline.getByText('access_keys.create').first()).toBeVisible()
   })
 })

@@ -101,4 +101,3 @@ func TestHasDuplicateTopLevelKeysDetectsSimpleCases(t *testing.T) {
 		})
 	}
 }
-

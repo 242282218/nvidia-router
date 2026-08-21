@@ -7,11 +7,11 @@ import (
 
 func TestResolveReasoningRejectsUnknownLevelWhenDynamicDisallowed(t *testing.T) {
 	profile := ReasoningProfile{
-		Supported:       true,
-		ZeroAllowed:     true,
-		DynamicAllowed:  false,
-		MaxBudget:       8000,
-		Levels:          []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
+		Supported:      true,
+		ZeroAllowed:    true,
+		DynamicAllowed: false,
+		MaxBudget:      8000,
+		Levels:         []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
 	}
 
 	// Misspelled level: "hgih" instead of "high"
@@ -51,11 +51,11 @@ func TestResolveReasoningRejectsUnknownLevelWhenDynamicDisallowed(t *testing.T) 
 
 func TestResolveReasoningAcceptsUnknownLevelWhenDynamicAllowed(t *testing.T) {
 	profile := ReasoningProfile{
-		Supported:       true,
-		ZeroAllowed:     true,
-		DynamicAllowed:  true,
-		MaxBudget:       8000,
-		Levels:          []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
+		Supported:      true,
+		ZeroAllowed:    true,
+		DynamicAllowed: true,
+		MaxBudget:      8000,
+		Levels:         []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
 	}
 
 	// Unknown level with dynamic allowed should pass through
@@ -85,11 +85,11 @@ func TestResolveReasoningMisspelledEffortFallbackBehavior(t *testing.T) {
 	// as the closest match to budget=0. The user thinks they enabled max thinking
 	// but actually disabled it entirely.
 	profile := ReasoningProfile{
-		Supported:       true,
-		ZeroAllowed:     true,
-		DynamicAllowed:  false,
-		MaxBudget:       8000,
-		Levels:          []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
+		Supported:      true,
+		ZeroAllowed:    true,
+		DynamicAllowed: false,
+		MaxBudget:      8000,
+		Levels:         []ReasoningLevel{ReasoningNone, ReasoningLow, ReasoningMedium, ReasoningHigh},
 	}
 
 	spec := ReasoningSpec{
