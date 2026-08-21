@@ -6,11 +6,30 @@ import { defineConfig, presetUno } from 'unocss'
 // - 任何文本/背景新配对必须先登记进 docs/前端对比度配对表.md（scripts/calc_contrast.py 实算）。
 export default defineConfig({
   presets: [presetUno()],
-  shortcuts: [
-    /* ── 语义字体阶梯 ── */
+  // UnoCSS 66.x has no built-in pointer-coarse variant; register one so every
+  // touch-target rule below actually emits @media (pointer: coarse) CSS.
+  variants: [
     {
-      'type-display': 'font-[var(--text-display)] tracking-[-0.02em] text-[var(--color-text)]',
-      'type-title': 'font-[var(--text-title)] tracking-[-0.015em] text-[var(--color-text)]',
+      name: 'pointer-coarse',
+      match(matcher) {
+        const prefix = 'pointer-coarse:'
+        if (!matcher.startsWith(prefix)) return
+        return {
+          matcher: matcher.slice(prefix.length),
+          handle: (input, next) => next({
+            ...input,
+            parent: `${input.parent ? `${input.parent} $$ ` : ''}@media (pointer: coarse)`,
+          }),
+        }
+      },
+      multiPass: true,
+    },
+  ],
+  shortcuts: [
+    /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0） ── */
+    {
+      'type-display': 'font-[var(--text-display)] text-[var(--color-text)]',
+      'type-title': 'font-[var(--text-title)] text-[var(--color-text)]',
       'type-heading': 'font-[var(--text-heading)] text-[var(--color-text)]',
       'type-label': 'font-[var(--text-label)] uppercase tracking-[0.1em] text-[var(--color-text-subtle)]',
     },
@@ -27,21 +46,25 @@ export default defineConfig({
       'text-accent': 'text-[var(--color-accent-text)]',
       'text-accent-indigo': 'text-[var(--color-info)]',
     },
-    /* ── 按钮：四 variant × 两密度。btn-base 承载形状与动效，variant 只描述颜色 ── */
+    /* ── 按钮：四 variant × 两密度。btn-base 承载形状与动效，variant 只描述颜色。
+       pointer-coarse 下触控目标提升到 44px（媒介/web P1#1 + 触控尺寸表硬约束）。 ── */
     {
-      'btn-base': 'inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] px-3.5 text-sm font-medium transition-[background-color,border-color,box-shadow,color,transform] duration-[var(--duration-micro)] active:translate-y-px disabled:cursor-not-allowed disabled:border disabled:border-[var(--color-disabled-border)] disabled:bg-[var(--color-disabled-background)] disabled:text-[var(--color-disabled-foreground)] disabled:opacity-100 disabled:shadow-none focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2',
+      'btn-base': 'inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] px-3.5 text-sm font-medium transition-[background-color,border-color,box-shadow,color,transform] duration-[var(--duration-micro)] active:translate-y-px disabled:cursor-not-allowed disabled:border disabled:border-[var(--color-disabled-border)] disabled:bg-[var(--color-disabled-background)] disabled:text-[var(--color-disabled-foreground)] disabled:opacity-100 disabled:shadow-none focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
       'btn-primary': 'btn-base bg-[var(--color-accent-background)] font-semibold text-[var(--color-accent-foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-xs)] hover:bg-[var(--color-accent-background-hover)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-sm)] active:bg-[var(--color-accent-background)]',
       'btn-secondary': 'btn-base border border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] shadow-[var(--shadow-xs)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] hover:shadow-[var(--shadow-sm)] active:bg-[var(--color-active)]',
       'btn-ghost': 'btn-base px-3 text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]',
       'btn-danger': 'btn-base border border-[var(--color-danger-text)] bg-transparent text-[var(--color-danger-text)] hover:border-[var(--color-danger-background)] hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)] active:bg-[var(--color-danger-background)]',
       // 行内紧凑操作：表格行、卡片角落
-      'btn-sm': 'h-8 rounded-[7px] px-2.5 text-xs',
-      // 纯图标操作（编辑/删除/关闭），36px 见方
-      'icon-btn': 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-subtle)] transition-[background-color,color,transform] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px active:bg-[var(--color-active)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2',
+      'btn-sm': 'h-8 rounded-[7px] px-2.5 text-xs pointer-coarse:h-11',
+      // 紧凑纯图标操作（36px 见方）；触屏提升到 44px 见方，避免实例级 h-8/w-8
+      // 覆盖 shortcut 的媒体查询变体导致触屏目标回退。
+      'icon-btn-sm': 'icon-btn h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11',
+      // 纯图标操作（编辑/删除/关闭），36px 见方；触屏 44px 见方
+      'icon-btn': 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-subtle)] transition-[background-color,color,transform] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px active:bg-[var(--color-active)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11 pointer-coarse:w-11',
     },
     /* ── 表单 ── */
     {
-      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] shadow-[inset_0_1px_2px_rgba(28,25,23,0.04)] transition-[background-color,border-color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-focus)_30%,transparent)] disabled:cursor-not-allowed disabled:opacity-60',
+      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] shadow-[inset_0_1px_2px_rgba(28,25,23,0.04)] transition-[background-color,border-color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-focus)_30%,transparent)] disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-11',
       'field-label': 'mb-1.5 block text-sm font-medium text-[var(--color-text-secondary)]',
     },
     /* ── 卡片与面板 ── */
@@ -86,8 +109,16 @@ export default defineConfig({
     /* ── 导航 ── */
     {
       'nav-group-label': 'px-3 pb-1.5 pt-5 type-label first:pt-1',
-      'nav-link': 'flex h-9 items-center gap-2.5 rounded-[var(--radius-control)] px-3 text-sm text-[var(--color-text-muted)] transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2',
+      'nav-link': 'flex h-9 items-center gap-2.5 rounded-[var(--radius-control)] px-3 text-sm text-[var(--color-text-muted)] transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
       'nav-link-active': 'nav-link bg-[var(--color-active)] font-medium text-[var(--color-text)] shadow-[var(--shadow-xs)]',
+    },
+    /* ── 分段切换（时间范围等互斥单选）：共享基线 + 选中/未选中两态。
+       触屏下高度提升到 44px，与 nav-link 同一触控组合。 ── */
+    {
+      'segment-group': 'inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]',
+      'segment-item': 'h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] pointer-coarse:h-11',
+      'segment-item-active': 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]',
+      'segment-item-idle': 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2',
     },
   ],
   rules: [

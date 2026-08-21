@@ -8,7 +8,27 @@ import type { MonitoringFilter } from './types'
 // what the operator has typed; only an explicit submit emits the filters.
 defineOptions({ name: 'MonitoringFilterForm' })
 
-const emit = defineEmits<{ apply: [filters: MonitoringFilter] }>()
+const emit = defineEmits<{ apply: [filters: MonitoringFilter]; reset: [] }>()
+
+// clearFields empties every draft input from the parent (e.g. the "清除筛选"
+// action on an empty filtered table) without emitting a filter change; the
+// caller decides whether to reload afterwards.
+function clearFields(): void {
+  for (const key of Object.keys(fields) as Array<keyof typeof fields>) {
+    fields[key] = ''
+  }
+  error.value = ''
+}
+
+// The toolbar's standing "清除筛选" button: clears the drafts AND tells the
+// parent to drop applied filters — reachable at any time, not only from the
+// empty-result state.
+function resetFilters(): void {
+  clearFields()
+  emit('reset')
+}
+
+defineExpose({ clearFields })
 
 const fields = reactive({
   search: '',
@@ -192,7 +212,15 @@ function isNonEmptyNumeric(value: string | number): boolean {
         placeholder="全部"
       >
     </div>
-    <div class="flex items-end justify-end sm:col-span-2 lg:col-span-4">
+    <div class="flex items-center justify-end gap-2 sm:col-span-2 lg:col-span-4">
+      <UiButton
+        variant="ghost"
+        type="button"
+        data-testid="monitoring-filter-reset"
+        @click="resetFilters"
+      >
+        清除筛选
+      </UiButton>
       <UiButton
         variant="primary"
         type="submit"

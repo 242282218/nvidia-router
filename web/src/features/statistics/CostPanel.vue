@@ -225,6 +225,7 @@ function formatCompactTokens(value: number): string {
       v-if="loading"
       class="mt-4"
       role="status"
+      aria-busy="true"
       aria-label="加载成本分析数据…"
     >
       <UiSkeleton

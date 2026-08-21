@@ -20,7 +20,7 @@ const point = (bucket: string, requestCount: number): MonitoringSeriesPoint => (
 })
 
 describe('MonitoringTrendChart', () => {
-  it('renders a scaled SVG line and an accessible data table', () => {
+  it('renders a smooth area line and an accessible data table', () => {
     const wrapper = mount(MonitoringTrendChart, {
       props: {
         series: [point('2026-08-03T10:00:00Z', 2), point('2026-08-03T11:00:00Z', 8)],
@@ -30,7 +30,11 @@ describe('MonitoringTrendChart', () => {
     })
 
     expect(wrapper.find('svg').exists()).toBe(true)
-    expect(wrapper.find('polyline').attributes('points')).toContain('0,')
+    // 平滑曲线 + 渐变面积都以 path 渲染；曲线起点从左侧留白开始
+    const paths = wrapper.findAll('path')
+    expect(paths.length).toBeGreaterThanOrEqual(2)
+    const strokePath = paths.find((candidate) => candidate.attributes('stroke') !== undefined)
+    expect(strokePath?.attributes('d')).toMatch(/^M48/)
     expect(wrapper.find('details table').text()).toContain('2026-08-03T11:00:00Z')
     expect(wrapper.text()).toContain('请求趋势')
   })
@@ -41,6 +45,6 @@ describe('MonitoringTrendChart', () => {
     })
 
     expect(wrapper.text()).toContain('暂无趋势数据')
-    expect(wrapper.find('polyline').exists()).toBe(false)
+    expect(wrapper.find('svg').exists()).toBe(false)
   })
 })

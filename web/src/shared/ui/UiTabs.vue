@@ -52,7 +52,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <button
       v-for="tab in tabs"
       :key="tab.id"
-      class="flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
+      class="flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] pointer-coarse:h-11"
       :class="active === tab.id
         ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]'
         : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"

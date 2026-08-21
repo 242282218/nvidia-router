@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
@@ -18,6 +18,7 @@ interface TabDefinition {
   subtitle: string
   icon: IconName
   testId: string
+  component: Component
 }
 
 const tabs: TabDefinition[] = [
@@ -27,6 +28,7 @@ const tabs: TabDefinition[] = [
     subtitle: '查看 Key 池就绪情况、排队深度、冷却状态与核心运行参数。',
     icon: 'pulse',
     testId: 'tab-runtime',
+    component: RuntimeView,
   },
   {
     id: 'statistics',
@@ -34,6 +36,7 @@ const tabs: TabDefinition[] = [
     subtitle: '多维度聚合请求指标、延迟趋势、Token 统计与成本估算。',
     icon: 'chart',
     testId: 'tab-statistics',
+    component: StatisticsView,
   },
   {
     id: 'live',
@@ -41,6 +44,7 @@ const tabs: TabDefinition[] = [
     subtitle: '基于 SSE 的实时请求元数据事件流，即时观察上下游交互。',
     icon: 'bolt',
     testId: 'tab-live',
+    component: LiveView,
   },
   {
     id: 'audit',
@@ -48,6 +52,7 @@ const tabs: TabDefinition[] = [
     subtitle: '记录所有管理员登录与配置变更事件，满足安全合规追踪。',
     icon: 'shield',
     testId: 'tab-audit',
+    component: AuditView,
   },
 ]
 
@@ -88,6 +93,7 @@ const defaultTab = tabs[0]!
 const currentTabInfo = computed<TabDefinition>(() => {
   return tabs.find((t) => t.id === activeTab.value) ?? defaultTab
 })
+const activeComponent = computed<Component>(() => currentTabInfo.value.component)
 </script>
 
 <template>
@@ -109,39 +115,19 @@ const currentTabInfo = computed<TabDefinition>(() => {
       </UiPageHeader>
 
       <div class="mt-2">
+        <!-- KeepAlive only caches component vnodes, so the tab panes must be a
+             single dynamic component (not v-if divs): switching tabs then
+             deactivates instead of destroying, preserving SSE connections,
+             filter drafts and polling state across tab switches. -->
         <KeepAlive>
-          <div
-            v-if="activeTab === 'runtime'"
-            id="tabpanel-runtime"
+          <component
+            :is="activeComponent"
+            :id="`tabpanel-${activeTab}`"
+            :key="activeTab"
             role="tabpanel"
-            aria-label="运行状态"
-          >
-            <RuntimeView :embedded="true" />
-          </div>
-          <div
-            v-else-if="activeTab === 'statistics'"
-            id="tabpanel-statistics"
-            role="tabpanel"
-            aria-label="请求监控"
-          >
-            <StatisticsView :embedded="true" />
-          </div>
-          <div
-            v-else-if="activeTab === 'live'"
-            id="tabpanel-live"
-            role="tabpanel"
-            aria-label="实时请求流"
-          >
-            <LiveView :embedded="true" />
-          </div>
-          <div
-            v-else-if="activeTab === 'audit'"
-            id="tabpanel-audit"
-            role="tabpanel"
-            aria-label="审计日志"
-          >
-            <AuditView :embedded="true" />
-          </div>
+            :aria-label="currentTabInfo.label"
+            :embedded="true"
+          />
         </KeepAlive>
       </div>
     </div>

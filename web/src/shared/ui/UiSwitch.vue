@@ -15,10 +15,15 @@ const emit = defineEmits<{ change: [value: boolean] }>()
 
 <template>
   <button
-    class="inline-flex h-6 w-11 shrink-0 items-center rounded-full border p-0.5 transition-[background-color,border-color] duration-[var(--duration-micro)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-    :class="checked
-      ? 'justify-end border-[var(--color-success)] bg-[var(--color-success)]'
-      : 'justify-start border-[var(--color-border-strong)] bg-[var(--color-sunken)]'"
+    class="inline-flex h-6 w-11 shrink-0 items-center rounded-full border p-0.5 transition-[background-color,border-color] duration-[var(--duration-micro)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 disabled:cursor-not-allowed"
+    :class="[
+      checked ? 'justify-end' : 'justify-start',
+      disabled
+        ? 'border-[var(--color-disabled-border)] bg-[var(--color-disabled-background)]'
+        : checked
+          ? 'border-[var(--color-success)] bg-[var(--color-success)]'
+          : 'border-[var(--color-border-strong)] bg-[var(--color-sunken)]',
+    ]"
     type="button"
     role="switch"
     :aria-checked="checked"
@@ -27,7 +32,8 @@ const emit = defineEmits<{ change: [value: boolean] }>()
     @click="emit('change', !checked)"
   >
     <span
-      class="h-5 w-5 rounded-full bg-white shadow-[var(--shadow-sm)]"
+      class="h-5 w-5 rounded-full shadow-[var(--shadow-sm)]"
+      :class="disabled ? 'bg-[var(--color-disabled-foreground)]' : 'bg-white'"
       aria-hidden="true"
     />
   </button>

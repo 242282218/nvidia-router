@@ -20,6 +20,9 @@ const emit = defineEmits<{
   <div
     data-testid="access-key-table"
     class="hidden overflow-x-auto md:block"
+    tabindex="0"
+    role="region"
+    aria-label="Access Key 表，可横向滚动"
   >
     <table class="data-table min-w-full">
       <caption class="sr-only">

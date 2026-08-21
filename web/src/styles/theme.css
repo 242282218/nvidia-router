@@ -2,8 +2,9 @@
   /* All text/control pairs below are verified in docs/前端对比度配对表.md
      (computed by scripts/calc_contrast.py). Changing any color value requires
      re-running the script and updating that table first.
-     Theme: Warm Paper 2.0 (暖白 · Minimal Product · Light 单模式).
-     暖白底色 + 暖调近黑强调（#1c1917），NVIDIA 绿（#76b900）仅作为品牌 Logo 点缀。 */
+     Theme: Warm Paper 2.0 (暖白 · Minimal Product · Light/Dark 双模式).
+     暖白底色 + 暖调近黑强调（#1c1917），NVIDIA 绿（#76b900）仅作为品牌 Logo 点缀。
+     Dark: 同一暖色相的深色映射（暖调近黑底 + 近白强调），配对同样登记在对比度表。 */
   color-scheme: light;
 
   /* ── 底色层级：暖纸底 → 纯白卡片浮于其上，形成柔和的纵向层次 ── */
@@ -65,11 +66,12 @@
 
   /* ── 字体刻度：四层语义阶梯，页面标题不再与卡片标题争层级 ──
      display 仅用于关键指标数字；title 用于页面 h1；heading 用于卡片/区块；
-     body 正文；label 用于眉题、表头、徽章等辅助标注。 */
+     body 正文；label 用于眉题、表头、徽章等辅助标注。
+     label 不低于 12px：辅助文字 12px 是可读性底线（排版节奏硬规则）。 */
   --text-display: 600 1.625rem/1.2 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-title: 600 1.375rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-heading: 600 0.9375rem/1.4 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
-  --text-label: 500 0.6875rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-label: 500 0.75rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
 
   /* ── 圆角：控件收敛、面板舒展，弱化工具感 ── */
   --radius-control: 8px;
@@ -97,6 +99,80 @@
   --duration-overlay: 300ms;
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* 滚动条与选区随主题切换（值登记于对比度表备注，非文本配对） */
+  --scrollbar-thumb: rgba(87, 83, 78, 0.26);
+  --scrollbar-thumb-hover: rgba(87, 83, 78, 0.44);
+}
+
+/* ── Dark（暖调深色）：与亮色同一暖色相，近白承担主操作，状态色提亮保对比 ──
+   全部配对已实算登记 docs/前端对比度配对表.md（scripts/calc_contrast.py DARK 段）。 */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-canvas: #141210;
+  --color-surface: #1c1917;
+  --color-elevated: #242120;
+  --color-sunken: #171514;
+  --color-hover: #262220;
+  --color-active: #2e2926;
+
+  --color-border-subtle: #2a2624;
+  --color-border: #37312d;
+  --color-border-strong: #867d72;
+
+  --color-text: #f7f5f3;
+  --color-text-secondary: #d9d4cf;
+  --color-text-muted: #a8a29e;
+  --color-text-subtle: #918b85;
+
+  /* 强调反转：近白承担主操作（Vercel/Linear 式暗色主按钮） */
+  --color-accent: #f7f5f3;
+  --color-accent-bright: #ffffff;
+  --color-accent-background: var(--color-accent);
+  --color-accent-background-hover: #ffffff;
+  --color-accent-text: var(--color-accent);
+  --color-accent-foreground: #1c1917;
+
+  /* 状态色：暗底上提亮的同语义色相；tint 底混入 surface 而非白 */
+  --color-success: #4ac269;
+  --color-success-text: var(--color-success);
+  --color-success-background: color-mix(in srgb, #4ac269 15%, var(--color-surface));
+  --color-success-foreground: #4ac269;
+  --color-warning: #d9a53f;
+  --color-warning-text: var(--color-warning);
+  --color-warning-background: color-mix(in srgb, #d9a53f 15%, var(--color-surface));
+  --color-warning-foreground: #d9a53f;
+  --color-danger: #f47067;
+  --color-danger-text: var(--color-danger);
+  --color-danger-background: color-mix(in srgb, #f47067 15%, var(--color-surface));
+  --color-danger-foreground: #f47067;
+  --color-info: #85b6ff;
+  --color-info-text: var(--color-info);
+  --color-info-background: color-mix(in srgb, #85b6ff 15%, var(--color-surface));
+  --color-info-foreground: #85b6ff;
+
+  --color-focus: #f7f5f3;
+  --color-muted-background: #262220;
+  --color-muted-foreground: #a8a29e;
+  --color-muted-border: #37312d;
+  --color-disabled-background: #211e1c;
+  --color-disabled-foreground: #867f78;
+  --color-disabled-border: #37312d;
+
+  /* 品牌绿在暗底上直接可读，前景保持深色不变 */
+  --color-brand: #76b900;
+  --color-brand-foreground: #081000;
+
+  /* 暗色下阴影弱化为纯黑低透明；层次主要靠表面亮度差 + 描边 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.30), 0 12px 32px rgba(0, 0, 0, 0.38);
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.42), 0 24px 64px rgba(0, 0, 0, 0.52);
+  --color-overlay: rgba(8, 6, 5, 0.62);
+
+  --scrollbar-thumb: rgba(168, 162, 158, 0.28);
+  --scrollbar-thumb-hover: rgba(168, 162, 158, 0.46);
 }
 
 * {
@@ -106,13 +182,13 @@
 
 *, *::before, *::after {
   scrollbar-width: thin;
-  scrollbar-color: rgba(87, 83, 78, 0.26) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(87, 83, 78, 0.26); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(87, 83, 78, 0.44); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 html,
 body,
@@ -142,6 +218,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 暗色氛围：暖橙余晖 + 一缕品牌绿极光，透明度压到不干扰内容 */
+[data-theme='dark'] body {
+  background:
+    radial-gradient(1100px 520px at 85% -8%, rgba(217, 165, 63, 0.07), transparent 62%),
+    radial-gradient(900px 480px at 8% 108%, rgba(118, 185, 0, 0.05), transparent 60%),
+    var(--color-canvas);
+}
+
 button,
 a,
 input,
@@ -159,7 +243,8 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
-select:focus-visible {
+select:focus-visible,
+summary:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
@@ -167,6 +252,10 @@ select:focus-visible {
 ::selection {
   background: rgba(255, 224, 178, 0.65);
   color: var(--color-text);
+}
+
+[data-theme='dark'] ::selection {
+  background: rgba(118, 185, 0, 0.30);
 }
 
 .font-mono-data {
@@ -218,6 +307,40 @@ select:focus-visible {
   border: 0;
 }
 
+/* ── 主题切换的 View Transition：旧主题静止，新主题以圆形从点击处扩散。
+   JS（useTheme）只负责驱动 clip-path 动画；这里关掉默认交叉淡化，
+   避免两层快照叠加产生闪白。不支持该 API 的浏览器直接瞬时切换。 ── */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+/* ── 列表交错入场：配合 --stagger-index 内联变量逐项延迟 ── */
+@keyframes stagger-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stagger-item {
+  animation: stagger-enter var(--duration-local) var(--ease-enter) both;
+  animation-delay: calc(min(var(--stagger-index, 0), 12) * 30ms);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -226,5 +349,13 @@ select:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* View Transition 快照层在 reduced-motion 下同样不做动画 */
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  ::view-transition-group(root),
+  ::view-transition-image-pair(root) {
+    animation: none !important;
   }
 }

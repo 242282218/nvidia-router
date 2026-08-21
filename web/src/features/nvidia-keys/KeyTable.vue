@@ -113,7 +113,7 @@ const emit = defineEmits<{
                   单测
                 </UiButton>
                 <button
-                  class="icon-btn h-8 w-8 hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)]"
+                  class="icon-btn-sm hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)]"
                   type="button"
                   :disabled="busyId === key.id"
                   :aria-label="`删除 Key ${key.masked}`"

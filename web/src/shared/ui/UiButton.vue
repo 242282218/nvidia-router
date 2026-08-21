@@ -33,8 +33,18 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ click: [event: globalThis.MouseEvent] }>()
 
+// Variant → shortcut must stay a literal record: UnoCSS extracts class names
+// from raw file text, so a `btn-${variant}` template literal hides btn-primary
+// / btn-danger from the scanner and those buttons ship without any CSS.
+const variantClass = {
+  primary: 'btn-primary',
+  secondary: 'btn-secondary',
+  ghost: 'btn-ghost',
+  danger: 'btn-danger',
+} as const
+
 const classes = computed(() => {
-  const base = `btn-${props.variant}`
+  const base = variantClass[props.variant]
   const size = props.size === 'sm' ? 'btn-sm' : ''
   const block = props.block ? 'w-full' : ''
   return [base, size, block].filter(Boolean).join(' ')

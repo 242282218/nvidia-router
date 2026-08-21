@@ -55,6 +55,51 @@ BRAND_FOREGROUND = "#081000"
 
 BORDER_STRONG = "#8a8378"
 
+# Raw values from web/src/styles/theme.css [data-theme='dark'] (暖调深色). Keep in sync.
+D_CANVAS = "#141210"
+D_SURFACE = "#1c1917"
+D_ELEVATED = "#242120"
+
+D_TEXT = "#f7f5f3"
+D_TEXT_SECONDARY = "#d9d4cf"
+D_TEXT_MUTED = "#a8a29e"
+D_TEXT_SUBTLE = "#918b85"
+
+D_ACCENT = "#f7f5f3"
+D_ACCENT_FOREGROUND = "#1c1917"
+
+D_SUCCESS = "#4ac269"
+D_WARNING = "#d9a53f"
+D_DANGER = "#f47067"
+D_INFO = "#85b6ff"
+
+D_FOCUS = "#f7f5f3"
+D_MUTED_BACKGROUND = "#262220"
+D_MUTED_FOREGROUND = "#a8a29e"
+D_DISABLED_BACKGROUND = "#211e1c"
+D_DISABLED_FOREGROUND = "#867f78"
+
+D_BORDER_STRONG = "#867d72"
+
+
+def _tint_on_surface(hex_color: str, percent: int) -> str:
+    """Reproduce color-mix(in srgb, X p%, var(--color-surface)) for dark tints."""
+    surface = D_SURFACE.lstrip("#")
+    fg = hex_color.lstrip("#")
+    mixed = []
+    for i in (0, 2, 4):
+        channel_fg = int(fg[i : i + 2], 16)
+        channel_bg = int(surface[i : i + 2], 16)
+        value = round(channel_fg * percent / 100 + channel_bg * (100 - percent) / 100)
+        mixed.append(f"{value:02x}")
+    return "#" + "".join(mixed)
+
+
+D_SUCCESS_BACKGROUND = _tint_on_surface(D_SUCCESS, 15)
+D_WARNING_BACKGROUND = _tint_on_surface(D_WARNING, 15)
+D_DANGER_BACKGROUND = _tint_on_surface(D_DANGER, 15)
+D_INFO_BACKGROUND = _tint_on_surface(D_INFO, 15)
+
 # name, foreground, background, required ratio
 PAIRS: list[tuple[str, str, str, float]] = [
     # body text roles, 4.5:1
@@ -107,6 +152,38 @@ PAIRS: list[tuple[str, str, str, float]] = [
     ("chart warning on canvas", WARNING, CANVAS, 3.0),
     ("chart success on canvas", SUCCESS, CANVAS, 3.0),
     ("chart info on canvas", INFO, CANVAS, 3.0),
+    # ── Dark theme ([data-theme='dark']) ──
+    ("dark text on canvas", D_TEXT, D_CANVAS, 4.5),
+    ("dark text on surface", D_TEXT, D_SURFACE, 4.5),
+    ("dark text on elevated", D_TEXT, D_ELEVATED, 4.5),
+    ("dark text-secondary on canvas", D_TEXT_SECONDARY, D_CANVAS, 4.5),
+    ("dark text-secondary on surface", D_TEXT_SECONDARY, D_SURFACE, 4.5),
+    ("dark text-secondary on elevated", D_TEXT_SECONDARY, D_ELEVATED, 4.5),
+    ("dark text-muted on canvas", D_TEXT_MUTED, D_CANVAS, 4.5),
+    ("dark text-muted on surface", D_TEXT_MUTED, D_SURFACE, 4.5),
+    ("dark text-muted on elevated", D_TEXT_MUTED, D_ELEVATED, 4.5),
+    ("dark text-subtle on surface", D_TEXT_SUBTLE, D_SURFACE, 4.5),
+    ("dark text-subtle on elevated", D_TEXT_SUBTLE, D_ELEVATED, 4.5),
+    ("dark accent-text on canvas", D_ACCENT, D_CANVAS, 4.5),
+    ("dark accent-text on surface", D_ACCENT, D_SURFACE, 4.5),
+    ("dark accent-foreground on accent", D_ACCENT_FOREGROUND, D_ACCENT, 4.5),
+    ("dark success-text on surface", D_SUCCESS, D_SURFACE, 4.5),
+    ("dark warning-text on surface", D_WARNING, D_SURFACE, 4.5),
+    ("dark danger-text on surface", D_DANGER, D_SURFACE, 4.5),
+    ("dark info-text on surface", D_INFO, D_SURFACE, 4.5),
+    ("dark success-fg on success-bg", D_SUCCESS, D_SUCCESS_BACKGROUND, 4.5),
+    ("dark warning-fg on warning-bg", D_WARNING, D_WARNING_BACKGROUND, 4.5),
+    ("dark danger-fg on danger-bg", D_DANGER, D_DANGER_BACKGROUND, 4.5),
+    ("dark info-fg on info-bg", D_INFO, D_INFO_BACKGROUND, 4.5),
+    ("dark muted-fg on muted-bg", D_MUTED_FOREGROUND, D_MUTED_BACKGROUND, 4.5),
+    ("dark disabled-fg on disabled-bg", D_DISABLED_FOREGROUND, D_DISABLED_BACKGROUND, 4.0),
+    ("dark focus ring on canvas", D_FOCUS, D_CANVAS, 3.0),
+    ("dark border-strong on canvas", D_BORDER_STRONG, D_CANVAS, 3.0),
+    ("dark border-strong on surface", D_BORDER_STRONG, D_SURFACE, 3.0),
+    ("dark chart danger on surface", D_DANGER, D_SURFACE, 3.0),
+    ("dark chart warning on surface", D_WARNING, D_SURFACE, 3.0),
+    ("dark chart success on surface", D_SUCCESS, D_SURFACE, 3.0),
+    ("dark chart info on surface", D_INFO, D_SURFACE, 3.0),
 ]
 
 

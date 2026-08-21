@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatClock, formatLatency } from '../../shared/format'
@@ -51,6 +51,19 @@ function clearEvents(): void {
 
 onMounted(() => {
   connect()
+})
+
+// Inside the observability KeepAlive, switching tabs deactivates this pane
+// instead of unmounting it — an invisible SSE stream would keep receiving
+// events and re-rendering a hidden list. Close on deactivate; reconnect (and
+// clear stale buffered events) on activate. Outside KeepAlive these hooks
+// never fire and behaviour is unchanged.
+onDeactivated(() => {
+  close()
+})
+
+onActivated(() => {
+  if (!source) connect()
 })
 
 onBeforeUnmount(() => {
@@ -263,7 +276,7 @@ function latencyColor(duration: number): string {
           <Transition name="fade">
             <button
               v-if="!pinnedToTop && events.length > 0"
-              class="absolute bottom-4 right-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)]"
+              class="absolute bottom-4 right-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)] pointer-coarse:px-4 pointer-coarse:py-2.5"
               type="button"
               @click="scrollToTop"
             >

@@ -204,6 +204,17 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **501 缺陷在当前生产不可达**：线上 11 个模型里三个非推理模型（`meta/llama-3.2-90b-vision-instruct`、`openai/gpt-oss-120b`、`opencodefree/x-preview-f-free`）**全部处于停用**，而停用模型在能力门禁之前就被拒。所以该修复的线上证据只能是"单测 + 部署产物含修复"，不能靠线上复现；用 `grep` 校验 release 目录源码（`/opt/nvidia-router-releases/<tag>/`）来确认镜像确实由含修复的源码构建。
 - **子代理汇报的踩坑**：第一轮 7 个审查子代理里 6 个用 SendMessage 催报全部无响应。**根因是把"汇报"设计成了旁路信道**；改为让每个子代理的**最终返回文本就是报告全文**（Agent 工具的返回值），并在 prompt 里固定 `## 结论/覆盖范围/发现/未覆盖` 段式、限定最多 5 条、要求 file:line + 具体失败场景，才稳定拿到结果。
 
+## 2026-08-21 前端「前沿高级」改造（Dark/命令面板/图表/登录页）
+
+- **双主题落地方式**：`theme.css` 用 `:root`（Light）+ `[data-theme='dark']` 属性选择器两套 token；`shared/useTheme.ts` 模块级单例管理偏好（light/dark/system，localStorage `nvr-theme`），`initTheme()` 必须在 `main.ts` 首帧前调用防 FOUC；watch 用 `{ flush: 'sync' }` 让 DOM 属性立即落地。View Transitions 圆形扩散切换：`document.startViewTransition` + WAAPI 驱动 `::view-transition-new(root)` 的 clip-path，需在 CSS 里关掉默认交叉淡化；不支持/reduced-motion 直接瞬时切换。
+- **对比度红线**：任何新文本/背景配对先跑 `python scripts/calc_contrast.py`（已含 DARK 段与 `_tint_on_surface()` 复现 color-mix），登记进 `docs/前端对比度配对表.md` 后才能进代码；当前 74/74。暗色状态色用提亮变体（success #4ac269 / warning #d9a53f / danger #f47067 / info #85b6ff），tint 底混 surface 不混白。
+- **shortcuts.spec 硬约束**：UnoCSS 任意值里禁止 `bg-[var(--x)]/50` 这类 alpha 修饰符，半透明一律写 `color-mix(in srgb, ...)`。
+- **ESLint no-undef 坑**：web 的 eslint 对 `.vue` 不注入 DOM 全局，类型位置必须写 `globalThis.HTMLElement` / `globalThis.KeyboardEvent` 等（AppShell 既有约定）。
+- **vitest+happy-dom 环境怪癖**：命令面板带输入查询时，从事件派发上下文发起含懒加载组件的 `router.push` 会永远 pending（守卫跑完、afterEach 不触发）；同状态从测试主体直接 push 一切正常。单测断言面板契约用 `vi.spyOn(router, 'push')`，完整导航集成交给 router/AppShell spec。真实浏览器无此问题。
+- **模块级单例测试法**：useTheme/useCommandPalette 是模块级 ref 单例，跨用例污染状态；用 `vi.resetModules()` + 动态 `await import()` 在 beforeEach 里拿干净实例。
+- **图表升级要点**：折线图改 Catmull-Rom→Bézier 平滑曲线 + 渐变面积（SVG defs 渐变 id 必须实例唯一，用 Math.random）；hover 十字线 tooltip 用 HTML 覆盖层按百分比定位；失败趋势保留虚线作色盲第二编码。UiStat 支持 `sparkline`（归一化 viewBox+non-scaling-stroke）与数值 count-up（`useCountUp`，reduced-motion 直跳）。
+- **验证命令不变**：lint/typecheck/test/build 全绿后 `go build ./...` 确认 embed；前端改动产物已重建进 `internal/web/dist`。
+
 ## 2026-08-21 第二轮修复（发布 20260821-review-3）与未决清单
 
 - **`%w` 包 nil 仍是非 nil error**：`fmt.Errorf("...: %w", f())` 中 `f()` 返回 nil 时，得到的是文本为 `%!w(<nil>)` 的**非 nil** error。`modelcatalog/saveSelection` 因此让已存储的 opencodefree 模型永远无法再启用，且 `SaveSelectionsResult` 是单事务，同批次无关模型一并回滚。线上 Vue 页面 `ModelsView.vue` 的 `saveCandidates` 会先过滤掉已配置模型，所以 UI 走不到——**缺陷藏在"前端恰好绕过"的路径里，直接调 API 的脚本会立刻命中**。

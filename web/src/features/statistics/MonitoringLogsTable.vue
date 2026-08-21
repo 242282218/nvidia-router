@@ -12,9 +12,13 @@ defineProps<{
   logs: RequestLogsPage
   logsError: string
   loading: boolean
+  /** True when keyword/dimension filters are active: an empty list then means
+   * "no match", not "no data ever" — the two need different copy and actions
+   * (data-table 契约：筛选空态必须与从未有数据区分). */
+  filtered?: boolean
 }>()
 
-const emit = defineEmits<{ retry: [] }>()
+const emit = defineEmits<{ retry: []; clearFilters: [] }>()
 
 function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger'; label: string } {
   return outcome === 'success' ? { variant: 'success', label: '成功' } : { variant: 'danger', label: '失败' }
@@ -35,6 +39,20 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
       @click="emit('retry')"
     >
       重试
+    </button>
+  </p>
+  <p
+    v-else-if="logs.items.length === 0 && filtered"
+    data-testid="monitoring-empty-logs"
+    class="p-6 text-center text-sm text-[var(--color-text-muted)]"
+  >
+    当前筛选条件下没有匹配的请求记录。
+    <button
+      class="ml-1 font-medium text-[var(--color-info)] underline underline-offset-2 hover:opacity-75"
+      type="button"
+      @click="emit('clearFilters')"
+    >
+      清除筛选
     </button>
   </p>
   <p
@@ -270,7 +288,7 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
             <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
               {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms
             </td>
-            <td class="data-table-td font-mono whitespace-nowrap">
+            <td class="data-table-td font-mono-data whitespace-nowrap">
               {{ item.duration_ms }} ms
             </td>
             <td class="data-table-td font-mono-data">

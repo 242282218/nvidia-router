@@ -79,7 +79,7 @@ const confirmCopy = computed(() => {
   }
   return {
     title: '删除 Access Key',
-    message: `将永久删除「${action.key.name}」（${action.key.key_prefix}…）及其策略配置。`,
+    message: `将永久删除「${action.key.name}」（${action.key.key_prefix}…）及其策略配置，此操作不可恢复。`,
     confirmLabel: '删除',
   }
 })

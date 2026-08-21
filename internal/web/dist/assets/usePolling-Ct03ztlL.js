@@ -1,1 +1,0 @@
-import{L as d}from"./index-V8P7yKFh.js";function v(n,r){let i;function t(){e(),i=setInterval(()=>{n()},r)}function e(){i!==void 0&&(clearInterval(i),i=void 0)}function o(){document.hidden?e():(n(),t())}document.addEventListener("visibilitychange",o),d(()=>{document.removeEventListener("visibilitychange",o),e()}),t()}export{v as u};

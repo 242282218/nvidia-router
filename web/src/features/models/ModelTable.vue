@@ -118,7 +118,12 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
     data-testid="model-table"
     class="card hidden overflow-hidden md:block"
   >
-    <div class="overflow-x-auto">
+    <div
+      class="overflow-x-auto"
+      tabindex="0"
+      role="region"
+      aria-label="模型白名单表，可横向滚动"
+    >
       <table class="data-table">
         <caption class="sr-only">
           模型白名单，共 {{ models.length }} 条
@@ -194,6 +199,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                   :data-testid="`candidate-table-${candidateSelectionKey(candidate)}`"
                   type="checkbox"
+                  :aria-label="`保存候选模型 ${candidate.display_name}`"
                   @change="onCandidateChange(candidate, $event)"
                 >
                 保存
@@ -274,6 +280,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
                   :data-testid="`test-model-${model.id}`"
                   type="checkbox"
+                  :aria-label="`将模型 ${model.display_name} 加入测试`"
                   @change="onModelTestChange(model, $event)"
                 >
                 测试

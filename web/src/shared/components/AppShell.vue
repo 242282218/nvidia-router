@@ -5,6 +5,9 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../../features/auth/useSession'
 import UiIcon from '../ui/UiIcon.vue'
 import type { IconName } from '../ui'
+import AppCommandPalette from './AppCommandPalette.vue'
+import { useCommandPalette } from '../useCommandPalette'
+import { toggleTheme, useTheme } from '../useTheme'
 
 defineOptions({ name: 'AppShell' })
 
@@ -27,6 +30,8 @@ const sidebarOpen = ref(false)
 const loggingOut = ref(false)
 const menuButton = ref<globalThis.HTMLButtonElement | null>(null)
 const sidebar = ref<globalThis.HTMLElement | null>(null)
+const palette = useCommandPalette()
+const theme = useTheme()
 // The sidebar is a full-time navigation rail on desktop; the mobile drawer is
 // only focus-managed (inert when closed, focus moved in/out) below lg.
 const isMobile = ref(false)
@@ -97,6 +102,43 @@ watch(() => route.path, () => {
   sidebarOpen.value = false
 })
 
+// ── 侧边栏滑动指示器：一个绝对定位的胶囊跟随激活项平移（FLIP 思想），
+// 避免每个链接各自带背景切换时的"跳变"感。测量失败时静默隐藏。 ──
+const navListRef = ref<globalThis.HTMLElement | null>(null)
+const indicator = ref<{ top: number, height: number, visible: boolean }>({ top: 0, height: 0, visible: false })
+
+function syncIndicator(): void {
+  const container = navListRef.value
+  if (!container) return
+  const active = container.querySelector<globalThis.HTMLElement>('[aria-current="page"]')
+  if (!active) {
+    indicator.value = { top: 0, height: 0, visible: false }
+    return
+  }
+  indicator.value = {
+    top: active.offsetTop,
+    height: active.offsetHeight,
+    visible: true,
+  }
+}
+
+watch([() => route.path, navGroups], () => {
+  void nextTick(syncIndicator)
+}, { immediate: true })
+
+onMounted(() => {
+  void nextTick(syncIndicator)
+  globalThis.addEventListener('resize', syncIndicator)
+})
+
+onBeforeUnmount(() => {
+  globalThis.removeEventListener('resize', syncIndicator)
+})
+
+function onThemeToggle(event: globalThis.MouseEvent): void {
+  toggleTheme({ x: event.clientX, y: event.clientY })
+}
+
 function isActive(path: string): boolean {
   return route.path === path || (path === '/nvidia-keys' && route.path === '/')
 }
@@ -123,7 +165,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 <template>
   <div class="min-h-screen text-[var(--color-text)]">
     <!-- Mobile header -->
-    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_92%,transparent)] px-4 backdrop-blur-md lg:hidden">
+    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_92%,transparent)] px-4 backdrop-blur-md lg:hidden">
       <button
         ref="menuButton"
         class="icon-btn"
@@ -138,14 +180,38 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           :size="20"
         />
       </button>
-      <div class="flex min-w-0 items-center gap-2.5">
+      <div class="flex min-w-0 flex-1 items-center gap-2.5">
         <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--color-brand)] text-[11px] font-bold text-[var(--color-brand-foreground)]">
           N
         </div>
-        <p class="truncate text-sm font-semibold tracking-[-0.01em]">
+        <p class="truncate text-sm font-semibold">
           {{ currentTitle }}
         </p>
       </div>
+      <button
+        class="icon-btn"
+        type="button"
+        aria-label="打开命令面板"
+        data-testid="open-command-palette-mobile"
+        @click="palette.show()"
+      >
+        <UiIcon
+          name="search"
+          :size="18"
+        />
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        :aria-label="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
+        data-testid="theme-toggle-mobile"
+        @click="onThemeToggle($event)"
+      >
+        <UiIcon
+          :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
+          :size="18"
+        />
+      </button>
     </header>
 
     <!-- Sidebar overlay (mobile) -->
@@ -173,7 +239,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           N
         </div>
         <div class="min-w-0">
-          <p class="truncate text-sm font-semibold tracking-[-0.01em]">
+          <p class="truncate text-sm font-semibold">
             NVIDIA Router
           </p>
           <p class="text-xs text-[var(--color-text-muted)]">
@@ -182,33 +248,67 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         </div>
       </div>
 
+      <!-- 命令面板入口：伪装成搜索框的按钮，桌面端主入口 -->
+      <div class="px-5 pb-1 pt-4">
+        <button
+          class="flex h-9 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          type="button"
+          data-testid="open-command-palette"
+          aria-label="打开命令面板（Ctrl+K）"
+          @click="palette.show()"
+        >
+          <UiIcon
+            name="search"
+            :size="15"
+          />
+          <span class="flex-1 text-left">搜索…</span>
+          <kbd class="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] leading-none">⌘K</kbd>
+        </button>
+      </div>
+
       <nav
         class="flex-1 overflow-y-auto px-3 pb-3"
         aria-label="管理功能"
       >
         <div
-          v-for="group in navGroups"
-          :key="group.label"
+          ref="navListRef"
+          class="relative"
         >
-          <p class="nav-group-label">
-            {{ group.label }}
-          </p>
-          <div class="space-y-0.5">
-            <RouterLink
-              v-for="item in group.items"
-              :key="item.path"
-              :to="item.path"
-              :data-testid="item.testId"
-              :class="isActive(item.path) ? 'nav-link-active' : 'nav-link'"
-              :aria-current="isActive(item.path) ? 'page' : undefined"
-            >
-              <UiIcon
-                :name="item.icon"
-                :size="16"
-                class="shrink-0"
-              />
-              {{ item.label }}
-            </RouterLink>
+          <!-- 滑动激活指示器：跟随当前项平移，而非逐项切换背景 -->
+          <div
+            v-if="indicator.visible"
+            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] shadow-[var(--shadow-xs)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            :style="{ transform: `translateY(${indicator.top}px)`, height: `${indicator.height}px` }"
+            aria-hidden="true"
+          />
+          <div
+            v-for="(group, groupIndex) in navGroups"
+            :key="group.label"
+          >
+            <p class="nav-group-label">
+              {{ group.label }}
+            </p>
+            <div class="space-y-0.5">
+              <RouterLink
+                v-for="item in group.items"
+                :key="item.path"
+                :to="item.path"
+                :data-testid="item.testId"
+                class="stagger-item relative"
+                :class="isActive(item.path)
+                  ? 'nav-link font-medium text-[var(--color-text)]'
+                  : 'nav-link'"
+                :style="{ '--stagger-index': groupIndex * 3 + group.items.indexOf(item) }"
+                :aria-current="isActive(item.path) ? 'page' : undefined"
+              >
+                <UiIcon
+                  :name="item.icon"
+                  :size="16"
+                  class="relative z-10 shrink-0"
+                />
+                <span class="relative z-10">{{ item.label }}</span>
+              </RouterLink>
+            </div>
           </div>
         </div>
       </nav>
@@ -237,8 +337,21 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               会话有效
             </p>
           </div>
+          <button
+            class="icon-btn-sm"
+            type="button"
+            :aria-label="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
+            data-testid="theme-toggle"
+            :title="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
+            @click="onThemeToggle($event)"
+          >
+            <UiIcon
+              :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
+              :size="15"
+            />
+          </button>
           <RouterLink
-            class="icon-btn h-8 w-8"
+            class="icon-btn-sm"
             to="/change-password"
             aria-label="修改管理员密码"
             title="修改密码"
@@ -250,7 +363,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           </RouterLink>
           <button
             data-testid="logout"
-            class="icon-btn h-8 w-8"
+            class="icon-btn-sm"
             type="button"
             :disabled="loggingOut"
             aria-label="退出登录"
@@ -279,6 +392,8 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         </Transition>
       </RouterView>
     </main>
+
+    <AppCommandPalette />
   </div>
 </template>
 

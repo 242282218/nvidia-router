@@ -1,11 +1,24 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import UiBadge from '../../shared/ui/UiBadge.vue'
 import UiModal from '../../shared/ui/UiModal.vue'
 import type { KeyTestResult } from './types'
 
-defineProps<{ open: boolean; results: KeyTestResult[] }>()
+const props = defineProps<{
+  open: boolean
+  results: KeyTestResult[]
+  /** id → masked value from the parent's loaded key list; results render
+   * "Key #id" when a mask is missing (e.g. the key was deleted mid-run). */
+  maskedById?: Map<number, string>
+}>()
 
 const emit = defineEmits<{ close: [] }>()
+
+function resultLabel(result: KeyTestResult): string {
+  const masked = props.maskedById?.get(result.id)
+  return masked ? `${masked}（#${result.id}）` : `Key #${result.id}`
+}
 
 function statusVariant(status: string): 'success' | 'danger' | 'warning' {
   switch (status) {
@@ -25,6 +38,11 @@ function statusLabel(status: string): string {
     default: return status
   }
 }
+
+const ordered = computed(() => [...props.results].sort((a, b) => {
+  const rank = (status: string): number => (status === 'ok' || status === 'valid' ? 0 : 1)
+  return rank(a.status) - rank(b.status)
+}))
 </script>
 
 <template>
@@ -39,12 +57,12 @@ function statusLabel(status: string): string {
       data-testid="key-test-results"
     >
       <article
-        v-for="result in results"
+        v-for="result in ordered"
         :key="result.id"
         class="panel-inset p-4"
       >
         <div class="mb-2.5 flex items-center justify-between">
-          <span class="text-sm font-medium text-[var(--color-text)]">Key #{{ result.id }}</span>
+          <span class="font-mono-data text-sm font-medium text-[var(--color-text)]">{{ resultLabel(result) }}</span>
           <UiBadge
             :variant="statusVariant(result.status)"
             :label="statusLabel(result.status)"

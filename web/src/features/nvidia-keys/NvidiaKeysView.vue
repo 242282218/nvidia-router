@@ -32,6 +32,15 @@ const { data: keys, loading, error: loadError, refresh: loadKeys, isDisposed } =
 
 const keyList = computed<NVIDIAKey[]>(() => keys.value ?? [])
 
+// Test results only carry the numeric id; the dialog labels each result with
+// the masked value from the already-loaded key list so batch results stay
+// attributable (Key #id alone is meaningless after a test-all run).
+const maskedById = computed<Map<number, string>>(() => {
+  const map = new Map<number, string>()
+  for (const key of keyList.value) map.set(key.id, key.masked)
+  return map
+})
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback
 }
@@ -312,6 +321,7 @@ async function confirmDelete(): Promise<void> {
     <KeyTestDialog
       :open="testDialogOpen"
       :results="testResults"
+      :masked-by-id="maskedById"
       @close="testDialogOpen = false"
     />
     <UiConfirmDialog

@@ -178,11 +178,17 @@ function isSettingParam(value: string | null): value is keyof RuntimeSettings {
         </p>
       </Transition>
 
-      <UiSkeleton
+      <div
         v-if="loading"
-        variant="cards"
-        :lines="4"
-      />
+        role="status"
+        aria-busy="true"
+        aria-label="加载运行状态…"
+      >
+        <UiSkeleton
+          variant="cards"
+          :lines="4"
+        />
+      </div>
 
       <template v-else>
         <p

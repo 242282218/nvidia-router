@@ -55,6 +55,58 @@ let loadController: globalThis.AbortController | null = null
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
+// KPI 指标卡配置化：v-for 交错入场 + 统一的 sparkline/格式化来源。
+const kpiStats = computed(() => {
+  const data = summary.value
+  if (!data) return []
+  return [
+    { label: '请求数', props: { label: '请求数', value: data.request_count, format: formatInteger, sparkline: sparkValues('requests') } },
+    { label: '成功率', props: { label: '成功率', value: data.success_rate, format: formatPercent, tone: 'success' as const, sparkline: sparkValues('rate') } },
+    { label: '失败数', props: { label: '失败数', value: data.failure_count, format: formatInteger, tone: 'danger' as const, sparkline: sparkValues('failures') } },
+    { label: '平均耗时', props: { label: '平均耗时', value: data.average_duration_ms, format: formatAverageLatency, sparkline: sparkValues('latency') } },
+    { label: '首字节', props: { label: '首字节', value: data.average_first_byte_ms, format: formatAverageLatency, tone: 'info' as const } },
+    { label: 'TTFT P50', props: { label: 'TTFT P50', value: data.first_token_p50_ms ?? '—', format: formatAverageLatency, tone: 'info' as const } },
+    { label: 'TTFT P95', props: { label: 'TTFT P95', value: data.first_token_p95_ms ?? '—', format: formatAverageLatency, tone: 'info' as const } },
+    { label: '平均排队', props: { label: '平均排队', value: data.average_queue_ms, format: formatAverageLatency } },
+    { label: '总尝试', props: { label: '总尝试', value: data.total_attempts, format: formatInteger } },
+    {
+      label: 'Token',
+      props: {
+        label: 'Token',
+        value: data.prompt_tokens + data.completion_tokens,
+        format: formatTokens,
+        hint: `输入 ${formatTokens(data.prompt_tokens)} · 输出 ${formatTokens(data.completion_tokens)}`,
+        sparkline: sparkValues('tokens'),
+      },
+    },
+  ]
+})
+
+// 指标卡 sparkline：与趋势图同源的序列，按指标语义取值。
+function sparkValues(metric: 'requests' | 'failures' | 'latency' | 'tokens' | 'rate'): number[] {
+  const series = snapshot.value?.series ?? []
+  return series.map((point) => {
+    if (metric === 'requests') return point.request_count
+    if (metric === 'failures') return point.failure_count
+    if (metric === 'latency') return point.average_duration_ms
+    if (metric === 'tokens') return point.prompt_tokens + point.completion_tokens
+    return point.request_count === 0 ? 0 : (point.success_count / point.request_count) * 100
+  })
+}
+
+// True while any dimension filter is applied: an empty log table then means
+// "no match" rather than "no data ever", which drives the distinct empty state.
+const filtersActive = computed(() => Object.keys(appliedFilters.value).length > 0)
+
+const filterFormRef = ref<InstanceType<typeof MonitoringFilterForm> | null>(null)
+
+function clearFilters(): void {
+  filterFormRef.value?.clearFields()
+  appliedFilters.value = {}
+  page.value = 1
+  void loadDashboard()
+}
+
 const rangeLabel = computed(() => {
   const found = ranges.find((option) => option.value === range.value)
   return found?.label ?? ''
@@ -341,13 +393,13 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             role="group"
             aria-label="监控时间范围"
           >
-            <div class="inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]">
+            <div class="segment-group">
               <button
                 v-for="option in ranges"
                 :key="option.value"
                 :data-testid="`range-${option.value}`"
-                class="h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
-                :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+                class="segment-item"
+                :class="range === option.value ? 'segment-item-active' : 'segment-item-idle'"
                 type="button"
                 :aria-pressed="range === option.value"
                 @click="selectRange(option.value)"
@@ -373,13 +425,13 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         v-if="embedded"
         class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] pb-3"
       >
-        <div class="inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]">
+        <div class="segment-group">
           <button
             v-for="option in ranges"
             :key="option.value"
             :data-testid="`range-${option.value}`"
-            class="h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)]"
-            :class="range === option.value ? 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+            class="segment-item"
+            :class="range === option.value ? 'segment-item-active' : 'segment-item-idle'"
             type="button"
             :aria-pressed="range === option.value"
             @click="selectRange(option.value)"
@@ -409,6 +461,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         v-if="loading && !snapshot && !logs"
         class="mt-5"
         role="status"
+        aria-busy="true"
         aria-label="加载监控数据…"
       >
         <UiSkeleton
@@ -463,50 +516,11 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           </p>
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
             <UiStat
-              label="请求数"
-              :value="formatInteger(summary.request_count)"
-            />
-            <UiStat
-              label="成功率"
-              :value="formatPercent(summary.success_rate)"
-              tone="success"
-            />
-            <UiStat
-              label="失败数"
-              :value="formatInteger(summary.failure_count)"
-              tone="danger"
-            />
-            <UiStat
-              label="平均耗时"
-              :value="formatAverageLatency(summary.average_duration_ms)"
-            />
-            <UiStat
-              label="首字节"
-              :value="formatAverageLatency(summary.average_first_byte_ms)"
-              tone="info"
-            />
-            <UiStat
-              label="TTFT P50"
-              :value="formatAverageLatency(summary.first_token_p50_ms)"
-              tone="info"
-            />
-            <UiStat
-              label="TTFT P95"
-              :value="formatAverageLatency(summary.first_token_p95_ms)"
-              tone="info"
-            />
-            <UiStat
-              label="平均排队"
-              :value="formatAverageLatency(summary.average_queue_ms)"
-            />
-            <UiStat
-              label="总尝试"
-              :value="formatInteger(summary.total_attempts)"
-            />
-            <UiStat
-              label="Token"
-              :value="formatTokens(summary.prompt_tokens + summary.completion_tokens)"
-              :hint="`输入 ${formatTokens(summary.prompt_tokens)} · 输出 ${formatTokens(summary.completion_tokens)}`"
+              v-for="(stat, index) in kpiStats"
+              :key="stat.label"
+              v-bind="stat.props"
+              class="stagger-item"
+              :style="{ '--stagger-index': index }"
             />
           </div>
         </section>
@@ -541,8 +555,10 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
         <CostPanel />
 
         <MonitoringFilterForm
+          ref="filterFormRef"
           class="mt-4"
           @apply="applyFilters"
+          @reset="clearFilters"
         />
 
         <section
@@ -569,7 +585,9 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             :logs="logs"
             :logs-error="logsError"
             :loading="loading"
+            :filtered="filtersActive"
             @retry="loadDashboard"
+            @clear-filters="clearFilters"
           />
 
           <div
@@ -611,7 +629,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   v-if="item !== 'ellipsis'"
                   :key="item"
                   :data-testid="`monitoring-page-${item}`"
-                  class="h-8 min-w-8 rounded-[7px] border text-xs transition-colors duration-[var(--duration-micro)]"
+                  class="h-8 min-w-8 rounded-[7px] border text-xs transition-colors duration-[var(--duration-micro)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11 pointer-coarse:min-w-11"
                   :class="item === page
                     ? 'border-[var(--color-border-strong)] bg-[var(--color-active)] font-semibold text-[var(--color-text)]'
                     : 'border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)]'"
