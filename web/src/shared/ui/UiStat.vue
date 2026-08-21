@@ -19,7 +19,9 @@ const props = withDefaults(defineProps<{
   sparkline?: number[]
   /** 数值型 value 的格式化函数；缺省千分位整数。 */
   format?: (n: number) => string
-}>(), { hint: undefined, tone: 'default', mono: true, sparkline: undefined, format: undefined })
+  /** Warm Restraint：主 KPI 放大档——display 字阶 + 收紧字距，一屏至多三四个。 */
+  prominent?: boolean
+}>(), { hint: undefined, tone: 'default', mono: true, sparkline: undefined, format: undefined, prominent: false })
 
 const toneClass: Record<string, string> = {
   default: 'text-[var(--color-text)]',
@@ -56,22 +58,35 @@ const displayValue = computed(() => {
       {{ label }}
     </p>
     <p
-      class="mt-2 text-[22px] font-semibold leading-tight"
-      :class="[toneClass[tone], mono ? 'font-mono-data' : '']"
+      class="mt-2 font-semibold leading-tight"
+      :class="[
+        toneClass[tone],
+        prominent ? 'stat-display' : mono ? 'font-mono-data text-[22px]' : 'text-[22px]',
+      ]"
     >
       {{ displayValue }}
     </p>
     <p
       v-if="hint"
-      class="mt-1 text-xs text-[var(--color-text-muted)]"
+      class="mt-1.5 text-xs text-[var(--color-text-muted)]"
     >
       {{ hint }}
     </p>
     <ChartSparkline
       v-if="sparkline && sparkline.length >= 2"
-      class="mt-3"
+      class="mt-4"
       :values="sparkline"
       :color="toneColorVar[tone]"
     />
   </div>
 </template>
+
+<style scoped>
+/* Warm Restraint 主 KPI 档：display 字阶（含 600 字重与 1.2 行高）+ 收紧字距。
+   tabular-nums 保证 count-up 时数字宽度不抖动；覆盖 mono 的字体族。 */
+.stat-display {
+  font: var(--text-display);
+  letter-spacing: var(--tracking-display);
+  font-variant-numeric: tabular-nums;
+}
+</style>

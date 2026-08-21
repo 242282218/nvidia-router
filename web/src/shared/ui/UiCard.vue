@@ -19,11 +19,11 @@ withDefaults(defineProps<{
 </script>
 
 <template>
-  <section :class="[interactive ? 'card-hover' : 'card', padded ? 'p-5' : '']">
+  <section :class="[interactive ? 'card-hover' : 'card', padded ? 'p-6' : '']">
     <header
       v-if="title || $slots.actions"
-      class="mb-4 flex flex-wrap items-start justify-between gap-3"
-      :class="padded ? '' : 'px-5 pt-5'"
+      class="mb-5 flex flex-wrap items-start justify-between gap-3"
+      :class="padded ? '' : 'px-6 pt-6'"
     >
       <div class="min-w-0">
         <h2 class="type-heading">

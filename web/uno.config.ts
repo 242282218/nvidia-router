@@ -26,10 +26,12 @@ export default defineConfig({
     },
   ],
   shortcuts: [
-    /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0） ── */
+    /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0）。
+       Warm Restraint v4：display 收紧 -0.02em 专供 KPI 主数字，title 微松 +0.01em；
+       type-label 维持既有 uppercase + 0.1em（眉题效果已达标，不再收紧）。 ── */
     {
-      'type-display': 'font-[var(--text-display)] text-[var(--color-text)]',
-      'type-title': 'font-[var(--text-title)] text-[var(--color-text)]',
+      'type-display': 'font-[var(--text-display)] tracking-[var(--tracking-display)] text-[var(--color-text)]',
+      'type-title': 'font-[var(--text-title)] tracking-[var(--tracking-title)] text-[var(--color-text)]',
       'type-heading': 'font-[var(--text-heading)] text-[var(--color-text)]',
       'type-label': 'font-[var(--text-label)] uppercase tracking-[0.1em] text-[var(--color-text-subtle)]',
     },
@@ -70,15 +72,16 @@ export default defineConfig({
     },
     /* ── 卡片与面板 ── */
     {
+      // Warm Restraint v4：卡片留白升档 p-5→p-6，静止阴影用双层柔影（theme --shadow-sm）。
       'card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)]',
-      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)] transition-[border-color,box-shadow,transform] duration-200 hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5',
+      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-sm)] transition-[border-color,box-shadow,transform] duration-200 hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5',
       // Warm Studio 卡片：发丝高光 + hover 渐变描边流光（材质类在 theme.css）
       'card-studio': 'card hairline-top card-glow relative',
       'panel-inset': 'rounded-[var(--radius-control)] bg-[var(--color-sunken)]',
-      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-xs)] transition-[border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-sm)]',
+      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-[var(--shadow-sm)] transition-[border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)]',
       // Static metric tile (no hover affordance — it is read-only telemetry,
       // not a clickable card). Distinct from stat-card which reacts to hover.
-      'metric-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-xs)]',
+      'metric-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-xs)]',
     },
     /* ── 页面骨架 ── */
     {
@@ -108,6 +111,8 @@ export default defineConfig({
     {
       'modal-overlay': 'fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-overlay)] p-4 backdrop-blur-sm',
       'modal-panel': 'w-full max-w-2xl rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] shadow-[var(--shadow-overlay)]',
+      // UiMenu 菜单项：36px 行高、左对齐、圆角略小于面板（Warm Restraint）
+      'menu-item': 'flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-[6px] px-3 text-left text-sm text-[var(--color-text-secondary)] transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--color-focus)]',
     },
     /* ── 导航 ── */
     {

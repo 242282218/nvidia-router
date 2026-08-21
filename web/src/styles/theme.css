@@ -20,9 +20,10 @@
   --color-hover: #f3f0eb;
   --color-active: #eae6df;
 
-  /* ── 描边：装饰性暖色发丝线 / 合规控件边界（subtle 为纯装饰分隔，无对比度义务） ── */
+  /* ── 描边：装饰性暖色发丝线 / 合规控件边界（subtle 为纯装饰分隔，无对比度义务）。
+     Warm Restraint v4：border 再淡半档（#ece8e0），静止时更安静，hover 才显形。 ── */
   --color-border-subtle: #efece7;
-  --color-border: #e8e4dd;
+  --color-border: #ece8e0;
   --color-border-strong: #8a8378;
 
   /* ── 文字：暖调墨色阶梯 ── */
@@ -73,19 +74,26 @@
      display 仅用于关键指标数字；title 用于页面 h1；heading 用于卡片/区块；
      body 正文；label 用于眉题、表头、徽章等辅助标注。
      label 不低于 12px：辅助文字 12px 是可读性底线（排版节奏硬规则）。 */
-  --text-display: 600 1.625rem/1.2 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-display: 600 1.75rem/1.2 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-title: 600 1.375rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-heading: 600 0.9375rem/1.4 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-label: 500 0.75rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+
+  /* ── 字距（Warm Restraint v4）：display 收紧、title 微松、label 眉题化 ──
+     font 简写不含 letter-spacing，组件按层级引用对应变量。 */
+  --tracking-display: -0.02em;
+  --tracking-title: 0.01em;
+  --tracking-label: 0.04em;
 
   /* ── 圆角：控件收敛、面板舒展，弱化工具感 ── */
   --radius-control: 8px;
   --radius-panel: 12px;
   --radius-overlay: 16px;
 
-  /* ── 分层阴影系统：质感核心。暖调投影（基于 #1c1917），低透明、多层次 ── */
+  /* ── 分层阴影系统：质感核心。暖调投影（基于 #1c1917），低透明、多层次。
+     Warm Restraint v4：sm 升为「近触底 + 远柔影」双层，静止即有浮起感。 ── */
   --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.05);
-  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 2px 8px rgba(28, 25, 23, 0.04);
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.06);
   --shadow-md: 0 2px 6px rgba(28, 25, 23, 0.05), 0 12px 32px rgba(28, 25, 23, 0.08);
   --shadow-overlay: 0 8px 24px rgba(28, 25, 23, 0.10), 0 24px 64px rgba(28, 25, 23, 0.14);
   --color-overlay: rgba(28, 25, 23, 0.42);
@@ -380,7 +388,7 @@ summary:focus-visible {
 
 .stagger-item {
   animation: stagger-enter var(--duration-local) var(--ease-enter) both;
-  animation-delay: calc(min(var(--stagger-index, 0), 12) * 30ms);
+  animation-delay: calc(min(var(--stagger-index, 0), 6) * 28ms);
 }
 
 /* ── Warm Studio 组件级材质 ── */

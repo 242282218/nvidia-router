@@ -5,7 +5,7 @@ import { icons, type IconName } from './icons'
 
 // 全应用唯一的图标出口：任何图标都经由 <UiIcon name="…" /> 渲染，
 // 底层为 @lucide/vue 组件（24×24 线性）。尺寸默认跟随字号（1em），
-// 描边统一 1.5 保持暖纸的精细线条。
+// 描边统一 1.35（Warm Restraint：更细更贵），圆端点由 lucide 默认提供。
 defineOptions({ name: 'UiIcon' })
 
 const props = withDefaults(defineProps<{
@@ -29,7 +29,7 @@ const dimension = computed(() => {
     :is="icon"
     class="inline-block shrink-0 align-[-0.125em]"
     :style="{ width: dimension, height: dimension }"
-    :stroke-width="1.5"
+    :stroke-width="1.35"
     :aria-hidden="label ? undefined : true"
     :aria-label="label"
     :role="label ? 'img' : undefined"

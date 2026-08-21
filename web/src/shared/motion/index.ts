@@ -15,11 +15,11 @@ export interface MotionPreset {
 /** 快速弹簧：按钮按压回弹、开关、小型状态切换 */
 export const springSnappy = { type: 'spring', stiffness: 520, damping: 34, mass: 0.9 }
 
-/** 柔和弹簧：弹窗、抽屉、浮动操作条等中型结构 */
-export const springSoft = { type: 'spring', stiffness: 320, damping: 30 }
+/** 柔和弹簧：弹窗、菜单、浮动操作条等中型结构（Warm Restraint：快、脆、不过度回弹） */
+export const springSoft = { type: 'spring', stiffness: 420, damping: 28, mass: 0.7 }
 
-/** 绵软弹簧：大面积面板、页面级位移 */
-export const springGentle = { type: 'spring', stiffness: 220, damping: 28 }
+/** 绵软弹簧：大面积面板、抽屉、页面级位移（跟手优先） */
+export const springGentle = { type: 'spring', stiffness: 380, damping: 30 }
 
 /** 上浮入场（默认块级元素）：进入上浮 10px，退出轻微下沉 */
 export const fadeRise: MotionPreset = {
@@ -45,7 +45,7 @@ export const dropIn: MotionPreset = {
   transition: springSoft,
 }
 
-/** 列表项交错延迟：index → 秒（封顶 12 项，与 .stagger-item 节奏一致） */
-export function staggerDelay(index: number, step = 0.03): number {
-  return Math.min(index, 12) * step
+/** 列表项交错延迟：index → 秒（封顶 6 项，总时长 ≤180ms，与 .stagger-item 节奏一致） */
+export function staggerDelay(index: number, step = 0.028): number {
+  return Math.min(index, 6) * step
 }
