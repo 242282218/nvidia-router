@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -135,17 +134,6 @@ func (f *modelHealthServiceFake) PatchSettings(_ context.Context, patch modelhea
 
 func (f *modelHealthServiceFake) RunNow() {
 	f.runWakeCount++
-}
-
-func decodeModelHealthSettings(t *testing.T, body []byte) modelhealth.Settings {
-	t.Helper()
-	var envelope struct {
-		Data modelhealth.Settings `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		t.Fatalf("decode settings: %v", err)
-	}
-	return envelope.Data
 }
 
 var _ = time.Time{}

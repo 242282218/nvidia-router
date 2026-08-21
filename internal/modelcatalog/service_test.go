@@ -1102,7 +1102,7 @@ func (d *fakeDiscoverer) Chat(_ context.Context, snapshot runtimeconfig.Snapshot
 		status = d.chatStatuses[0]
 		d.chatStatuses = d.chatStatuses[1:]
 	}
-	var reader io.ReadCloser = io.NopCloser(strings.NewReader(body))
+	reader := io.NopCloser(strings.NewReader(body))
 	if d.chatCompletion != nil {
 		reader = probeCompletionBody{ReadCloser: reader, tracker: d.chatCompletion}
 	}

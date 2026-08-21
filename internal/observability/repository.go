@@ -101,13 +101,13 @@ func (r *Repository) RecordBatch(ctx context.Context, records []RequestRecord) e
 	if err != nil {
 		return fmt.Errorf("prepare insert request log: %w", err)
 	}
-	defer insertStmt.Close()
+	defer func() { _ = insertStmt.Close() }()
 
 	upsertStmt, err := tx.PrepareContext(ctx, upsertDailyStatQuery)
 	if err != nil {
 		return fmt.Errorf("prepare upsert daily stats: %w", err)
 	}
-	defer upsertStmt.Close()
+	defer func() { _ = upsertStmt.Close() }()
 
 	for _, record := range records {
 		if err := execInsertRequestRecord(ctx, insertStmt, record); err != nil {
@@ -181,7 +181,7 @@ func existingForeignKeyIDs(ctx context.Context, tx *sql.Tx, table string, ids []
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {

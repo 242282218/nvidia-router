@@ -65,7 +65,7 @@ func TestLongRunningTaskExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute stream request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -122,7 +122,7 @@ func TestCompatibilityMaxCompletionTokensMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -169,7 +169,7 @@ func TestReasoningModelsObservabilityAndExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -242,7 +242,7 @@ func TestHighConcurrencyStability(t *testing.T) {
 				errCh <- fmt.Errorf("do req %d: %w", idx, err)
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusOK {
 				b, _ := io.ReadAll(resp.Body)
 				errCh <- fmt.Errorf("req %d status %d: %s", idx, resp.StatusCode, string(b))

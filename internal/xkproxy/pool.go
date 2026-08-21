@@ -356,7 +356,6 @@ func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration, pref
 	}
 	// Slow path: TTL-aware filtering with preferred / panic fallback.
 	live := make([]Proxy, 0, len(p.proxies))
-	available := make([]Proxy, 0, len(p.proxies))
 	preferred := make([]Proxy, 0, len(p.proxies))
 	for _, proxy := range p.proxies {
 		if !proxy.LiveAt(now) {
@@ -366,7 +365,6 @@ func (p *Pool) orderedLocked(now time.Time, minRemainingLife time.Duration, pref
 		if !proxy.AvailableAt(now) {
 			continue
 		}
-		available = append(available, proxy)
 		if proxy.RemainingLife(now) >= minRemainingLife {
 			preferred = append(preferred, proxy)
 		}

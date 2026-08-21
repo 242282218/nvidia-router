@@ -404,7 +404,7 @@ func (s *Service) probeOne(ctx context.Context, model modelcatalog.Model, keyID 
 		provider = modelcatalog.ProviderNVIDIA
 	}
 	started := time.Now()
-	outcome := OutcomeSuccess
+	var outcome string
 	errorCode := ""
 	if provider == modelcatalog.ProviderNVIDIA && keyID <= 0 {
 		outcome = OutcomeSkipped

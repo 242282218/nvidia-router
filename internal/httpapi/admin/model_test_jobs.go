@@ -211,7 +211,6 @@ func (h *ModelTestJobs) run(job *modelTestJob) {
 		select {
 		case indices <- index:
 		case <-job.Context.Done():
-			break
 		}
 		if job.Context.Err() != nil {
 			break
