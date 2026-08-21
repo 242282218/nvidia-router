@@ -204,6 +204,15 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **501 缺陷在当前生产不可达**：线上 11 个模型里三个非推理模型（`meta/llama-3.2-90b-vision-instruct`、`openai/gpt-oss-120b`、`opencodefree/x-preview-f-free`）**全部处于停用**，而停用模型在能力门禁之前就被拒。所以该修复的线上证据只能是"单测 + 部署产物含修复"，不能靠线上复现；用 `grep` 校验 release 目录源码（`/opt/nvidia-router-releases/<tag>/`）来确认镜像确实由含修复的源码构建。
 - **子代理汇报的踩坑**：第一轮 7 个审查子代理里 6 个用 SendMessage 催报全部无响应。**根因是把"汇报"设计成了旁路信道**；改为让每个子代理的**最终返回文本就是报告全文**（Agent 工具的返回值），并在 prompt 里固定 `## 结论/覆盖范围/发现/未覆盖` 段式、限定最多 5 条、要求 file:line + 具体失败场景，才稳定拿到结果。
 
+## 2026-08-21 前端前沿化改造发布与部署（efa5d93）
+
+- GitHub `main` 提交 `efa5d93`（feat: 前端前沿化改造——暗色模式、命令面板、图表升级与登录页重设计），84 文件 +1925/-237，已推送 origin/main。工作区里上一轮未提交的前端修复（KeepAlive 轮询挂起、UnoCSS 扫描安全 variant 映射、pointer-coarse 触控目标）一并入库；提交前确认这些改动与本轮同主题且合并状态全量验证通过。
+- 部署：`python scripts/deploy/deploy_remote.py 20260821-web-ui-efa5d93` 一条命令完成（git archive HEAD → 继承 `20260122-fix-cde` 的 `.env`/deploy override → GOPROXY=goproxy.cn 构建 → 停 app → 旧镜像备份 → 切换 → live/ready 校验）。本次无数据库迁移，DB 直接兼容。
+- 备份：`/opt/nvidia-router-releases/20260821-web-ui-efa5d93/backups/predeploy-20260821-web-ui-efa5d93/router.db`（600，5.86MB）。
+- 上线后验证（全部实测）：容器 healthy、restarts=0、OOM=false；近 3 分钟日志 panic/fatal 计数 0；嵌入 HTML 引用新资源 hash `index-CzSL9L4X.css`/`index-DRm58z-c.js` 且均 HTTP 200；匿名 `/v1/models`、`/metrics`、`/admin/api/models` 均 401，根路径 200；公网 `114.55.25.190:3756` health/live 与登录页均 200。
+- 回滚链：20260821-web-ui-efa5d93 → 20260122-fix-cde。
+- 未做（缺运行时凭据）：管理员会话级验证、真实模型请求与代理池预热后渠道判定。按既有教训，重启后 NVIDIA 渠道有预热期假 502，判定渠道故障前先读 `/metrics` 的 `proxy_pool_healthy`。
+
 ## 2026-08-21 前端「前沿高级」改造（Dark/命令面板/图表/登录页）
 
 - **双主题落地方式**：`theme.css` 用 `:root`（Light）+ `[data-theme='dark']` 属性选择器两套 token；`shared/useTheme.ts` 模块级单例管理偏好（light/dark/system，localStorage `nvr-theme`），`initTheme()` 必须在 `main.ts` 首帧前调用防 FOUC；watch 用 `{ flush: 'sync' }` 让 DOM 属性立即落地。View Transitions 圆形扩散切换：`document.startViewTransition` + WAAPI 驱动 `::view-transition-new(root)` 的 clip-path，需在 CSS 里关掉默认交叉淡化；不支持/reduced-motion 直接瞬时切换。
