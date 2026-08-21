@@ -109,6 +109,20 @@ func (r *Repository) FirstEnabledID(ctx context.Context, now time.Time) (int64, 
 	return id, nil
 }
 
+// CountEnabled returns the total count of enabled, valid NVIDIA keys,
+// ignoring cooldown state. Used to distinguish "no keys configured" from
+// "keys exist but all are cooling".
+func (r *Repository) CountEnabled(ctx context.Context) (int, error) {
+	var count int
+	if err := r.read().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM nvidia_keys
+		WHERE enabled = 1 AND auth_invalid = 0
+	`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count enabled NVIDIA keys: %w", err)
+	}
+	return count, nil
+}
+
 func (r *Repository) SetEnabled(ctx context.Context, id int64, enabled bool, now time.Time) (keystate.KeySnapshot, error) {
 	return r.stateTransaction(ctx, func(tx *sql.Tx) (keystate.KeySnapshot, error) {
 		result, err := tx.ExecContext(ctx, `UPDATE nvidia_keys SET enabled = ?, updated_at = ? WHERE id = ?`, boolInt(enabled), formatTimestamp(now), id)

@@ -188,3 +188,96 @@ func TestFromChatUsesPublicModelNotUpstream(t *testing.T) {
 		t.Fatalf("upstream id leaked into responses: %s", string(got))
 	}
 }
+
+// The upstream validator (upstream/nvidia.hasTextValue) and the streaming decoder
+// both accept object-form reasoning, so rejecting it here turned a complete 200
+// answer into a 502 — and, being classified fault.Protocol, spent another key
+// attempt on it. Reasoning is auxiliary: unreadable shapes are dropped, never
+// fatal.
+func TestFromChatKeepsAnswerWhenReasoningIsObjectShaped(t *testing.T) {
+	cases := []struct {
+		name         string
+		message      string
+		wantReason   string
+		wantReasonOK bool
+	}{
+		{
+			name:         "object with thought",
+			message:      `{"role":"assistant","content":"answer","reasoning_content":{"thought":"deep thought","text":"ignored"}}`,
+			wantReason:   "deep thought",
+			wantReasonOK: true,
+		},
+		{
+			name:         "object with text only",
+			message:      `{"role":"assistant","content":"answer","reasoning_content":{"text":"visible"}}`,
+			wantReason:   "visible",
+			wantReasonOK: true,
+		},
+		{
+			name:    "shape this converter cannot read is dropped, answer survives",
+			message: `{"role":"assistant","content":"answer","reasoning_content":12345}`,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, err := FromChat([]byte(`{"choices":[{"message":`+testCase.message+`}]}`), "resp_obj", nonstreamModel())
+			if err != nil {
+				t.Fatalf("FromChat: %v", err)
+			}
+			result := decodeResponses(t, got)
+			if result["status"] != "completed" {
+				t.Fatalf("status = %v, want completed", result["status"])
+			}
+			output, ok := result["output"].([]any)
+			if !ok {
+				t.Fatalf("output missing: %v", result["output"])
+			}
+			var answer, reasoning string
+			for _, entry := range output {
+				item, _ := entry.(map[string]any)
+				switch item["type"] {
+				case "message":
+					content, _ := item["content"].([]any)
+					if len(content) > 0 {
+						part, _ := content[0].(map[string]any)
+						answer, _ = part["text"].(string)
+					}
+				case "reasoning":
+					summary, _ := item["summary"].([]any)
+					if len(summary) > 0 {
+						part, _ := summary[0].(map[string]any)
+						reasoning, _ = part["text"].(string)
+					}
+				}
+			}
+			if answer != "answer" {
+				t.Fatalf("answer = %q, want %q", answer, "answer")
+			}
+			if testCase.wantReasonOK && reasoning != testCase.wantReason {
+				t.Fatalf("reasoning = %q, want %q", reasoning, testCase.wantReason)
+			}
+			if !testCase.wantReasonOK && reasoning != "" {
+				t.Fatalf("reasoning = %q, want none", reasoning)
+			}
+		})
+	}
+}
+
+// Disagreeing aliases used to be an error, which also turned a successful 200
+// into a 502. Precedence is reasoning_content > reasoning > thinking.
+func TestFromChatResolvesDisagreeingReasoningAliasesByPrecedence(t *testing.T) {
+	chat := `{"choices":[{"message":{"role":"assistant","content":"answer",` +
+		`"reasoning_content":"winner","reasoning":"loser","thinking":"last"}}]}`
+	got, err := FromChat([]byte(chat), "resp_alias", nonstreamModel())
+	if err != nil {
+		t.Fatalf("FromChat: %v", err)
+	}
+	if !strings.Contains(string(got), "winner") {
+		t.Fatalf("reasoning_content must win, got %s", string(got))
+	}
+	for _, loser := range []string{"loser", "last"} {
+		if strings.Contains(string(got), loser) {
+			t.Fatalf("alias %q must not appear, got %s", loser, string(got))
+		}
+	}
+}

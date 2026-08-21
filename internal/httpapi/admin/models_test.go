@@ -303,6 +303,7 @@ type fakeCandidateKeys struct {
 }
 
 func (f fakeCandidateKeys) FirstEnabledID(context.Context) (int64, error) { return f.id, f.err }
+func (f fakeCandidateKeys) CountEnabled(context.Context) (int, error)     { return 0, nil }
 
 func TestModelAPIUsesFirstKeyAndEnforcesAudioVerification(t *testing.T) {
 	models := &fakeModels{candidates: []modelcatalog.Candidate{{UpstreamID: "vendor/model", DisplayName: "Model", Kind: modelcatalog.KindChat}}, models: []modelcatalog.Model{{ID: 9, PublicID: "speech", UpstreamID: "vendor/speech", DisplayName: "Speech", Kind: modelcatalog.KindTTS, BlockedByKeyIDs: []int64{5}}}}

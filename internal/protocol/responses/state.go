@@ -1,6 +1,9 @@
 package responses
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // EmittedEvent is a single logical Responses SSE event produced by the stream
 // state machine. The Data map is a placeholder for event-specific payload
@@ -97,10 +100,27 @@ type streamState struct {
 
 type toolItem struct {
 	outputIndex int
-	id          string
-	name        string
-	arguments   *stringsBuilder
-	closed      bool
+	// index is the upstream tool_calls[] index, used to synthesize a call id when
+	// the upstream never sends one (same fallback shape as the non-stream path).
+	index     int
+	id        string
+	name      string
+	arguments *stringsBuilder
+	closed    bool
+	// added tracks whether response.output_item.added has been emitted. The event
+	// is held back while the call id is still unknown so it never carries an empty
+	// call_id.
+	added bool
+}
+
+// callID is the id every emitted event must use. An empty upstream id would leave
+// the client unable to submit a tool result, so it falls back to the same
+// call_<index> shape buildOutputItems uses for a non-stream response.
+func (t *toolItem) callID() string {
+	if t.id != "" {
+		return t.id
+	}
+	return fmt.Sprintf("call_%d", t.index)
 }
 
 func newStreamState() *streamState {
@@ -187,7 +207,7 @@ func (s *streamState) outputItems() []any {
 			continue
 		}
 		slots[tool.outputIndex] = map[string]any{
-			"type": "function_call", "status": "completed", "id": tool.id, "call_id": tool.id,
+			"type": "function_call", "status": "completed", "id": tool.callID(), "call_id": tool.callID(),
 			"name": tool.name, "arguments": tool.arguments.string(),
 		}
 	}

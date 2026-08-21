@@ -768,3 +768,78 @@ func TestStreamApplyDeltaFailureStillEmitsTerminal(t *testing.T) {
 		t.Fatal("a failed conversion must not report completed")
 	}
 }
+
+// The late correction used to cover only name, so an upstream that sent the tool
+// call id in a later chunk left call_id empty across output_item.added,
+// arguments.delta/done, output_item.done and the terminal output items — the
+// client then had no id to submit its tool result under.
+func TestStreamAdoptsLateToolCallID(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, Name: "lookup"}}},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, ID: "call_upstream", Arguments: `{"q":`}}},
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, Arguments: `"go"}`}}},
+		{FinishReason: "tool_calls"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_late", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	// Every event that names the call must carry the upstream id, never blank.
+	seen := 0
+	for _, event := range emit.events {
+		for _, key := range []string{"item_id", "call_id"} {
+			value, ok := event.Data[key].(string)
+			if !ok {
+				continue
+			}
+			seen++
+			if value != "call_upstream" {
+				t.Fatalf("event %s %s = %q, want call_upstream", event.Event, key, value)
+			}
+		}
+		item, ok := event.Data["item"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] != "function_call" {
+			continue
+		}
+		for _, key := range []string{"id", "call_id"} {
+			value, _ := item[key].(string)
+			seen++
+			if value != "call_upstream" {
+				t.Fatalf("event %s item.%s = %q, want call_upstream", event.Event, key, value)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no tool call id fields were emitted at all")
+	}
+}
+
+// When the upstream never sends an id, the stream must still name the call so the
+// client can submit a result — matching buildOutputItems' call_<index> fallback on
+// the non-stream path.
+func TestStreamFallsBackToSyntheticToolCallID(t *testing.T) {
+	source := &fakeSource{deltas: []ChatDelta{
+		{ToolCalls: []ChatToolCallDelta{{Index: 0, Name: "lookup", Arguments: `{}`}}},
+		{FinishReason: "tool_calls"},
+	}}
+	emit := &collectingEmitter{}
+	if _, err := newStreamState().Convert(source, emit, "resp_synth", "public-chat"); err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	for _, event := range emit.events {
+		if value, ok := event.Data["item_id"].(string); ok && value == "" {
+			t.Fatalf("event %s carries an empty item_id", event.Event)
+		}
+		item, ok := event.Data["item"].(map[string]any)
+		if !ok || item["type"] != "function_call" {
+			continue
+		}
+		if item["call_id"] != "call_0" {
+			t.Fatalf("event %s item.call_id = %v, want call_0", event.Event, item["call_id"])
+		}
+	}
+}

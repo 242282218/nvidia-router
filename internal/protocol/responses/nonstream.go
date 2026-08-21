@@ -94,33 +94,35 @@ type toolCallContent struct {
 
 type chatUsage = ChatUsage
 
+// extractReasoning returns the assistant's reasoning text, if any.
+//
+// Reasoning is auxiliary output: the answer in `content` is what the caller asked
+// for, so a reasoning field this converter cannot read is dropped rather than
+// failed. It used to go through the strict extractText, which accepts only a
+// string or [{type,text}] — but the object form ({"thought":..,"text":..}) is
+// accepted both by the upstream validator (upstream/nvidia.hasTextValue) and by
+// the streaming path, so the same model returning the same shape answered 200
+// when streaming and 502 when not, discarding a complete answer and spending
+// another key attempt on the fault.Protocol classification.
+//
+// decodeStringField is the streaming path's decoder, reused here so both paths
+// tolerate exactly the same shapes. Aliases are read in precedence order and the
+// first non-empty one wins; disagreement between them used to be an error, which
+// again turned a successful 200 into a 502.
 func extractReasoning(message chatChoiceMessage) (string, bool, error) {
-	var result string
-	found := false
-	for _, item := range []struct {
-		name string
-		raw  json.RawMessage
-	}{
-		{name: "reasoning_content", raw: message.ReasoningContent},
-		{name: "reasoning", raw: message.Reasoning},
-		{name: "thinking", raw: message.Thinking},
+	for _, raw := range []json.RawMessage{
+		message.ReasoningContent,
+		message.Reasoning,
+		message.Thinking,
 	} {
-		if len(item.raw) == 0 || string(item.raw) == "null" {
+		if len(raw) == 0 || string(raw) == "null" {
 			continue
 		}
-		text, present, err := extractText(item.raw, item.name)
-		if err != nil {
-			return "", false, err
+		if text := decodeStringField(raw); text != "" {
+			return text, true, nil
 		}
-		if !present {
-			continue
-		}
-		if found && result != text {
-			return "", false, fmt.Errorf("convert chat to responses: reasoning aliases disagree")
-		}
-		result, found = text, true
 	}
-	return result, found, nil
+	return "", false, nil
 }
 
 func buildOutputItems(message chatChoiceMessage, responsesID string) ([]map[string]any, error) {

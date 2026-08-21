@@ -191,41 +191,76 @@ func (s *streamState) emitReasoningDelta(text string, emit Emitter, responseID s
 func (s *streamState) applyToolCall(call ChatToolCallDelta, emit Emitter, responseID string) error {
 	tool, exists := s.openTools[call.Index]
 	if !exists {
-		id := call.ID
 		tool = &toolItem{
 			outputIndex: s.itemIndex,
-			id:          id,
+			index:       call.Index,
+			id:          call.ID,
 			name:        call.Name,
 			arguments:   newBoundedBuilder(maxToolArgumentsBytes, ErrToolArgumentsTooLarge),
 		}
 		s.openTools[call.Index] = tool
 		s.toolOrder = append(s.toolOrder, call.Index)
-		added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
-			"sequence_number": s.nextSequence(),
-			"output_index":    s.itemIndex,
-			"item":            map[string]any{"type": "function_call", "status": "in_progress", "id": id, "call_id": id, "name": call.Name, "arguments": ""},
-		}}
-		if err := emit.Emit(added); err != nil {
-			return fmt.Errorf("emit tool output_item.added: %w", err)
-		}
+		// Reserve the slot now so a later item cannot take this output_index even
+		// when the added event is still pending.
 		s.itemIndex++
+	}
+	// Late corrections: an upstream may send name or id in a chunk after the one
+	// that opened the call. Without the id branch every event kept the empty id it
+	// was created with, so call_id stayed blank all the way through
+	// output_item.done and the client could not submit a tool result at all.
+	if call.ID != "" && tool.id == "" {
+		tool.id = call.ID
 	}
 	if call.Name != "" && tool.name == "" {
 		tool.name = call.Name
 	}
+	// Announce the item as soon as the id is known. A stream that carries the id in
+	// the first chunk for an index — the ordinary shape — therefore emits added at
+	// exactly the same point as before this fix.
+	if tool.id != "" {
+		if err := s.ensureToolAdded(tool, emit); err != nil {
+			return err
+		}
+	}
 	if call.Arguments != "" {
+		// Arguments arriving while the id is still unknown force the announcement
+		// now; callID falls back to the synthetic form rather than emitting blank.
+		if err := s.ensureToolAdded(tool, emit); err != nil {
+			return err
+		}
 		if err := tool.arguments.write(call.Arguments); err != nil {
 			return fmt.Errorf("accumulate tool call %d arguments: %w", call.Index, err)
 		}
 		delta := EmittedEvent{Event: "response.function_call_arguments.delta", Data: map[string]any{
 			"sequence_number": s.nextSequence(),
 			"output_index":    tool.outputIndex,
-			"item_id":         tool.id,
+			"item_id":         tool.callID(),
 			"delta":           call.Arguments,
 		}}
 		if err := emit.Emit(delta); err != nil {
 			return fmt.Errorf("emit arguments delta: %w", err)
 		}
+	}
+	return nil
+}
+
+// ensureToolAdded emits response.output_item.added once per tool item, and pins
+// the id it announced into tool.id. Pinning matters: once the client has seen an
+// id, a later upstream id must not replace it, or added and done would disagree
+// about the same item.
+func (s *streamState) ensureToolAdded(tool *toolItem, emit Emitter) error {
+	if tool.added {
+		return nil
+	}
+	tool.added = true
+	tool.id = tool.callID()
+	added := EmittedEvent{Event: "response.output_item.added", Data: map[string]any{
+		"sequence_number": s.nextSequence(),
+		"output_index":    tool.outputIndex,
+		"item":            map[string]any{"type": "function_call", "status": "in_progress", "id": tool.id, "call_id": tool.id, "name": tool.name, "arguments": ""},
+	}}
+	if err := emit.Emit(added); err != nil {
+		return fmt.Errorf("emit tool output_item.added: %w", err)
 	}
 	return nil
 }
@@ -401,11 +436,17 @@ func (s *streamState) closeReasoningItem(emit Emitter) error {
 }
 
 func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
+	// A call that never produced arguments has not been announced yet; the client
+	// must see added before done.
+	if err := s.ensureToolAdded(tool, emit); err != nil {
+		return err
+	}
+	id := tool.callID()
 	arguments := tool.arguments.string()
 	argsDone := EmittedEvent{Event: "response.function_call_arguments.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
 		"output_index":    tool.outputIndex,
-		"item_id":         tool.id,
+		"item_id":         id,
 		"name":            tool.name,
 		"arguments":       arguments,
 	}}
@@ -414,13 +455,13 @@ func (s *streamState) closeTool(tool *toolItem, emit Emitter) error {
 	}
 	itemDone := EmittedEvent{Event: "response.output_item.done", Data: map[string]any{
 		"sequence_number": s.nextSequence(),
-		"item_id":         tool.id,
+		"item_id":         id,
 		"output_index":    tool.outputIndex,
 		"item": map[string]any{
 			"type":      "function_call",
 			"status":    "completed",
-			"id":        tool.id,
-			"call_id":   tool.id,
+			"id":        id,
+			"call_id":   id,
 			"name":      tool.name,
 			"arguments": arguments,
 		},

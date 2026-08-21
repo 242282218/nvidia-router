@@ -29,6 +29,12 @@ type Request struct {
 	// The raw payload no longer represents the request, so the fast path below
 	// must not hand it to the upstream.
 	messagesNormalized bool
+	// rawUnsafe records that the request has duplicate top-level keys. The fast
+	// path must not forward raw bytes in this state because the validated view
+	// (fields map) naturally deduplicates, meaning "validated bytes" and
+	// "forwarded bytes" would diverge — the upstream could receive duplicate
+	// keys that the router never saw, potentially causing 422 on strict schemas.
+	rawUnsafe bool
 }
 
 func Parse(payload []byte) (Request, error) {
@@ -39,6 +45,13 @@ func Parse(payload []byte) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
+	// Detect duplicate top-level keys early. The fast path below forwards raw
+	// bytes directly to the upstream; if those bytes contain duplicate keys that
+	// decodeFields silently collapsed into the fields map, the router validates
+	// one view of the request but sends a different one — the upstream may 422
+	// on duplicate keys while the router never saw them. Mark such requests as
+	// rawUnsafe so the fast path rebuilds from fields instead.
+	rawUnsafe := hasDuplicateTopLevelKeys(payload)
 	if err := rejectUnsupported(fields); err != nil {
 		return Request{}, err
 	}
@@ -98,7 +111,7 @@ func Parse(payload []byte) (Request, error) {
 		},
 		tools: normalizedTools, toolChoice: normalizedChoice,
 		toolChoiceSet: fields["tool_choice"] != nil, reasoning: reasoning,
-		raw: payload, messagesNormalized: messagesNormalized,
+		raw: payload, messagesNormalized: messagesNormalized, rawUnsafe: rawUnsafe,
 	}, nil
 }
 
@@ -142,7 +155,7 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	// upstream model equals the public model — reuse the original payload
 	// without clone+sort+marshal.
 	if model.UpstreamID == r.publicModel && len(r.tools) == 0 && !r.toolChoiceSet && !r.messagesNormalized &&
-		!r.reasoning.Requested {
+		!r.reasoning.Requested && !r.rawUnsafe {
 		if _, hasComp := r.fields["max_completion_tokens"]; !hasComp || isJSONNull(r.fields["max_completion_tokens"]) {
 			if _, hasTokens := r.fields["max_tokens"]; hasTokens && isJSONNull(r.fields["max_tokens"]) {
 				// max_tokens is null — still needs normalization, fall through

@@ -14,6 +14,8 @@ import (
 	"nvidia-router/internal/modelcatalog"
 )
 
+var errAllKeysCooling = errors.New("all NVIDIA keys are cooling")
+
 type ModelSource interface {
 	List(context.Context) ([]modelcatalog.Model, error)
 }
@@ -24,6 +26,7 @@ type ModelProber interface {
 
 type KeySource interface {
 	FirstEnabledID(context.Context) (int64, error)
+	CountEnabled(context.Context) (int, error)
 }
 
 type Service struct {
@@ -365,6 +368,28 @@ func (s *Service) selectNVIDIAKey(ctx context.Context, models []modelcatalog.Mod
 			return 0, errors.New("NVIDIA key source is unavailable")
 		}
 		id, err := s.keys.FirstEnabledID(ctx)
+		if errors.Is(err, sql.ErrNoRows) {
+			// No keys available right now — distinguish "no keys at all" from
+			// "keys exist but all are cooling". When a 429 storm puts every key
+			// into cooldown, FirstEnabledID returns sql.ErrNoRows because its
+			// WHERE clause filters out cooling keys. Without the distinction,
+			// probeOne writes outcome=skipped + errorCode="no_credential", and
+			// ClassifyStatus returns StatusUnconfigured, which tells the ops
+			// dashboard "you haven't configured any keys" instead of "your keys
+			// are rate-limited and cooling down". The two states require
+			// completely different operator actions.
+			count, countErr := s.keys.CountEnabled(ctx)
+			if countErr != nil {
+				// Count failed; can't distinguish, treat as generic no-key
+				return 0, err
+			}
+			if count > 0 {
+				// Keys exist but all are cooling
+				return 0, errAllKeysCooling
+			}
+			// Truly no keys configured
+			return 0, err
+		}
 		if err != nil {
 			return 0, err
 		}
@@ -383,7 +408,9 @@ func (s *Service) probeOne(ctx context.Context, model modelcatalog.Model, keyID 
 	errorCode := ""
 	if provider == modelcatalog.ProviderNVIDIA && keyID <= 0 {
 		outcome = OutcomeSkipped
-		if errors.Is(keyErr, sql.ErrNoRows) || keyErr == nil {
+		if errors.Is(keyErr, errAllKeysCooling) {
+			errorCode = "keys_cooling"
+		} else if errors.Is(keyErr, sql.ErrNoRows) || keyErr == nil {
 			errorCode = "no_credential"
 		} else {
 			errorCode = "key_source_unavailable"

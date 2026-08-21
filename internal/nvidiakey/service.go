@@ -58,6 +58,14 @@ func (s *Service) FirstEnabledID(ctx context.Context) (int64, error) {
 	return id, nil
 }
 
+func (s *Service) CountEnabled(ctx context.Context) (int, error) {
+	count, err := s.repository.CountEnabled(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count enabled NVIDIA keys: %w", err)
+	}
+	return count, nil
+}
+
 // AvailableIDsShuffled returns the keys that may serve a request right now, in
 // random order. Model probes use it so a batch spreads across the fleet instead
 // of hammering the lowest id, and so a retry lands on a different credential.

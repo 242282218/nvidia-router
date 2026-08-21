@@ -174,6 +174,21 @@ func ResolveReasoning(spec ReasoningSpec, profile ReasoningProfile) (ReasoningDe
 			EffectiveLevel: requestedLevel, EffectiveBudget: -1,
 		}, nil
 	}
+	if _, known := reasoningBudgets[requestedLevel]; !known && !profile.DynamicAllowed {
+		// Unknown level and dynamic budgets disallowed: the user likely misspelled
+		// a standard level (e.g., "hgih" for "high"). Without this block, nearestLevel
+		// returns "none" (budgetForLevel returns 0 for unknown levels, and 0 is nearest
+		// to "none"), silently turning off thinking when the user intended to enable it.
+		// Return invalid_parameter with the model's accepted levels.
+		accepted := make([]string, len(levels))
+		for i, level := range levels {
+			accepted[i] = string(level)
+		}
+		return ReasoningDecision{}, invalid("invalid_parameter", spec.Source, fmt.Sprintf(
+			"The reasoning level %q is not recognized. This model accepts: %s.",
+			requestedLevel, strings.Join(accepted, ", "),
+		))
+	}
 	effectiveLevel := nearestLevel(requestedLevel, requestedBudget, levels, profile)
 	if effectiveLevel == "" {
 		return ReasoningDecision{}, ErrReasoningUnsupported

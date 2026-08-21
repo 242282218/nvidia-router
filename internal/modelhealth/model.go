@@ -113,6 +113,10 @@ func ClassifyStatus(latest *Latest, stats WindowStats, now time.Time, interval t
 		return StatusStale
 	}
 	if latest.Outcome == OutcomeSkipped {
+		// Distinguish "no keys configured" from "keys exist but all cooling"
+		if latest.ErrorCode == "keys_cooling" {
+			return StatusUnavailable
+		}
 		return StatusUnconfigured
 	}
 	if latest.ConsecutiveFailures >= 3 || stats.SuccessCount == 0 {
