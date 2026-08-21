@@ -4,6 +4,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useSession } from '../../features/auth/useSession'
 import UiIcon from '../ui/UiIcon.vue'
+import UiMenu from '../ui/UiMenu.vue'
 import type { IconName } from '../ui'
 import AppCommandPalette from './AppCommandPalette.vue'
 import ShortcutHelpOverlay from './ShortcutHelpOverlay.vue'
@@ -280,17 +281,17 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         </div>
       </div>
 
-      <!-- 命令面板入口：伪装成搜索框的按钮，桌面端主入口 -->
+      <!-- 命令面板入口：幽灵极简——透明底+发丝描边，交互时才显形（Warm Restraint） -->
       <div
         class="px-5 pb-1 pt-4"
         :class="railCollapsed ? 'lg:px-3' : ''"
       >
         <button
-          class="flex h-9 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          class="flex h-9 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-transparent px-3 text-sm text-[var(--color-text-subtle)] transition-[background-color,border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
           :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
           type="button"
           data-testid="open-command-palette"
-          :aria-label="railCollapsed ? '打开命令面板（Ctrl+K）' : '打开命令面板（Ctrl+K）'"
+          :aria-label="'打开命令面板（Ctrl+K）'"
           title="搜索（Ctrl+K）"
           @click="palette.show()"
         >
@@ -304,7 +305,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           >搜索…</span>
           <kbd
             v-if="!railCollapsed"
-            class="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] leading-none"
+            class="rounded bg-[var(--color-canvas)] px-1.5 py-0.5 text-[11px] leading-none text-[var(--color-text-muted)]"
           >⌘K</kbd>
         </button>
       </div>
@@ -363,17 +364,19 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         </div>
       </nav>
 
-      <!-- 用户区块：会话状态 + 账户操作（修改密码此前无入口，只能手输地址） -->
+      <!-- 用户区块（Warm Restraint 克制收纳）：身份一行，操作收进 … 菜单；
+           折叠态只剩圆形头像触发钮。e2e 依赖 testid：theme-toggle / logout。 -->
       <div
-        class="border-t border-[var(--color-border)] p-3"
-        :class="railCollapsed ? 'lg:px-2' : ''"
+        class="mt-2 border-t border-[var(--color-border-subtle)] p-4"
+        :class="railCollapsed ? 'lg:p-2' : ''"
       >
+        <!-- 展开态：头像 + 身份/会话 + 右侧 … 菜单 -->
         <div
-          class="flex items-center gap-2.5 rounded-[var(--radius-control)] px-2 py-1.5"
-          :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
+          v-if="!railCollapsed"
+          class="flex items-center gap-2.5"
         >
           <div
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-sunken)] text-[var(--color-text-muted)]"
+            class="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-sunken)] text-[var(--color-text-muted)]"
             aria-hidden="true"
           >
             <UiIcon
@@ -381,10 +384,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               :size="16"
             />
           </div>
-          <div
-            v-if="!railCollapsed"
-            class="min-w-0 flex-1"
-          >
+          <div class="min-w-0 flex-1">
             <p class="truncate text-[13px] font-medium text-[var(--color-text-secondary)]">
               管理员
             </p>
@@ -396,90 +396,113 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
               会话有效
             </p>
           </div>
-          <template v-if="!railCollapsed">
-            <button
-              class="icon-btn-sm"
-              type="button"
-              :aria-label="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
-              data-testid="theme-toggle"
-              :title="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
-              @click="onThemeToggle($event)"
-            >
-              <UiIcon
-                :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
-                :size="15"
-              />
-            </button>
-            <RouterLink
-              class="icon-btn-sm"
-              to="/change-password"
-              aria-label="修改管理员密码"
-              title="修改密码"
-            >
-              <UiIcon
-                name="settings"
-                :size="15"
-              />
-            </RouterLink>
-            <button
-              data-testid="logout"
-              class="icon-btn-sm"
-              type="button"
-              :disabled="loggingOut"
-              aria-label="退出登录"
-              title="退出登录"
-              @click="logout"
-            >
-              <UiIcon
-                name="logout"
-                :size="15"
-              />
-            </button>
-          </template>
+          <UiMenu label="账户操作">
+            <template #default="{ close }">
+              <button
+                class="menu-item"
+                role="menuitem"
+                type="button"
+                data-testid="theme-toggle"
+                @click="onThemeToggle($event); close()"
+              >
+                <UiIcon
+                  :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
+                  :size="15"
+                />
+                {{ theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题' }}
+              </button>
+              <RouterLink
+                class="menu-item"
+                role="menuitem"
+                to="/change-password"
+                @click="close()"
+              >
+                <UiIcon
+                  name="settings"
+                  :size="15"
+                />
+                修改密码
+              </RouterLink>
+              <button
+                class="menu-item text-[var(--color-danger)]"
+                role="menuitem"
+                type="button"
+                data-testid="logout"
+                :disabled="loggingOut"
+                @click="close(); logout()"
+              >
+                <UiIcon
+                  name="logout"
+                  :size="15"
+                />
+                退出登录
+              </button>
+            </template>
+          </UiMenu>
         </div>
-        <!-- 折叠模式下的纵向操作列 -->
+
+        <!-- 折叠态：仅圆形头像触发同一菜单；面板左对齐溢出 rail 宽度悬浮于内容层 -->
         <div
-          v-if="railCollapsed"
-          class="mt-2 hidden flex-col items-center gap-1 lg:flex"
+          v-else
+          class="flex justify-center"
         >
-          <button
-            class="icon-btn-sm"
-            type="button"
-            :aria-label="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
-            data-testid="theme-toggle"
-            :title="theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题'"
-            @click="onThemeToggle($event)"
+          <UiMenu
+            label="账户操作"
+            trigger-class="h-8 w-8 rounded-full pointer-coarse:h-11 pointer-coarse:w-11"
           >
-            <UiIcon
-              :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
-              :size="15"
-            />
-          </button>
-          <RouterLink
-            class="icon-btn-sm"
-            to="/change-password"
-            aria-label="修改管理员密码"
-            title="修改密码"
-          >
-            <UiIcon
-              name="settings"
-              :size="15"
-            />
-          </RouterLink>
-          <button
-            data-testid="logout"
-            class="icon-btn-sm"
-            type="button"
-            :disabled="loggingOut"
-            aria-label="退出登录"
-            title="退出登录"
-            @click="logout"
-          >
-            <UiIcon
-              name="logout"
-              :size="15"
-            />
-          </button>
+            <template #trigger>
+              <span
+                class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-sunken)] text-[var(--color-text-muted)]"
+                aria-hidden="true"
+              >
+                <UiIcon
+                  name="user"
+                  :size="16"
+                />
+              </span>
+            </template>
+            <template #default="{ close }">
+              <button
+                class="menu-item"
+                role="menuitem"
+                type="button"
+                data-testid="theme-toggle"
+                @click="onThemeToggle($event); close()"
+              >
+                <UiIcon
+                  :name="theme.resolvedTheme.value === 'dark' ? 'sun' : 'moon'"
+                  :size="15"
+                />
+                {{ theme.resolvedTheme.value === 'dark' ? '切换到亮色主题' : '切换到暗色主题' }}
+              </button>
+              <RouterLink
+                class="menu-item"
+                role="menuitem"
+                to="/change-password"
+                @click="close()"
+              >
+                <UiIcon
+                  name="settings"
+                  :size="15"
+                />
+                修改密码
+              </RouterLink>
+              <button
+                class="menu-item text-[var(--color-danger)]"
+                role="menuitem"
+                type="button"
+                data-testid="logout"
+                :disabled="loggingOut"
+                @click="close(); logout()"
+              >
+                <UiIcon
+                  name="logout"
+                  :size="15"
+                />
+                退出登录
+              </button>
+            </template>
+          </UiMenu>
         </div>
       </div>
 

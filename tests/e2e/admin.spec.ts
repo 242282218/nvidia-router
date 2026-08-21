@@ -30,6 +30,8 @@ test.describe('administrator authentication', () => {
     await expect(page).toHaveURL(/\/admin\/$/)
     await expect(page.getByTestId('nav-nvidia-keys')).toBeVisible()
 
+    // Warm Restraint：logout 收纳在侧栏底部「账户操作」菜单内，先展开再点击
+    await page.getByRole('button', { name: '账户操作' }).click()
     await page.getByTestId('logout').click()
     await expect(page).toHaveURL(/\/admin\/login$/)
     await login(page)
