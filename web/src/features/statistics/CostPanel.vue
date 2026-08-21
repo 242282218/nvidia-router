@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { ChartHeatmap } from '../../shared/charts'
 import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import { statisticsApi } from './api'
 import type { DailyModelCost } from './types'
@@ -151,6 +152,39 @@ function formatCost(usd: number): string {
 function formatCompactTokens(value: number): string {
   return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
+
+// ── 日×模型成本热力图：行=模型（按花费降序，最多 8 行），列=日期 ──
+const HEATMAP_MAX_ROWS = 8
+
+const heatmap = computed(() => {
+  const days = [...new Set(costs.value.map((item) => item.day))].sort()
+  const totalsByModel = new Map<string, number>()
+  for (const item of costs.value) {
+    totalsByModel.set(item.model_id, (totalsByModel.get(item.model_id) ?? 0) + item.total_cost_usd)
+  }
+  const models = [...totalsByModel.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, HEATMAP_MAX_ROWS)
+    .map(([modelId]) => modelId)
+  const lookup = new Map<string, number>()
+  for (const item of costs.value) {
+    if (models.includes(item.model_id)) {
+      lookup.set(`${item.model_id}|${item.day}`, item.total_cost_usd)
+    }
+  }
+  const values = models.map((modelId) =>
+    days.map((day) => lookup.get(`${modelId}|${day}`) ?? null),
+  )
+  return {
+    rowLabels: models,
+    colLabels: days.map((day) => day.slice(5)),
+    values,
+  }
+})
+
+function formatHeatmapCell(value: number): string {
+  return formatUSD(value)
+}
 </script>
 
 <template>
@@ -291,35 +325,24 @@ function formatCompactTokens(value: number): string {
         </div>
       </div>
 
-      <!-- Cost distribution visual bar -->
+      <!-- 日×模型成本热力图：颜色深浅 = 花费多少，title 提供文字数值 -->
       <div
-        v-if="totalCostUSD > 0 && byModel.length > 0"
+        v-if="heatmap.rowLabels.length > 0"
         class="mt-4 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-3"
       >
         <div class="flex items-center justify-between text-xs font-medium text-[var(--color-text-secondary)]">
-          <span>模型花费占比分布</span>
-          <span>总花费 {{ formatUSD(totalCostUSD) }}</span>
+          <span>每日 × 模型花费热力图</span>
+          <span>总花费 {{ formatUSD(totalCostUSD) }} · 最贵 {{ formatUSD(Math.max(...heatmap.values.flat().map((v) => v ?? 0), 0)) }}</span>
         </div>
-        <div class="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--color-border)]">
-          <div
-            v-for="[modelId, entry] in byModel.slice(0, 6)"
-            :key="modelId"
-            class="h-full transition-all first:rounded-l-full last:rounded-r-full"
-            :style="{ width: `${Math.max(entry.sharePercent, 2)}%`, backgroundColor: entry.totalCostUSD > 0 ? undefined : 'transparent' }"
-            :class="entry.sharePercent > 50 ? 'bg-[var(--color-accent)]' : entry.sharePercent > 20 ? 'bg-[var(--color-info)]' : entry.sharePercent > 10 ? 'bg-[var(--color-success)]' : 'bg-[var(--color-warning)]'"
-            :title="`${modelId}: ${entry.sharePercent}% (${formatUSD(entry.totalCostUSD)})`"
+        <div class="mt-3">
+          <ChartHeatmap
+            :row-labels="heatmap.rowLabels"
+            :col-labels="heatmap.colLabels"
+            :values="heatmap.values"
+            color="var(--color-warning)"
+            :format="formatHeatmapCell"
+            :ariaLabel="`近 ${selectedDays} 天每日模型花费热力图`"
           />
-        </div>
-        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-muted)]">
-          <span
-            v-for="[modelId, entry] in byModel.slice(0, 4)"
-            :key="modelId"
-            class="flex items-center gap-1.5"
-          >
-            <span class="h-2 w-2 rounded-full bg-[var(--color-info)]" />
-            <code class="font-mono-data text-xs">{{ modelId }}</code>
-            <strong class="font-mono-data text-[var(--color-text)]">{{ entry.sharePercent }}%</strong>
-          </span>
         </div>
       </div>
 

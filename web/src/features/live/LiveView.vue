@@ -166,10 +166,18 @@ function latencyColor(duration: number): string {
         :subtitle="`通过 SSE 推送实时展示路由请求的元数据；仅保留最近 ${maxEvents} 条，最新在上、自动滚动。`"
       >
         <template #actions>
-          <UiBadge
-            :variant="connected ? 'success' : 'warning'"
-            :label="connected ? '已连接' : '连接中…'"
-          />
+          <span
+            class="badge flex items-center gap-1.5"
+            :class="connected ? 'badge-success' : 'badge-warning'"
+            data-testid="live-connection"
+          >
+            <span
+              :class="connected ? 'pulse-dot bg-[var(--color-success)]' : ''"
+              class="h-1.5 w-1.5 rounded-full"
+              aria-hidden="true"
+            />
+            {{ connected ? '已连接' : '连接中…' }}
+          </span>
           <UiButton
             variant="ghost"
             size="sm"
@@ -238,41 +246,47 @@ function latencyColor(duration: number): string {
         />
 
         <div class="relative">
-          <ul
+          <div
             ref="listEl"
-            class="max-h-[calc(100vh-16rem)] divide-y divide-[var(--color-border-subtle)] overflow-y-auto"
+            class="max-h-[calc(100vh-16rem)] overflow-y-auto"
             @scroll="onListScroll"
           >
-            <li
-              v-for="event in reversedEvents"
-              :key="event.request_id"
-              class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-[var(--color-hover)]"
+            <TransitionGroup
+              tag="ul"
+              name="feed"
+              class="divide-y divide-[var(--color-border-subtle)]"
             >
-              <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
-                {{ formatClock(event.created_at) }}
-              </span>
-              <code class="truncate font-mono-data text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
-              <code class="truncate font-mono-data text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
-              <UiBadge
-                :variant="statusBadge(event.http_status).variant"
-                :label="statusBadge(event.http_status).label"
-                :dot="false"
-              />
-              <span
-                v-if="event.error_code"
-                class="truncate text-xs text-[var(--color-warning)]"
+              <li
+                v-for="event in reversedEvents"
+                :key="event.request_id"
+                class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-[var(--color-hover)]"
               >
-                {{ event.error_code }}
-              </span>
-              <span
-                class="ml-auto font-mono-data text-xs"
-                :class="latencyColor(event.duration_ms)"
-              >
-                {{ formatLatency(event.duration_ms) }}
-                <template v-if="event.first_token_ms !== undefined">· TTFT {{ formatLatency(event.first_token_ms) }}</template>
-              </span>
-            </li>
-          </ul>
+                <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
+                  {{ formatClock(event.created_at) }}
+                </span>
+                <code class="truncate font-mono-data text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
+                <code class="truncate font-mono-data text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
+                <UiBadge
+                  :variant="statusBadge(event.http_status).variant"
+                  :label="statusBadge(event.http_status).label"
+                  :dot="false"
+                />
+                <span
+                  v-if="event.error_code"
+                  class="truncate text-xs text-[var(--color-warning)]"
+                >
+                  {{ event.error_code }}
+                </span>
+                <span
+                  class="ml-auto font-mono-data text-xs"
+                  :class="latencyColor(event.duration_ms)"
+                >
+                  {{ formatLatency(event.duration_ms) }}
+                  <template v-if="event.first_token_ms !== undefined">· TTFT {{ formatLatency(event.first_token_ms) }}</template>
+                </span>
+              </li>
+            </TransitionGroup>
+          </div>
           <Transition name="fade">
             <button
               v-if="!pinnedToTop && events.length > 0"
@@ -298,6 +312,21 @@ function latencyColor(duration: number): string {
 }
 .fade-enter-from,
 .fade-leave-to {
+  opacity: 0;
+}
+
+/* 实时流入场：新事件从上方轻滑落（最新在上），旧事件淡出让位 */
+.feed-enter-active {
+  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
+}
+.feed-enter-from {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+.feed-leave-active {
+  transition: opacity var(--duration-micro) var(--ease-exit);
+}
+.feed-leave-to {
   opacity: 0;
 }
 </style>

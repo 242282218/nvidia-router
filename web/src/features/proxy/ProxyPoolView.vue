@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
 import { formatLocalDateTime } from '../../shared/format'
 import UiBadge from '../../shared/ui/UiBadge.vue'
 import UiButton from '../../shared/ui/UiButton.vue'
+import type { DataTableColumn } from '../../shared/ui/dataTable'
+import UiDataTable from '../../shared/ui/UiDataTable.vue'
 import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiProgressRing from '../../shared/ui/UiProgressRing.vue'
 import UiStat from '../../shared/ui/UiStat.vue'
 import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
 import { usePolling } from '../../shared/usePolling'
@@ -39,7 +43,16 @@ let statusController: AbortController | null = null
 onMounted(() => {
   void loadSettings()
   void refreshStatus()
+  // 命令面板深链：/proxy-pool?collect=1 直接触发一轮采集
+  if (route.query.collect === '1') {
+    pendingCollect = true
+    void router.replace({ query: { ...route.query, collect: undefined } })
+  }
 })
+
+const route = useRoute()
+const router = useRouter()
+let pendingCollect = false
 
 // Pool status telemetry refreshes every 10s, paused while the tab is hidden.
 usePolling(() => refreshStatus(), 10_000)
@@ -63,7 +76,15 @@ async function loadSettings(): Promise<void> {
       errorMessage.value = error instanceof ApiError ? error.message : '代理池配置加载失败。'
     }
   } finally {
-    if (!disposed && controller === next) loading.value = false
+    if (!disposed && controller === next) {
+      loading.value = false
+      // 深链采集：等配置就绪且池已启用时执行一轮采集
+      if (pendingCollect) {
+        pendingCollect = false
+        if (settings.value?.enabled) void refreshPool()
+        else formError.value = '代理池未启用，无法执行立即采集。'
+      }
+    }
   }
 }
 
@@ -125,6 +146,43 @@ function poolBadge(): { variant: 'success' | 'warning' | 'muted'; label: string 
   if (status.last_error_code) return { variant: 'warning', label: `采集异常（${status.last_error_code}）` }
   return { variant: 'success', label: '运行正常' }
 }
+
+// 健康度环：有效出口 / 期望出口数（expected_qty）的容量利用率
+const ring = computed(() => {
+  const healthy = statusData.value?.healthy_size ?? 0
+  const expected = Math.max(expectedQty.value, 1)
+  const percent = Math.min(100, (healthy / expected) * 100)
+  const tone = healthy === 0 ? 'danger' as const : percent >= 100 ? 'success' as const : 'warning' as const
+  return { healthy, expected, percent, tone }
+})
+
+interface ProxyRow {
+  address: string
+  healthy?: boolean
+  ejected?: boolean
+  latency_ewma_ms?: number
+  quality_score?: number
+  remaining_seconds?: number
+}
+
+const proxyColumns: DataTableColumn<ProxyRow>[] = [
+  { key: 'address', label: '出口' },
+  { key: 'state', label: '状态' },
+  { key: 'latency_ewma_ms', label: '延迟', align: 'right', sortable: true, value: (row) => row.latency_ewma_ms ?? Number.MAX_SAFE_INTEGER },
+  { key: 'quality_score', label: '质量分', align: 'right', sortable: true, value: (row) => row.quality_score ?? -Infinity },
+  { key: 'remaining_seconds', label: '剩余 TTL', align: 'right', sortable: true, value: (row) => row.remaining_seconds ?? 0 },
+]
+
+const proxyRows = computed<ProxyRow[]>(() =>
+  (statusData.value?.proxies ?? []).map((proxy) => ({
+    address: proxy.address,
+    healthy: proxy.healthy,
+    ejected: proxy.ejected,
+    latency_ewma_ms: proxy.latency_ewma_ms,
+    quality_score: proxy.quality_score,
+    remaining_seconds: proxy.remaining_seconds,
+  })),
+)
 
 async function save(): Promise<void> {
   const patch: ProxyPoolPatch = buildPatch()
@@ -439,14 +497,29 @@ async function refreshPool(): Promise<void> {
           v-if="statusData"
           class="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4"
         >
-          <UiStat
-            label="有效出口"
-            :value="statusData.healthy_size ?? 0"
-          />
-          <UiStat
-            label="池内记录"
-            :value="statusData.total_size ?? 0"
-          />
+          <!-- 健康度环：页面视觉锚点，容量利用率 = 有效出口 / 期望出口 -->
+          <div class="metric-card flex items-center gap-4 sm:col-span-2 lg:col-span-1">
+            <UiProgressRing
+              :value="ring.percent"
+              :size="84"
+              :stroke-width="7"
+              :tone="ring.tone"
+              :label="String(ring.healthy)"
+            >
+              <template #sub>
+                <span class="text-[10px] text-[var(--color-text-muted)]">/ {{ ring.expected }}</span>
+              </template>
+            </UiProgressRing>
+            <div class="min-w-0">
+              <p class="type-label">
+                池健康度
+              </p>
+              <p class="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                有效 {{ ring.healthy }} · 期望 {{ ring.expected }}<br>
+                池内记录 {{ statusData.total_size ?? 0 }}
+              </p>
+            </div>
+          </div>
           <UiStat
             label="最近采集"
             :value="formatLocalDateTime(statusData.last_success_at)"
@@ -455,77 +528,41 @@ async function refreshPool(): Promise<void> {
             label="上游状态"
             :value="statusData.last_error_code || '正常'"
           />
+          <UiStat
+            label="采集周期 / TTL"
+            :value="`${interval} / ${proxyTTL}`"
+          />
         </div>
 
         <div
           v-if="statusData?.proxies?.length"
-          class="overflow-x-auto border-t border-[var(--color-border)]"
+          class="border-t border-[var(--color-border)] p-4"
         >
-          <table class="data-table min-w-[760px]">
-            <caption class="sr-only">
-              内置代理出口质量
-            </caption>
-            <thead>
-              <tr>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  出口
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  状态
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  延迟
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  质量分
-                </th>
-                <th
-                  class="data-table-th"
-                  scope="col"
-                >
-                  剩余 TTL
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="proxy in statusData.proxies"
-                :key="proxy.address"
-                class="data-table-row"
-              >
-                <td class="data-table-td font-mono-data">
-                  {{ proxy.address }}
-                </td>
-                <td class="data-table-td">
-                  <UiBadge
-                    :variant="proxy.ejected ? 'danger' : proxy.healthy ? 'success' : 'muted'"
-                    :label="proxy.healthy ? '健康' : proxy.ejected ? '隔离' : '待验证'"
-                  />
-                </td>
-                <td class="data-table-td font-mono-data">
-                  {{ proxy.latency_ewma_ms ?? '—' }} ms
-                </td>
-                <td class="data-table-td font-mono-data">
-                  {{ proxy.quality_score ?? '—' }}
-                </td>
-                <td class="data-table-td font-mono-data">
-                  {{ proxy.remaining_seconds ?? 0 }} s
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <UiDataTable
+            test-id="proxy-exits-table"
+            caption="内置代理出口质量"
+            :columns="proxyColumns"
+            :rows="proxyRows"
+            :row-key="(row) => row.address"
+            density="compact"
+            max-height="420px"
+          >
+            <template #cell-state="{ row }">
+              <UiBadge
+                :variant="row.ejected ? 'danger' : row.healthy ? 'success' : 'muted'"
+                :label="row.healthy ? '健康' : row.ejected ? '隔离' : '待验证'"
+              />
+            </template>
+            <template #cell-latency_ewma_ms="{ row }">
+              <span class="font-mono-data">{{ row.latency_ewma_ms ?? '—' }} ms</span>
+            </template>
+            <template #cell-quality_score="{ row }">
+              <span class="font-mono-data">{{ row.quality_score ?? '—' }}</span>
+            </template>
+            <template #cell-remaining_seconds="{ row }">
+              <span class="font-mono-data">{{ row.remaining_seconds ?? 0 }} s</span>
+            </template>
+          </UiDataTable>
         </div>
         <p
           v-else-if="statusData"

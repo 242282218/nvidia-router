@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
+import { ChartDonut, type DonutSegment } from '../../shared/charts'
 import UiButton from '../../shared/ui/UiButton.vue'
 import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
+import UiProgressRing from '../../shared/ui/UiProgressRing.vue'
 import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import UiStat from '../../shared/ui/UiStat.vue'
 import { formatTimeOfDay } from '../../shared/format'
@@ -55,32 +57,19 @@ let loadController: globalThis.AbortController | null = null
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
-// KPI 指标卡配置化：v-for 交错入场 + 统一的 sparkline/格式化来源。
-const kpiStats = computed(() => {
+// 结果分布（success / canceled / failure）：canceled 是客户端中断（499），
+// 单列不并入失败，避免推理模型的长首字节把失败率拖高。
+const outcomeSegments = computed<DonutSegment[]>(() => {
   const data = summary.value
   if (!data) return []
   return [
-    { label: '请求数', props: { label: '请求数', value: data.request_count, format: formatInteger, sparkline: sparkValues('requests') } },
-    { label: '成功率', props: { label: '成功率', value: data.success_rate, format: formatPercent, tone: 'success' as const, sparkline: sparkValues('rate') } },
-    { label: '失败数', props: { label: '失败数', value: data.failure_count, format: formatInteger, tone: 'danger' as const, sparkline: sparkValues('failures') } },
-    { label: '平均耗时', props: { label: '平均耗时', value: data.average_duration_ms, format: formatAverageLatency, sparkline: sparkValues('latency') } },
-    { label: '首字节', props: { label: '首字节', value: data.average_first_byte_ms, format: formatAverageLatency, tone: 'info' as const } },
-    { label: 'TTFT P50', props: { label: 'TTFT P50', value: data.first_token_p50_ms ?? '—', format: formatAverageLatency, tone: 'info' as const } },
-    { label: 'TTFT P95', props: { label: 'TTFT P95', value: data.first_token_p95_ms ?? '—', format: formatAverageLatency, tone: 'info' as const } },
-    { label: '平均排队', props: { label: '平均排队', value: data.average_queue_ms, format: formatAverageLatency } },
-    { label: '总尝试', props: { label: '总尝试', value: data.total_attempts, format: formatInteger } },
-    {
-      label: 'Token',
-      props: {
-        label: 'Token',
-        value: data.prompt_tokens + data.completion_tokens,
-        format: formatTokens,
-        hint: `输入 ${formatTokens(data.prompt_tokens)} · 输出 ${formatTokens(data.completion_tokens)}`,
-        sparkline: sparkValues('tokens'),
-      },
-    },
+    { label: '成功', value: data.success_count, color: 'var(--color-success)' },
+    { label: '取消', value: data.canceled_count ?? 0, color: 'var(--color-warning)' },
+    { label: '失败', value: data.failure_count, color: 'var(--color-danger)' },
   ]
 })
+
+const outcomeTotal = computed(() => outcomeSegments.value.reduce((sum, s) => sum + s.value, 0))
 
 // 指标卡 sparkline：与趋势图同源的序列，按指标语义取值。
 function sparkValues(metric: 'requests' | 'failures' | 'latency' | 'tokens' | 'rate'): number[] {
@@ -510,17 +499,100 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             <span id="kpi-heading">关键指标</span>
           </p>
           <!-- One provenance line for the whole grid instead of one per card:
-               ten cards repeating "窗口 24 小时" is noise, not evidence. -->
+                ten cards repeating "窗口 24 小时" is noise, not evidence. -->
           <p class="mb-2 text-xs text-[var(--color-text-subtle)]">
             口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
           </p>
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+          <!-- Bento 网格：请求数/成功率/Token 为宽卡，其余单格 -->
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
             <UiStat
-              v-for="(stat, index) in kpiStats"
-              :key="stat.label"
-              v-bind="stat.props"
+              class="stagger-item sm:col-span-2"
+              :style="{ '--stagger-index': 0 }"
+              label="请求数"
+              :value="summary.request_count"
+              :format="formatInteger"
+              :sparkline="sparkValues('requests')"
+              :hint="`总尝试 ${formatInteger(summary.total_attempts)} 次（含换 Key 重试）`"
+            />
+            <div
+              class="metric-card flex items-center gap-4 stagger-item sm:col-span-2"
+              :style="{ '--stagger-index': 1 }"
+              data-testid="monitoring-success-ring"
+            >
+              <UiProgressRing
+                :value="summary.success_rate"
+                :size="84"
+                :stroke-width="7"
+                tone="success"
+                :label="formatPercent(summary.success_rate)"
+              />
+              <div class="min-w-0">
+                <p class="type-label">
+                  成功率
+                </p>
+                <p class="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                  成功 {{ formatInteger(summary.success_count) }} · 失败
+                  {{ formatInteger(summary.failure_count) }}<br>
+                  取消 {{ formatInteger(summary.canceled_count) }}（客户端中断，不计入失败）
+                </p>
+              </div>
+            </div>
+            <UiStat
               class="stagger-item"
-              :style="{ '--stagger-index': index }"
+              :style="{ '--stagger-index': 2 }"
+              label="失败数"
+              :value="summary.failure_count"
+              :format="formatInteger"
+              tone="danger"
+              :sparkline="sparkValues('failures')"
+            />
+            <UiStat
+              class="stagger-item"
+              :style="{ '--stagger-index': 3 }"
+              label="平均耗时"
+              :value="summary.average_duration_ms"
+              :format="formatAverageLatency"
+              :sparkline="sparkValues('latency')"
+            />
+            <UiStat
+              class="stagger-item sm:col-span-2"
+              :style="{ '--stagger-index': 4 }"
+              label="Token"
+              :value="summary.prompt_tokens + summary.completion_tokens"
+              :format="formatTokens"
+              :sparkline="sparkValues('tokens')"
+              :hint="`输入 ${formatTokens(summary.prompt_tokens)} · 输出 ${formatTokens(summary.completion_tokens)}`"
+            />
+            <UiStat
+              class="stagger-item"
+              :style="{ '--stagger-index': 5 }"
+              label="TTFT P50"
+              :value="summary.first_token_p50_ms ?? '—'"
+              :format="formatAverageLatency"
+              tone="info"
+            />
+            <UiStat
+              class="stagger-item"
+              :style="{ '--stagger-index': 6 }"
+              label="TTFT P95"
+              :value="summary.first_token_p95_ms ?? '—'"
+              :format="formatAverageLatency"
+              tone="info"
+            />
+            <UiStat
+              class="stagger-item"
+              :style="{ '--stagger-index': 7 }"
+              label="首字节"
+              :value="summary.average_first_byte_ms"
+              :format="formatAverageLatency"
+              tone="info"
+            />
+            <UiStat
+              class="stagger-item"
+              :style="{ '--stagger-index': 8 }"
+              label="平均排队"
+              :value="summary.average_queue_ms"
+              :format="formatAverageLatency"
             />
           </div>
         </section>
@@ -551,6 +623,33 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             :range-label="rangeLabel"
           />
         </div>
+
+        <!-- 结果分布：success / canceled / failure 三桶，文字图例为色盲第二编码 -->
+        <section
+          v-if="summary"
+          class="card mt-4 p-5"
+          data-testid="monitoring-outcome-donut"
+          aria-label="请求结果分布"
+        >
+          <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="type-heading">
+              结果分布
+            </h2>
+            <p class="text-xs text-[var(--color-text-muted)]">
+              窗口：{{ rangeLabel }} · 取消 = 客户端提前断开（如 499），不计入失败
+            </p>
+          </div>
+          <div class="max-w-md">
+            <ChartDonut
+              :segments="outcomeSegments"
+              :center-label="formatInteger(outcomeTotal)"
+            >
+              <template #sub>
+                <span class="mt-1 text-xs text-[var(--color-text-muted)]">总请求</span>
+              </template>
+            </ChartDonut>
+          </div>
+        </section>
 
         <CostPanel />
 

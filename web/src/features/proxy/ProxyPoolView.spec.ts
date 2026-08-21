@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { proxyPoolApi } from './api'
@@ -13,6 +14,17 @@ vi.mock('./api', () => ({
     refresh: vi.fn(),
   },
 }))
+
+// 视图通过 ?collect=1 深链触发立即采集，需要路由上下文
+async function mountView(query?: Record<string, string>) {
+  const router = createRouter({
+    history: createMemoryHistory('/admin/'),
+    routes: [{ path: '/proxy-pool', component: ProxyPoolView }],
+  })
+  await router.push({ path: '/proxy-pool', query })
+  await router.isReady()
+  return mount(ProxyPoolView, { global: { plugins: [router] } })
+}
 
 const settings = {
   enabled: true,
@@ -51,7 +63,7 @@ beforeEach(() => {
 
 describe('ProxyPoolView', () => {
   it('shows built-in collector configuration without exposing the XApi secret', async () => {
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     expect(wrapper.get('h1').text()).toContain('代理池')
@@ -69,7 +81,7 @@ describe('ProxyPoolView', () => {
   })
 
   it('saves collector settings and does not send a fixed proxy credential', async () => {
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     await wrapper.get('[data-testid="proxy-interval"]').setValue('10s')
@@ -99,7 +111,7 @@ describe('ProxyPoolView', () => {
     const settingsWithoutMaxLatency = { ...settings } as Omit<typeof settings, 'max_latency'> & { max_latency?: string }
     delete settingsWithoutMaxLatency.max_latency
     vi.mocked(proxyPoolApi.get).mockResolvedValueOnce({ data: settingsWithoutMaxLatency })
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     await wrapper.get('form').trigger('submit')
@@ -120,7 +132,7 @@ describe('ProxyPoolView', () => {
     settingsWithoutCollectorFields.enabled = false
     settingsWithoutCollectorFields.upstream_configured = false
     vi.mocked(proxyPoolApi.get).mockResolvedValueOnce({ data: settingsWithoutCollectorFields as unknown as ProxyPoolSettings })
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     await wrapper.get('form').trigger('submit')
@@ -139,7 +151,7 @@ describe('ProxyPoolView', () => {
   })
 
   it('runs one immediate collection and refreshes status', async () => {
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     await wrapper.get('[data-testid="proxy-refresh-now"]').trigger('click')
@@ -150,8 +162,16 @@ describe('ProxyPoolView', () => {
     expect(wrapper.text()).toContain('已完成一轮采集与验证')
   })
 
+  it('triggers immediate collection from the ?collect=1 deep link', async () => {
+    const wrapper = await mountView({ collect: '1' })
+    await flushPromises()
+
+    expect(proxyPoolApi.refresh).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('已完成一轮采集与验证')
+  })
+
   it('renders pool quality rows and an empty-pool recovery message', async () => {
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
     expect(wrapper.text()).toContain('203.0.113.10:8080')
     expect(wrapper.text()).toContain('42 ms')
@@ -168,7 +188,7 @@ describe('ProxyPoolView', () => {
     vi.mocked(proxyPoolApi.status)
       .mockResolvedValueOnce({ data: emptyStatus })
       .mockResolvedValueOnce({ data: { ...emptyStatus, healthy_size: -1 } })
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     await wrapper.get('section button').trigger('click')
@@ -182,7 +202,7 @@ describe('ProxyPoolView', () => {
     vi.mocked(proxyPoolApi.get)
       .mockRejectedValueOnce(new Error('backend unreachable'))
       .mockResolvedValueOnce({ data: settings })
-    const wrapper = mount(ProxyPoolView)
+    const wrapper = await mountView()
     await flushPromises()
 
     expect(wrapper.get('[data-testid="proxy-settings-load-error"]').text()).toContain('代理池配置加载失败')

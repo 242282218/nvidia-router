@@ -1,14 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import UiBadge from '../../shared/ui/UiBadge.vue'
+import type { DataTableColumn } from '../../shared/ui/dataTable'
+import UiDataTable from '../../shared/ui/UiDataTable.vue'
 import { formatInteger, formatLogDate, formatTokens } from './format'
-import type { RequestLogsPage } from './types'
+import type { RequestLog, RequestLogsPage } from './types'
 
 // Presentation-only request log detail: mobile cards + desktop table. The
 // empty and error states are rendered here so the parent's `monitoring-log-table`
 // section stays one coherent block.
 defineOptions({ name: 'MonitoringLogsTable' })
 
-defineProps<{
+const props = defineProps<{
   logs: RequestLogsPage
   logsError: string
   loading: boolean
@@ -23,6 +27,23 @@ const emit = defineEmits<{ retry: []; clearFilters: [] }>()
 function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger'; label: string } {
   return outcome === 'success' ? { variant: 'success', label: '成功' } : { variant: 'danger', label: '失败' }
 }
+
+const logColumns: DataTableColumn<RequestLog>[] = [
+  { key: 'created_at', label: '时间', sortable: true, value: (row) => row.created_at },
+  { key: 'request_id', label: '请求 ID' },
+  { key: 'endpoint', label: '接口 / 模型' },
+  { key: 'keys', label: 'Key' },
+  { key: 'status', label: '状态', sortable: true, value: (row) => row.http_status },
+  { key: 'stream', label: '流式' },
+  { key: 'reasoning', label: '思考 / 路由' },
+  { key: 'queue_ms', label: '排队 / 首字节', align: 'right', sortable: true, value: (row) => row.queue_ms },
+  { key: 'duration_ms', label: '耗时', align: 'right', sortable: true, value: (row) => row.duration_ms },
+  { key: 'attempt_count', label: '重试', align: 'right', sortable: true, value: (row) => row.attempt_count },
+  { key: 'tokens', label: 'Token', align: 'right', sortable: true, value: (row) => (row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0) },
+  { key: 'error', label: '错误 / 上游 ID' },
+]
+
+const logRows = computed(() => props.logs.items)
 </script>
 
 <template>
@@ -170,140 +191,57 @@ function outcome(outcome: 'success' | 'failure'): { variant: 'success' | 'danger
       </article>
     </div>
 
-    <div
-      class="hidden overflow-x-auto md:block"
-      tabindex="0"
-      aria-label="请求明细表，可横向滚动"
-    >
-      <table class="data-table min-w-[1200px]">
-        <caption class="sr-only">
-          请求明细，共 {{ formatInteger(logs.total) }} 条
-        </caption>
-        <thead>
-          <tr>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              时间
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              请求 ID
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              接口 / 模型
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              Key
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              状态
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              流式
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              思考 / 路由
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              排队 / 首字节
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              耗时
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              重试
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              Token
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              错误 / 上游 ID
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="item in logs.items"
-            :key="item.request_id"
-            class="data-table-row"
-          >
-            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
-              {{ formatLogDate(item.created_at) }}
-            </td>
-            <td class="data-table-td font-mono-data text-xs text-[var(--color-info)]">
-              {{ item.request_id }}
-            </td>
-            <td class="data-table-td">
-              <span class="block">{{ item.endpoint }}</span>
-              <span class="mt-1 block max-w-48 truncate font-mono-data text-xs text-[var(--color-text-muted)]">{{ item.model_id ?? '—' }}</span>
-            </td>
-            <td class="data-table-td text-xs">
-              NVIDIA {{ item.nvidia_key_id ?? '—' }}<br>Access {{ item.access_key_id ?? '—' }}
-            </td>
-            <td class="data-table-td whitespace-nowrap">
-              <span :class="item.outcome === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'">{{ outcome(item.outcome).label }}</span>
-              <span class="ml-1 font-mono-data text-xs">{{ item.http_status }}</span>
-            </td>
-            <td class="data-table-td">
-              {{ item.is_stream ? (item.stream_done ? '是 · [DONE]' : '是 · 未完成') : '否' }}
-            </td>
-            <td class="data-table-td text-xs">
-              <span class="block whitespace-nowrap">请求 {{ item.reasoning_requested ? '是' : '否' }} · 响应 {{ item.reasoning_present ? '是' : '否' }} · {{ item.reasoning_chars ?? '—' }} 字</span>
-              <span class="mt-1 block max-w-44 truncate text-[var(--color-text-muted)]">{{ item.reasoning_wire_fields ?? '—' }} · {{ item.route_mode ?? '—' }}</span>
-            </td>
-            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
-              {{ item.queue_ms }} / {{ item.first_byte_ms ?? '—' }} ms
-            </td>
-            <td class="data-table-td font-mono-data whitespace-nowrap">
-              {{ item.duration_ms }} ms
-            </td>
-            <td class="data-table-td font-mono-data">
-              {{ item.attempt_count }}
-            </td>
-            <td class="data-table-td font-mono-data text-xs whitespace-nowrap">
-              {{ formatTokens((item.prompt_tokens ?? 0) + (item.completion_tokens ?? 0)) }}
-            </td>
-            <td class="data-table-td max-w-56 truncate text-xs">
-              <span class="block text-[var(--color-danger)]">{{ item.error_code ?? '—' }}</span>
-              <span class="block truncate text-[var(--color-text-muted)]">{{ item.upstream_request_id ?? '—' }}</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="hidden p-4 md:block">
+      <UiDataTable
+        test-id="monitoring-logs-data-table"
+        :caption="`请求明细，共 ${formatInteger(logs.total)} 条`"
+        :columns="logColumns"
+        :rows="logRows"
+        :row-key="(row) => row.request_id"
+        :loading="loading"
+        max-height="560px"
+      >
+        <template #cell-created_at="{ row }">
+          <span class="font-mono-data text-xs whitespace-nowrap">{{ formatLogDate(row.created_at) }}</span>
+        </template>
+        <template #cell-request_id="{ row }">
+          <span class="font-mono-data text-xs text-[var(--color-info)]">{{ row.request_id }}</span>
+        </template>
+        <template #cell-endpoint="{ row }">
+          <span class="block">{{ row.endpoint }}</span>
+          <span class="mt-1 block max-w-48 truncate font-mono-data text-xs text-[var(--color-text-muted)]">{{ row.model_id ?? '—' }}</span>
+        </template>
+        <template #cell-keys="{ row }">
+          <span class="text-xs">NVIDIA {{ row.nvidia_key_id ?? '—' }}<br>Access {{ row.access_key_id ?? '—' }}</span>
+        </template>
+        <template #cell-status="{ row }">
+          <span :class="row.outcome === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'">{{ outcome(row.outcome).label }}</span>
+          <span class="ml-1 font-mono-data text-xs">{{ row.http_status }}</span>
+        </template>
+        <template #cell-stream="{ row }">
+          {{ row.is_stream ? (row.stream_done ? '是 · [DONE]' : '是 · 未完成') : '否' }}
+        </template>
+        <template #cell-reasoning="{ row }">
+          <span class="block text-xs whitespace-nowrap">请求 {{ row.reasoning_requested ? '是' : '否' }} · 响应 {{ row.reasoning_present ? '是' : '否' }} · {{ row.reasoning_chars ?? '—' }} 字</span>
+          <span class="mt-1 block max-w-44 truncate text-xs text-[var(--color-text-muted)]">{{ row.reasoning_wire_fields ?? '—' }} · {{ row.route_mode ?? '—' }}</span>
+        </template>
+        <template #cell-queue_ms="{ row }">
+          <span class="font-mono-data text-xs whitespace-nowrap">{{ row.queue_ms }} / {{ row.first_byte_ms ?? '—' }} ms</span>
+        </template>
+        <template #cell-duration_ms="{ row }">
+          <span class="font-mono-data whitespace-nowrap">{{ row.duration_ms }} ms</span>
+        </template>
+        <template #cell-attempt_count="{ row }">
+          <span class="font-mono-data">{{ row.attempt_count }}</span>
+        </template>
+        <template #cell-tokens="{ row }">
+          <span class="font-mono-data text-xs whitespace-nowrap">{{ formatTokens((row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0)) }}</span>
+        </template>
+        <template #cell-error="{ row }">
+          <span class="block max-w-56 truncate text-xs text-[var(--color-danger)]">{{ row.error_code ?? '—' }}</span>
+          <span class="block max-w-56 truncate text-xs text-[var(--color-text-muted)]">{{ row.upstream_request_id ?? '—' }}</span>
+        </template>
+      </UiDataTable>
     </div>
   </template>
 </template>
