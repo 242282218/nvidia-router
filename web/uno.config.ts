@@ -105,7 +105,8 @@ export default defineConfig({
       'data-table': 'w-full text-left text-sm',
       'data-table-th': 'border-b border-[var(--color-border)] px-4 py-3 text-left type-label',
       'data-table-td': 'border-b border-[var(--color-border-subtle)] px-4 py-3 text-[var(--color-text-secondary)]',
-      'data-table-row': 'transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)]',
+      // Warm Restraint：hover 高亮压到 40% 透明，行扫过只留一丝暖意
+      'data-table-row': 'transition-colors duration-[var(--duration-micro)] hover:bg-[color-mix(in_srgb,var(--color-hover)_40%,transparent)]',
     },
     /* ── 浮层 ── */
     {

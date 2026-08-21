@@ -498,16 +498,16 @@ async function refreshPool(): Promise<void> {
           class="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4"
         >
           <!-- 健康度环：页面视觉锚点，容量利用率 = 有效出口 / 期望出口 -->
-          <div class="metric-card flex items-center gap-4 sm:col-span-2 lg:col-span-1">
+          <div class="metric-card flex items-center gap-5 sm:col-span-2 lg:col-span-1">
             <UiProgressRing
               :value="ring.percent"
-              :size="84"
-              :stroke-width="7"
+              :size="92"
+              :stroke-width="6"
               :tone="ring.tone"
               :label="String(ring.healthy)"
             >
               <template #sub>
-                <span class="text-[10px] text-[var(--color-text-muted)]">/ {{ ring.expected }}</span>
+                <span class="type-label mt-0.5">{{ ring.healthy }} / {{ ring.expected }} 健康</span>
               </template>
             </UiProgressRing>
             <div class="min-w-0">
@@ -544,7 +544,6 @@ async function refreshPool(): Promise<void> {
             :columns="proxyColumns"
             :rows="proxyRows"
             :row-key="(row) => row.address"
-            density="compact"
             max-height="420px"
           >
             <template #cell-state="{ row }">

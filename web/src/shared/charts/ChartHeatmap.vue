@@ -32,7 +32,10 @@ const maxValue = computed(() => {
 
 function cellStyle(value: number | null): Record<string, string> {
   if (value === null || maxValue.value === 0) return { background: 'var(--color-sunken)' }
-  const intensity = 0.08 + (value / maxValue.value) * 0.82
+  // Warm Restraint：连续渐变收敛为 3 个克制档位（低/中/高），
+  // 数值本身由 title 文字承载，颜色只表达相对密度。
+  const ratio = value / maxValue.value
+  const intensity = ratio < 0.34 ? 0.16 : (ratio < 0.67 ? 0.42 : 0.74)
   return {
     background: `color-mix(in srgb, ${props.color} ${Math.round(intensity * 100)}%, var(--color-surface))`,
   }
@@ -52,7 +55,7 @@ function cellTitle(rowLabel: string, colLabel: string, value: number | null): st
     role="region"
     :aria-label="ariaLabel"
   >
-    <table class="border-separate border-spacing-[3px]">
+    <table class="border-separate border-spacing-[4px]">
       <thead>
         <tr>
           <th scope="col" />
@@ -77,7 +80,7 @@ function cellTitle(rowLabel: string, colLabel: string, value: number | null): st
           <td
             v-for="(_, ci) in colLabels"
             :key="ci"
-            class="h-7 min-w-7 rounded-[5px] transition-transform duration-100 hover:scale-110"
+            class="h-7 min-w-7 rounded-[6px] transition-transform duration-100 hover:scale-110"
             :style="cellStyle(values[ri]?.[ci] ?? null)"
             :title="cellTitle(row, colLabels[ci] ?? '', values[ri]?.[ci] ?? null)"
           />

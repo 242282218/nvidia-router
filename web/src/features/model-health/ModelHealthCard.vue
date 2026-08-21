@@ -39,15 +39,25 @@ function outcomeLabel(outcome: ModelHealthOutcome): string {
   }
 }
 
-function outcomeClass(outcome: ModelHealthOutcome): string {
+// Warm Restraint 时间格：1.5px 空心描边表达状态色相；仅成功格填充 40% 透明，
+// 其余保持纸面底色——整条时间线更轻，密度信息仍由 title 文字承载。
+function outlineColor(outcome: ModelHealthOutcome): string {
   switch (outcome) {
-    case 'success': return 'bg-[var(--color-success)]'
-    case 'failure': return 'bg-[var(--color-danger)]'
-    case 'timeout': return 'bg-[var(--color-warning)]'
-    case 'mixed': return 'bg-[var(--color-warning)]'
-    case 'skipped': return 'bg-[var(--color-info)]'
-    case 'canceled': return 'bg-[var(--color-text-subtle)]'
-    default: return 'bg-[var(--color-border-subtle)]'
+    case 'success': return 'var(--color-success)'
+    case 'failure': return 'var(--color-danger)'
+    case 'timeout':
+    case 'mixed': return 'var(--color-warning)'
+    case 'skipped': return 'var(--color-info)'
+    case 'canceled': return 'var(--color-text-subtle)'
+    default: return 'var(--color-border-subtle)'
+  }
+}
+
+function bucketStyle(outcome: ModelHealthOutcome): Record<string, string> {
+  const color = outlineColor(outcome)
+  return {
+    borderColor: `color-mix(in srgb, ${color} 72%, transparent)`,
+    backgroundColor: outcome === 'success' ? `color-mix(in srgb, ${color} 40%, transparent)` : 'transparent',
   }
 }
 
@@ -80,7 +90,7 @@ function providerLabel(provider: string): string {
 
 <template>
   <article
-    class="card min-w-0 p-4 sm:p-5"
+    class="card min-w-0 p-5 sm:p-6"
     :data-testid="`model-health-card-${model.model_id}`"
   >
     <div class="flex min-w-0 items-start gap-3">
@@ -133,16 +143,21 @@ function providerLabel(provider: string): string {
 
     <div
       :data-testid="`model-health-timeline-${model.model_id}`"
-      class="mt-3 flex h-8 items-stretch gap-0.5 overflow-hidden rounded-[6px] bg-[var(--color-sunken)] p-1"
+      class="mt-3 flex h-8 items-stretch gap-1"
       role="img"
       :aria-label="timelineLabel(model)"
     >
       <span
+        v-if="model.buckets.length === 0"
+        class="min-w-0 flex-1 rounded-[4px] border border-dashed border-[var(--color-border)]"
+        aria-hidden="true"
+      />
+      <span
         v-for="(bucket, index) in model.buckets"
         :key="`${bucket.start}-${index}`"
         :data-testid="`model-health-bucket-${model.model_id}-${index}`"
-        class="min-w-0 flex-1 rounded-[2px] transition-opacity duration-[var(--duration-micro)] hover:opacity-70"
-        :class="outcomeClass(bucket.outcome)"
+        class="min-w-0 flex-1 rounded-[4px] border-[1.5px] transition-opacity duration-[var(--duration-micro)] hover:opacity-70"
+        :style="bucketStyle(bucket.outcome)"
         :title="bucketTitle(bucket)"
         aria-hidden="true"
       />

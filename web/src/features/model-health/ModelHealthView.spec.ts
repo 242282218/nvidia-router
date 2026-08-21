@@ -108,6 +108,10 @@ describe('ModelHealthView', () => {
     const wrapper = mount(ModelHealthView)
     await flushPromises()
 
+    // Warm Restraint：刷新/频率控件收进「检测设置」… 菜单，先展开再操作
+    const trigger = wrapper.get('button[aria-haspopup="menu"][aria-label="检测设置"]')
+    await trigger.trigger('click')
+
     await wrapper.get('[data-testid="model-health-enabled"]').trigger('click')
     await flushPromises()
     expect(modelHealthApi.updateSettings).toHaveBeenCalledWith({ enabled: true, interval_seconds: 60, concurrency: 2 }, expect.any(AbortSignal))
@@ -115,6 +119,11 @@ describe('ModelHealthView', () => {
     await wrapper.get('[data-testid="model-health-interval"]').setValue('300')
     await flushPromises()
     expect(modelHealthApi.updateSettings).toHaveBeenLastCalledWith({ enabled: true, interval_seconds: 300, concurrency: 2 }, expect.any(AbortSignal))
+
+    await wrapper.get('[data-testid="model-health-refresh"]').trigger('click')
+    await flushPromises()
+    // mount 加载 1 次 + 手动刷新 1 次
+    expect(modelHealthApi.getSummary).toHaveBeenCalledTimes(2)
 
     await wrapper.get('[data-testid="model-health-run"]').trigger('click')
     await flushPromises()
@@ -129,6 +138,9 @@ describe('ModelHealthView', () => {
     vi.mocked(modelHealthApi.getSummary).mockResolvedValueOnce({ data: customSummary })
     const wrapper = mount(ModelHealthView)
     await flushPromises()
+
+    // 频率控件在「检测设置」菜单内，先展开
+    await wrapper.get('button[aria-haspopup="menu"][aria-label="检测设置"]').trigger('click')
 
     const interval = wrapper.get('[data-testid="model-health-interval"]')
     expect(interval.element.tagName).toBe('INPUT')

@@ -113,10 +113,11 @@ const yAxisLabels = computed(() => [
           x2="0"
           y2="1"
         >
+          <!-- Warm Restraint：面积淡到 8%，让线条本身承担表达 -->
           <stop
             offset="0%"
             :stop-color="color"
-            stop-opacity="0.28"
+            stop-opacity="0.08"
           />
           <stop
             offset="100%"
@@ -126,24 +127,14 @@ const yAxisLabels = computed(() => [
         </linearGradient>
       </defs>
       <template v-if="showAxis">
+        <!-- 仅一条基准线（Warm Restraint：去掉全部虚线网格） -->
         <line
           :x1="plotLeft"
           :y1="baselineY"
           :x2="viewBoxWidth"
           :y2="baselineY"
-          stroke="var(--color-border-strong)"
-          stroke-width="1"
-        />
-        <line
-          v-for="row in yAxisLabels.slice(1)"
-          :key="row.y"
-          :x1="plotLeft"
-          :y1="row.y"
-          :x2="viewBoxWidth"
-          :y2="row.y"
           stroke="var(--color-border)"
           stroke-width="1"
-          stroke-dasharray="4 6"
         />
         <text
           v-for="label in yAxisLabels"
@@ -161,13 +152,17 @@ const yAxisLabels = computed(() => [
       <path
         :d="areaPath"
         :fill="`url(#${gradientId})`"
+        class="chart-area-fade"
       />
       <path
         :d="linePath"
         fill="none"
         :stroke="color"
+        class="chart-line-draw"
+        :class="{ 'chart-line-static': dashed }"
+        :pathLength="dashed ? undefined : 1"
         :stroke-dasharray="dashed ? '6 4' : undefined"
-        stroke-width="2.5"
+        stroke-width="1.25"
         stroke-linecap="round"
         stroke-linejoin="round"
       />
@@ -184,10 +179,10 @@ const yAxisLabels = computed(() => [
         <circle
           :cx="hoverPoint.x"
           :cy="hoverPoint.y"
-          r="5.5"
+          r="3.5"
           fill="var(--color-elevated)"
           :stroke="color"
-          stroke-width="2.5"
+          stroke-width="2"
         />
       </g>
     </svg>
@@ -211,3 +206,30 @@ const yAxisLabels = computed(() => [
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Warm Restraint 数据仪式：线条从左到右生长 700ms，面积同步淡入。
+   pathLength=1 归一化周长，dashoffset 1→0 即完整描画一次；
+   虚线（失败趋势）依赖 dasharray 表达第二编码，不参与生长动画。
+   reduced-motion 由全局 CSS 把动画压到瞬时，无需在此重复。 */
+.chart-line-draw {
+  stroke-dasharray: 1;
+  animation: chart-line-draw 700ms var(--ease-enter) both;
+}
+.chart-line-draw.chart-line-static {
+  animation: none;
+  stroke-dasharray: 6 4;
+}
+.chart-area-fade {
+  opacity: 0;
+  animation: chart-area-fade 500ms var(--ease-enter) 120ms both;
+}
+@keyframes chart-line-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes chart-area-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+</style>

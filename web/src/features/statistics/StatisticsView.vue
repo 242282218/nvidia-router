@@ -503,11 +503,13 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           <p class="mb-2 text-xs text-[var(--color-text-subtle)]">
             口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
           </p>
-          <!-- Bento 网格：请求数/成功率/Token 为宽卡，其余单格 -->
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+          <!-- Warm Restraint KPI：一屏只放三个主指标（display 大数字 + 留白），
+               其余降级为下方单条次要指标带，靠字阶而不是卡片数量分层。 -->
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <UiStat
-              class="stagger-item sm:col-span-2"
+              class="stagger-item"
               :style="{ '--stagger-index': 0 }"
+              prominent
               label="请求数"
               :value="summary.request_count"
               :format="formatInteger"
@@ -515,14 +517,14 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
               :hint="`总尝试 ${formatInteger(summary.total_attempts)} 次（含换 Key 重试）`"
             />
             <div
-              class="metric-card flex items-center gap-4 stagger-item sm:col-span-2"
+              class="metric-card flex items-center gap-5 stagger-item"
               :style="{ '--stagger-index': 1 }"
               data-testid="monitoring-success-ring"
             >
               <UiProgressRing
                 :value="summary.success_rate"
-                :size="84"
-                :stroke-width="7"
+                :size="92"
+                :stroke-width="6"
                 tone="success"
                 :label="formatPercent(summary.success_rate)"
               />
@@ -530,7 +532,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                 <p class="type-label">
                   成功率
                 </p>
-                <p class="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                <p class="mt-1.5 text-xs leading-relaxed text-[var(--color-text-muted)]">
                   成功 {{ formatInteger(summary.success_count) }} · 失败
                   {{ formatInteger(summary.failure_count) }}<br>
                   取消 {{ formatInteger(summary.canceled_count) }}（客户端中断，不计入失败）
@@ -540,60 +542,64 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             <UiStat
               class="stagger-item"
               :style="{ '--stagger-index': 2 }"
-              label="失败数"
-              :value="summary.failure_count"
-              :format="formatInteger"
-              tone="danger"
-              :sparkline="sparkValues('failures')"
-            />
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 3 }"
-              label="平均耗时"
-              :value="summary.average_duration_ms"
-              :format="formatAverageLatency"
-              :sparkline="sparkValues('latency')"
-            />
-            <UiStat
-              class="stagger-item sm:col-span-2"
-              :style="{ '--stagger-index': 4 }"
+              prominent
               label="Token"
               :value="summary.prompt_tokens + summary.completion_tokens"
               :format="formatTokens"
               :sparkline="sparkValues('tokens')"
               :hint="`输入 ${formatTokens(summary.prompt_tokens)} · 输出 ${formatTokens(summary.completion_tokens)}`"
             />
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 5 }"
-              label="TTFT P50"
-              :value="summary.first_token_p50_ms ?? '—'"
-              :format="formatAverageLatency"
-              tone="info"
-            />
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 6 }"
-              label="TTFT P95"
-              :value="summary.first_token_p95_ms ?? '—'"
-              :format="formatAverageLatency"
-              tone="info"
-            />
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 7 }"
-              label="首字节"
-              :value="summary.average_first_byte_ms"
-              :format="formatAverageLatency"
-              tone="info"
-            />
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 8 }"
-              label="平均排队"
-              :value="summary.average_queue_ms"
-              :format="formatAverageLatency"
-            />
+          </div>
+          <!-- 次要指标带：一张卡六列小字，不与主指标争层级 -->
+          <div class="metric-card mt-4 grid grid-cols-2 gap-x-6 gap-y-4 stagger-item sm:grid-cols-3 xl:grid-cols-6">
+            <div>
+              <p class="type-label">
+                失败数
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-danger)]">
+                {{ formatInteger(summary.failure_count) }}
+              </p>
+            </div>
+            <div>
+              <p class="type-label">
+                平均耗时
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
+                {{ formatAverageLatency(summary.average_duration_ms) }}
+              </p>
+            </div>
+            <div>
+              <p class="type-label">
+                TTFT P50
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-info)]">
+                {{ summary.first_token_p50_ms === undefined ? '—' : formatAverageLatency(summary.first_token_p50_ms) }}
+              </p>
+            </div>
+            <div>
+              <p class="type-label">
+                TTFT P95
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-info)]">
+                {{ summary.first_token_p95_ms === undefined ? '—' : formatAverageLatency(summary.first_token_p95_ms) }}
+              </p>
+            </div>
+            <div>
+              <p class="type-label">
+                首字节
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
+                {{ formatAverageLatency(summary.average_first_byte_ms) }}
+              </p>
+            </div>
+            <div>
+              <p class="type-label">
+                平均排队
+              </p>
+              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
+                {{ formatAverageLatency(summary.average_queue_ms) }}
+              </p>
+            </div>
           </div>
         </section>
 

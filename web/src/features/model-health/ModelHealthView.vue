@@ -5,6 +5,8 @@ import { ApiError, isFiniteNumber, isRecord, isAbortError } from '../../shared/a
 import { formatTimeOfDay } from '../../shared/format'
 import { toastError, toastSuccess } from '../../shared/toast'
 import UiButton from '../../shared/ui/UiButton.vue'
+import UiIcon from '../../shared/ui/UiIcon.vue'
+import UiMenu from '../../shared/ui/UiMenu.vue'
 import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
 import UiSelect from '../../shared/ui/UiSelect.vue'
 import UiStatePanel from '../../shared/ui/UiStatePanel.vue'
@@ -253,16 +255,51 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
           >
             立即检测
           </UiButton>
-          <UiButton
-            variant="secondary"
-            icon="refresh"
-            :loading="loading"
-            loading-label="刷新中…"
-            data-testid="model-health-refresh"
-            @click="loadSummary(false)"
-          >
-            刷新
-          </UiButton>
+          <!-- Warm Restraint：刷新与频率控件收进 … 菜单，墙面只留主操作 -->
+          <UiMenu label="检测设置">
+            <template #default="{ close }">
+              <button
+                class="menu-item"
+                role="menuitem"
+                type="button"
+                data-testid="model-health-refresh"
+                :disabled="loading"
+                @click="loadSummary(false); close()"
+              >
+                <UiIcon
+                  name="refresh"
+                  :size="15"
+                />
+                刷新
+              </button>
+              <div class="flex items-center justify-between gap-6 px-3 pb-1 pt-2">
+                <span class="text-sm text-[var(--color-text-secondary)]">自动检测</span>
+                <UiSwitch
+                  data-testid="model-health-enabled"
+                  :checked="currentSettings.enabled"
+                  :disabled="saving"
+                  label="启用自动模型检测"
+                  @change="(value) => updateSettings({ enabled: value })"
+                />
+              </div>
+              <div class="flex items-center justify-between gap-4 px-3 pb-2">
+                <span class="text-sm text-[var(--color-text-secondary)]">频率</span>
+                <input
+                  v-model.lazy="intervalValue"
+                  type="number"
+                  min="10"
+                  max="3600"
+                  step="1"
+                  data-testid="model-health-interval"
+                  aria-label="模型检测频率（秒）"
+                  class="input-field h-8 w-24"
+                >
+              </div>
+              <p class="border-t border-[var(--color-border-subtle)] px-3 pb-1.5 pt-2 text-[11px] leading-relaxed text-[var(--color-text-subtle)]">
+                频率越短，上游调用越多；探测为只读请求。
+              </p>
+            </template>
+          </UiMenu>
         </template>
       </UiPageHeader>
 
@@ -322,28 +359,6 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
             {{ option.label }}
           </option>
         </UiSelect>
-
-        <div class="ml-auto flex items-center gap-2 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5">
-          <UiSwitch
-            data-testid="model-health-enabled"
-            :checked="currentSettings.enabled"
-            :disabled="saving"
-            label="启用自动模型检测"
-            @change="(value) => updateSettings({ enabled: value })"
-          />
-          <span class="text-sm text-[var(--color-text-secondary)]">自动检测</span>
-          <input
-            v-model.lazy="intervalValue"
-            type="number"
-            min="10"
-            max="3600"
-            step="1"
-            data-testid="model-health-interval"
-            aria-label="模型检测频率（秒）"
-            class="input-field w-24"
-          >
-          <span class="text-xs text-[var(--color-text-muted)]">秒</span>
-        </div>
       </div>
 
       <p class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-muted)]">

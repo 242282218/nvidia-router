@@ -19,7 +19,7 @@ const props = withDefaults(defineProps<{
   thickness?: number
   /** 中心主文案；缺省显示总值。 */
   centerLabel?: string
-}>(), { size: 148, thickness: 16, centerLabel: undefined })
+}>(), { size: 148, thickness: 10, centerLabel: undefined })
 
 const total = computed(() => props.segments.reduce((sum, s) => sum + s.value, 0))
 
@@ -80,14 +80,14 @@ const arcs = computed(() => {
         />
       </svg>
       <div class="absolute inset-0 flex flex-col items-center justify-center">
-        <span class="font-mono-data text-xl font-semibold leading-none text-[var(--color-text)]">
+        <span class="donut-center text-[var(--color-text)]">
           {{ centerLabel ?? formatChartValue(total) }}
         </span>
         <slot name="sub" />
       </div>
     </div>
 
-    <!-- 文字图例：色盲与读屏的第二编码 -->
+    <!-- 文字图例：色盲与读屏的第二编码（Warm Restraint：只留点+文字+数值） -->
     <ul class="min-w-32 flex-1 space-y-1.5">
       <li
         v-for="arc in arcs"
@@ -101,8 +101,16 @@ const arcs = computed(() => {
         />
         <span class="text-[var(--color-text-secondary)]">{{ arc.segment.label }}</span>
         <span class="font-mono-data ml-auto text-[var(--color-text)]">{{ formatChartValue(arc.segment.value) }}</span>
-        <span class="font-mono-data w-10 text-right text-xs text-[var(--color-text-muted)]">{{ arc.percent }}%</span>
       </li>
     </ul>
   </div>
 </template>
+
+<style scoped>
+/* 环心主数字：display 字阶 + tabular-nums，与 KPI 同一语言 */
+.donut-center {
+  font: var(--text-display);
+  letter-spacing: var(--tracking-display);
+  font-variant-numeric: tabular-nums;
+}
+</style>
