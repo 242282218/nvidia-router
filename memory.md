@@ -203,3 +203,19 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **一次被数据否掉的假设，记下来避免重犯**：观察到 `stepfun-ai/step-3.7-flash` 即使收到 `thinking:{"type":"disabled"}` 仍返回 `reasoning_content`，先怀疑是 `availableLevels`（`compat/reasoning.go:429` 在 `ZeroAllowed=false` 时丢掉 `none`，被 `nearestLevel` 拉回 enabled）。**实测证伪**：该模型 `zero_allowed=true` 且 levels 含 `none`，路由器确实发了 disabled，是 NVIDIA 上游不理会 → 外部归因。对照组同时证明路由器侧正确：`openai` 线格式的 `opencode-free/nemotron-3-ultra-free` 在 `none` 下 `completion_tokens` 39→2、`reasoning_chars=0`。**判定"关断是否生效"必须跨线格式做对照，不能只看单模型。**
 - **501 缺陷在当前生产不可达**：线上 11 个模型里三个非推理模型（`meta/llama-3.2-90b-vision-instruct`、`openai/gpt-oss-120b`、`opencodefree/x-preview-f-free`）**全部处于停用**，而停用模型在能力门禁之前就被拒。所以该修复的线上证据只能是"单测 + 部署产物含修复"，不能靠线上复现；用 `grep` 校验 release 目录源码（`/opt/nvidia-router-releases/<tag>/`）来确认镜像确实由含修复的源码构建。
 - **子代理汇报的踩坑**：第一轮 7 个审查子代理里 6 个用 SendMessage 催报全部无响应。**根因是把"汇报"设计成了旁路信道**；改为让每个子代理的**最终返回文本就是报告全文**（Agent 工具的返回值），并在 prompt 里固定 `## 结论/覆盖范围/发现/未覆盖` 段式、限定最多 5 条、要求 file:line + 具体失败场景，才稳定拿到结果。
+
+## 2026-08-21 第二轮修复（发布 20260821-review-3）与未决清单
+
+- **`%w` 包 nil 仍是非 nil error**：`fmt.Errorf("...: %w", f())` 中 `f()` 返回 nil 时，得到的是文本为 `%!w(<nil>)` 的**非 nil** error。`modelcatalog/saveSelection` 因此让已存储的 opencodefree 模型永远无法再启用，且 `SaveSelectionsResult` 是单事务，同批次无关模型一并回滚。线上 Vue 页面 `ModelsView.vue` 的 `saveCandidates` 会先过滤掉已配置模型，所以 UI 走不到——**缺陷藏在"前端恰好绕过"的路径里，直接调 API 的脚本会立刻命中**。
+- **修这条时踩的坑（重要方法论）**：最初按"该守卫是死代码"整段删除，结果既有测试 `TestSaveSelectionRejectsEnablingExistingNonNVIDIAProvider` 失败——它 seed 的是 `provider='openai_compatible'`，**不属于两种受支持 provider**，`validateEnabledProvider` 对它确实返回错误。所以守卫真正的作用是拦住"存储 provider 不受支持的历史行被 upsert 静默改写成 nvidia 并启用"。正确修法是只把 `%w` 包装收进 `if err != nil`。**教训：判断一段校验是不是死代码，必须把它的所有输入取值域走一遍，而不是只看当前业务里常见的那两个值；既有测试是取值域的现成证据。**
+- **`EarliestCooldownExpiry` 缺 `> now` 过滤 → 健康检查空转烧配额**：`cooldown_until` 只有 `markSuccess` 会清除，探测持续失败的 Key 永久保留过去时间戳；`nextDelay` 对 `remaining<=0` 返回 0，于是扫描循环以"探测耗时"为唯一节流持续跑，每轮都发真实 NVIDIA `/v1/models`。**不要改 `nextDelay` 的 return 0**（`healthchecker_test.go:307` 有理据断言，关闭 half-open 间隙是有意的），错在 SQL。钩子签名改为接收 checker 自身 `clock.Now()`，让"是否仍在冷却"与"还要等多久"用同一时间源。
+- **`nvidiakey.formatTimestamp` 是 `Truncate(time.Second) + RFC3339`**（定长），所以 `cooldown_until` 的字符串比较与时间序一致，SQL 里直接 `> ?` 是安全的。注意 `modelhealth` 用的是 `RFC3339Nano`（**变长**，去尾随零），字典序在小数位是前缀关系时会反转——两处不要混用同一套比较假设。
+- **写"只删单条缓存"的回归测试要避开 TTL 混淆**：accesskey 认证缓存 TTL 30s。若用"推进 1 分钟让 Key 过期"来构造，survivor 的缓存条目也被 TTL 清掉，测试即使在有 bug 时也会失败/在修好后也不通过。正确构造是**让 Key 的过期时间短于缓存 TTL**（如 10s 过期 + 推进 15s），这样缓存条目仍在、走的才是"命中缓存但身份已过期"那个分支。
+- **子代理配额耗尽的应对**：本轮 16 个子代理因 API 配额（`403 pre-consume quota failed`）集体失败。**失败前先 `git status` 确认它们没留下半成品编辑**——本次工作树是干净的，可直接自己接手。让子代理"最终返回文本即报告全文"这个改法是有效的（rev-catalog、rev-protocol 都交回了完整可用的报告）。
+- **本轮已修**：见上一条 commit。**未修、已确认值得做的**（下一批）：
+  1. P1 `responses/nonstream.go:177-203` `extractText` 只接受字符串/`[{type,text}]` 形态的 `reasoning_content`，对象形态使成功的 200 变成 502 并触发换 Key 重试；而 `upstream/nvidia/chat.go:287-317` 的 `hasTextValue` 和流式 `delta.go:107-138` 都容忍对象形态 → **同模型同形态，流式 200 / 非流式 502**。同函数 `:118` 的"reasoning aliases disagree"同样把 200 变 502。
+  2. P2 `responses/stream.go:185-204` 流式工具调用的 `id` 只对 `name` 做迟到补正，`id` 迟到时 `call_id` 全程为空，客户端无法回提交工具结果；非流式 `nonstream.go:141-143` 有 `call_%d` 兜底可对齐。
+  3. P2 `modelhealth` 在"所有 NVIDIA Key 都在冷却"时把模型报成 `no_credential`/未配置，与"真的没配 Key"混为一谈，运维处置动作完全不同。
+  4. P2 `chat/request.go:144-155` raw 快路径把重复顶层键原样转发上游（慢路径 `marshalFields` 从 map 重建天然去重），"校验看到的字节"与"转发的字节"不是同一份。
+  5. P3 拼错的 `reasoning_effort`（如 `"hgih"`）在 `!DynamicAllowed` 时被最近邻拉到 `none`，用户以为开了最高强度、实际关闭思考且无任何告警。
+- **重启后立刻探测 NVIDIA 渠道会得到假 502**：容器重启会把 XApi 出口池清空重建，采集+验证完成前 NVIDIA 渠道返回 502 `upstream_proxy_unavailable`（OpenCodeFree 渠道不经出口池，同一时刻全 200，正好是天然对照组）。**部署后验证必须先读 `/metrics` 的 `proxy_pool_healthy` 再判定渠道故障**，否则会把预热期误报成回归。脚本 `scripts/test/pool_warmup_check_remote.py`（读池 gauge + 间隔重试 5 次）。本轮实测：预热后 healthy=23，NVIDIA 连续 5/5 全 200。
