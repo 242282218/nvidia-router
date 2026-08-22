@@ -26,3 +26,13 @@ export function formatTokens(value: number): string {
 export function formatLogDate(value: string): string {
   return formatUTCDate(value, { seconds: true })
 }
+
+/** Shorten monitoring bucket labels for chart axes: hourly
+ * "2026-08-22T09:00:00Z" → "09:00", daily "2026-08-22" → "08-22".
+ * Buckets are UTC; keep them unconverted so the axis matches the raw
+ * series (same convention as the pre-split trend chart data table). */
+export function formatBucketLabel(bucket: string): string {
+  if (bucket.length === 10) return bucket.slice(5)
+  const match = /T(\d{2}:\d{2})/.exec(bucket)
+  return match?.[1] ?? bucket
+}

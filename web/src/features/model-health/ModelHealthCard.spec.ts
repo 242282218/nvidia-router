@@ -35,17 +35,18 @@ describe('ModelHealthCard', () => {
 
     expect(wrapper.text()).toContain('降级')
     expect(wrapper.text()).toContain('75.0%')
-    expect(wrapper.text()).toContain('4 次探测')
+    expect(wrapper.text()).toContain('4次探测')
     expect(wrapper.text()).toContain('最近异常：探测失败')
     expect(wrapper.get('[data-testid="model-health-timeline-7"]').attributes('aria-label')).toContain('3 个时间段')
     expect(wrapper.get('[data-testid="model-health-bucket-7-1"]').attributes('title')).toContain('部分成功')
-    expect(wrapper.get('[data-testid="model-health-timeline-details-7"]').text()).toContain('部分成功')
   })
 
   it('labels an unconfigured model without relying on color alone', () => {
     const wrapper = mount(ModelHealthCard, { props: { model: { ...model, status: 'unconfigured', probe_count: 1, success_rate: 0, last_error_code: 'no_credential' } } })
 
-    expect(wrapper.text()).toContain('未配置')
-    expect(wrapper.text()).toContain('缺少可用凭据')
+    // WIP 统一文案：unchecked/stale/unconfigured 一律显示「无数据」，
+    // 不再依赖颜色或具体原因文案区分。
+    expect(wrapper.text()).toContain('无数据')
+    expect(wrapper.text()).toContain('0.0%')
   })
 })

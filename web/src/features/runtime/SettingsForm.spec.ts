@@ -21,6 +21,7 @@ const settings: RuntimeSettings = {
   latency_routing_enabled: true,
   embedding_cache_enabled: false,
   embedding_cache_max_entries: 256,
+  auto_reasoning_enabled: false,
 }
 
 const inputTestIds = {
@@ -149,6 +150,7 @@ describe('SettingsForm', () => {
         latency_routing_enabled: true,
         embedding_cache_enabled: false,
         embedding_cache_max_entries: 256,
+        auto_reasoning_enabled: false,
       },
     ],
     [
@@ -182,6 +184,7 @@ describe('SettingsForm', () => {
         latency_routing_enabled: true,
         embedding_cache_enabled: false,
         embedding_cache_max_entries: 256,
+        auto_reasoning_enabled: false,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {

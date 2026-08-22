@@ -17,6 +17,8 @@ const ModelsView = () => import('../features/models/ModelsView.vue')
 const AccessKeysView = () => import('../features/access-keys/AccessKeysView.vue')
 const ProxyPoolView = () => import('../features/proxy/ProxyPoolView.vue')
 const ModelHealthView = () => import('../features/model-health/ModelHealthView.vue')
+const RuntimeView = () => import('../features/runtime/RuntimeView.vue')
+const StatisticsView = () => import('../features/statistics/StatisticsView.vue')
 const ObservabilityView = () => import('../features/observability/ObservabilityView.vue')
 
 // 导航元信息：侧栏分组、图标、排序、测试锚点全部登记在路由上。
@@ -88,12 +90,21 @@ export function createAppRouter(
             meta: { title: '渠道状态', nav: { group: '资源接入', icon: 'pulse', order: 55, testId: 'nav-model-health' } },
           },
           {
+            component: RuntimeView,
+            path: 'runtime',
+            meta: { title: '运行状态', nav: { group: '系统观测', icon: 'gauge', order: 60, testId: 'nav-runtime' } },
+          },
+          {
+            component: StatisticsView,
+            path: 'monitoring',
+            meta: { title: '请求监控', nav: { group: '系统观测', icon: 'chart', order: 61, testId: 'nav-monitoring' } },
+          },
+          {
             component: ObservabilityView,
             path: 'system',
-            meta: { title: '系统与观测', nav: { group: '系统观测', icon: 'system', order: 60, testId: 'nav-system' } },
+            meta: { title: '系统与观测', nav: { group: '系统观测', icon: 'system', order: 62, testId: 'nav-system' } },
           },
-          { path: 'runtime', redirect: '/system?tab=runtime' },
-          { path: 'statistics', redirect: '/system?tab=statistics' },
+          { path: 'statistics', redirect: '/monitoring' },
           { path: 'live', redirect: '/system?tab=live' },
           { path: 'audit', redirect: '/system?tab=audit' },
           { component: NotFoundView, path: ':pathMatch(.*)*', meta: { title: '页面不存在' } },

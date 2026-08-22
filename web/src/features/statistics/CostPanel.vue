@@ -2,10 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isFiniteNumber, isRecord } from '../../shared/api/client'
-import { ChartHeatmap } from '../../shared/charts'
 import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import { statisticsApi } from './api'
 import type { DailyModelCost } from './types'
+
+// 模型成本排行（设计 §5.4）：原 CostPanel 的多块看板收敛为 ranking list——
+// 名次徽章 + 模型 + 成本 + 占比条。数据加载、聚合与币种折算逻辑不变。
+defineOptions({ name: 'CostPanel' })
 
 const dayOptions: Array<{ value: 7 | 30 | 90; label: string }> = [
   { value: 7, label: '近 7 天' },
@@ -75,41 +78,22 @@ function isDailyModelCost(value: unknown): value is DailyModelCost {
 }
 
 const totalCostUSD = computed(() => costs.value.reduce((sum, item) => sum + item.total_cost_usd, 0))
-const totalPromptCostUSD = computed(() => costs.value.reduce((sum, item) => sum + (item.input_cost_usd || 0), 0))
-const totalCompletionCostUSD = computed(() => costs.value.reduce((sum, item) => sum + (item.output_cost_usd || 0), 0))
-
-const promptTokens = computed(() => costs.value.reduce((sum, item) => sum + item.prompt_tokens, 0))
-const completionTokens = computed(() => costs.value.reduce((sum, item) => sum + item.completion_tokens, 0))
-const totalTokens = computed(() => promptTokens.value + completionTokens.value)
 
 const unpricedCount = computed(() => new Set(costs.value.filter((item) => !item.priced).map((item) => item.model_id)).size)
 
 interface ModelAggregate {
-  promptTokens: number
-  completionTokens: number
   totalTokens: number
-  inputCostUSD: number
-  outputCostUSD: number
   totalCostUSD: number
   priced: boolean
   sharePercent: number
 }
 
 const byModel = computed(() => {
-  const map = new Map<string, { promptTokens: number; completionTokens: number; inputCostUSD: number; outputCostUSD: number; totalCostUSD: number; priced: boolean }>()
+  const map = new Map<string, { promptTokens: number; completionTokens: number; totalCostUSD: number; priced: boolean }>()
   for (const item of costs.value) {
-    const entry = map.get(item.model_id) ?? {
-      promptTokens: 0,
-      completionTokens: 0,
-      inputCostUSD: 0,
-      outputCostUSD: 0,
-      totalCostUSD: 0,
-      priced: false,
-    }
+    const entry = map.get(item.model_id) ?? { promptTokens: 0, completionTokens: 0, totalCostUSD: 0, priced: false }
     entry.promptTokens += item.prompt_tokens
     entry.completionTokens += item.completion_tokens
-    entry.inputCostUSD += item.input_cost_usd || 0
-    entry.outputCostUSD += item.output_cost_usd || 0
     entry.totalCostUSD += item.total_cost_usd
     entry.priced = entry.priced || item.priced
     map.set(item.model_id, entry)
@@ -117,11 +101,11 @@ const byModel = computed(() => {
   const total = totalCostUSD.value
   const result: Array<[string, ModelAggregate]> = []
   for (const [modelId, entry] of map.entries()) {
-    const totalTok = entry.promptTokens + entry.completionTokens
     const share = total > 0 ? (entry.totalCostUSD / total) * 100 : 0
     result.push([modelId, {
-      ...entry,
-      totalTokens: totalTok,
+      totalTokens: entry.promptTokens + entry.completionTokens,
+      totalCostUSD: entry.totalCostUSD,
+      priced: entry.priced,
       sharePercent: Number(share.toFixed(1)),
     }])
   }
@@ -153,52 +137,33 @@ function formatCompactTokens(value: number): string {
   return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
-// ── 日×模型成本热力图：行=模型（按花费降序，最多 8 行），列=日期 ──
-const HEATMAP_MAX_ROWS = 8
+// 名次徽章：1=accent、2=info、3=warning、其余弱化为文本序号（CPA §43）。
+function rankClass(rank: number): string {
+  if (rank === 1) return 'bg-[var(--color-accent-background)] text-[var(--color-accent-foreground)]'
+  if (rank === 2) return 'bg-[var(--color-info-background)] text-[var(--color-info-foreground)]'
+  if (rank === 3) return 'bg-[var(--color-warning-background)] text-[var(--color-warning-foreground)]'
+  return 'bg-[var(--color-muted-background)] text-[var(--color-muted-foreground)]'
+}
 
-const heatmap = computed(() => {
-  const days = [...new Set(costs.value.map((item) => item.day))].sort()
-  const totalsByModel = new Map<string, number>()
-  for (const item of costs.value) {
-    totalsByModel.set(item.model_id, (totalsByModel.get(item.model_id) ?? 0) + item.total_cost_usd)
-  }
-  const models = [...totalsByModel.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, HEATMAP_MAX_ROWS)
-    .map(([modelId]) => modelId)
-  const lookup = new Map<string, number>()
-  for (const item of costs.value) {
-    if (models.includes(item.model_id)) {
-      lookup.set(`${item.model_id}|${item.day}`, item.total_cost_usd)
-    }
-  }
-  const values = models.map((modelId) =>
-    days.map((day) => lookup.get(`${modelId}|${day}`) ?? null),
-  )
-  return {
-    rowLabels: models,
-    colLabels: days.map((day) => day.slice(5)),
-    values,
-  }
-})
-
-function formatHeatmapCell(value: number): string {
-  return formatUSD(value)
+// 第一名占比条用 accent 强调，其余统一低饱和（色块只做视觉锚点，数值由文字承载）。
+function barColor(rank: number): string {
+  return rank === 1 ? 'var(--color-accent)' : 'color-mix(in srgb, var(--color-text-subtle) 30%, transparent)'
 }
 </script>
 
 <template>
-  <div
+  <section
     data-testid="cost-panel"
-    class="card mt-4 p-5"
+    class="card flex flex-col overflow-hidden"
+    aria-label="模型成本排行"
   >
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
       <div>
-        <h2 class="text-sm font-semibold text-[var(--color-text)]">
-          成本估算与用量分析
-        </h2>
+        <h3 class="type-heading">
+          模型成本排行
+        </h3>
         <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
-          基于请求 Token 用量与模型单价（USD /1M）实时估算，汇率按 1 USD ≈ {{ USD_TO_CNY }} CNY 换算。
+          Token 用量 × 单价估算 · 汇率 1 USD ≈ {{ USD_TO_CNY }} CNY
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -241,7 +206,7 @@ function formatHeatmapCell(value: number): string {
 
     <p
       v-if="errorMessage"
-      class="mt-3 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
+      class="m-4 flex flex-wrap items-center gap-3 text-sm text-[var(--color-danger)]"
       role="alert"
     >
       <span>{{ errorMessage }}</span>
@@ -256,11 +221,11 @@ function formatHeatmapCell(value: number): string {
     </p>
 
     <div
-      v-if="loading"
-      class="mt-4"
+      v-else-if="loading"
+      class="m-4"
       role="status"
       aria-busy="true"
-      aria-label="加载成本分析数据…"
+      aria-label="加载成本数据…"
     >
       <UiSkeleton
         variant="cards"
@@ -268,196 +233,71 @@ function formatHeatmapCell(value: number): string {
       />
     </div>
 
-    <template v-else-if="costs.length">
-      <!-- KPI cards grid -->
-      <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="stat-card">
-          <p class="text-xs font-medium text-[var(--color-text-muted)]">
-            总估算成本（近 {{ selectedDays }} 天）
-          </p>
-          <p class="mt-2 font-mono-data text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-            {{ formatUSD(totalCostUSD) }}
-          </p>
-          <p class="mt-1 font-mono-data text-xs text-[var(--color-text-secondary)]">
-            ≈ {{ formatCNY(totalCostUSD) }}
-          </p>
-        </div>
-
-        <div class="stat-card">
-          <p class="text-xs font-medium text-[var(--color-text-muted)]">
-            输入 / 输出费用拆解
-          </p>
-          <div class="mt-2 flex items-baseline justify-between font-mono-data text-sm">
-            <span class="text-[var(--color-text-secondary)]">输入</span>
-            <span class="font-semibold text-[var(--color-text)]">{{ formatUSD(totalPromptCostUSD) }}</span>
-          </div>
-          <div class="mt-1 flex items-baseline justify-between font-mono-data text-sm">
-            <span class="text-[var(--color-text-secondary)]">输出</span>
-            <span class="font-semibold text-[var(--color-text)]">{{ formatUSD(totalCompletionCostUSD) }}</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <p class="text-xs font-medium text-[var(--color-text-muted)]">
-            总消耗 Token
-          </p>
-          <p class="mt-2 font-mono-data text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-            {{ formatCompactTokens(totalTokens) }}
-          </p>
-          <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-            入 {{ formatCompactTokens(promptTokens) }} · 出 {{ formatCompactTokens(completionTokens) }}
-          </p>
-        </div>
-
-        <div class="stat-card">
-          <p class="text-xs font-medium text-[var(--color-text-muted)]">
-            模型定价覆盖
-          </p>
-          <p
-            class="mt-2 text-2xl font-semibold"
-            :class="unpricedCount > 0 ? 'text-[var(--color-warning)]' : 'text-[var(--color-success)]'"
-          >
-            {{ unpricedCount === 0 ? '全部已定价' : `${unpricedCount} 个未定价` }}
-          </p>
-          <p class="mt-1 text-xs text-[var(--color-text-muted)]">
-            共计 {{ byModel.length }} 个活跃模型
-          </p>
-        </div>
-      </div>
-
-      <!-- 日×模型成本热力图：颜色深浅 = 花费多少，title 提供文字数值 -->
+    <template v-else-if="byModel.length">
       <div
-        v-if="heatmap.rowLabels.length > 0"
-        class="mt-4 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-3"
+        class="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5 text-xs text-[var(--color-text-muted)]"
+        data-testid="cost-panel-total"
       >
-        <div class="flex items-center justify-between text-xs font-medium text-[var(--color-text-secondary)]">
-          <span>每日 × 模型花费热力图</span>
-          <span>总花费 {{ formatUSD(totalCostUSD) }} · 最贵 {{ formatUSD(Math.max(...heatmap.values.flat().map((v) => v ?? 0), 0)) }}</span>
-        </div>
-        <div class="mt-3">
-          <ChartHeatmap
-            :row-labels="heatmap.rowLabels"
-            :col-labels="heatmap.colLabels"
-            :values="heatmap.values"
-            color="var(--color-warning)"
-            :format="formatHeatmapCell"
-            :ariaLabel="`近 ${selectedDays} 天每日模型花费热力图`"
-          />
-        </div>
+        <span>总成本（近 {{ selectedDays }} 天）</span>
+        <span class="font-mono-data text-sm font-semibold text-[var(--color-text)]">
+          {{ formatCost(totalCostUSD) }}
+        </span>
       </div>
+
+      <ol class="divide-y divide-[var(--color-border-subtle)]">
+        <li
+          v-for="(entry, index) in byModel"
+          :key="entry[0]"
+          class="px-4 py-2.5"
+          data-testid="cost-ranking-row"
+        >
+          <div class="flex items-center gap-2.5">
+            <span
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] font-mono-data text-xs font-semibold"
+              :class="rankClass(index + 1)"
+              aria-hidden="true"
+            >{{ index + 1 }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono-data text-xs font-medium text-[var(--color-text)]">
+              {{ entry[0] }}
+            </span>
+            <span
+              v-if="!entry[1].priced"
+              class="badge-warning"
+            >未定价</span>
+            <span class="shrink-0 font-mono-data text-xs font-semibold text-[var(--color-text)]">
+              {{ formatCost(entry[1].totalCostUSD) }}
+            </span>
+            <span class="w-11 shrink-0 text-right font-mono-data text-xs text-[var(--color-text-muted)]">
+              {{ entry[1].sharePercent }}%
+            </span>
+          </div>
+          <div class="mt-1.5 flex items-center gap-2 pl-[34px]">
+            <div class="h-[5px] flex-1 overflow-hidden rounded-full bg-[var(--color-sunken)]">
+              <div
+                class="h-full rounded-full"
+                :style="{ width: `${Math.min(100, Math.max(0, entry[1].sharePercent))}%`, background: barColor(index + 1) }"
+              />
+            </div>
+            <span class="shrink-0 font-mono-data text-xs text-[var(--color-text-subtle)]">
+              {{ formatCompactTokens(entry[1].totalTokens) }} tok
+            </span>
+          </div>
+        </li>
+      </ol>
 
       <div
         v-if="unpricedCount > 0"
-        class="mt-3 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-3 py-2 text-xs text-[var(--color-warning)]"
+        class="mx-4 mb-4 mt-3 rounded-lg border border-[color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_10%,transparent)] px-3 py-2 text-xs text-[var(--color-warning)]"
       >
         有 {{ unpricedCount }} 个模型未设置单价，可在「模型白名单」页配置输入与输出价格（USD/1M Tokens），完善成本核算。
-      </div>
-
-      <!-- Breakdown Table -->
-      <div class="mt-4 overflow-x-auto">
-        <table class="data-table min-w-[720px]">
-          <caption class="sr-only">
-            按模型聚合的 Token 用量与估算成本，近 {{ selectedDays }} 天
-          </caption>
-          <thead>
-            <tr>
-              <th
-                class="data-table-th"
-                scope="col"
-              >
-                模型
-              </th>
-              <th
-                class="data-table-th text-right"
-                scope="col"
-              >
-                输入 (Token / 费用)
-              </th>
-              <th
-                class="data-table-th text-right"
-                scope="col"
-              >
-                输出 (Token / 费用)
-              </th>
-              <th
-                class="data-table-th text-right"
-                scope="col"
-              >
-                总 Token
-              </th>
-              <th
-                class="data-table-th text-right"
-                scope="col"
-              >
-                估算总成本
-              </th>
-              <th
-                class="data-table-th text-right"
-                scope="col"
-              >
-                支出占比
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-[var(--color-border-subtle)]">
-            <tr
-              v-for="[modelId, entry] in byModel"
-              :key="modelId"
-              class="data-table-row"
-            >
-              <td class="data-table-td">
-                <div class="flex items-center gap-2">
-                  <code class="font-mono-data text-xs font-medium text-[var(--color-info)]">{{ modelId }}</code>
-                  <span
-                    v-if="!entry.priced"
-                    class="badge-warning"
-                  >未定价</span>
-                </div>
-              </td>
-              <td class="data-table-td text-right font-mono-data text-xs">
-                <p class="text-[var(--color-text)]">
-                  {{ entry.promptTokens.toLocaleString('zh-CN') }}
-                </p>
-                <p class="text-[var(--color-text-muted)]">
-                  {{ formatCost(entry.inputCostUSD) }}
-                </p>
-              </td>
-              <td class="data-table-td text-right font-mono-data text-xs">
-                <p class="text-[var(--color-text)]">
-                  {{ entry.completionTokens.toLocaleString('zh-CN') }}
-                </p>
-                <p class="text-[var(--color-text-muted)]">
-                  {{ formatCost(entry.outputCostUSD) }}
-                </p>
-              </td>
-              <td class="data-table-td text-right font-mono-data text-xs font-medium text-[var(--color-text)]">
-                {{ entry.totalTokens.toLocaleString('zh-CN') }}
-              </td>
-              <td class="data-table-td text-right font-mono-data text-xs font-semibold text-[var(--color-text)]">
-                <p>{{ formatCost(entry.totalCostUSD) }}</p>
-              </td>
-              <td class="data-table-td text-right font-mono-data text-xs">
-                <div class="flex items-center justify-end gap-2">
-                  <div class="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--color-border)]">
-                    <div
-                      class="h-full rounded-full bg-[var(--color-accent)]"
-                      :style="{ width: `${Math.min(100, Math.max(0, entry.sharePercent))}%` }"
-                    />
-                  </div>
-                  <span class="w-10 text-right text-[var(--color-text-secondary)]">{{ entry.sharePercent }}%</span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
       </div>
     </template>
 
     <div
-      v-else-if="!errorMessage"
-      class="mt-4 rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
+      v-else
+      class="m-4 rounded-[var(--radius-panel)] border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-text-muted)]"
     >
       近 {{ selectedDays }} 天暂无 Token 用量与请求记录。
     </div>
-  </div>
+  </section>
 </template>

@@ -267,12 +267,23 @@ describe('management routes', () => {
     expect(paths).toContain('/access-keys')
     expect(paths).toContain('/proxy-pool')
     expect(paths).toContain('/channel-status')
+    expect(paths).toContain('/runtime')
+    expect(paths).toContain('/monitoring')
     expect(paths).toContain('/system')
   })
 
-  it('redirects old observability routes to unified /system with appropriate query', async () => {
-    const { router } = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/runtime')
-    expect(router.currentRoute.value.path).toBe('/system')
-    expect(router.currentRoute.value.query.tab).toBe('runtime')
+  it('redirects the legacy statistics path to the monitoring page', async () => {
+    const { router } = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/statistics')
+    expect(router.currentRoute.value.path).toBe('/monitoring')
+  })
+
+  it('redirects legacy live and audit paths to /system with their query', async () => {
+    const live = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/live')
+    expect(live.router.currentRoute.value.path).toBe('/system')
+    expect(live.router.currentRoute.value.query.tab).toBe('live')
+
+    const audit = await navigate({ kind: 'authenticated', mustChangePassword: false }, '/audit')
+    expect(audit.router.currentRoute.value.path).toBe('/system')
+    expect(audit.router.currentRoute.value.query.tab).toBe('audit')
   })
 })

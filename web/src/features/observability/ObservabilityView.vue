@@ -7,10 +7,8 @@ import UiTabs from '../../shared/ui/UiTabs.vue'
 import type { IconName } from '../../shared/ui'
 import AuditView from '../audit/AuditView.vue'
 import LiveView from '../live/LiveView.vue'
-import RuntimeView from '../runtime/RuntimeView.vue'
-import StatisticsView from '../statistics/StatisticsView.vue'
 
-type ObservabilityTab = 'runtime' | 'statistics' | 'live' | 'audit'
+type ObservabilityTab = 'live' | 'audit'
 
 interface TabDefinition {
   id: ObservabilityTab
@@ -22,22 +20,6 @@ interface TabDefinition {
 }
 
 const tabs: TabDefinition[] = [
-  {
-    id: 'runtime',
-    label: '运行状态',
-    subtitle: '查看 Key 池就绪情况、排队深度、冷却状态与核心运行参数。',
-    icon: 'pulse',
-    testId: 'tab-runtime',
-    component: RuntimeView,
-  },
-  {
-    id: 'statistics',
-    label: '请求监控',
-    subtitle: '多维度聚合请求指标、延迟趋势、Token 统计与成本估算。',
-    icon: 'chart',
-    testId: 'tab-statistics',
-    component: StatisticsView,
-  },
   {
     id: 'live',
     label: '实时请求流',
@@ -59,18 +41,35 @@ const tabs: TabDefinition[] = [
 const route = useRoute()
 const router = useRouter()
 
-const activeTab = ref<ObservabilityTab>(validTab(route.query.tab) ?? 'runtime')
+const activeTab = ref<ObservabilityTab>(validTab(route.query.tab) ?? 'live')
 
 function validTab(value: unknown): ObservabilityTab | null {
-  if (value === 'runtime' || value === 'statistics' || value === 'live' || value === 'audit') {
+  if (value === 'live' || value === 'audit') {
     return value
   }
   return null
 }
 
+// 运行状态/请求监控已拆分为独立页面（docs/plans/2026-08-22-观测拆分与CPA布局复刻设计.md）。
+// 历史书签仍会带着 ?tab=runtime / ?tab=statistics 打开本页，这里一次性迁移到新路由。
+function migrateLegacyTab(value: unknown): boolean {
+  if (value === 'runtime') {
+    void router.replace('/runtime')
+    return true
+  }
+  if (value === 'statistics') {
+    void router.replace('/monitoring')
+    return true
+  }
+  return false
+}
+
+migrateLegacyTab(route.query.tab)
+
 watch(
   () => route.query.tab,
   (next) => {
+    if (migrateLegacyTab(next)) return
     const valid = validTab(next)
     if (valid && valid !== activeTab.value) {
       activeTab.value = valid
@@ -84,7 +83,7 @@ function setTab(tabId: string): void {
   void router.replace({
     query: {
       ...route.query,
-      tab: tabId === 'runtime' ? undefined : tabId,
+      tab: tabId === 'live' ? undefined : tabId,
     },
   })
 }

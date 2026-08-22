@@ -2,19 +2,19 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError, isAbortError, isFiniteNumber, isRecord } from '../../shared/api/client'
-import { ChartDonut, type DonutSegment } from '../../shared/charts'
 import UiButton from '../../shared/ui/UiButton.vue'
 import UiPageHeader from '../../shared/ui/UiPageHeader.vue'
-import UiProgressRing from '../../shared/ui/UiProgressRing.vue'
 import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
-import UiStat from '../../shared/ui/UiStat.vue'
+import UiStatCard from '../../shared/ui/UiStatCard.vue'
 import { formatTimeOfDay } from '../../shared/format'
 import { usePolling } from '../../shared/usePolling'
 import CostPanel from './CostPanel.vue'
+import FailureFeed from './FailureFeed.vue'
 import { formatAverageLatency, formatInteger, formatPercent, formatTokens } from './format'
-import MonitoringFilterForm from './MonitoringFilterForm.vue'
+import HealthTimeline from './HealthTimeline.vue'
+import MonitoringFilterPanel from './MonitoringFilterPanel.vue'
 import MonitoringLogsTable from './MonitoringLogsTable.vue'
-import MonitoringTrendChart from './MonitoringTrendChart.vue'
+import TrafficChart from './TrafficChart.vue'
 import { statisticsApi } from './api'
 import type {
   MonitoringFilter,
@@ -24,18 +24,12 @@ import type {
   RequestLogsPage,
 } from './types'
 
-withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
-
-const ranges: Array<{ value: MonitoringRange; label: string }> = [
-  { value: '24h', label: '24 小时' },
-  { value: '7d', label: '7 天' },
-  { value: '30d', label: '30 天' },
-]
-
 const range = ref<MonitoringRange>('24h')
 const appliedFilters = ref<MonitoringFilter>({})
 const snapshot = ref<MonitoringSnapshot | null>(null)
 const logs = ref<RequestLogsPage | null>(null)
+const failureLogs = ref<RequestLogsPage['items']>([])
+const failureError = ref('')
 const loading = ref(false)
 const summaryError = ref('')
 const logsError = ref('')
@@ -57,48 +51,55 @@ let loadController: globalThis.AbortController | null = null
 
 const summary = computed(() => snapshot.value?.summary ?? null)
 
-// 结果分布（success / canceled / failure）：canceled 是客户端中断（499），
-// 单列不并入失败，避免推理模型的长首字节把失败率拖高。
-const outcomeSegments = computed<DonutSegment[]>(() => {
-  const data = summary.value
-  if (!data) return []
-  return [
-    { label: '成功', value: data.success_count, color: 'var(--color-success)' },
-    { label: '取消', value: data.canceled_count ?? 0, color: 'var(--color-warning)' },
-    { label: '失败', value: data.failure_count, color: 'var(--color-danger)' },
-  ]
-})
-
-const outcomeTotal = computed(() => outcomeSegments.value.reduce((sum, s) => sum + s.value, 0))
-
-// 指标卡 sparkline：与趋势图同源的序列，按指标语义取值。
-function sparkValues(metric: 'requests' | 'failures' | 'latency' | 'tokens' | 'rate'): number[] {
-  const series = snapshot.value?.series ?? []
-  return series.map((point) => {
-    if (metric === 'requests') return point.request_count
-    if (metric === 'failures') return point.failure_count
-    if (metric === 'latency') return point.average_duration_ms
-    if (metric === 'tokens') return point.prompt_tokens + point.completion_tokens
-    return point.request_count === 0 ? 0 : (point.success_count / point.request_count) * 100
-  })
-}
-
 // True while any dimension filter is applied: an empty log table then means
 // "no match" rather than "no data ever", which drives the distinct empty state.
 const filtersActive = computed(() => Object.keys(appliedFilters.value).length > 0)
 
-const filterFormRef = ref<InstanceType<typeof MonitoringFilterForm> | null>(null)
+const filterPanelRef = ref<InstanceType<typeof MonitoringFilterPanel> | null>(null)
 
 function clearFilters(): void {
-  filterFormRef.value?.clearFields()
+  filterPanelRef.value?.clearFields()
   appliedFilters.value = {}
   page.value = 1
   void loadDashboard()
 }
 
+// FailureFeed 下钻：把模型写入筛选草稿并立即应用（模型 + 失败结果）。
+function filterByModel(modelId: string): void {
+  filterPanelRef.value?.setDraftField('model_id', modelId)
+  appliedFilters.value = { ...appliedFilters.value, model_id: modelId, outcome: 'failure' }
+  page.value = 1
+  void loadDashboard()
+  globalThis.requestAnimationFrame(() => {
+    globalThis.document.getElementById('monitoring-log-table-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
 const rangeLabel = computed(() => {
-  const found = ranges.find((option) => option.value === range.value)
-  return found?.label ?? ''
+  const found: Array<{ value: MonitoringRange; label: string }> = [
+    { value: '24h', label: '24 小时' },
+    { value: '7d', label: '7 天' },
+    { value: '30d', label: '30 天' },
+  ]
+  return found.find((option) => option.value === range.value)?.label ?? ''
+})
+
+// 结果分布三行（设计 §5.3）：CPA 明确不要 donut，改为进度列表。
+const outcomeRows = computed(() => {
+  const data = summary.value
+  if (!data) return []
+  const total = Math.max(data.success_count + data.canceled_count + data.failure_count, 1)
+  return [
+    { label: '成功', value: data.success_count, percent: (data.success_count / total) * 100, color: 'var(--color-success)' },
+    { label: '取消', value: data.canceled_count, percent: (data.canceled_count / total) * 100, color: 'var(--color-warning)' },
+    { label: '失败', value: data.failure_count, percent: (data.failure_count / total) * 100, color: 'var(--color-danger)' },
+  ]
+})
+
+const outcomeTotal = computed(() => {
+  const data = summary.value
+  if (!data) return 0
+  return data.success_count + data.canceled_count + data.failure_count
 })
 
 // totalPages and pageNumbers drive the numbered pagination control; ellipsis
@@ -199,6 +200,7 @@ async function loadDashboard(): Promise<void> {
   await Promise.all([
     loadSummary(controller.signal, sequence),
     loadLogs(controller.signal, sequence),
+    loadFailureFeed(controller.signal, sequence),
   ])
   if (!disposed && sequence === loadSequence) loading.value = false
 }
@@ -227,6 +229,20 @@ async function loadLogs(signal: globalThis.AbortSignal, sequence: number): Promi
   } catch (error) {
     if (disposed || sequence !== loadSequence || isAbortError(error)) return
     logsError.value = error instanceof ApiError ? error.message : '请求明细加载失败。'
+  }
+}
+
+// 最近失败请求：只取第一页前 8 条，失败不影响主表（单卡独立错误态）。
+async function loadFailureFeed(signal: globalThis.AbortSignal, sequence: number): Promise<void> {
+  try {
+    const response: unknown = await statisticsApi.getLogs(range.value, { outcome: 'failure' }, 1, 8, signal)
+    if (disposed || sequence !== loadSequence) return
+    if (!isRequestLogsPage(response)) throw new TypeError('Invalid failure feed response.')
+    failureLogs.value = response.data.items
+    failureError.value = ''
+  } catch (error) {
+    if (disposed || sequence !== loadSequence || isAbortError(error)) return
+    failureError.value = error instanceof ApiError ? error.message : '最近失败请求加载失败。'
   }
 }
 
@@ -368,87 +384,35 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
 </script>
 
 <template>
-  <div :class="embedded ? '' : 'page-container'">
-    <div :class="embedded ? '' : 'content-wrapper'">
+  <div class="page-container">
+    <div class="content-wrapper">
       <UiPageHeader
-        v-if="!embedded"
         eyebrow="系统观测"
-        title="监控"
+        title="请求监控"
         subtitle="保存请求元数据，不保存请求或响应正文；可按时间和维度定位异常。"
-      >
-        <template #actions>
-          <div
-            class="flex flex-wrap items-center gap-2"
-            role="group"
-            aria-label="监控时间范围"
-          >
-            <div class="segment-group">
-              <button
-                v-for="option in ranges"
-                :key="option.value"
-                :data-testid="`range-${option.value}`"
-                class="segment-item"
-                :class="range === option.value ? 'segment-item-active' : 'segment-item-idle'"
-                type="button"
-                :aria-pressed="range === option.value"
-                @click="selectRange(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-            <UiButton
-              variant="ghost"
-              :loading="loading"
-              loading-label="刷新中…"
-              icon="refresh"
-              @click="loadDashboard"
-            >
-              刷新
-            </UiButton>
-          </div>
-        </template>
-      </UiPageHeader>
+      />
 
-      <!-- Embedded toolbar -->
-      <div
-        v-if="embedded"
-        class="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] pb-3"
-      >
-        <div class="segment-group">
-          <button
-            v-for="option in ranges"
-            :key="option.value"
-            :data-testid="`range-${option.value}`"
-            class="segment-item"
-            :class="range === option.value ? 'segment-item-active' : 'segment-item-idle'"
-            type="button"
-            :aria-pressed="range === option.value"
-            @click="selectRange(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-        <UiButton
-          variant="ghost"
-          size="sm"
-          :loading="loading"
-          loading-label="刷新中…"
-          icon="refresh"
-          @click="loadDashboard"
-        >
-          刷新
-        </UiButton>
-      </div>
+      <MonitoringFilterPanel
+        ref="filterPanelRef"
+        :range="range"
+        :loading="loading"
+        data-testid="monitoring-filter-panel"
+        @update:range="selectRange"
+        @apply="applyFilters"
+        @reset="clearFilters"
+        @refresh="loadDashboard"
+      />
+
       <p
         v-if="summaryUpdatedAt"
-        class="mt-1 text-xs text-[var(--color-text-subtle)]"
+        class="mt-2 text-xs text-[var(--color-text-subtle)]"
       >
         趋势每 30 秒自动刷新 · 更新于 {{ formatTimeOfDay(summaryUpdatedAt) }}
       </p>
 
       <div
         v-if="loading && !snapshot && !logs"
-        class="mt-5"
+        class="mt-4"
         role="status"
         aria-busy="true"
         aria-label="加载监控数据…"
@@ -490,185 +454,155 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           {{ summaryError }}
         </p>
 
+        <!-- KPI 行（设计 §5.2）：CPA 平铺八卡，替代旧的"3 主指标 + 次要指标带"。 -->
         <section
           v-if="summary"
           class="mt-4"
-          aria-labelledby="kpi-heading"
+          aria-label="关键指标"
         >
-          <p class="sr-only">
-            <span id="kpi-heading">关键指标</span>
-          </p>
-          <!-- One provenance line for the whole grid instead of one per card:
-                ten cards repeating "窗口 24 小时" is noise, not evidence. -->
           <p class="mb-2 text-xs text-[var(--color-text-subtle)]">
             口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
           </p>
-          <!-- Warm Restraint KPI：一屏只放三个主指标（display 大数字 + 留白），
-               其余降级为下方单条次要指标带，靠字阶而不是卡片数量分层。 -->
-          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 0 }"
-              prominent
+          <div
+            class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8"
+            data-testid="monitoring-kpi-row"
+          >
+            <UiStatCard
+              icon="pulse"
+              tone="default"
               label="请求数"
               :value="summary.request_count"
               :format="formatInteger"
-              :sparkline="sparkValues('requests')"
               :hint="`总尝试 ${formatInteger(summary.total_attempts)} 次（含换 Key 重试）`"
             />
-            <div
-              class="metric-card flex items-center gap-5 stagger-item"
-              :style="{ '--stagger-index': 1 }"
-              data-testid="monitoring-success-ring"
-            >
-              <UiProgressRing
-                :value="summary.success_rate"
-                :size="92"
-                :stroke-width="6"
-                tone="success"
-                :label="formatPercent(summary.success_rate)"
-              />
-              <div class="min-w-0">
-                <p class="type-label">
-                  成功率
-                </p>
-                <p class="mt-1.5 text-xs leading-relaxed text-[var(--color-text-muted)]">
-                  成功 {{ formatInteger(summary.success_count) }} · 失败
-                  {{ formatInteger(summary.failure_count) }}<br>
-                  取消 {{ formatInteger(summary.canceled_count) }}（客户端中断，不计入失败）
-                </p>
-              </div>
-            </div>
-            <UiStat
-              class="stagger-item"
-              :style="{ '--stagger-index': 2 }"
-              prominent
-              label="Token"
+            <UiStatCard
+              icon="check-circle"
+              tone="success"
+              label="成功率"
+              tone-value
+              :value="formatPercent(summary.success_rate)"
+              :hint="`成功 ${formatInteger(summary.success_count)} · 失败 ${formatInteger(summary.failure_count)}`"
+            />
+            <UiStatCard
+              icon="x-circle"
+              tone="danger"
+              label="失败数"
+              tone-value
+              :value="summary.failure_count"
+              :hint="`取消 ${formatInteger(summary.canceled_count)}（不计失败）`"
+            />
+            <UiStatCard
+              icon="timer"
+              tone="default"
+              label="平均耗时"
+              :value="formatAverageLatency(summary.average_duration_ms)"
+              :hint="`平均排队 ${formatAverageLatency(summary.average_queue_ms)}`"
+            />
+            <UiStatCard
+              icon="trendingUp"
+              tone="info"
+              label="TTFT P50"
+              :value="formatAverageLatency(summary.first_token_p50_ms)"
+              hint="首 Token 中位延迟"
+            />
+            <UiStatCard
+              icon="trendingDown"
+              tone="info"
+              label="TTFT P95"
+              :value="formatAverageLatency(summary.first_token_p95_ms)"
+              hint="首 Token P95 延迟"
+            />
+            <UiStatCard
+              icon="bolt"
+              tone="default"
+              label="首字节"
+              :value="formatAverageLatency(summary.average_first_byte_ms)"
+              hint="响应首字节平均"
+            />
+            <UiStatCard
+              icon="database"
+              tone="info"
+              label="Token 总量"
               :value="summary.prompt_tokens + summary.completion_tokens"
               :format="formatTokens"
-              :sparkline="sparkValues('tokens')"
               :hint="`输入 ${formatTokens(summary.prompt_tokens)} · 输出 ${formatTokens(summary.completion_tokens)}`"
             />
           </div>
-          <!-- 次要指标带：一张卡六列小字，不与主指标争层级 -->
-          <div class="metric-card mt-4 grid grid-cols-2 gap-x-6 gap-y-4 stagger-item sm:grid-cols-3 xl:grid-cols-6">
-            <div>
-              <p class="type-label">
-                失败数
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-danger)]">
-                {{ formatInteger(summary.failure_count) }}
-              </p>
-            </div>
-            <div>
-              <p class="type-label">
-                平均耗时
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
-                {{ formatAverageLatency(summary.average_duration_ms) }}
-              </p>
-            </div>
-            <div>
-              <p class="type-label">
-                TTFT P50
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-info)]">
-                {{ summary.first_token_p50_ms === undefined ? '—' : formatAverageLatency(summary.first_token_p50_ms) }}
-              </p>
-            </div>
-            <div>
-              <p class="type-label">
-                TTFT P95
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-info)]">
-                {{ summary.first_token_p95_ms === undefined ? '—' : formatAverageLatency(summary.first_token_p95_ms) }}
-              </p>
-            </div>
-            <div>
-              <p class="type-label">
-                首字节
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
-                {{ formatAverageLatency(summary.average_first_byte_ms) }}
-              </p>
-            </div>
-            <div>
-              <p class="type-label">
-                平均排队
-              </p>
-              <p class="mt-1.5 font-mono-data text-sm font-medium text-[var(--color-text)]">
-                {{ formatAverageLatency(summary.average_queue_ms) }}
-              </p>
-            </div>
-          </div>
         </section>
 
-        <div class="mt-4 grid gap-4 xl:grid-cols-2">
-          <MonitoringTrendChart
+        <!-- 中排三卡：流量趋势 / 健康时间线 / 结果分布。 -->
+        <div class="mt-3 grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,2.2fr)_minmax(260px,1fr)]">
+          <TrafficChart
             :series="snapshot?.series ?? []"
-            metric="requests"
-            title="请求趋势"
             :range-label="rangeLabel"
           />
-          <MonitoringTrendChart
+          <HealthTimeline
             :series="snapshot?.series ?? []"
-            metric="failures"
-            title="失败趋势"
-            :range-label="rangeLabel"
+            :range="range"
+            :from="snapshot?.from"
+            :to="snapshot?.to"
           />
-          <MonitoringTrendChart
-            :series="snapshot?.series ?? []"
-            metric="latency"
-            title="延迟趋势"
-            :range-label="rangeLabel"
-          />
-          <MonitoringTrendChart
-            :series="snapshot?.series ?? []"
-            metric="tokens"
-            title="Token 趋势"
-            :range-label="rangeLabel"
+          <section
+            class="card p-4"
+            data-testid="monitoring-outcome-list"
+            aria-label="请求结果分布"
+          >
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="type-heading">
+                结果分布
+              </h3>
+              <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
+                共 {{ formatInteger(outcomeTotal) }} 条
+              </span>
+            </div>
+            <p class="mt-1 text-xs text-[var(--color-text-muted)]">
+              取消 = 客户端提前断开（如 499），不计入失败。
+            </p>
+            <ul
+              v-if="outcomeRows.length"
+              class="mt-4 space-y-4"
+            >
+              <li
+                v-for="row in outcomeRows"
+                :key="row.label"
+              >
+                <div class="flex items-center gap-2 text-sm">
+                  <span
+                    class="h-2 w-2 shrink-0 rounded-full"
+                    :style="{ background: row.color }"
+                    aria-hidden="true"
+                  />
+                  <span class="text-[var(--color-text-secondary)]">{{ row.label }}</span>
+                  <span class="ml-auto font-mono-data font-medium text-[var(--color-text)]">{{ formatInteger(row.value) }}</span>
+                  <span class="w-12 text-right font-mono-data text-xs text-[var(--color-text-subtle)]">{{ row.percent.toFixed(1) }}%</span>
+                </div>
+                <div class="mt-1.5 h-[5px] overflow-hidden rounded-full bg-[var(--color-sunken)]">
+                  <div
+                    class="h-full rounded-full transition-[width] duration-[var(--duration-local)]"
+                    :style="{ width: `${Math.min(100, row.percent)}%`, background: row.color }"
+                  />
+                </div>
+              </li>
+            </ul>
+          </section>
+        </div>
+
+        <!-- 下排：成本排行 + 最近失败请求。 -->
+        <div class="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          <CostPanel />
+          <FailureFeed
+            :logs="failureLogs"
+            :error="failureError"
+            :loading="loading"
+            @retry="loadDashboard"
+            @select="filterByModel"
           />
         </div>
 
-        <!-- 结果分布：success / canceled / failure 三桶，文字图例为色盲第二编码 -->
         <section
-          v-if="summary"
-          class="card mt-4 p-5"
-          data-testid="monitoring-outcome-donut"
-          aria-label="请求结果分布"
-        >
-          <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-            <h2 class="type-heading">
-              结果分布
-            </h2>
-            <p class="text-xs text-[var(--color-text-muted)]">
-              窗口：{{ rangeLabel }} · 取消 = 客户端提前断开（如 499），不计入失败
-            </p>
-          </div>
-          <div class="max-w-md">
-            <ChartDonut
-              :segments="outcomeSegments"
-              :center-label="formatInteger(outcomeTotal)"
-            >
-              <template #sub>
-                <span class="mt-1 text-xs text-[var(--color-text-muted)]">总请求</span>
-              </template>
-            </ChartDonut>
-          </div>
-        </section>
-
-        <CostPanel />
-
-        <MonitoringFilterForm
-          ref="filterFormRef"
-          class="mt-4"
-          @apply="applyFilters"
-          @reset="clearFilters"
-        />
-
-        <section
+          id="monitoring-log-table-section"
           data-testid="monitoring-log-table"
-          class="card mt-4 overflow-hidden"
+          class="card mt-3 overflow-hidden scroll-mt-4"
         >
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
             <div>
@@ -676,7 +610,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                 请求明细
               </h2>
               <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
-                只包含元数据，保留期按运行设置执行。
+                只包含元数据，保留期按运行设置执行；点击行展开完整字段。
               </p>
             </div>
             <span

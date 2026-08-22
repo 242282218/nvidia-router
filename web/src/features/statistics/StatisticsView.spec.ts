@@ -9,6 +9,7 @@ vi.mock('./api', () => ({
   statisticsApi: {
     getSummary: vi.fn(),
     getLogs: vi.fn(),
+    getCosts: vi.fn(),
   },
 }))
 
@@ -95,53 +96,70 @@ const logs: RequestLogsPage = {
   has_more: false,
 }
 
+function mainLogCalls(): Array<unknown[]> {
+  // loadDashboard 并发触发主表明细与失败 Feed 两次 getLogs；
+  // 主表分页大小 ≥50，失败 Feed 固定 8 条——用 pageSize 区分，
+  // 不能用 outcome 维度区分（用户自己也可能筛 outcome）。
+  return vi.mocked(statisticsApi.getLogs).mock.calls.filter(call => call[3] !== 8)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(statisticsApi.getSummary).mockResolvedValue({ data: snapshot })
   vi.mocked(statisticsApi.getLogs).mockResolvedValue({ data: logs })
+  vi.mocked(statisticsApi.getCosts).mockResolvedValue({ data: [] })
 })
 
 describe('StatisticsView monitoring dashboard', () => {
-  it('loads KPI cards, trends and request metadata', async () => {
+  it('loads KPI row, traffic chart, health timeline, outcome list and row cards', async () => {
     const wrapper = mount(StatisticsView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('监控')
+    expect(wrapper.text()).toContain('请求监控')
     expect(wrapper.text()).toContain('1,234')
     expect(wrapper.text()).toContain('98.9%')
     expect(wrapper.text()).toContain('TTFT P50')
     expect(wrapper.text()).toContain('120.5 ms')
     expect(wrapper.text()).toContain('TTFT P95')
     expect(wrapper.text()).toContain('840.2 ms')
-    expect(wrapper.text()).toContain('请求趋势')
-    expect(wrapper.text()).toContain('延迟趋势')
-    expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('req-safe')
-    expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('流式')
-    expect(wrapper.get('[data-testid="monitoring-log-table"]').text()).toContain('up-safe')
-    // Reasoning observability renders across the mobile card and desktop table.
-    const logTable = wrapper.get('[data-testid="monitoring-log-table"]').text()
-    expect(logTable).toContain('思考')
-    expect(logTable).toContain('请求 是 · 响应 是 · 95 字')
-    expect(logTable).toContain('thinking')
-    expect(logTable).toContain('direct')
-    expect(logTable).toContain('是 · [DONE]')
-    expect(logTable).not.toContain('response body')
+    expect(wrapper.get('[data-testid="traffic-chart"]').text()).toContain('流量趋势')
+    expect(wrapper.get('[data-testid="health-timeline"]').text()).toContain('健康时间线')
+    expect(wrapper.get('[data-testid="monitoring-outcome-list"]').text()).toContain('结果分布')
+    expect(wrapper.get('[data-testid="cost-panel"]').text()).toContain('模型成本排行')
+    expect(wrapper.get('[data-testid="failure-feed"]').text()).toContain('最近失败请求')
+
+    // 行卡明细：核心列 + 展开区收纳次要字段。
+    const rowCard = wrapper.get('[data-testid="request-row-req-safe"]')
+    expect(rowCard.text()).toContain('meta/llama')
+    expect(rowCard.text()).toContain('流式 · 完成')
+    await rowCard.trigger('click')
+    const detail = wrapper.get('[data-testid="request-row-detail"]')
+    expect(detail.text()).toContain('req-safe')
+    expect(detail.text()).toContain('up-safe')
+    expect(detail.text()).toContain('思考')
+    expect(detail.text()).toContain('请求 是 · 响应 是 · 95 字')
+    expect(detail.text()).toContain('thinking')
+    expect(detail.text()).toContain('direct')
+    expect(wrapper.text()).not.toContain('response body')
+
     expect(statisticsApi.getSummary).toHaveBeenCalledWith('24h', {}, expect.any(AbortSignal))
-    expect(statisticsApi.getLogs).toHaveBeenCalledWith('24h', {}, 1, 50, expect.any(AbortSignal))
+    expect(mainLogCalls()[0]).toEqual(['24h', {}, 1, 50, expect.any(AbortSignal)])
+    // 失败 Feed 独立拉取第一页前 8 条。
+    expect(statisticsApi.getLogs).toHaveBeenCalledWith('24h', { outcome: 'failure' }, 1, 8, expect.any(AbortSignal))
   })
 
   it('reloads both queries when the range changes and keeps filters', async () => {
     const wrapper = mount(StatisticsView)
     await flushPromises()
     await wrapper.get('[data-testid="monitoring-search"]').setValue('safe')
-    await wrapper.get('[data-testid="monitoring-filters"]').trigger('submit')
+    await wrapper.get('[data-testid="monitoring-filter-panel"]').trigger('submit')
     await flushPromises()
 
     await wrapper.get('[data-testid="range-30d"]').trigger('click')
     await flushPromises()
 
     expect(statisticsApi.getSummary).toHaveBeenLastCalledWith('30d', { search: 'safe' }, expect.any(AbortSignal))
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('30d', { search: 'safe' }, 1, 50, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['30d', { search: 'safe' }, 1, 50, expect.any(AbortSignal)])
     expect((wrapper.get('[data-testid="monitoring-search"]').element as HTMLInputElement).value).toBe('safe')
   })
 
@@ -153,13 +171,13 @@ describe('StatisticsView monitoring dashboard', () => {
     await flushPromises()
 
     await wrapper.get('[data-testid="monitoring-status"]').setValue('failure')
-    await wrapper.get('[data-testid="monitoring-filters"]').trigger('submit')
+    await wrapper.get('[data-testid="monitoring-filter-panel"]').trigger('submit')
     await flushPromises()
 
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', { outcome: 'failure' }, 1, 50, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['24h', { outcome: 'failure' }, 1, 50, expect.any(AbortSignal)])
     await wrapper.get('[data-testid="monitoring-next-page"]').trigger('click')
     await flushPromises()
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', { outcome: 'failure' }, 2, 50, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['24h', { outcome: 'failure' }, 2, 50, expect.any(AbortSignal)])
   })
 
   it('rejects invalid numeric filters inline instead of silently dropping them', async () => {
@@ -169,7 +187,7 @@ describe('StatisticsView monitoring dashboard', () => {
 
     await wrapper.get('[data-testid="monitoring-status"]').setValue('failure')
     await wrapper.get('[data-testid="monitoring-status-code"]').setValue('-5')
-    await wrapper.get('[data-testid="monitoring-filters"]').trigger('submit')
+    await wrapper.get('[data-testid="monitoring-filter-panel"]').trigger('submit')
     await flushPromises()
 
     expect(wrapper.get('[data-testid="monitoring-filter-error"]').text()).toContain('状态码必须是正整数')
@@ -188,18 +206,35 @@ describe('StatisticsView monitoring dashboard', () => {
     await wrapper.get('[data-testid="monitoring-page-size"]').setValue('100')
     await wrapper.get('[data-testid="monitoring-page-size"]').trigger('change')
     await flushPromises()
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 1, 100, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['24h', {}, 1, 100, expect.any(AbortSignal)])
 
     // Direct page-number navigation.
     await wrapper.get('[data-testid="monitoring-page-2"]').trigger('click')
     await flushPromises()
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 2, 100, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['24h', {}, 2, 100, expect.any(AbortSignal)])
 
     // Jump input navigates to a specific page.
     await wrapper.get('[data-testid="monitoring-jump-page"]').setValue('3')
     await wrapper.get('[data-testid="monitoring-jump-page"]').trigger('submit')
     await flushPromises()
-    expect(statisticsApi.getLogs).toHaveBeenLastCalledWith('24h', {}, 3, 100, expect.any(AbortSignal))
+    expect(mainLogCalls().at(-1)).toEqual(['24h', {}, 3, 100, expect.any(AbortSignal)])
+  })
+
+  it('drills from the failure feed into model-filtered logs', async () => {
+    vi.mocked(statisticsApi.getLogs).mockImplementation(async (_range: string, filter: { outcome?: string } = {}) => {
+      if (filter.outcome === 'failure') {
+        return { data: { ...logs, items: [{ ...logs.items[0]!, request_id: 'req-bad', outcome: 'failure' as const, model_id: 'kimi/k2', http_status: 502, error_code: 'upstream_error' }] } }
+      }
+      return { data: logs }
+    })
+    const wrapper = mount(StatisticsView)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="failure-feed-list"] button').trigger('click')
+    await flushPromises()
+
+    expect(mainLogCalls().at(-1)).toEqual(['24h', { outcome: 'failure', model_id: 'kimi/k2' }, 1, 50, expect.any(AbortSignal)])
+    expect((wrapper.get('[data-testid="monitoring-model-input"]').element as HTMLInputElement).value).toBe('kimi/k2')
   })
 
   it('shows summary and log errors independently', async () => {
