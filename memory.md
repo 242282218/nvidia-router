@@ -288,3 +288,12 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **验证 go 侧改动与无关测试失败的关系**：`go list -deps <pkg>` 确认被改包不在失败包的依赖闭包里，即可排除因果（测试二进制相同）；再用 `git worktree add --detach` 跑干净 HEAD 对照（注意 CMD 无 `/dev/null`，重定向用 `>NUL`；`git stash push -u` 往返也可但更险）。
 - **CMD 环境坑汇总**：无 grep/head/heredoc（用 findstr、`git grep`、写临时 py 脚本执行）；多行 `python -c` 会偶发吞输出，重要补丁一律写成脚本文件跑完删除；`git grep` 无匹配 exit 1 会截断 `&&` 链，用 `;` 或分开跑。
 - 本轮验证全绿：`go vet`、`go test ./...`、`gofmt -l` 空、web lint/typecheck/test（261 用例）/build、`check-web-dist.sh`；未部署（用户指定本轮只本地验证）。
+
+## 2026-08-22 vibe 场景模型评测（10 分钟时间盒）
+
+- 报告：`docs/plans/2026-08-22-vibe场景模型评测报告.md`；可复用探针 `scripts/test/vibe_eval_remote.py`（门控筛选 + 5 维度矩阵 + 预算硬超时），运行方式 `python scripts/test/remote_exec.py scripts/test/vibe_eval_remote.py --stdin-env NVIDIA_ROUTER_ADMIN_PASSWORD`；总墙钟约 5 分钟。
+- **评测脚本设计坑**：emit/log 函数绝不能从用于控制流的 record dict 里 `pop` 字段——本轮 `tool_calls_raw` 被 pop 导致 tools_followup（多轮闭环）静默没跑，只能补探针。"输出序列化"与"控制流数据"必须是两份。
+- **用例设计坑**：needle recall 配 `max_tokens=64` 会被默认思考吃掉（内容空 + `finish_reason=length`），"验证内容正确性"的用例必须给足输出预算；判定失败前先区分预算现象与能力现象。
+- **CMD 坑**：`;` 不是命令分隔符，会被当作参数传给 argparse（`remote_exec.py: error: unrecognized arguments`）；链式命令用 `&&`，或分两次执行。
+- **登录 401 先怀疑本地密码变量过期**：线上 admin 密码经多次 CLI 重置后，本地 `NVIDIA_ROUTER_ADMIN_PASSWORD` 环境变量是陈旧值；凭据只运行时注入，不落盘。
+- 当日关键实测（详见报告）：`z-ai/glm-5.2` 上游 410 Gone（白名单仍 enabled）；`hy3-free` 被 auto-reasoning 注入的 `reasoning_effort` 打挂（上游仅接受 no_think/low/high）；`kimi-k3`/`x-preview-f-free` 声明非推理但默认输出 reasoning_content；`minimax-m3` 是 thinking 线格式里思考强度唯一单调可控的（0/69/930 字符），其 `supports_tools=false` 是元数据错误（08-16 实测支持）；`opencode-free/nemotron-3-ultra-free` 是唯一工具全绿（并行+流式+多轮闭环）的模型，但 12 次请求 2 次 HTTP 200 截断流（无 `[DONE]`/finish/内容）；m3 的 json_object 间歇输出 `{}`。
