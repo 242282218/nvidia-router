@@ -297,3 +297,13 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **CMD 坑**：`;` 不是命令分隔符，会被当作参数传给 argparse（`remote_exec.py: error: unrecognized arguments`）；链式命令用 `&&`，或分两次执行。
 - **登录 401 先怀疑本地密码变量过期**：线上 admin 密码经多次 CLI 重置后，本地 `NVIDIA_ROUTER_ADMIN_PASSWORD` 环境变量是陈旧值；凭据只运行时注入，不落盘。
 - 当日关键实测（详见报告）：`z-ai/glm-5.2` 上游 410 Gone（白名单仍 enabled）；`hy3-free` 被 auto-reasoning 注入的 `reasoning_effort` 打挂（上游仅接受 no_think/low/high）；`kimi-k3`/`x-preview-f-free` 声明非推理但默认输出 reasoning_content；`minimax-m3` 是 thinking 线格式里思考强度唯一单调可控的（0/69/930 字符），其 `supports_tools=false` 是元数据错误（08-16 实测支持）；`opencode-free/nemotron-3-ultra-free` 是唯一工具全绿（并行+流式+多轮闭环）的模型，但 12 次请求 2 次 HTTP 200 截断流（无 `[DONE]`/finish/内容）；m3 的 json_object 间歇输出 `{}`。
+
+## 2026-08-22 vibe 可用性优化轮（评测报告第五、七节全部落地）
+
+- 发布：release `20260822-vibe-optimization`（commit dd8098d + 79ce166，分支 codex/observability-split-20260822 未 push），回滚链 → 20260822-codex-responses-hints。处理结果全记录在评测报告第七节。
+- **auto-reasoning 温和默认**（`compat/reasoning.go` 的 `AutoReasoningSpec`）：注入不超过 `medium` 的最强档、全部超重回退最轻档、`none`/`auto` 永不注入。根因：旧行为选最高档，hy3-free 上游词汇表只有 no_think/low/high，被注入 `max` 后整模型无 effort 请求必 502。改行为需同步三处测试（compat、protocol/chat、protocol/responses 各有 auto_reasoning_test.go 钉行为）。
+- **流式截断显式化**（`httpapi/v1/chat.go` 的 `streamResponse`）：已 commit 的流在 `[DONE]` 前 EOF 不再静默返回，追加 OpenAI 流内错误事件（`upstream_stream_truncated`）+ 终止 `[DONE]`；`stream_done` 保持 0。Responses 路径本来就有 `response.failed`，无需改。OCF 与 NVIDIA 共用 `streamResponse`，修一处覆盖两渠道。
+- **OCF 上游词汇表漂移是一类问题**：hy3-free 与 x-preview 都拒绝 `none`/`medium`、只认 low/high（错误形如 "reasoning_effort must be one of: no_think, low, high"）。数据层修法：`PATCH reasoning_levels=["low","high"]`（zero_allowed 保持 true）。残差：客户端显式 `none` 会被 nearest 拉到 low（关断不可表达），因 router 无法发送 `no_think` 原生值——加 per-model wire 别名列才能根治（未做）。
+- **能力位回写模式（PATCH→实测→失败即回退）**：`PATCH /admin/api/models/{id}` 接受 `supports_tools/supports_reasoning/reasoning_wire_format/reasoning_levels/reasoning_zero_allowed/reasoning_dynamic_allowed`；先 PATCH 再用真实 tools/reasoning 请求验证，失败立即回写旧值。本轮成果：m3、kimi-k3、x-preview 三个模型 tools 打开并保留。
+- **验证结论**：kimi-k3 是主力 vibe 模型（Agent 五轮闭环 5/5、思考强度 0/1/342 字符可控、稳定性 5/5）；m3 工具通但有上游间歇 404 窗口；nemotron-free 截断流已显式化为 stream_error（客户端重试可吸收）；x-preview 机制通但终答质量差不建议 Agent。glm-5.2（410）/kimi-k2.6（404）/OCF deepseek-free（502）已禁用，`/v1/models` 收敛到 10 个。
+- **kimi-k3 两个小残差**：小 max_tokens（32）下 auto-inject 思考仍可能吃空内容（5 次稳定性中 2 次空内容但 200+done）；TTFT 5-25s 偏慢。
