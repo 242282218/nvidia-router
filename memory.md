@@ -307,3 +307,12 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **能力位回写模式（PATCH→实测→失败即回退）**：`PATCH /admin/api/models/{id}` 接受 `supports_tools/supports_reasoning/reasoning_wire_format/reasoning_levels/reasoning_zero_allowed/reasoning_dynamic_allowed`；先 PATCH 再用真实 tools/reasoning 请求验证，失败立即回写旧值。本轮成果：m3、kimi-k3、x-preview 三个模型 tools 打开并保留。
 - **验证结论**：kimi-k3 是主力 vibe 模型（Agent 五轮闭环 5/5、思考强度 0/1/342 字符可控、稳定性 5/5）；m3 工具通但有上游间歇 404 窗口；nemotron-free 截断流已显式化为 stream_error（客户端重试可吸收）；x-preview 机制通但终答质量差不建议 Agent。glm-5.2（410）/kimi-k2.6（404）/OCF deepseek-free（502）已禁用，`/v1/models` 收敛到 10 个。
 - **kimi-k3 两个小残差**：小 max_tokens（32）下 auto-inject 思考仍可能吃空内容（5 次稳定性中 2 次空内容但 200+done）；TTFT 5-25s 偏慢。
+
+## 2026-08-22 侧栏与表头视觉精修（63359b5，已部署）
+
+- 三处用户截图痛点：① Key 表头排序图标 12px/40% 太小太淡，被用户截图误读为乱码"T4"；② 侧栏账户区灰底人形头像存在感弱、恒真的「会话有效」独占一行；③ 侧栏搜索框硬编码 `⌘K` 与命令面板 `Ctrl K` 两套口径（Windows 上误导）。
+- 改动：UiDataTable 排序指示器 13px/55% 且 hover 显形（`group/sort` 命名分组）、激活态换 `arrow-up`/`arrow-down` 单向箭头（icons.ts 新注册 ArrowUp/ArrowDown）、激活列名提亮；KeyTable 列名「失败 / 最近错误」→「失败」（列内容已含最近错误时间）；AppShell 账户区品牌绿「管」字头像 + 角标状态点（`role="img" aria-label="管理员，会话有效"` 承载无障碍语义），「管理员」升主色 14px，折叠态头像同步；侧栏搜索快捷键复用 `useHotkeys.formatCombo('mod+k')`（mod 匹配 Ctrl/⌘，显示 Ctrl K 全平台正确）；品牌投影/折叠钮 hover 走 token（`--border-glow-to`）。
+- **e2e 契约红线**：账户区视觉可任意重构，但 UiMenu 触发钮 `aria-label="账户操作"` 与 `theme-toggle`/`logout` testid 不能动（admin.spec.ts 先按 role 展开菜单再点 testid）。
+- **3756 被本地旧实例占用时跑溢出探针**：一次性脚本「`go build` harness → 后台启动 → 日志首行读实际 URL → `node scripts/test/web_overflow_probe.mjs <URL>` → 清理」，不与常驻进程抢端口。
+- 验证全绿：lint/typecheck/vitest 263（新增 2 条侧栏断言）/build/check-web-dist/go build/溢出探针 21/e2e 10。
+- 部署：release `20260822-ui-refine-63359b5`（deploy_remote.py，继承 vibe-optimization 的 .env，无 DB 迁移）；线上截图核验三处改动全部生效（Ctrl K、品牌头像、表头「失败」）；登录 200/session 200/登出 204（密码运行时注入）；回滚 → `20260822-vibe-optimization`。
