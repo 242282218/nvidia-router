@@ -316,3 +316,12 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **3756 被本地旧实例占用时跑溢出探针**：一次性脚本「`go build` harness → 后台启动 → 日志首行读实际 URL → `node scripts/test/web_overflow_probe.mjs <URL>` → 清理」，不与常驻进程抢端口。
 - 验证全绿：lint/typecheck/vitest 263（新增 2 条侧栏断言）/build/check-web-dist/go build/溢出探针 21/e2e 10。
 - 部署：release `20260822-ui-refine-63359b5`（deploy_remote.py，继承 vibe-optimization 的 .env，无 DB 迁移）；线上截图核验三处改动全部生效（Ctrl K、品牌头像、表头「失败」）；登录 200/session 200/登出 204（密码运行时注入）；回滚 → `20260822-vibe-optimization`。
+
+## 2026-08-23 main 提交修复与重新部署（366f3ce）
+
+- `main` 最终推进到 `366f3ce`。首轮 CI `32582985252` 的 verify 因 3 处测试直接 `defer db.Close()` 被 `golangci-lint v2.4.0/errcheck` 拒绝；同版本本地复核又发现 1 处 `reasoning_source_test.go`，统一改为 `defer func() { _ = db.Close() }()` 后，第二轮 CI `32583818710` 的 verify 与 e2e 全部成功（e2e 10/10）。
+- 本地复核：精确 `golangci-lint v2.4.0` 0 issues，`go test ./...`、`go vet ./...`、前端 lint/typecheck/test/build、embed 检查和 E2E 均通过；本机无 gcc，Go race 由 CI 验证。
+- 用 `scripts/deploy/deploy_remote.py 20260823-main-366f3ce` 部署到国内 `hangzhou2-2`：release `/opt/nvidia-router-releases/20260823-main-366f3ce`，镜像 `nvidia-router:deploy-20260823-main-366f3ce`；继承旧 release 的运行时 `.env`（600）和 deploy override，复用外部 `nvr-data`，无新增数据库迁移。
+- 切换前备份：`backups/predeploy-20260823-main-366f3ce/router.db`，权限 600、属主 `10001:10001`、SHA-256 `2e34e592acd2cd3c5f3a2b7a1656f74e9da93145017b7a6697271cda529a820d`；回滚点为 `20260822-ui-refine-63359b5`。
+- 部署后：app `running/healthy`、重启 0、OOM false；live/ready、18080/18081/6020 健康端点均 200；根页和 embed 资源 `index-BTU_L3ah.css`/`index-DRw6sFaS.js` 均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；公网 `/health/live` 200；近 10 分钟无 panic/fatal/migration/flush 错误签名。
+- 未执行管理员会话、真实模型请求、代理轮换或 CONNECT 业务矩阵；缺少运行时凭据时不将健康检查宣称为完整 live/E2E。
