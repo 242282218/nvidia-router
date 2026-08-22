@@ -185,7 +185,17 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
           :variant="model.enabled ? 'success' : 'muted'"
           :label="model.enabled ? '启用' : '停用'"
         />
-        <span class="text-xs text-[var(--color-text-muted)]">勾选后参与只读测试</span>
+        <span
+          v-if="model.context_length !== undefined && model.context_length > 0"
+          class="font-mono-data text-xs text-[var(--color-text-muted)]"
+          :data-testid="`model-card-context-${model.id}`"
+        >
+          上下文 {{ model.context_length }} tokens
+        </span>
+        <span
+          v-else
+          class="text-xs text-[var(--color-text-muted)]"
+        >勾选后参与只读测试</span>
       </div>
 
       <p

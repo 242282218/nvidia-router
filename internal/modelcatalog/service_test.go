@@ -1304,6 +1304,51 @@ func TestPatchStreamTimeoutsPersistsAndRoundsTrips(t *testing.T) {
 	}
 }
 
+func TestPatchContextLengthPersistsAndRoundTrips(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	result, err := service.SaveSelectionResult(context.Background(), []Selection{{
+		PublicID: "context-length", UpstreamID: "vendor/context-length", DisplayName: "Context length", Kind: KindChat,
+	}})
+	if err != nil {
+		t.Fatalf("SaveSelectionResult: %v", err)
+	}
+	modelID := result.Models[0].ID
+
+	length := 131072
+	patched, err := service.Patch(context.Background(), modelID, Patch{ContextLength: &length})
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if patched.ContextLength != length {
+		t.Fatalf("ContextLength = %d, want %d", patched.ContextLength, length)
+	}
+
+	// A display-only patch must preserve the declaration, and re-saving the
+	// discovery selection must not reset it either (context is operator-owned).
+	display := "Renamed"
+	if again, err := service.Patch(context.Background(), modelID, Patch{DisplayName: &display}); err != nil {
+		t.Fatalf("second Patch: %v", err)
+	} else if again.ContextLength != length {
+		t.Fatalf("ContextLength after display-only patch = %d, want preserved %d", again.ContextLength, length)
+	}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "context-length", UpstreamID: "vendor/context-length", DisplayName: display, Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	model := modelByPublicID(t, service, "context-length")
+	if model.ContextLength != length {
+		t.Fatalf("ContextLength after selection re-save = %d, want preserved %d", model.ContextLength, length)
+	}
+
+	cleared := 0
+	if patched, err := service.Patch(context.Background(), modelID, Patch{ContextLength: &cleared}); err != nil {
+		t.Fatalf("clear Patch: %v", err)
+	} else if patched.ContextLength != 0 {
+		t.Fatalf("ContextLength after clear = %d, want 0", patched.ContextLength)
+	}
+}
+
 // Re-validating the STORED provider wrapped validateEnabledProvider's result with
 // %w unconditionally, and %w on a nil error still yields a non-nil error. Since
 // that function accepts both providers, re-saving an existing OpenCodeFree model

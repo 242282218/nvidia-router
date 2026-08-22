@@ -48,6 +48,11 @@ type modelDTO struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	// ContextLength is the operator-declared context window (tokens), the
+	// OpenRouter-style extension coding agents read to plan compression. It is
+	// omitted when undeclared (0) so clients fall back to their own defaults
+	// instead of trusting a fabricated value.
+	ContextLength *int `json:"context_length,omitempty"`
 }
 
 func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -71,7 +76,7 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if !model.Enabled {
 			continue
 		}
-		dto = append(dto, modelDTO{
+		entry := modelDTO{
 			ID:     model.PublicID,
 			Object: "model",
 			// Created must be stable per model. It previously used time.Now(),
@@ -79,7 +84,12 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			// and clients could not diff or cache the catalog.
 			Created: modelCreatedUnix(model.CreatedAt),
 			OwnedBy: "nvidia",
-		})
+		}
+		if model.ContextLength > 0 {
+			length := model.ContextLength
+			entry.ContextLength = &length
+		}
+		dto = append(dto, entry)
 	}
 
 	writer.Header().Set("Content-Type", "application/json")

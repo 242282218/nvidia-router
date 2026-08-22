@@ -90,7 +90,10 @@ type modelDTO struct {
 	StreamIdleTimeoutMS       *int     `json:"stream_idle_timeout_ms,omitempty"`
 	InputUSDPerMTok           *float64 `json:"input_usd_per_mtok,omitempty"`
 	OutputUSDPerMTok          *float64 `json:"output_usd_per_mtok,omitempty"`
-	BlockedByKeyIDs           []int64  `json:"blocked_by_key_ids"`
+	// ContextLength is the operator-declared context window (tokens); 0 means
+	// undeclared and is surfaced as-is so the admin UI can show it explicitly.
+	ContextLength   int     `json:"context_length"`
+	BlockedByKeyIDs []int64 `json:"blocked_by_key_ids"`
 }
 type selectionDTO struct {
 	PublicID                string            `json:"public_id"`
@@ -388,6 +391,7 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		StreamIdleTimeoutMS:       v.StreamIdleTimeoutMS,
 		InputUSDPerMTok:           v.InputUSDPerMTok,
 		OutputUSDPerMTok:          v.OutputUSDPerMTok,
+		ContextLength:             v.ContextLength,
 		BlockedByKeyIDs:           v.BlockedByKeyIDs,
 	}
 }

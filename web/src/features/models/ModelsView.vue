@@ -142,6 +142,7 @@ function isModel(value: unknown): value is Model {
     && (value.output_usd_per_mtok === undefined || typeof value.output_usd_per_mtok === 'number')
     && (value.stream_first_token_timeout_ms === undefined || typeof value.stream_first_token_timeout_ms === 'number')
     && (value.stream_idle_timeout_ms === undefined || typeof value.stream_idle_timeout_ms === 'number')
+    && (value.context_length === undefined || typeof value.context_length === 'number')
     && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
     && (value.reasoning_status === undefined || typeof value.reasoning_status === 'string')
 }
@@ -469,6 +470,26 @@ async function savePricing(model: Model, inputUsd: number, outputUsd: number): P
   }
 }
 
+async function saveContextLength(model: Model, contextLength: number): Promise<void> {
+  busyId.value = model.id
+  errorMessage.value = ''
+  try {
+    const updated: unknown = await modelsApi.patch(model.id, { context_length: contextLength })
+    if (isDisposed()) return
+    if (!isModel(updated)) {
+      throw new TypeError('Invalid model patch response.')
+    }
+    replaceModel(updated)
+    toastSuccess(`模型「${updated.display_name}」上下文窗口已更新。`)
+  } catch (error) {
+    if (isDisposed()) return
+    errorMessage.value = error instanceof ApiError ? error.message : '保存上下文窗口失败。'
+    toastError(errorMessage.value)
+  } finally {
+    if (!isDisposed()) busyId.value = null
+  }
+}
+
 async function confirmDelete(): Promise<void> {
   const model = pendingDelete.value
   if (!model || deleting.value) return
@@ -758,6 +779,7 @@ async function cancelCurrentTest(): Promise<void> {
               @toggle="toggleModel"
               @unblock="unblockModel"
               @save-pricing="savePricing"
+              @save-context-length="saveContextLength"
               @delete="pendingDelete = $event"
               @toggle-test="toggleTestModel"
               @toggle-candidate="toggleCandidate"

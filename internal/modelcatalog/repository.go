@@ -162,6 +162,9 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 }
 
 func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.Time) (model Model, previousKind Kind, returnErr error) {
+	if patch.ContextLength != nil && *patch.ContextLength < 0 {
+		return Model{}, "", fmt.Errorf("%w: context_length must be non-negative", ErrInvalidModelSelection)
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Model{}, "", fmt.Errorf("begin model patch transaction: %w", err)
@@ -210,6 +213,7 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 		output_usd_per_mtok = CASE WHEN ? IS NULL THEN output_usd_per_mtok ELSE ? END,
 		stream_first_token_timeout_ms = CASE WHEN ? IS NULL THEN stream_first_token_timeout_ms ELSE ? END,
 		stream_idle_timeout_ms        = CASE WHEN ? IS NULL THEN stream_idle_timeout_ms        ELSE ? END,
+		context_length                = CASE WHEN ? IS NULL THEN context_length                ELSE ? END,
 		updated_at = ? WHERE id = ?`,
 		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningStatus, selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget, selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed), optionalTimestamp(selection.CapabilityVerifiedAt),
 		patch.Provider, patchDerefString(patch.Provider),
@@ -217,6 +221,7 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 		patch.OutputUSDPerMTok, patchDeref(patch.OutputUSDPerMTok),
 		patch.StreamFirstTokenTimeoutMS, patchDerefInt(patch.StreamFirstTokenTimeoutMS),
 		patch.StreamIdleTimeoutMS, patchDerefInt(patch.StreamIdleTimeoutMS),
+		patch.ContextLength, patchDerefInt(patch.ContextLength),
 		updatedAt, id)
 	if err != nil {
 		return Model{}, "", fmt.Errorf("save model patch: %w", err)
@@ -541,7 +546,7 @@ const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, pro
 		reasoning_levels, reasoning_min_budget, reasoning_max_budget, reasoning_zero_allowed, reasoning_dynamic_allowed,
 		capability_verified_at, created_at, updated_at,
 		stream_first_token_timeout_ms, stream_idle_timeout_ms,
-		input_usd_per_mtok, output_usd_per_mtok FROM models`
+		input_usd_per_mtok, output_usd_per_mtok, context_length FROM models`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -612,7 +617,7 @@ func scanModel(row rowScanner) (Model, error) {
 	var inputPrice, outputPrice sql.NullFloat64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
 		&model.Provider, &enabled, &vision, &tools, &reasoning, &model.ReasoningStatus, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
-		&streamFirstToken, &streamIdle, &inputPrice, &outputPrice); err != nil {
+		&streamFirstToken, &streamIdle, &inputPrice, &outputPrice, &model.ContextLength); err != nil {
 		return Model{}, err
 	}
 	if model.Provider == "" {

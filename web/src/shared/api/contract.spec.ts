@@ -118,6 +118,7 @@ const runtimeSettings = object({
   latency_routing_enabled: scalar('boolean'),
   embedding_cache_enabled: scalar('boolean'),
   embedding_cache_max_entries: scalar('number'),
+  auto_reasoning_enabled: scalar('boolean'),
 })
 
 const model = object({
@@ -131,10 +132,12 @@ const model = object({
   supports_vision: scalar('boolean'),
   supports_tools: scalar('boolean'),
   supports_reasoning: scalar('boolean'),
+  reasoning_status: scalar('string'),
   reasoning_wire_format: optional(scalar('string')),
   capability_verified_at: optional(scalar('string')),
   input_usd_per_mtok: optional(scalar('number')),
   output_usd_per_mtok: optional(scalar('number')),
+  context_length: scalar('number'),
   blocked_by_key_ids: optional(array(scalar('number'))),
 })
 
@@ -151,6 +154,7 @@ const candidate = object({
   supports_vision: scalar('boolean'),
   supports_tools: scalar('boolean'),
   supports_reasoning: scalar('boolean'),
+  reasoning_status: scalar('string'),
   reasoning_wire_format: optional(scalar('string')),
 })
 

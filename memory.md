@@ -278,3 +278,13 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - 模型能力迁移后，Repository 直写路径也要补齐 `reasoning_status` 默认值；不能只依赖 Service 层的归一化，否则迁移夹具、导入和直接 upsert 会触发 SQLite CHECK 失败。
 - Responses 的 `include` 不能因兼容 Codex 而整体放行；只接受明确的 `reasoning.encrypted_content` 提示，其余 hosted include 继续拒绝，并单测非数组、未知项和合法项。
 - 提交前最小验证组合：`go test ./...`、`go vet ./...`、`pnpm --dir web run build`、`git diff --check`；临时联调脚本不得写入具体服务器地址或凭据。
+
+## 2026-08-22 vibe 场景优化轮（context_length 闭环 + 契约漂移 + flaky 测试）
+
+- **review-3 未决清单已过时**：其 P1（非流式对象形态 reasoning_content 502）、P2（流式工具 call_id 迟到为空）、P3（拼错 effort 静默降级）早已在 `26def3d`/`0c4138c` 修复并有回归测试（`TestFromChatKeepsAnswerWhenReasoningIsObjectShaped`、`TestStreamAdoptsLateToolCallID`、`TestResolveReasoningRejectsUnknownLevelWhenDynamicDisallowed`）；动手前先跑这些测试确认现状。
+- **context_length 是 operator-owned 列**（迁移 042）：NVIDIA/OCF 的 `/v1/models` 都不返回上下文元数据，因此不进候选 Selection upsert（重新保存白名单不会抹掉手工值），只走 PATCH 的 `CASE WHEN ? IS NULL` 模式（与 pricing/流式超时同款）；0=未声明，`/v1/models` 仅 >0 时透出（OpenRouter 风格 `context_length` 字段），绝不编造默认值——值由管理端手工维护，vibe 客户端读它做压缩决策。
+- **后端加字段必须同步 `web/src/shared/api/contract.spec.ts` 的 shape**：c7761be 的最小验证组合不含 `pnpm --dir web run test`，导致 `auto_reasoning_enabled`（settings）与 candidate `reasoning_status` 两处契约漂移潜伏到本轮才爆红；后端 DTO/迁移加字段时，contract 快照（`go test ./internal/httpapi/admin -update`）与前端 shape 两处都要动。
+- **flaky 测试根因模式（毫秒半开区间）**：observability `formatTime` 是定长毫秒（`2006-01-02T15:04:05.000Z`），监控窗口为半开 `[From, To)` 且两侧都向下截断到毫秒。测试用 `time.Now()` 作 `CreatedAt` 后立即再用 `time.Now()` 查询时，两次取时落在同一毫秒 → 存储值 == To → `created_at < To` 把刚写的记录排除。修复：请求日志类测试的 `CreatedAt` 一律回拨 1 秒（真实语义也是"日志时刻早于查询时刻"）。判定此类 flake：单跑通过、`-count=2` 失败、`-count=5` 又通过。
+- **验证 go 侧改动与无关测试失败的关系**：`go list -deps <pkg>` 确认被改包不在失败包的依赖闭包里，即可排除因果（测试二进制相同）；再用 `git worktree add --detach` 跑干净 HEAD 对照（注意 CMD 无 `/dev/null`，重定向用 `>NUL`；`git stash push -u` 往返也可但更险）。
+- **CMD 环境坑汇总**：无 grep/head/heredoc（用 findstr、`git grep`、写临时 py 脚本执行）；多行 `python -c` 会偶发吞输出，重要补丁一律写成脚本文件跑完删除；`git grep` 无匹配 exit 1 会截断 `&&` 链，用 `;` 或分开跑。
+- 本轮验证全绿：`go vet`、`go test ./...`、`gofmt -l` 空、web lint/typecheck/test（261 用例）/build、`check-web-dist.sh`；未部署（用户指定本轮只本地验证）。

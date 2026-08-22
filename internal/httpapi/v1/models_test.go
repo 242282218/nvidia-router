@@ -14,7 +14,7 @@ import (
 
 func TestV1ModelsListsEnabledWhitelist(t *testing.T) {
 	listed := []modelcatalog.Model{
-		{ID: 1, PublicID: "public-chat", UpstreamID: "vendor/chat", DisplayName: "Chat", Kind: modelcatalog.KindChat, Enabled: true},
+		{ID: 1, PublicID: "public-chat", UpstreamID: "vendor/chat", DisplayName: "Chat", Kind: modelcatalog.KindChat, Enabled: true, ContextLength: 131072},
 		{ID: 2, PublicID: "public-embed", UpstreamID: "vendor/embed", DisplayName: "Embed", Kind: modelcatalog.KindEmbedding, Enabled: true},
 		{ID: 3, PublicID: "public-disabled", UpstreamID: "vendor/disabled", DisplayName: "Disabled", Kind: modelcatalog.KindChat, Enabled: false},
 	}
@@ -54,6 +54,14 @@ func TestV1ModelsListsEnabledWhitelist(t *testing.T) {
 		if entry.OwnedBy == "" {
 			t.Fatalf("owned_by empty for %q", entry.ID)
 		}
+		// Only a declared context window is exposed; undeclared (0) models omit
+		// the field so clients fall back to their own defaults.
+		if entry.ID == "public-chat" && (entry.ContextLength == nil || *entry.ContextLength != 131072) {
+			t.Fatalf("context_length for public-chat = %v, want 131072", entry.ContextLength)
+		}
+		if entry.ID == "public-embed" && entry.ContextLength != nil {
+			t.Fatalf("context_length for public-embed = %v, want omitted", *entry.ContextLength)
+		}
 	}
 }
 
@@ -90,10 +98,11 @@ func TestV1ModelsIgnoresDisabledModels(t *testing.T) {
 }
 
 type modelListEntry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Created       int64  `json:"created"`
+	OwnedBy       string `json:"owned_by"`
+	ContextLength *int   `json:"context_length"`
 }
 
 type modelListerFunc func(context.Context) ([]modelcatalog.Model, error)

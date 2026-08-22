@@ -17,11 +17,15 @@ func TestRequestLogPersistsReasoningSource(t *testing.T) {
 	defer db.Close()
 
 	record := RequestRecord{
-		RequestID:          "request-reasoning-source",
-		Endpoint:           "/v1/chat/completions",
-		HTTPStatus:         200,
-		Outcome:            OutcomeSuccess,
-		CreatedAt:          time.Now().UTC(),
+		RequestID:  "request-reasoning-source",
+		Endpoint:   "/v1/chat/completions",
+		HTTPStatus: 200,
+		Outcome:    OutcomeSuccess,
+		// Back-date by a second: the monitoring window is the half-open
+		// [From, To) compared on millisecond-truncated TEXT. A "now" record
+		// queried at "now" can truncate to the same millisecond as To and fall
+		// outside the window, which made this test flap on fast runs.
+		CreatedAt:          time.Now().UTC().Add(-time.Second),
 		ReasoningRequested: true,
 		ReasoningSource:    "auto-inject",
 	}

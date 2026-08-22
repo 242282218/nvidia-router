@@ -42,6 +42,9 @@ export interface Model extends Candidate {
   stream_idle_timeout_ms?: number
   input_usd_per_mtok?: number
   output_usd_per_mtok?: number
+  // Operator-declared context window (tokens); 0/undefined means undeclared and
+  // /v1/models omits the field so clients fall back to their own defaults.
+  context_length?: number
   blocked_by_key_ids?: number[]
 }
 
@@ -101,6 +104,7 @@ export interface ModelPatch {
   stream_idle_timeout_ms?: number
   input_usd_per_mtok?: number
   output_usd_per_mtok?: number
+  context_length?: number
 }
 
 export interface CandidatesResponse {

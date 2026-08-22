@@ -265,7 +265,7 @@ func contractModels() []modelcatalog.Model {
 	// non-nil slice so the wire carries [] rather than null (audit R13: the
 	// front-end guard rejects null for this field).
 	return []modelcatalog.Model{
-		{ID: 1, PublicID: "chat-llm", UpstreamID: "meta/llama-3.3-70b", DisplayName: "Chat LLM", Kind: modelcatalog.KindChat, Enabled: true, SupportsVision: true, SupportsTools: true, SupportsReasoning: true, ReasoningWireFormat: "chain_of_thought", CapabilityVerifiedAt: &verified, CreatedAt: verified, BlockedByKeyIDs: []int64{}},
+		{ID: 1, PublicID: "chat-llm", UpstreamID: "meta/llama-3.3-70b", DisplayName: "Chat LLM", Kind: modelcatalog.KindChat, Enabled: true, SupportsVision: true, SupportsTools: true, SupportsReasoning: true, ReasoningWireFormat: "chain_of_thought", CapabilityVerifiedAt: &verified, CreatedAt: verified, ContextLength: 131072, BlockedByKeyIDs: []int64{}},
 		{ID: 2, PublicID: "embed-qa", UpstreamID: "nvidia/embed-qa-4", DisplayName: "Embedding QA", Kind: modelcatalog.KindEmbedding, BlockedByKeyIDs: []int64{7}},
 	}
 }

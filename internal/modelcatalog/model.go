@@ -73,8 +73,12 @@ type Model struct {
 	// value means the model is not priced and counts as $0.
 	InputUSDPerMTok  *float64
 	OutputUSDPerMTok *float64
-	BlockedByKeyIDs  []int64
-	updatedAt        time.Time
+	// ContextLength is the operator-declared context window in tokens. 0 means
+	// undeclared: neither upstream exposes context metadata, so /v1/models omits
+	// the field rather than fabricating a value clients would plan around.
+	ContextLength   int
+	BlockedByKeyIDs []int64
+	updatedAt       time.Time
 }
 
 type MutationResult struct {
@@ -158,6 +162,9 @@ type Patch struct {
 	// upstream-discovered attributes): these are operator-owned cost columns.
 	InputUSDPerMTok  *float64 `json:"input_usd_per_mtok,omitempty"`
 	OutputUSDPerMTok *float64 `json:"output_usd_per_mtok,omitempty"`
+	// ContextLength is operator-owned like pricing: 0 clears the declaration
+	// back to "unknown", a positive value replaces it.
+	ContextLength *int `json:"context_length,omitempty"`
 }
 
 func (m Model) ReasoningProfile() compat.ReasoningProfile {

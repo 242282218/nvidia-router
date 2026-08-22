@@ -480,6 +480,42 @@ describe('ModelsView', () => {
     expect(wrapper.text()).toContain('$0.14')
   })
 
+  it('saves the context window declaration from the table editor and clears it when left empty', async () => {
+    vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 3, public_id: 'chat-model', display_name: 'Chat' })] })
+    vi.mocked(modelsApi.patch).mockResolvedValue({
+      ...makeModel({ id: 3, public_id: 'chat-model', display_name: 'Chat' }),
+      context_length: 131072,
+      blocked_by_key_ids: [],
+    })
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('未声明')
+
+    await wrapper.get('[data-testid="model-edit-context"]').trigger('click')
+    await wrapper.get('[data-testid="model-context-input-3"]').setValue('131072')
+    await wrapper.get('[data-testid="model-save-context-3"]').trigger('click')
+    await flushPromises()
+
+    expect(modelsApi.patch).toHaveBeenCalledWith(3, { context_length: 131072 })
+    expect(wrapper.text()).toContain('131072')
+
+    // An empty input declares "unknown" (0) rather than failing the edit.
+    vi.mocked(modelsApi.patch).mockClear()
+    vi.mocked(modelsApi.patch).mockResolvedValue({
+      ...makeModel({ id: 3, public_id: 'chat-model', display_name: 'Chat' }),
+      context_length: 0,
+      blocked_by_key_ids: [],
+    })
+    await wrapper.get('[data-testid="model-edit-context"]').trigger('click')
+    await wrapper.get('[data-testid="model-context-input-3"]').setValue('')
+    await wrapper.get('[data-testid="model-save-context-3"]').trigger('click')
+    await flushPromises()
+
+    expect(modelsApi.patch).toHaveBeenCalledWith(3, { context_length: 0 })
+    expect(wrapper.text()).toContain('未声明')
+  })
+
   it('requires confirmation to delete a model and removes it from the list', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({ data: [makeModel({ id: 8, display_name: 'To Delete' })] })
     vi.mocked(modelsApi.delete).mockResolvedValue(undefined)

@@ -26,6 +26,7 @@ const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
   savePricing: [model: Model, inputUsd: number, outputUsd: number]
+  saveContextLength: [model: Model, contextLength: number]
   delete: [model: Model]
   toggleTest: [model: Model, selected: boolean]
   toggleCandidate: [candidate: Candidate, selected: boolean]
@@ -37,6 +38,32 @@ const emit = defineEmits<{
 const editingPrice = ref<number | null>(null)
 const inputDraft = ref('')
 const outputDraft = ref('')
+
+// Same inline-edit pattern for the operator-owned context window declaration.
+const editingContext = ref<number | null>(null)
+const contextDraft = ref('')
+
+function beginContextEdit(model: Model): void {
+  editingContext.value = model.id
+  contextDraft.value = model.context_length !== undefined && model.context_length > 0 ? String(model.context_length) : ''
+}
+
+function cancelContextEdit(): void {
+  editingContext.value = null
+}
+
+function submitContextEdit(model: Model): void {
+  const trimmed = contextDraft.value.trim()
+  if (trimmed === '') {
+    emit('saveContextLength', model, 0)
+    editingContext.value = null
+    return
+  }
+  const value = Number(trimmed)
+  if (!Number.isInteger(value) || value <= 0) return
+  emit('saveContextLength', model, value)
+  editingContext.value = null
+}
 
 function beginPricingEdit(model: Model): void {
   editingPrice.value = model.id
@@ -75,6 +102,13 @@ function formatPrice(value?: number): string {
 // global-default marker when the model carries no override. The columns are
 // seeded by migration 016/022 (e.g. deepseek 300s); exposing them here makes the
 // override observable without the operator querying the raw API.
+// formatContextLength renders the declared context window in tokens; an
+// undeclared model shows the explicit marker instead of a misleading 0.
+function formatContextLength(value?: number): string {
+  if (value === undefined || value <= 0) return '未声明'
+  return String(value)
+}
+
 function formatStreamTimeout(firstToken?: number, idle?: number): string {
   if (firstToken === undefined && idle === undefined) return '全局默认'
   const parts: string[] = []
@@ -182,6 +216,12 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               class="data-table-th"
               scope="col"
             >
+              上下文
+            </th>
+            <th
+              class="data-table-th"
+              scope="col"
+            >
               流式超时
             </th>
             <th
@@ -260,6 +300,9 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   —
                 </span>
               </div>
+            </td>
+            <td class="data-table-td text-xs text-[var(--color-text-subtle)]">
+              —
             </td>
             <td class="data-table-td text-xs text-[var(--color-text-subtle)]">
               —
@@ -394,6 +437,55 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                 @click="beginPricingEdit(model)"
               >
                 {{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}
+              </button>
+            </td>
+            <td class="data-table-td">
+              <div
+                v-if="editingContext === model.id"
+                :data-testid="`model-context-edit-${model.id}`"
+              >
+                <input
+                  :value="contextDraft"
+                  class="input-field h-8 w-24 px-2 text-xs"
+                  type="number"
+                  min="0"
+                  step="1"
+                  :data-testid="`model-context-input-${model.id}`"
+                  placeholder="tokens"
+                  @input="(e: Event) => { contextDraft = (e.target as HTMLInputElement).value }"
+                  @keyup.enter="submitContextEdit(model)"
+                  @keyup.esc="cancelContextEdit"
+                >
+                <div class="mt-1.5 flex items-center gap-1.5">
+                  <UiButton
+                    variant="primary"
+                    size="sm"
+                    :data-testid="`model-save-context-${model.id}`"
+                    :loading="busyId === model.id"
+                    loading-label="保存中…"
+                    @click="submitContextEdit(model)"
+                  >
+                    保存
+                  </UiButton>
+                  <UiButton
+                    variant="ghost"
+                    size="sm"
+                    @click="cancelContextEdit"
+                  >
+                    取消
+                  </UiButton>
+                </div>
+              </div>
+              <button
+                v-else
+                class="rounded-[6px] px-2 py-1 font-mono-data text-xs transition-colors hover:bg-[var(--color-hover)]"
+                :class="model.context_length !== undefined && model.context_length > 0 ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-subtle)]'"
+                type="button"
+                data-testid="model-edit-context"
+                title="点击编辑上下文窗口（tokens），留空表示未声明"
+                @click="beginContextEdit(model)"
+              >
+                {{ formatContextLength(model.context_length) }}
               </button>
             </td>
             <td class="data-table-td">

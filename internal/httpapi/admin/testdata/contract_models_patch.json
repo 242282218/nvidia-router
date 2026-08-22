@@ -2,6 +2,7 @@
   "blocked_by_key_ids": [
     7
   ],
+  "context_length": 0,
   "display_name": "Embedding QA",
   "enabled": true,
   "id": 2,
