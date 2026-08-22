@@ -21,13 +21,14 @@ interface SettingsFields {
   latency_routing_enabled: boolean
   embedding_cache_enabled: boolean
   embedding_cache_max_entries: number | string
+  auto_reasoning_enabled: boolean
 }
 
 type SettingParam = keyof RuntimeSettings
-type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes' | 'latency_routing_enabled' | 'embedding_cache_enabled'>
+type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes' | 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled'>
 
 interface SettingRule {
-  field: Exclude<keyof SettingsFields, 'latency_routing_enabled' | 'embedding_cache_enabled' | 'failover_status_codes'>
+  field: Exclude<keyof SettingsFields, 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled' | 'failover_status_codes'>
   hint?: string
   integerInput: boolean
   max: number
@@ -65,6 +66,7 @@ const fields = reactive<SettingsFields>({
   latency_routing_enabled: false,
   embedding_cache_enabled: false,
   embedding_cache_max_entries: 256,
+  auto_reasoning_enabled: true,
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
 
@@ -108,6 +110,7 @@ watch(() => props.settings, (settings) => {
   fields.latency_routing_enabled = settings.latency_routing_enabled
   fields.embedding_cache_enabled = settings.embedding_cache_enabled
   fields.embedding_cache_max_entries = settings.embedding_cache_max_entries
+  fields.auto_reasoning_enabled = settings.auto_reasoning_enabled
 }, { immediate: true })
 
 function submit(): void {
@@ -121,6 +124,7 @@ function validateFields(): RuntimeSettings | null {
   settings.failover_status_codes = fields.failover_status_codes.trim()
   settings.latency_routing_enabled = fields.latency_routing_enabled
   settings.embedding_cache_enabled = fields.embedding_cache_enabled
+  settings.auto_reasoning_enabled = fields.auto_reasoning_enabled
   for (const rule of settingRules) {
     const raw = fields[rule.field]
     const value = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)
@@ -245,6 +249,19 @@ function fieldError(param: SettingParam): string {
         <span>
           <span class="font-medium text-[var(--color-text)]">质量感知调度</span>
           <span class="mt-0.5 block text-xs leading-relaxed text-[var(--color-text-muted)]">按真实请求质量优先、请求延迟辅助选择出口；未充分采样的出口低频探索，关闭则恢复纯轮转。</span>
+        </span>
+      </label>
+
+      <label class="panel-inset flex cursor-pointer items-start gap-3 p-3 text-sm">
+        <input
+          v-model="fields.auto_reasoning_enabled"
+          data-testid="auto-reasoning-enabled"
+          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
+          type="checkbox"
+        >
+        <span>
+          <span class="font-medium text-[var(--color-text)]">自动开启最高思考</span>
+          <span class="mt-0.5 block text-xs leading-relaxed text-[var(--color-text-muted)]">客户端未提供 reasoning 参数时，对已确认支持思考的模型自动使用最高可用挡位；客户端显式设置仍优先。</span>
         </span>
       </label>
 

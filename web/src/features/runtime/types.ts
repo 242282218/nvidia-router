@@ -35,6 +35,7 @@ export interface RuntimeSettings {
   latency_routing_enabled: boolean
   embedding_cache_enabled: boolean
   embedding_cache_max_entries: number
+  auto_reasoning_enabled: boolean
 }
 
 export interface RuntimeSummaryResponse {
