@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 
 import { formatDate } from '../../shared/format'
 import UiBadge from '../../shared/ui/UiBadge.vue'
@@ -38,9 +38,7 @@ const errorToneClass = computed(() => visualStatus.value === 'unchecked'
 const rateLabel = computed(() => props.model.probe_count > props.model.skipped_count
   ? `${props.model.success_rate.toFixed(1)}%`
   : '—')
-const detailsOpen = ref(false)
 const titleId = computed(() => `model-health-title-${props.model.model_id}`)
-const detailsId = computed(() => `model-health-details-${props.model.model_id}`)
 
 function outcomeLabel(outcome: ModelHealthOutcome): string {
   switch (outcome) {
@@ -106,9 +104,10 @@ function providerLabel(provider: string): string {
 
 <template>
   <article
-    class="card card-glow relative min-w-0 overflow-hidden p-4 sm:p-5"
+    class="card card-glow relative min-w-0 overflow-hidden p-4 sm:p-[18px]"
     :data-testid="`model-health-card-${model.model_id}`"
     :data-status="visualStatus"
+    :aria-labelledby="titleId"
   >
     <span
       class="absolute inset-x-0 top-0 h-0.5"
@@ -116,17 +115,9 @@ function providerLabel(provider: string): string {
       aria-hidden="true"
     />
 
-    <button
-      :id="titleId"
-      type="button"
-      class="group flex min-h-11 w-full min-w-0 appearance-none items-start gap-3 rounded-[var(--radius-control)] border-0 bg-transparent p-0 text-left focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
-      :aria-controls="detailsId"
-      :aria-expanded="detailsOpen"
-      :aria-label="`查看 ${model.display_name || model.public_id} 详情`"
-      @click="detailsOpen = !detailsOpen"
-    >
+    <div class="flex min-w-0 items-start gap-3">
       <span
-        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-sunken)] text-[var(--color-text-secondary)]"
+        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-[var(--color-sunken)] text-[var(--color-text-secondary)] ring-1 ring-inset ring-[var(--color-border-subtle)]"
         aria-hidden="true"
       >
         <UiIcon
@@ -134,15 +125,15 @@ function providerLabel(provider: string): string {
           :size="17"
         />
       </span>
-      <span class="flex min-w-0 flex-1 flex-col">
+      <div class="flex min-w-0 flex-1 flex-col pt-0.5">
         <span class="flex flex-wrap items-center gap-2">
-          <span
-            class="min-w-0 truncate text-sm font-semibold text-[var(--color-text)]"
-            role="heading"
-            aria-level="2"
+          <h2
+            :id="titleId"
+            class="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 text-[var(--color-text)]"
+            :title="model.display_name || model.public_id"
           >
             {{ model.display_name || model.public_id }}
-          </span>
+          </h2>
           <UiBadge
             :variant="status.variant"
             :label="status.label"
@@ -152,70 +143,92 @@ function providerLabel(provider: string): string {
             class="badge-muted"
           >停用</span>
         </span>
-        <span
-          class="mt-1 truncate font-mono-data text-xs text-[var(--color-text-muted)]"
+        <p
+          class="m-0 mt-1 flex min-w-0 items-center gap-1.5 truncate text-xs text-[var(--color-text-muted)]"
           :title="model.public_id"
         >
-          {{ model.public_id }}
-        </span>
-      </span>
-      <span class="flex shrink-0 items-center gap-2 text-xs text-[var(--color-text-subtle)]">
-        <span class="hidden sm:inline">{{ providerLabel(model.provider) }}</span>
-        <UiIcon
-          name="chevron-down"
-          :size="16"
-          class="transition-transform duration-[var(--duration-micro)]"
-          :class="detailsOpen ? 'rotate-180' : ''"
-          aria-hidden="true"
-        />
-      </span>
-    </button>
-
-    <div class="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
-      <div class="flex items-baseline gap-1.5">
-        <strong class="font-mono-data text-lg font-semibold text-[var(--color-text)]">
+          <span class="shrink-0 font-medium text-[var(--color-text-secondary)]">{{ providerLabel(model.provider) }}</span>
+          <span class="text-[var(--color-text-subtle)]">·</span>
+          <span class="min-w-0 truncate font-mono-data">{{ model.public_id }}</span>
+        </p>
+      </div>
+      <div
+        class="shrink-0 rounded-[var(--radius-control)] px-3 py-2 text-right"
+        :style="{ backgroundColor: `color-mix(in srgb, ${status.color} 10%, var(--color-surface))` }"
+      >
+        <strong
+          class="block font-mono-data text-[21px] font-semibold leading-none tracking-[var(--tracking-display)]"
+          :style="{ color: status.color }"
+          :data-testid="`model-health-rate-${model.model_id}`"
+        >
           {{ rateLabel }}
         </strong>
-        <span class="ml-1 text-xs text-[var(--color-text-muted)]">探测成功率</span>
-      </div>
-      <div class="flex items-baseline gap-1.5">
-        <strong class="font-mono-data text-sm font-semibold text-[var(--color-text)]">
-          {{ model.probe_count }}
-        </strong>
-        <span class="text-xs text-[var(--color-text-muted)]">次探测</span>
+        <span class="mt-1 block text-[11px] text-[var(--color-text-muted)]">成功率</span>
       </div>
     </div>
 
-    <div class="mt-4">
+    <dl class="m-0 mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-[var(--radius-control)] bg-[var(--color-border-subtle)]">
+      <div class="min-w-0 bg-[var(--color-sunken)] px-2.5 py-2">
+        <dt class="m-0 type-label truncate">
+          探测次数
+        </dt>
+        <dd class="m-0 mt-1 font-mono-data text-sm font-semibold text-[var(--color-text)]">
+          {{ model.probe_count }}
+        </dd>
+      </div>
+      <div class="min-w-0 bg-[var(--color-sunken)] px-2.5 py-2">
+        <dt class="m-0 type-label truncate">
+          连续失败
+        </dt>
+        <dd
+          class="m-0 mt-1 font-mono-data text-sm font-semibold"
+          :class="model.consecutive_failures > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text)]'"
+        >
+          {{ model.consecutive_failures }}
+        </dd>
+      </div>
+      <div class="min-w-0 bg-[var(--color-sunken)] px-2.5 py-2">
+        <dt class="m-0 type-label truncate">
+          最近延迟
+        </dt>
+        <dd class="m-0 mt-1 truncate font-mono-data text-sm font-semibold text-[var(--color-text)]">
+          <template v-if="model.last_duration_ms !== undefined">
+            {{ model.last_duration_ms }}<span class="ml-0.5 text-[11px] font-normal text-[var(--color-text-muted)]">ms</span>
+          </template>
+          <template v-else>
+            —
+          </template>
+        </dd>
+      </div>
+    </dl>
+
+    <div class="mt-3">
       <div class="mb-2 flex items-center justify-between gap-3">
-        <span class="text-xs font-medium text-[var(--color-text-secondary)]">状态时间线</span>
+        <span class="type-label text-[var(--color-text-secondary)]">状态时间线</span>
         <span class="text-[11px] text-[var(--color-text-subtle)]">
           {{ model.buckets.length ? `${model.buckets.length} 个时间段` : '暂无数据' }}
         </span>
       </div>
       <div
         :data-testid="`model-health-timeline-${model.model_id}`"
-        class="flex min-h-9 items-stretch gap-1 overflow-hidden"
+        class="flex min-h-9 items-stretch gap-px overflow-hidden rounded-[var(--radius-control)] bg-[var(--color-sunken)] p-1"
         role="group"
         :aria-label="timelineLabel(model)"
       >
         <span
           v-if="model.buckets.length === 0"
-          class="min-w-0 flex-1 rounded-[4px] border border-dashed border-[var(--color-border)] bg-[var(--color-sunken)]"
+          class="min-w-0 flex-1 rounded-[4px] border border-dashed border-[var(--color-border)]"
           aria-hidden="true"
         />
-        <button
+        <span
           v-for="(bucket, index) in model.buckets"
           :key="`${bucket.start}-${index}`"
-          type="button"
           :data-testid="`model-health-bucket-${model.model_id}-${index}`"
-          class="min-h-9 min-w-[4px] flex-1 rounded-[4px] border transition-[filter,transform,box-shadow] duration-[var(--duration-micro)] hover:brightness-95 hover:shadow-[var(--shadow-xs)] active:scale-[0.96] focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          class="min-h-7 min-w-0 flex-1 rounded-[3px] border"
           :style="bucketStyle(bucket.outcome)"
           :title="bucketTitle(bucket)"
           :aria-label="bucketTitle(bucket)"
-          :aria-controls="detailsId"
-          :aria-expanded="detailsOpen"
-          @click="detailsOpen = true"
+          role="img"
         />
       </div>
       <div class="mt-2 grid grid-cols-3 text-[11px] text-[var(--color-text-subtle)]">
@@ -225,61 +238,27 @@ function providerLabel(provider: string): string {
       </div>
     </div>
 
-    <div class="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-[var(--color-text-muted)]">
-      <span>最近检测：{{ formatDate(model.last_probe_at, { seconds: true }) }}</span>
-      <span v-if="model.last_duration_ms !== undefined">{{ model.last_duration_ms }} ms</span>
+    <div class="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-[var(--color-border-subtle)] pt-2.5 text-xs text-[var(--color-text-muted)]">
+      <span>最近检测</span>
+      <time
+        class="font-mono-data text-[var(--color-text-secondary)]"
+        :datetime="model.last_probe_at"
+      >
+        {{ formatDate(model.last_probe_at, { seconds: true }) }}
+      </time>
     </div>
 
     <p
       v-if="model.last_error_code"
-      class="mt-2 text-xs"
+      class="m-0 mt-1 flex items-center gap-1.5 text-xs"
       :class="errorToneClass"
     >
-      最近异常：{{ errorLabel(model.last_error_code) }}
+      <UiIcon
+        name="warning"
+        :size="14"
+        aria-hidden="true"
+      />
+      <span>最近异常：{{ errorLabel(model.last_error_code) }}</span>
     </p>
-
-    <section
-      v-if="detailsOpen"
-      :id="detailsId"
-      :data-testid="`model-health-timeline-details-${model.model_id}`"
-      class="mt-4 border-t border-[var(--color-border-subtle)] pt-3 text-xs text-[var(--color-text-muted)]"
-      :aria-labelledby="titleId"
-    >
-      <div class="flex items-center justify-between gap-3">
-        <h3 class="font-medium text-[var(--color-text-secondary)]">
-          时间段详情
-        </h3>
-        <button
-          type="button"
-          class="min-h-9 rounded-[var(--radius-control)] px-2 text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
-          @click="detailsOpen = false"
-        >
-          收起
-        </button>
-      </div>
-      <ol class="mt-2 space-y-1.5">
-        <li
-          v-for="(bucket, index) in model.buckets"
-          :key="`${bucket.end}-${index}`"
-          class="flex items-center justify-between gap-3"
-        >
-          <span class="flex min-w-0 items-center gap-2">
-            <span
-              class="h-2 w-2 shrink-0 rounded-[2px]"
-              :style="bucketStyle(bucket.outcome)"
-              aria-hidden="true"
-            />
-            <span class="truncate">{{ formatDate(bucket.start, { seconds: true }) }}</span>
-          </span>
-          <span class="shrink-0">{{ outcomeLabel(bucket.outcome) }} · {{ bucket.probe_count }} 次</span>
-        </li>
-      </ol>
-      <p
-        v-if="model.buckets.length === 0"
-        class="mt-2 rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-3 py-2"
-      >
-        当前时间范围没有可用探测数据。
-      </p>
-    </section>
   </article>
 </template>
