@@ -78,6 +78,16 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	if selection.Provider == "" {
 		selection.Provider = defaultModelProvider
 	}
+	// Repository callers include migration fixtures and import paths that may not
+	// pass through Service.SaveSelection. Keep the persisted status valid for
+	// those callers instead of sending an empty string past the database CHECK.
+	if selection.ReasoningStatus == "" {
+		if selection.SupportsReasoning {
+			selection.ReasoningStatus = ReasoningStatusInferred
+		} else {
+			selection.ReasoningStatus = ReasoningStatusUnknown
+		}
+	}
 	var previousProvider sql.NullString
 	var previousKind sql.NullString
 	var previousUpdatedAt sql.NullString
@@ -109,10 +119,10 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO models (
 			public_id, upstream_id, display_name, kind, provider, enabled,
-			supports_vision, supports_tools, supports_reasoning,
+			supports_vision, supports_tools, supports_reasoning, reasoning_status,
 			reasoning_wire_format, reasoning_levels, reasoning_min_budget, reasoning_max_budget,
 			reasoning_zero_allowed, reasoning_dynamic_allowed, capability_verified_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(public_id) DO UPDATE SET
 			upstream_id = excluded.upstream_id,
 			display_name = excluded.display_name,
@@ -121,8 +131,9 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 			enabled = excluded.enabled,
 			supports_vision = excluded.supports_vision,
 			supports_tools = excluded.supports_tools,
-			supports_reasoning = excluded.supports_reasoning,
-			reasoning_wire_format = excluded.reasoning_wire_format,
+			supports_reasoning = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.supports_reasoning ELSE excluded.supports_reasoning END,
+			reasoning_status = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.reasoning_status ELSE excluded.reasoning_status END,
+			reasoning_wire_format = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.reasoning_wire_format ELSE excluded.reasoning_wire_format END,
 			reasoning_levels = excluded.reasoning_levels,
 			reasoning_min_budget = excluded.reasoning_min_budget,
 			reasoning_max_budget = excluded.reasoning_max_budget,
@@ -131,7 +142,7 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 			capability_verified_at = excluded.capability_verified_at,
 			updated_at = excluded.updated_at
 	`, selection.PublicID, selection.UpstreamID, selection.DisplayName, selection.Kind, selection.Provider, boolInt(selection.Enabled),
-		boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning),
+		boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningStatus,
 		selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget,
 		selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed),
 		verifiedAt, createdAt, updatedAt); err != nil {
@@ -193,14 +204,14 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 		return Model{}, "", fmt.Errorf("validate model patch provider: %w", err)
 	}
 	updatedAt := formatRevisionTime(now, model.updatedAt)
-	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_wire_format = ?, reasoning_levels = ?, reasoning_min_budget = ?, reasoning_max_budget = ?, reasoning_zero_allowed = ?, reasoning_dynamic_allowed = ?, capability_verified_at = ?,
+	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_status = ?, reasoning_wire_format = ?, reasoning_levels = ?, reasoning_min_budget = ?, reasoning_max_budget = ?, reasoning_zero_allowed = ?, reasoning_dynamic_allowed = ?, capability_verified_at = ?,
 		provider = CASE WHEN ? IS NULL THEN provider ELSE ? END,
 		input_usd_per_mtok  = CASE WHEN ? IS NULL THEN input_usd_per_mtok  ELSE ? END,
 		output_usd_per_mtok = CASE WHEN ? IS NULL THEN output_usd_per_mtok ELSE ? END,
 		stream_first_token_timeout_ms = CASE WHEN ? IS NULL THEN stream_first_token_timeout_ms ELSE ? END,
 		stream_idle_timeout_ms        = CASE WHEN ? IS NULL THEN stream_idle_timeout_ms        ELSE ? END,
 		updated_at = ? WHERE id = ?`,
-		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget, selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed), optionalTimestamp(selection.CapabilityVerifiedAt),
+		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningStatus, selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget, selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed), optionalTimestamp(selection.CapabilityVerifiedAt),
 		patch.Provider, patchDerefString(patch.Provider),
 		patch.InputUSDPerMTok, patchDeref(patch.InputUSDPerMTok),
 		patch.OutputUSDPerMTok, patchDeref(patch.OutputUSDPerMTok),
@@ -526,7 +537,7 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 }
 
 const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, provider, enabled,
-		supports_vision, supports_tools, supports_reasoning, reasoning_wire_format,
+		supports_vision, supports_tools, supports_reasoning, reasoning_status, reasoning_wire_format,
 		reasoning_levels, reasoning_min_budget, reasoning_max_budget, reasoning_zero_allowed, reasoning_dynamic_allowed,
 		capability_verified_at, created_at, updated_at,
 		stream_first_token_timeout_ms, stream_idle_timeout_ms,
@@ -535,7 +546,7 @@ const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, pro
 type rowScanner interface{ Scan(dest ...any) error }
 
 func selectionFromModel(model Model) Selection {
-	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Provider: model.Provider, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
+	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Provider: model.Provider, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning, ReasoningStatus: model.ReasoningStatus, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
 }
 
 func applyPatch(selection *Selection, patch Patch) {
@@ -559,6 +570,16 @@ func applyPatch(selection *Selection, patch Patch) {
 	}
 	if patch.SupportsReasoning != nil {
 		selection.SupportsReasoning = *patch.SupportsReasoning
+		if patch.ReasoningStatus == nil {
+			if *patch.SupportsReasoning {
+				selection.ReasoningStatus = ReasoningStatusInferred
+			} else {
+				selection.ReasoningStatus = ReasoningStatusUnsupported
+			}
+		}
+	}
+	if patch.ReasoningStatus != nil {
+		selection.ReasoningStatus = *patch.ReasoningStatus
 	}
 	if patch.ReasoningWireFormat != nil {
 		selection.ReasoningWireFormat = *patch.ReasoningWireFormat
@@ -590,12 +611,19 @@ func scanModel(row rowScanner) (Model, error) {
 	var streamFirstToken, streamIdle sql.NullInt64
 	var inputPrice, outputPrice sql.NullFloat64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
-		&model.Provider, &enabled, &vision, &tools, &reasoning, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
+		&model.Provider, &enabled, &vision, &tools, &reasoning, &model.ReasoningStatus, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
 		&streamFirstToken, &streamIdle, &inputPrice, &outputPrice); err != nil {
 		return Model{}, err
 	}
 	if model.Provider == "" {
 		model.Provider = defaultModelProvider
+	}
+	if model.ReasoningStatus == "" {
+		if reasoning == 1 {
+			model.ReasoningStatus = ReasoningStatusInferred
+		} else {
+			model.ReasoningStatus = ReasoningStatusUnknown
+		}
 	}
 	model.Enabled = enabled == 1
 	model.SupportsVision = vision == 1

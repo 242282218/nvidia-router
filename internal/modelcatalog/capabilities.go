@@ -40,6 +40,9 @@ func normalizeSelection(selection Selection) (Selection, error) {
 	if !validKind(selection.Kind) {
 		return Selection{}, fmt.Errorf("unsupported model kind %q", selection.Kind)
 	}
+	if err := normalizeReasoningStatus(&selection); err != nil {
+		return Selection{}, err
+	}
 	if err := normalizeReasoningProfile(&selection); err != nil {
 		return Selection{}, err
 	}
@@ -47,6 +50,28 @@ func normalizeSelection(selection Selection) (Selection, error) {
 		return Selection{}, ErrCapabilityUnverified
 	}
 	return selection, nil
+}
+
+func normalizeReasoningStatus(selection *Selection) error {
+	if selection.ReasoningStatus == "" {
+		if selection.SupportsReasoning {
+			selection.ReasoningStatus = ReasoningStatusInferred
+		} else {
+			selection.ReasoningStatus = ReasoningStatusUnknown
+		}
+	}
+	switch selection.ReasoningStatus {
+	case ReasoningStatusUnknown, ReasoningStatusInferred, ReasoningStatusVisible, ReasoningStatusHidden, ReasoningStatusUnsupported:
+	default:
+		return fmt.Errorf("unsupported reasoning status %q", selection.ReasoningStatus)
+	}
+	if !selection.SupportsReasoning && (selection.ReasoningStatus == ReasoningStatusVisible || selection.ReasoningStatus == ReasoningStatusHidden) {
+		return errors.New("visible or hidden reasoning status requires reasoning support")
+	}
+	if selection.SupportsReasoning && selection.ReasoningStatus == ReasoningStatusUnsupported {
+		return errors.New("unsupported reasoning status cannot claim reasoning support")
+	}
+	return nil
 }
 
 func normalizeReasoningProfile(selection *Selection) error {

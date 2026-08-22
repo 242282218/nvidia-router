@@ -135,7 +135,7 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 		       first_byte_ms, first_token_ms, duration_ms, attempt_count,
 		       prompt_tokens, completion_tokens, upstream_request_id, created_at,
 		       reasoning_requested, reasoning_wire_fields, reasoning_present,
-		       reasoning_chars, stream_done, route_mode,
+		       reasoning_chars, stream_done, route_mode, reasoning_source,
 		       reasoning_requested_level, reasoning_effective_level
 		FROM request_logs
 		WHERE `+where+`
@@ -548,7 +548,7 @@ func normalizeRequestLogsPage(page, pageSize int) (int, int, error) {
 
 func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	var item RequestLog
-	var modelID, errorCode, upstreamRequestID, reasoningWireFields, routeMode sql.NullString
+	var modelID, errorCode, upstreamRequestID, reasoningWireFields, routeMode, reasoningSource sql.NullString
 	var reasoningRequestedLevel, reasoningEffectiveLevel sql.NullString
 	var accessKeyID, nvidiaKeyID, firstByteMS, firstTokenMS, promptTokens, completionTokens, reasoningChars sql.NullInt64
 	var isStream, reasoningRequested, reasoningPresent, streamDone int
@@ -558,7 +558,7 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 		&firstByteMS, &firstTokenMS, &item.DurationMS, &item.AttemptCount, &promptTokens,
 		&completionTokens, &upstreamRequestID, &item.CreatedAt,
 		&reasoningRequested, &reasoningWireFields, &reasoningPresent, &reasoningChars,
-		&streamDone, &routeMode, &reasoningRequestedLevel, &reasoningEffectiveLevel,
+		&streamDone, &routeMode, &reasoningSource, &reasoningRequestedLevel, &reasoningEffectiveLevel,
 	); err != nil {
 		return RequestLog{}, err
 	}
@@ -578,6 +578,7 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	item.ReasoningChars = nullableInt64Pointer(reasoningChars)
 	item.StreamDone = streamDone != 0
 	item.RouteMode = nullableStringPointer(routeMode)
+	item.ReasoningSource = nullableStringPointer(reasoningSource)
 	item.ReasoningRequestedLevel = nullableStringPointer(reasoningRequestedLevel)
 	item.ReasoningEffectiveLevel = nullableStringPointer(reasoningEffectiveLevel)
 	return item, nil

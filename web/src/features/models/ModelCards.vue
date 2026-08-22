@@ -41,8 +41,20 @@ function providerLabel(provider?: string): string {
   return normalizeProvider(provider) === 'opencodefree' ? 'OpenCodeFree' : 'NVIDIA'
 }
 
-function isPendingProvider(provider?: string): boolean {
-  return normalizeProvider(provider) === 'opencodefree'
+function reasoningStatusLabel(status?: string): string {
+  switch (status) {
+    case 'visible': return '可见'
+    case 'hidden': return '隐藏'
+    case 'inferred': return '推断'
+    case 'unsupported': return '不支持'
+    default: return '待验证'
+  }
+}
+
+function reasoningStatusVariant(status?: string): 'success' | 'warning' | 'muted' {
+  if (status === 'visible' || status === 'hidden' || status === 'inferred') return 'success'
+  if (status === 'unsupported') return 'muted'
+  return 'warning'
 }
 
 function onCandidateChange(candidate: Candidate, event: globalThis.Event): void {
@@ -84,7 +96,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             </div>
             <UiBadge
               class="shrink-0"
-              :variant="isPendingProvider(candidate.provider) ? 'warning' : 'info'"
+              :variant="candidate.reasoning_status === 'unknown' ? 'warning' : 'info'"
               :label="providerLabel(candidate.provider)"
             />
           </div>
@@ -102,9 +114,9 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               :dot="false"
             />
             <UiBadge
-              v-if="isPendingProvider(candidate.provider)"
+              v-if="candidate.reasoning_status === 'unknown'"
               variant="warning"
-              label="待接入"
+              label="待验证"
               :dot="false"
             />
           </div>
@@ -139,7 +151,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
         </div>
         <UiBadge
           class="shrink-0"
-          :variant="isPendingProvider(model.provider) ? 'warning' : 'info'"
+          :variant="'info'"
           :label="providerLabel(model.provider)"
           :dot="false"
         />
@@ -162,8 +174,8 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
           :dot="false"
         />
         <UiBadge
-          :variant="model.supports_reasoning ? 'success' : 'muted'"
-          :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'}`"
+          :variant="reasoningStatusVariant(model.reasoning_status)"
+          :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'} · ${reasoningStatusLabel(model.reasoning_status)}`"
           :dot="false"
         />
       </div>
@@ -173,7 +185,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
           :variant="model.enabled ? 'success' : 'muted'"
           :label="model.enabled ? '启用' : '停用'"
         />
-        <span class="text-xs text-[var(--color-text-muted)]">勾选后参与{{ isPendingProvider(model.provider) ? ' OpenCodeFree ' : ' NVIDIA ' }}只读测试</span>
+        <span class="text-xs text-[var(--color-text-muted)]">勾选后参与只读测试</span>
       </div>
 
       <p

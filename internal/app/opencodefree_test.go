@@ -155,7 +155,7 @@ func TestOpenCodeFreeChatRoutesToGatewayAndListsInModels(t *testing.T) {
 		t.Fatalf("gateway hits = %d, want 1", atomic.LoadInt64(&hits))
 	}
 
-	// Responses endpoint does not support the OpenCodeFree provider.
+	// Responses endpoint uses the same gateway route for the OpenCodeFree provider.
 	req, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{"model":"pub-free","input":"hi"}`))
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -163,9 +163,16 @@ func TestOpenCodeFreeChatRoutesToGatewayAndListsInModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("responses: %v", err)
 	}
+	body, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("responses status = %d, want 501", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("responses status = %d body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "hello from opencodefree") {
+		t.Fatalf("responses did not come from gateway: %s", string(body))
+	}
+	if atomic.LoadInt64(&hits) != 2 {
+		t.Fatalf("gateway hits = %d, want 2 after Responses", atomic.LoadInt64(&hits))
 	}
 }
 

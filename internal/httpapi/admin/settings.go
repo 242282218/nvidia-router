@@ -35,6 +35,7 @@ type settingsDTO struct {
 	LatencyRoutingEnabled     bool   `json:"latency_routing_enabled"`
 	EmbeddingCacheEnabled     bool   `json:"embedding_cache_enabled"`
 	EmbeddingCacheMaxEntries  int    `json:"embedding_cache_max_entries"`
+	AutoReasoningEnabled      bool   `json:"auto_reasoning_enabled"`
 }
 
 type settingsPatch struct {
@@ -57,6 +58,7 @@ type settingsPatch struct {
 	LatencyRoutingEnabled     *bool   `json:"latency_routing_enabled"`
 	EmbeddingCacheEnabled     *bool   `json:"embedding_cache_enabled"`
 	EmbeddingCacheMaxEntries  *int    `json:"embedding_cache_max_entries"`
+	AutoReasoningEnabled      *bool   `json:"auto_reasoning_enabled"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -149,6 +151,9 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.EmbeddingCacheMaxEntries != nil {
 		current.EmbeddingCacheMaxEntries = *patch.EmbeddingCacheMaxEntries
 	}
+	if patch.AutoReasoningEnabled != nil {
+		current.AutoReasoningEnabled = *patch.AutoReasoningEnabled
+	}
 	return current
 }
 
@@ -170,6 +175,7 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		LatencyRoutingEnabled:     snapshot.LatencyRoutingEnabled,
 		EmbeddingCacheEnabled:     snapshot.EmbeddingCacheEnabled,
 		EmbeddingCacheMaxEntries:  snapshot.EmbeddingCacheMaxEntries,
+		AutoReasoningEnabled:      snapshot.AutoReasoningEnabled,
 	}
 }
 

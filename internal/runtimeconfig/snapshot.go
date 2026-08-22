@@ -87,6 +87,9 @@ type Snapshot struct {
 	// EmbeddingCacheMaxEntries bounds the in-memory embedding cache. A bounded
 	// LRU keeps memory flat regardless of how many distinct inputs flow through.
 	EmbeddingCacheMaxEntries int
+	// AutoReasoningEnabled injects the highest supported reasoning level when a
+	// client omits all reasoning aliases. Explicit client values always win.
+	AutoReasoningEnabled bool
 	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
 	FirstByteDeadline time.Time
 }

@@ -685,6 +685,7 @@ func candidateFromHint(modelID string, hint nvidia.CapabilityHint) Candidate {
 		SupportsVision:          hint.SupportsVision,
 		SupportsTools:           hint.SupportsTools,
 		SupportsReasoning:       hint.SupportsReasoning,
+		ReasoningStatus:         reasoningStatusForCapabilities(hint.SupportsReasoning),
 		ReasoningWireFormat:     string(hint.ReasoningWireFormat),
 		ReasoningLevels:         defaultReasoningLevelsForCandidate(hint.SupportsReasoning),
 		ReasoningMaxBudget:      128000,
@@ -700,17 +701,34 @@ func defaultReasoningLevelsForCandidate(supported bool) []string {
 	return defaultReasoningLevels()
 }
 
+func reasoningStatusForCapabilities(supported bool) string {
+	if supported {
+		return ReasoningStatusInferred
+	}
+	return ReasoningStatusUnknown
+}
+
 func candidateFromOpenCodeFree(modelID string) Candidate {
+	hint := openCodeFreeCapabilityHint(modelID)
 	return Candidate{
-		PublicID:     ProviderOpenCodeFree + "/" + modelID,
-		UpstreamID:   modelID,
-		DisplayName:  modelID,
-		Kind:         KindChat,
-		Provider:     ProviderOpenCodeFree,
-		Channel:      ProviderOpenCodeFree,
-		Badge:        "OpenCodeFree",
-		Status:       "pending",
-		Capabilities: []string{"chat", "free"},
+		PublicID:                ProviderOpenCodeFree + "/" + modelID,
+		UpstreamID:              modelID,
+		DisplayName:             modelID,
+		Kind:                    KindChat,
+		Provider:                ProviderOpenCodeFree,
+		Channel:                 ProviderOpenCodeFree,
+		Badge:                   "OpenCodeFree",
+		Status:                  "available",
+		Capabilities:            capabilityTags(KindChat, hint.SupportsVision, hint.SupportsTools, hint.SupportsReasoning),
+		SupportsVision:          hint.SupportsVision,
+		SupportsTools:           hint.SupportsTools,
+		SupportsReasoning:       hint.SupportsReasoning,
+		ReasoningStatus:         hint.ReasoningStatus,
+		ReasoningWireFormat:     hint.ReasoningWire,
+		ReasoningLevels:         defaultReasoningLevelsForCandidate(hint.SupportsReasoning),
+		ReasoningMaxBudget:      128000,
+		ReasoningZeroAllowed:    hint.SupportsReasoning,
+		ReasoningDynamicAllowed: hint.SupportsReasoning,
 	}
 }
 

@@ -16,10 +16,9 @@ type ModelLister interface {
 }
 
 // requireNVIDIAProvider rejects a model whose provider is not the NVIDIA
-// upstream. Chat is the only endpoint that routes OpenCodeFree models; the
-// other /v1 endpoints (responses, embeddings, audio) do not support that
-// provider and answer with 501 instead of sending the request to the wrong
-// upstream.
+// upstream. Chat and Responses route OpenCodeFree models separately; the other
+// /v1 endpoints (embeddings, audio) do not support that provider and answer with
+// 501 instead of sending the request to the wrong upstream.
 func requireNVIDIAProvider(writer http.ResponseWriter, model modelcatalog.Model) bool {
 	if model.Provider != "" && model.Provider != modelcatalog.ProviderNVIDIA {
 		apierror.Error{

@@ -42,9 +42,9 @@ const insertRequestLogQuery = `
 		first_byte_ms, first_token_ms, duration_ms, attempt_count,
 		prompt_tokens, completion_tokens, upstream_request_id, created_at,
 		reasoning_requested, reasoning_wire_fields, reasoning_present,
-		reasoning_chars, stream_done, route_mode,
+		reasoning_chars, stream_done, route_mode, reasoning_source,
 		reasoning_requested_level, reasoning_effective_level
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 const upsertDailyStatQuery = `
@@ -321,7 +321,7 @@ func execInsertRequestRecord(ctx context.Context, runner stmtRunner, record Requ
 		record.FirstByteMS, record.FirstTokenMS, record.DurationMS, record.AttemptCount,
 		record.PromptTokens, record.CompletionTokens, record.UpstreamRequestID, formatTime(record.CreatedAt),
 		boolInt(record.ReasoningRequested), nullableString(record.ReasoningWireFields), boolInt(record.ReasoningPresent),
-		record.ReasoningChars, boolInt(record.StreamDone), nullableString(record.RouteMode),
+		record.ReasoningChars, boolInt(record.StreamDone), nullableString(record.RouteMode), nullableString(record.ReasoningSource),
 		nullableString(record.ReasoningRequestedLevel), nullableString(record.ReasoningEffectiveLevel),
 	)
 	if err != nil {

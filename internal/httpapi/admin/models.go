@@ -57,6 +57,7 @@ type candidateDTO struct {
 	SupportsVision          bool              `json:"supports_vision"`
 	SupportsTools           bool              `json:"supports_tools"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningStatus         string            `json:"reasoning_status"`
 	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
 	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
 	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
@@ -75,6 +76,7 @@ type modelDTO struct {
 	SupportsVision          bool              `json:"supports_vision"`
 	SupportsTools           bool              `json:"supports_tools"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningStatus         string            `json:"reasoning_status"`
 	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
 	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
 	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
@@ -100,6 +102,7 @@ type selectionDTO struct {
 	SupportsVision          bool              `json:"supports_vision"`
 	SupportsTools           bool              `json:"supports_tools"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
+	ReasoningStatus         string            `json:"reasoning_status"`
 	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
 	ReasoningLevels         []string          `json:"reasoning_levels,omitempty"`
 	ReasoningMinBudget      int               `json:"reasoning_min_budget,omitempty"`
@@ -350,6 +353,7 @@ func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
 		PublicID: publicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind,
 		Provider: provider, Channel: channel, Badge: badge, Status: status, Capabilities: capabilities,
 		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning,
+		ReasoningStatus:     v.ReasoningStatus,
 		ReasoningWireFormat: v.ReasoningWireFormat,
 		ReasoningLevels:     v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget,
 		ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed,
@@ -372,6 +376,7 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		SupportsVision:            v.SupportsVision,
 		SupportsTools:             v.SupportsTools,
 		SupportsReasoning:         v.SupportsReasoning,
+		ReasoningStatus:           v.ReasoningStatus,
 		ReasoningWireFormat:       v.ReasoningWireFormat,
 		ReasoningLevels:           v.ReasoningLevels,
 		ReasoningMinBudget:        v.ReasoningMinBudget,
@@ -387,7 +392,7 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 	}
 }
 func (v selectionDTO) selection() modelcatalog.Selection {
-	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Provider: v.Provider, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningWireFormat: v.ReasoningWireFormat, ReasoningLevels: v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget, ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed, ReasoningDynamicAllowed: v.ReasoningDynamicAllowed}
+	return modelcatalog.Selection{PublicID: v.PublicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind, Provider: v.Provider, Enabled: v.Enabled, SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning, ReasoningStatus: v.ReasoningStatus, ReasoningWireFormat: v.ReasoningWireFormat, ReasoningLevels: v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget, ReasoningMaxBudget: v.ReasoningMaxBudget, ReasoningZeroAllowed: v.ReasoningZeroAllowed, ReasoningDynamicAllowed: v.ReasoningDynamicAllowed}
 }
 
 func (h *Models) openCodeFreeConfigured() bool {

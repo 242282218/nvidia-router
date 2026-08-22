@@ -156,9 +156,15 @@ func (r Request) RequestedReasoningLevel() string {
 	return ""
 }
 
-// MarshalFor binds a parsed request to a resolved enabled Chat model and emits
-// one normalized NVIDIA Chat request shape.
+func (r Request) ReasoningRequested() bool {
+	return r.reasoning.Requested
+}
+
 func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
+	return r.MarshalForWithOptions(model, false)
+}
+
+func (r Request) MarshalForWithOptions(model modelcatalog.Model, autoReasoning bool) ([]byte, error) {
 	if model.Kind != modelcatalog.KindChat || !model.Enabled {
 		return nil, invalidResponses("model_capability_unsupported", "model", "The selected model is not a chat model.")
 	}
@@ -183,8 +189,14 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 		}
 		chat["tool_choice"] = encodedChoice
 	}
-	if r.reasoning.Requested && model.SupportsReasoning {
-		decision, err := compat.ResolveReasoning(r.reasoning, model.ReasoningProfile())
+	reasoning := r.reasoning
+	if autoReasoning && !reasoning.Requested && model.SupportsReasoning {
+		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile()); ok {
+			reasoning = automatic
+		}
+	}
+	if reasoning.Requested && model.SupportsReasoning {
+		decision, err := compat.ResolveReasoning(reasoning, model.ReasoningProfile())
 		if err != nil {
 			return nil, reasoningResponseModelError(err)
 		}

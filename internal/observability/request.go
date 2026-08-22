@@ -42,6 +42,7 @@ type RequestRecord struct {
 	// counts. Reasoning text, prompts and keys are never persisted.
 	ReasoningRequested      bool
 	ReasoningWireFields     string
+	ReasoningSource         string
 	ReasoningRequestedLevel string
 	ReasoningEffectiveLevel string
 	ReasoningPresent        bool

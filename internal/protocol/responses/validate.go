@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/compat"
@@ -52,7 +53,7 @@ func rejectUnsupportedTopLevel(fields map[string]json.RawMessage) error {
 		"prompt_cache_options": {}, "prompt_cache_retention": {}, "context_management": {}, "include": {},
 		"max_tool_calls": {}, "moderation": {}, "safety_identifier": {}, "service_tier": {}, "truncation": {},
 		"top_logprobs": {}, "stream_options": {}, "seed": {}, "stop": {}, "presence_penalty": {},
-		"frequency_penalty": {}, "thinking": {},
+		"frequency_penalty": {}, "thinking": {}, "client_metadata": {},
 	}
 	for name := range fields {
 		if _, ok := allowed[name]; !ok {
@@ -91,16 +92,16 @@ func rejectStoreTrue(fields map[string]json.RawMessage) error {
 }
 
 func rejectPresentUserState(fields map[string]json.RawMessage) error {
+	// Codex sends prompt_cache_key as a cache hint; the stateless adapter accepts
+	// it but deliberately does not persist or forward it to Chat Completions.
 	unsupported := map[string]string{
 		"previous_response_id":   "Stateful response recovery is not supported.",
 		"conversation":           "Stateful response recovery is not supported.",
 		"metadata":               "Response metadata persistence is not supported.",
 		"prompt":                 "Prompt templates are not supported.",
-		"prompt_cache_key":       "Prompt cache keys are not supported.",
 		"prompt_cache_options":   "Prompt cache options are not supported.",
 		"prompt_cache_retention": "Prompt cache retention is not supported.",
 		"context_management":     "Context management is not supported.",
-		"include":                "Hosted tool inclusion is not supported.",
 		"max_tool_calls":         "Maximum tool call limits are not supported.",
 		"moderation":             "Moderation controls are not supported.",
 		"safety_identifier":      "Safety identifiers are not supported.",
@@ -130,8 +131,21 @@ func rejectBackgroundAsync(fields map[string]json.RawMessage) error {
 }
 
 func rejectIncludeHosted(fields map[string]json.RawMessage) error {
-	if raw, ok := fields["include"]; ok && !isJSONNull(raw) {
-		return unsupportedResponses("include", "Hosted tool inclusion is not supported.")
+	raw, ok := fields["include"]
+	if !ok || isJSONNull(raw) {
+		return nil
+	}
+	var includes []string
+	if json.Unmarshal(raw, &includes) != nil || includes == nil {
+		return invalidResponses("invalid_parameter", "include", "The include parameter must be an array of strings.")
+	}
+	for index, include := range includes {
+		// Codex uses this response-side hint to ask for encrypted reasoning
+		// metadata. It is not a hosted tool and is intentionally not forwarded.
+		if include == "reasoning.encrypted_content" {
+			continue
+		}
+		return unsupportedResponses(fmt.Sprintf("include[%d]", index), "Hosted tool inclusion is not supported.")
 	}
 	return nil
 }

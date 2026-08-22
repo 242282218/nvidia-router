@@ -19,6 +19,14 @@ const (
 	ProviderOpenCodeFree = "opencodefree"
 )
 
+const (
+	ReasoningStatusUnknown     = "unknown"
+	ReasoningStatusInferred    = "inferred"
+	ReasoningStatusVisible     = "visible"
+	ReasoningStatusHidden      = "hidden"
+	ReasoningStatusUnsupported = "unsupported"
+)
+
 const defaultModelProvider = ProviderNVIDIA
 
 type Kind string
@@ -41,6 +49,7 @@ type Model struct {
 	SupportsVision          bool
 	SupportsTools           bool
 	SupportsReasoning       bool
+	ReasoningStatus         string
 	ReasoningWireFormat     string
 	ReasoningLevels         []string
 	ReasoningMinBudget      int
@@ -88,6 +97,7 @@ type Candidate struct {
 	SupportsVision          bool
 	SupportsTools           bool
 	SupportsReasoning       bool
+	ReasoningStatus         string
 	ReasoningWireFormat     string
 	ReasoningLevels         []string
 	ReasoningMinBudget      int
@@ -106,6 +116,7 @@ type Selection struct {
 	SupportsVision          bool
 	SupportsTools           bool
 	SupportsReasoning       bool
+	ReasoningStatus         string
 	ReasoningWireFormat     string
 	ReasoningLevels         []string
 	ReasoningMinBudget      int
@@ -131,6 +142,7 @@ type Patch struct {
 	SupportsVision          *bool     `json:"supports_vision,omitempty"`
 	SupportsTools           *bool     `json:"supports_tools,omitempty"`
 	SupportsReasoning       *bool     `json:"supports_reasoning,omitempty"`
+	ReasoningStatus         *string   `json:"reasoning_status,omitempty"`
 	ReasoningWireFormat     *string   `json:"reasoning_wire_format,omitempty"`
 	ReasoningLevels         *[]string `json:"reasoning_levels,omitempty"`
 	ReasoningMinBudget      *int      `json:"reasoning_min_budget,omitempty"`

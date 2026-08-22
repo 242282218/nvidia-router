@@ -18,6 +18,7 @@ import (
 	responsesprotocol "nvidia-router/internal/protocol/responses"
 	"nvidia-router/internal/provider"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
@@ -27,13 +28,29 @@ import (
 // Attempt orchestrator and NVIDIA Chat provider as the Chat handler, so no
 // parallel key scheduling path exists.
 type Responses struct {
-	models   ModelResolver
-	attempts AttemptRunner
-	client   provider.Provider
+	models       ModelResolver
+	attempts     AttemptRunner
+	client       provider.Provider
+	openCodeFree OpenCodeFreeChat
+	settings     runtimeconfig.Provider
 }
 
 func NewResponses(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Responses {
 	return &Responses{models: models, attempts: attempts, client: client}
+}
+
+func (h *Responses) WithOpenCodeFree(client OpenCodeFreeChat) *Responses {
+	h.openCodeFree = client
+	return h
+}
+
+func (h *Responses) WithRuntimeConfig(settings runtimeconfig.Provider) *Responses {
+	h.settings = settings
+	return h
+}
+
+func (h *Responses) autoReasoningEnabled() bool {
+	return h.settings != nil && h.settings.Snapshot().AutoReasoningEnabled
 }
 
 func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -68,10 +85,8 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, modelError(err))
 		return
 	}
-	if !requireNVIDIAProvider(writer, model) {
-		return
-	}
-	upstreamBody, err := parsed.MarshalFor(model)
+	autoReasoning := h.autoReasoningEnabled() && model.SupportsReasoning
+	upstreamBody, err := parsed.MarshalForWithOptions(model, autoReasoning)
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -81,12 +96,24 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
+	if parsed.ReasoningRequested() {
+		observability.SetReasoningSource(request.Context(), "client")
+	} else if autoReasoning && model.SupportsReasoning {
+		observability.SetReasoningSource(request.Context(), "auto-inject")
+	}
 	id, err := responsesprotocol.NewResponseID()
 	if err != nil {
 		writeChatError(writer, err)
 		return
 	}
 	config := parsed.ResponseConfig()
+	if model.Provider == modelcatalog.ProviderOpenCodeFree {
+		h.serveOpenCodeFreeResponses(writer, request, upstreamBody, id, model, config, stream)
+		return
+	}
+	if !requireNVIDIAProvider(writer, model) {
+		return
+	}
 	result, err := h.attempts.Run(applyModelTimeouts(nvidia.WithForwardedHeaders(request.Context(), request.Header), model), model.ID, stream, h.executeWithConfig(upstreamBody, id, model, config, stream))
 	if err != nil {
 		writeChatError(writer, err)

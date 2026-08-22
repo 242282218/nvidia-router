@@ -1,5 +1,6 @@
 {
   "data": {
+    "auto_reasoning_enabled": false,
     "connect_timeout_ms": 10000,
     "embedding_cache_enabled": false,
     "embedding_cache_max_entries": 0,

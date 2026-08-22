@@ -14,6 +14,7 @@ export interface ModelCapabilities {
   supports_vision: boolean
   supports_tools: boolean
   supports_reasoning: boolean
+  reasoning_status?: string
   reasoning_wire_format?: string
 }
 
@@ -63,6 +64,12 @@ export interface ModelTestResult {
   provider?: ModelProvider
   status: string
   duration_ms?: number
+  probe?: {
+    base: string
+    reasoning: string
+    reasoning_wire_format?: string
+    tools: string
+  }
   error?: string
   started_at?: string
   finished_at?: string

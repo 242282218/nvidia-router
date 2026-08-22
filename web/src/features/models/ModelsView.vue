@@ -143,6 +143,7 @@ function isModel(value: unknown): value is Model {
     && (value.stream_first_token_timeout_ms === undefined || typeof value.stream_first_token_timeout_ms === 'number')
     && (value.stream_idle_timeout_ms === undefined || typeof value.stream_idle_timeout_ms === 'number')
     && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
+    && (value.reasoning_status === undefined || typeof value.reasoning_status === 'string')
 }
 
 function isCandidate(value: unknown): value is Candidate {
@@ -160,10 +161,19 @@ function isCandidate(value: unknown): value is Candidate {
     && (value.public_id === undefined || typeof value.public_id === 'string')
     && (value.capabilities === undefined || isStringArray(value.capabilities))
     && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
+    && (value.reasoning_status === undefined || typeof value.reasoning_status === 'string')
 }
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isProbeSummary(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.base === 'string'
+    && typeof value.reasoning === 'string'
+    && typeof value.tools === 'string'
+    && (value.reasoning_wire_format === undefined || typeof value.reasoning_wire_format === 'string')
 }
 
 function isModelTestResult(value: unknown): value is ModelTestResult {
@@ -176,6 +186,7 @@ function isModelTestResult(value: unknown): value is ModelTestResult {
     && (value.error === undefined || typeof value.error === 'string')
     && (value.started_at === undefined || typeof value.started_at === 'string')
     && (value.finished_at === undefined || typeof value.finished_at === 'string')
+    && (value.probe === undefined || isProbeSummary(value.probe))
 }
 
 function readModelTestJob(value: unknown): ModelTestJob | null {
@@ -249,6 +260,26 @@ function jobStatusLabel(status: string): string {
   }
 }
 
+function probeStatusLabel(status: string): string {
+  switch (status) {
+    case 'success': return '基础✓'
+    case 'visible': return '思考可见'
+    case 'hidden': return '思考隐藏'
+    case 'unsupported': return '思考不支持'
+    case 'supported': return '工具✓'
+    case 'unknown': return '待定'
+    default: return status
+  }
+}
+
+function probeSummaryLabel(result: ModelTestResult): string {
+  const probe = result.probe
+  if (!probe) return '—'
+  const parts = [probeStatusLabel(probe.base), probeStatusLabel(probe.reasoning), probeStatusLabel(probe.tools)]
+  if (probe.reasoning_wire_format) parts.push(probe.reasoning_wire_format)
+  return parts.join(' · ')
+}
+
 function resultStatusLabel(status: string): string {
   switch (status.toLowerCase()) {
     case 'success':
@@ -306,6 +337,7 @@ function selectionFor(candidate: Candidate): SaveSelection {
     supports_vision: candidate.supports_vision,
     supports_tools: candidate.supports_tools,
     supports_reasoning: candidate.supports_reasoning,
+    reasoning_status: candidate.reasoning_status,
   }
   if (candidate.reasoning_wire_format !== undefined) {
     selection.reasoning_wire_format = candidate.reasoning_wire_format
@@ -882,6 +914,12 @@ async function cancelCurrentTest(): Promise<void> {
                         class="data-table-th"
                         scope="col"
                       >
+                        探测摘要
+                      </th>
+                      <th
+                        class="data-table-th"
+                        scope="col"
+                      >
                         耗时
                       </th>
                       <th
@@ -912,6 +950,9 @@ async function cancelCurrentTest(): Promise<void> {
                           :dot="false"
                         />
                       </td>
+                      <td class="data-table-td max-w-[360px] text-xs text-[var(--color-text-secondary)]">
+                        {{ probeSummaryLabel(result) }}
+                      </td>
                       <td class="data-table-td font-mono-data text-xs">
                         {{ formatDuration(result.duration_ms) }}
                       </td>
@@ -922,7 +963,7 @@ async function cancelCurrentTest(): Promise<void> {
                     <tr v-if="testJob.results.length === 0">
                       <td
                         class="data-table-td text-center text-xs text-[var(--color-text-muted)]"
-                        colspan="5"
+                        colspan="6"
                       >
                         任务已创建，等待逐项结果…
                       </td>

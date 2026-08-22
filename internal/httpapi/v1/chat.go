@@ -45,6 +45,7 @@ type Chat struct {
 	attempts     AttemptRunner
 	client       provider.Provider
 	openCodeFree OpenCodeFreeChat // optional; nil keeps NVIDIA-only routing
+	settings     runtimeconfig.Provider
 }
 
 func NewChat(models ModelResolver, attempts AttemptRunner, client provider.Provider) *Chat {
@@ -56,6 +57,15 @@ func NewChat(models ModelResolver, attempts AttemptRunner, client provider.Provi
 func (h *Chat) WithOpenCodeFree(client OpenCodeFreeChat) *Chat {
 	h.openCodeFree = client
 	return h
+}
+
+func (h *Chat) WithRuntimeConfig(settings runtimeconfig.Provider) *Chat {
+	h.settings = settings
+	return h
+}
+
+func (h *Chat) autoReasoningEnabled() bool {
+	return h.settings != nil && h.settings.Snapshot().AutoReasoningEnabled
 }
 
 func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -90,7 +100,8 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, modelError(err))
 		return
 	}
-	upstreamBody, err := parsed.MarshalFor(model)
+	autoReasoning := h.autoReasoningEnabled() && model.SupportsReasoning
+	upstreamBody, err := parsed.MarshalForWithOptions(model, autoReasoning)
 	if err != nil {
 		writeChatError(writer, err)
 		return
@@ -100,6 +111,11 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
 	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
+	if parsed.ReasoningRequested() {
+		observability.SetReasoningSource(request.Context(), "client")
+	} else if autoReasoning && model.SupportsReasoning {
+		observability.SetReasoningSource(request.Context(), "auto-inject")
+	}
 	stream := parsed.Stream()
 	// OpenCodeFree models route to the optional gateway directly: no NVIDIA key
 	// pool, no failover, one upstream. Every other provider keeps the Attempt
@@ -230,6 +246,10 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 	response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
 	if err != nil {
 		writeChatError(writer, fmt.Errorf("OpenCodeFree chat: %w", err))
+		return false
+	}
+	if response == nil || response.Body == nil {
+		writeChatError(writer, fault.EmptyResponse(errors.New("OpenCodeFree chat returned no response")))
 		return false
 	}
 	defer func() { _ = response.Body.Close() }()

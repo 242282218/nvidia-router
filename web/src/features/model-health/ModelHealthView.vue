@@ -14,6 +14,7 @@ import UiSwitch from '../../shared/ui/UiSwitch.vue'
 import { usePolling } from '../../shared/usePolling'
 import { modelHealthApi } from './api'
 import ModelHealthCard from './ModelHealthCard.vue'
+import { displayStatus } from './status'
 import type {
   ModelHealthGroup,
   ModelHealthModel,
@@ -37,10 +38,26 @@ const groups: Array<{ value: ModelHealthGroup; label: string }> = [
 ]
 
 const sorts: Array<{ value: ModelHealthSort; label: string }> = [
-  { value: 'availability', label: '可用优先' },
+  { value: 'availability', label: '异常优先' },
   { value: 'recent', label: '最近检测优先' },
   { value: 'volume', label: '探测量优先' },
 ]
+
+const statusLegend = [
+  { key: 'healthy', label: '健康', hint: '85%+', color: 'var(--color-success)' },
+  { key: 'degraded', label: '降级', hint: '50%+', color: 'var(--color-warning)' },
+  { key: 'unavailable', label: '异常', hint: '低于 50%', color: 'var(--color-danger)' },
+  { key: 'unchecked', label: '无数据', hint: '暂无探测', color: 'var(--color-text-subtle)' },
+]
+
+const availabilityRank: Record<string, number> = {
+  unavailable: 0,
+  degraded: 1,
+  stale: 2,
+  unchecked: 2,
+  unconfigured: 2,
+  healthy: 3,
+}
 
 const range = ref<ModelHealthRange>('6h')
 const group = ref<ModelHealthGroup>('default')
@@ -72,12 +89,18 @@ const intervalValue = computed({
 
 const filteredModels = computed<ModelHealthModel[]>(() => {
   const needle = search.value.trim().toLowerCase()
-  return (summary.value?.models ?? []).filter((model) => {
+  const models = (summary.value?.models ?? []).filter((model) => {
     if (scope.value === 'enabled' && !model.enabled) return false
     if (!needle) return true
     return [model.display_name, model.public_id, model.provider, model.kind]
       .some((value) => value.toLowerCase().includes(needle))
   })
+  if (sort.value !== 'availability') return models
+
+  return models
+    .map((model, index) => ({ model, index }))
+    .sort((left, right) => (availabilityRank[displayStatus(left.model)] ?? 2) - (availabilityRank[displayStatus(right.model)] ?? 2) || left.index - right.index)
+    .map(({ model }) => model)
 })
 
 const groupedModels = computed(() => {
@@ -95,6 +118,14 @@ const groupedModels = computed(() => {
 })
 
 const totalProbes = computed(() => (summary.value?.models ?? []).reduce((total, model) => total + model.probe_count, 0))
+const displayStatusCounts = computed(() => {
+  const counts = { healthy: 0, degraded: 0, unavailable: 0, unchecked: 0 }
+  for (const model of summary.value?.models ?? []) {
+    counts[displayStatus(model)] += 1
+  }
+  return counts
+})
+const noDataCount = computed(() => displayStatusCounts.value.unchecked)
 
 watch([range, group, sort], () => {
   void loadSummary(false)
@@ -361,9 +392,32 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         </UiSelect>
       </div>
 
+      <div
+        data-testid="model-health-legend"
+        class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[var(--radius-panel)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-3 py-2.5"
+        role="list"
+        aria-label="渠道状态图例"
+      >
+        <span class="text-xs font-medium text-[var(--color-text-secondary)]">状态图例</span>
+        <span
+          v-for="item in statusLegend"
+          :key="item.key"
+          class="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
+          role="listitem"
+        >
+          <span
+            class="h-2.5 w-2.5 shrink-0 rounded-[3px]"
+            :style="{ backgroundColor: item.color }"
+            aria-hidden="true"
+          />
+          <span>{{ item.label }}</span>
+          <span class="text-[var(--color-text-subtle)]">（{{ item.hint }}）</span>
+        </span>
+      </div>
+
       <p class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-muted)]">
         <span>监控 {{ summary?.total_models ?? 0 }} 个模型 · 总探测 {{ totalProbes }}</span>
-        <span v-if="summary">正常 {{ summary.healthy_count }} · 降级 {{ summary.degraded_count }} · 过期 {{ summary.stale_count }} · 未检测 {{ summary.unchecked_count }}</span>
+        <span v-if="summary">健康 {{ displayStatusCounts.healthy }} · 降级 {{ displayStatusCounts.degraded }} · 异常 {{ displayStatusCounts.unavailable }} · 无数据 {{ noDataCount }}</span>
         <span v-if="updatedAt">更新于 {{ formatTimeOfDay(updatedAt) }}</span>
         <span>主动探测为只读请求，不计入请求监控；频率越短，上游调用越多。</span>
       </p>
@@ -403,7 +457,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         skeleton="cards"
         :skeleton-lines="6"
         empty-label="没有匹配的模型"
-        empty-hint="调整搜索或模型范围后重试。"
+        empty-hint="调整模型范围、分组或时间范围后重试。"
         empty-icon="model"
         error-test-id="model-health-error"
         retry-test-id="model-health-retry"
@@ -424,7 +478,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
               </h2>
               <span class="text-xs text-[var(--color-text-subtle)]">{{ section.models.length }}</span>
             </div>
-            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div class="grid min-w-0 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3">
               <ModelHealthCard
                 v-for="(model, index) in section.models"
                 :key="model.model_id"

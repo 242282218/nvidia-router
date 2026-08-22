@@ -31,6 +31,7 @@ type RequestState struct {
 	// counts; reasoning text is never retained.
 	ReasoningRequested      bool
 	ReasoningWireFields     string
+	ReasoningSource         string
 	ReasoningRequestedLevel string
 	ReasoningEffectiveLevel string
 	ReasoningPresent        bool
@@ -123,6 +124,14 @@ func SetReasoningRequest(ctx context.Context, requested bool, wireFields string)
 	})
 }
 
+func SetReasoningSource(ctx context.Context, source string) {
+	source = strings.TrimSpace(source)
+	if source != "client" && source != "auto-inject" {
+		return
+	}
+	updateState(ctx, func(state *RequestState) { state.ReasoningSource = source })
+}
+
 func SetReasoningLevels(ctx context.Context, requested, effective string) {
 	requested = safeReasoningLevel(requested)
 	effective = safeReasoningLevel(effective)
@@ -209,6 +218,7 @@ func (s *RequestState) Snapshot() RequestState {
 		CompletionTokens: s.CompletionTokens, UpstreamRequestID: s.UpstreamRequestID,
 		FirstTokenAt:       s.FirstTokenAt,
 		ReasoningRequested: s.ReasoningRequested, ReasoningWireFields: s.ReasoningWireFields,
+		ReasoningSource:         s.ReasoningSource,
 		ReasoningRequestedLevel: s.ReasoningRequestedLevel, ReasoningEffectiveLevel: s.ReasoningEffectiveLevel,
 		ReasoningPresent: s.ReasoningPresent, ReasoningChars: s.ReasoningChars,
 		StreamDone: s.StreamDone, RouteMode: s.RouteMode,

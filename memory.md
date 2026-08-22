@@ -271,3 +271,10 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - 响应式 0px 溢出探针：scripts/test/web_overflow_probe.mjs（320/390/768/1280/1440/1699+200%×3 页面；SSE 页面不能等 networkidle，用 load+固定稳定窗；Playwright 解析用 createRequire 指 web/package.json，ESM 不读 NODE_PATH）。
 - 监控 series 桶粒度由后端定死：24h→24 小时桶（ISO `YYYY-MM-DDTHH:00:00Z`）、7d/30d→天桶（`YYYY-MM-DD`），无 10 分钟粒度；图表短标签用 statistics/format.ts 的 formatBucketLabel，保持 UTC 不换算（与拆分前数据表口径一致）。
 - Vue 模板里绑定表达式必须写 `:attr`，JSX 式 `attr={`...`}` 会以 SyntaxError 使整个 SFC 解析失败（vitest 表现为 Failed Suite 无用例）。
+
+## 2026-08-22 Codex/OpenCodeFree 能力链路审查
+
+- 可选上游接口返回 `(*http.Response)(nil), nil` 或 `response.Body == nil` 时，Chat 与 Responses 处理器都必须在访问状态码/Body 前转成 `upstream_empty_response`，并用两种形态的回归测试覆盖，避免 panic。
+- 模型能力迁移后，Repository 直写路径也要补齐 `reasoning_status` 默认值；不能只依赖 Service 层的归一化，否则迁移夹具、导入和直接 upsert 会触发 SQLite CHECK 失败。
+- Responses 的 `include` 不能因兼容 Codex 而整体放行；只接受明确的 `reasoning.encrypted_content` 提示，其余 hosted include 继续拒绝，并单测非数组、未知项和合法项。
+- 提交前最小验证组合：`go test ./...`、`go vet ./...`、`pnpm --dir web run build`、`git diff --check`；临时联调脚本不得写入具体服务器地址或凭据。

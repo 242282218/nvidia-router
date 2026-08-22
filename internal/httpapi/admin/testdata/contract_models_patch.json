@@ -8,6 +8,7 @@
   "kind": "embedding",
   "provider": "nvidia",
   "public_id": "embed-qa",
+  "reasoning_status": "",
   "reasoning_wire_format": "",
   "supports_reasoning": false,
   "supports_tools": false,

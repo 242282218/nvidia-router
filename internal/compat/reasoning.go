@@ -149,6 +149,26 @@ func ParseReasoning(fields map[string]json.RawMessage) (ReasoningSpec, error) {
 	return result, nil
 }
 
+func AutoReasoningSpec(profile ReasoningProfile) (ReasoningSpec, bool) {
+	if !profile.Supported {
+		return ReasoningSpec{}, false
+	}
+	levels := availableLevels(profile)
+	for index := len(levels) - 1; index >= 0; index-- {
+		if levels[index] == ReasoningNone {
+			continue
+		}
+		level := levels[index]
+		return ReasoningSpec{
+			Requested: true,
+			Level:     level,
+			Budget:    budgetForLevel(level),
+			Source:    "auto-inject",
+		}, true
+	}
+	return ReasoningSpec{}, false
+}
+
 func ResolveReasoning(spec ReasoningSpec, profile ReasoningProfile) (ReasoningDecision, error) {
 	if !spec.Requested {
 		return ReasoningDecision{}, nil

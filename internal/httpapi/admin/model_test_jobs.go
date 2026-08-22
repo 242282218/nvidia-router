@@ -29,6 +29,10 @@ type modelTestRunner interface {
 	TestModelAuto(context.Context, int64) error
 }
 
+type detailedModelTestRunner interface {
+	TestModelAutoDetailed(context.Context, int64) (modelcatalog.ProbeSummary, error)
+}
+
 type modelTestJobRequest struct {
 	ModelIDs    []int64 `json:"model_ids"`
 	Mode        string  `json:"mode"`
@@ -36,14 +40,15 @@ type modelTestJobRequest struct {
 }
 
 type modelTestJobResult struct {
-	ModelID    int64      `json:"model_id"`
-	PublicID   string     `json:"public_id"`
-	Provider   string     `json:"provider"`
-	Status     string     `json:"status"`
-	Duration   *int64     `json:"duration_ms,omitempty"`
-	Error      string     `json:"error,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ModelID    int64                      `json:"model_id"`
+	PublicID   string                     `json:"public_id"`
+	Provider   string                     `json:"provider"`
+	Status     string                     `json:"status"`
+	Duration   *int64                     `json:"duration_ms,omitempty"`
+	Error      string                     `json:"error,omitempty"`
+	StartedAt  *time.Time                 `json:"started_at,omitempty"`
+	FinishedAt *time.Time                 `json:"finished_at,omitempty"`
+	Probe      *modelcatalog.ProbeSummary `json:"probe,omitempty"`
 }
 
 type modelTestJob struct {
@@ -244,7 +249,15 @@ func (h *ModelTestJobs) runOne(job *modelTestJob, resultIndex int) {
 	h.mu.Unlock()
 
 	startedClock := time.Now()
-	err := h.runner.TestModelAuto(job.Context, job.Results[resultIndex].ModelID)
+	var probe modelcatalog.ProbeSummary
+	var hasProbe bool
+	var err error
+	if detailed, ok := h.runner.(detailedModelTestRunner); ok {
+		hasProbe = true
+		probe, err = detailed.TestModelAutoDetailed(job.Context, job.Results[resultIndex].ModelID)
+	} else {
+		err = h.runner.TestModelAuto(job.Context, job.Results[resultIndex].ModelID)
+	}
 	duration := time.Since(startedClock).Milliseconds()
 	finished := h.now().UTC()
 	h.mu.Lock()
@@ -254,6 +267,9 @@ func (h *ModelTestJobs) runOne(job *modelTestJob, resultIndex int) {
 	}
 	result := &job.Results[resultIndex]
 	result.Duration = &duration
+	if hasProbe {
+		result.Probe = &probe
+	}
 	result.FinishedAt = &finished
 	if err != nil {
 		result.Status = "failed"

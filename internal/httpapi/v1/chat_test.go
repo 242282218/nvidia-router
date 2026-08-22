@@ -43,6 +43,33 @@ func TestChatRejectsOversizedBody(t *testing.T) {
 	assertChatError(t, response, http.StatusRequestEntityTooLarge, "request_too_large")
 }
 
+func TestChatOpenCodeFreeEmptyResponseReturnsFault(t *testing.T) {
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return model, nil
+	})
+
+	for name, upstreamResponse := range map[string]*http.Response{
+		"nil response": nil,
+		"nil body":     {StatusCode: http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler := NewChat(resolver, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(context.Context, runtimeconfig.Snapshot, []byte, bool) (*http.Response, error) {
+				return upstreamResponse, nil
+			}))
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"free-model","messages":[{"role":"user","content":"hi"}]}`))
+
+			handler.ServeHTTP(response, request)
+
+			assertChatError(t, response, http.StatusTooManyRequests, "upstream_empty_response")
+		})
+	}
+}
+
 func TestStreamWriteDeadlineUsesEarlierContextDeadline(t *testing.T) {
 	settings := &deadlineBudgetSettings{snapshot: runtimeconfig.Snapshot{
 		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, StreamFirstTokenTimeoutMS: 100,
@@ -813,6 +840,12 @@ type modelResolverFunc func(context.Context, string, modelcatalog.Requirements) 
 
 func (f modelResolverFunc) Resolve(ctx context.Context, id string, requirements modelcatalog.Requirements) (modelcatalog.Model, error) {
 	return f(ctx, id, requirements)
+}
+
+type openCodeFreeFunc func(context.Context, runtimeconfig.Snapshot, []byte, bool) (*http.Response, error)
+
+func (f openCodeFreeFunc) Chat(ctx context.Context, snapshot runtimeconfig.Snapshot, body []byte, stream bool) (*http.Response, error) {
+	return f(ctx, snapshot, body, stream)
 }
 
 type attemptRunnerFunc func(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error)

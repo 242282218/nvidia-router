@@ -107,6 +107,7 @@ type RequestLog struct {
 	// counts; reasoning text is never stored or serialized.
 	ReasoningRequested      bool    `json:"reasoning_requested"`
 	ReasoningWireFields     *string `json:"reasoning_wire_fields,omitempty"`
+	ReasoningSource         *string `json:"reasoning_source,omitempty"`
 	ReasoningRequestedLevel *string `json:"reasoning_requested_level,omitempty"`
 	ReasoningEffectiveLevel *string `json:"reasoning_effective_level,omitempty"`
 	ReasoningPresent        bool    `json:"reasoning_present"`

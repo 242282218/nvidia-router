@@ -95,13 +95,25 @@ function providerLabel(provider?: string): string {
   return normalizeProvider(provider) === 'opencodefree' ? 'OpenCodeFree' : 'NVIDIA'
 }
 
-function isPendingProvider(provider?: string): boolean {
-  return normalizeProvider(provider) === 'opencodefree'
+function candidateStatus(candidate: Candidate, configured: boolean): string {
+  if (candidate.reasoning_status === 'unknown') return '待验证'
+  return configured ? '已在白名单' : '候选'
 }
 
-function candidateStatus(candidate: Candidate, configured: boolean): string {
-  if (isPendingProvider(candidate.provider)) return '待接入'
-  return configured ? '已在白名单' : '候选'
+function reasoningStatusLabel(status?: string): string {
+  switch (status) {
+    case 'visible': return '可见'
+    case 'hidden': return '隐藏'
+    case 'inferred': return '推断'
+    case 'unsupported': return '不支持'
+    default: return '待验证'
+  }
+}
+
+function reasoningStatusVariant(status?: string): 'success' | 'warning' | 'muted' {
+  if (status === 'visible' || status === 'hidden' || status === 'inferred') return 'success'
+  if (status === 'unsupported') return 'muted'
+  return 'warning'
 }
 
 function onCandidateChange(candidate: Candidate, event: globalThis.Event): void {
@@ -221,7 +233,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             </td>
             <td class="data-table-td">
               <UiBadge
-                :variant="isPendingProvider(candidate.provider) ? 'warning' : 'info'"
+                :variant="candidate.reasoning_status === 'unknown' ? 'warning' : 'info'"
                 :label="providerLabel(candidate.provider)"
               />
             </td>
@@ -257,7 +269,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             </td>
             <td class="data-table-td">
               <UiBadge
-                :variant="isPendingProvider(candidate.provider) ? 'warning' : 'muted'"
+                :variant="candidate.reasoning_status === 'unknown' ? 'warning' : 'muted'"
                 :label="candidateStatus(candidate, selectedCandidateKeys.has(candidateSelectionKey(candidate)))"
               />
               <p class="mt-1.5 text-xs text-[var(--color-text-muted)]">
@@ -296,7 +308,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             </td>
             <td class="data-table-td">
               <UiBadge
-                :variant="isPendingProvider(model.provider) ? 'warning' : 'info'"
+                :variant="'info'"
                 :label="providerLabel(model.provider)"
               />
             </td>
@@ -320,8 +332,8 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   :dot="false"
                 />
                 <UiBadge
-                  :variant="model.supports_reasoning ? 'success' : 'muted'"
-                  :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'}`"
+                  :variant="reasoningStatusVariant(model.reasoning_status)"
+                  :label="`Reasoning ${model.supports_reasoning ? '✓' : '—'} · ${reasoningStatusLabel(model.reasoning_status)}`"
                   :dot="false"
                 />
               </div>

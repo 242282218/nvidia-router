@@ -230,7 +230,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	// identical vectors skip the upstream. It is in-memory and bounded; the max
 	// entry count follows the runtime setting on each embedding request.
 	embeddingCache := embedcache.New(settings.Snapshot().EmbeddingCacheMaxEntries)
-	chatHandler := v1.NewChat(models, attempts, nvidiaClient)
+	chatHandler := v1.NewChat(models, attempts, nvidiaClient).WithRuntimeConfig(settings)
 	// A nil *opencodefree.Client must not be assigned to the optional interface:
 	// Go would wrap the nil pointer in a non-nil interface value and the route
 	// would panic instead of answering 503 when the gateway is unconfigured.
@@ -238,7 +238,11 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 		chatHandler.WithOpenCodeFree(openCodeFreeClient)
 	}
 	chat := observe(chatHandler)
-	responses := observe(v1.NewResponses(models, attempts, nvidiaClient))
+	responsesHandler := v1.NewResponses(models, attempts, nvidiaClient).WithRuntimeConfig(settings)
+	if openCodeFreeClient != nil {
+		responsesHandler.WithOpenCodeFree(openCodeFreeClient)
+	}
+	responses := observe(responsesHandler)
 	embeddings := observe(v1.NewEmbeddings(models, attempts, nvidiaClient, settings, embeddingCache))
 	audio := observe(v1.NewAudio(models, attempts, nvidiaClient, resolved.Config.TempDir))
 	speech := observe(v1.NewSpeech(models, attempts, nvidiaClient))

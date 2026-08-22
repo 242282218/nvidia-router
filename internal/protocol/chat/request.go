@@ -147,7 +147,15 @@ func (r Request) RequestedReasoningLevel() string {
 	return ""
 }
 
+func (r Request) ReasoningRequested() bool {
+	return r.reasoning.Requested
+}
+
 func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
+	return r.MarshalForWithOptions(model, false)
+}
+
+func (r Request) MarshalForWithOptions(model modelcatalog.Model, autoReasoning bool) ([]byte, error) {
 	if err := validateModel(r, model); err != nil {
 		return nil, err
 	}
@@ -155,7 +163,7 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 	// upstream model equals the public model — reuse the original payload
 	// without clone+sort+marshal.
 	if model.UpstreamID == r.publicModel && len(r.tools) == 0 && !r.toolChoiceSet && !r.messagesNormalized &&
-		!r.reasoning.Requested && !r.rawUnsafe {
+		!r.reasoning.Requested && !autoReasoning && !r.rawUnsafe {
 		if _, hasComp := r.fields["max_completion_tokens"]; !hasComp || isJSONNull(r.fields["max_completion_tokens"]) {
 			if _, hasTokens := r.fields["max_tokens"]; hasTokens && isJSONNull(r.fields["max_tokens"]) {
 				// max_tokens is null — still needs normalization, fall through
@@ -186,8 +194,14 @@ func (r Request) MarshalFor(model modelcatalog.Model) ([]byte, error) {
 		}
 		fields["tool_choice"] = encodedChoice
 	}
-	if r.reasoning.Requested && model.SupportsReasoning {
-		decision, err := compat.ResolveReasoning(r.reasoning, model.ReasoningProfile())
+	reasoning := r.reasoning
+	if autoReasoning && !reasoning.Requested && model.SupportsReasoning {
+		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile()); ok {
+			reasoning = automatic
+		}
+	}
+	if reasoning.Requested && model.SupportsReasoning {
+		decision, err := compat.ResolveReasoning(reasoning, model.ReasoningProfile())
 		if err != nil {
 			return nil, reasoningModelError(err)
 		}
