@@ -260,3 +260,14 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - **控件收进菜单的测试适配模式**：e2e 直接 `getByTestId` 点按钮的（如 logout 收进侧栏「账户操作」菜单），先点 `getByRole('button', { name: '<菜单名>' })` 展开；单测同理由 `wrapper.get('button[aria-haspopup="menu"][aria-label=…]')` 进入。testid 保持不变是契约。
 - token v4 要点：`--color-border #ece8e0`（装饰无对比度义务，calc_contrast 只断言 border-strong）；双层柔影 shadow-sm；tracking 变量 display/-0.02em、title/+0.01em（font 简写不含字距需独立变量）；卡片留白整体升一档（card p-6/metric-card p-5）；count-up 加 >5% 变化阈值防空跳。
 - 本地 E2E 可跑：Git Bash 在 `D:\Program Files\Git\bin\bash.exe`（memory 早前"未安装"已过时），`& "D:\Program Files\Git\bin\bash.exe" tests/e2e/run.sh` 一条命令起 harness+playwright，8/8 通过含移动端响应式。
+
+## 2026-08-22 观测拆分与 CPA 布局复刻（分支 codex/observability-split-20260822）
+
+- 设计文档：docs/plans/2026-08-22-观测拆分与CPA布局复刻设计.md（方案 B：纯前端拆分 + CPA 布局 × Warm 皮肤）。commit：设计 2fe4776 → WIP 收编 2605d7c → 功能 a76ce60 → embed ea58c50 → 文档 8528402。未 push。
+- **工作区剥离态恢复**：部署打包后的工作树会删掉全部测试/docs/CI 并剥离 package.json 的 test 脚本与 vitest/playwright/eslint devDeps、截短根 pnpm-lock.yaml。恢复顺序：`git ls-files -z --deleted` 逐一 restore（**绝不能** `git checkout -- web/` 整目录，会连带回滚 model-health/models/runtime 的未提交 WIP 源码）→ `git restore web/package.json pnpm-lock.yaml .gitignore` → `CI=true pnpm --dir web install`（CI 标志避开 NO_TTY；lockfile 不还原会 frozen-lockfile 失败）。
+- **WIP 依赖的提交自洽**：新代码若依赖未提交 WIP 的类型/组件（RuntimeSettings.auto_reasoning_enabled、model-health/status.ts），提交前必须在临时 worktree（`git worktree add --detach`，不能 add 已 checkout 的分支名）跑 vue-tsc + vitest 验证已提交状态独立可绿。
+- **本地 3756 端口有常驻旧 nvidia-router.exe**：e2e harness 起不来时会静默绑随机端口（日志首行打印实际 URL）。跑 overflow probe 或手工调试前先 `netstat -ano | findstr :3756` 确认目标，否则会打到处着旧 embed 的本地实例上（症状：登录口令全错、资产哈希与 dist 不符）。
+- e2e harness 初始口令：`NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=e2e-initial-admin-password`（tests/e2e/harness/main.go），全新库首登强制改密；用例统一口令 e2e-admin-password-2026。
+- 响应式 0px 溢出探针：scripts/test/web_overflow_probe.mjs（320/390/768/1280/1440/1699+200%×3 页面；SSE 页面不能等 networkidle，用 load+固定稳定窗；Playwright 解析用 createRequire 指 web/package.json，ESM 不读 NODE_PATH）。
+- 监控 series 桶粒度由后端定死：24h→24 小时桶（ISO `YYYY-MM-DDTHH:00:00Z`）、7d/30d→天桶（`YYYY-MM-DD`），无 10 分钟粒度；图表短标签用 statistics/format.ts 的 formatBucketLabel，保持 UTC 不换算（与拆分前数据表口径一致）。
+- Vue 模板里绑定表达式必须写 `:attr`，JSX 式 `attr={`...`}` 会以 SyntaxError 使整个 SFC 解析失败（vitest 表现为 Failed Suite 无用例）。
