@@ -86,10 +86,8 @@ type modelDTO struct {
 	CapabilityVerifiedAt    *time.Time        `json:"capability_verified_at,omitempty"`
 	// StreamFirstTokenTimeoutMS / StreamIdleTimeoutMS are per-model overrides of
 	// the global streaming windows; nil means "use the global setting".
-	StreamFirstTokenTimeoutMS *int     `json:"stream_first_token_timeout_ms,omitempty"`
-	StreamIdleTimeoutMS       *int     `json:"stream_idle_timeout_ms,omitempty"`
-	InputUSDPerMTok           *float64 `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok          *float64 `json:"output_usd_per_mtok,omitempty"`
+	StreamFirstTokenTimeoutMS *int `json:"stream_first_token_timeout_ms,omitempty"`
+	StreamIdleTimeoutMS       *int `json:"stream_idle_timeout_ms,omitempty"`
 	// ContextLength is the operator-declared context window (tokens); 0 means
 	// undeclared and is surfaced as-is so the admin UI can show it explicitly.
 	ContextLength   int     `json:"context_length"`
@@ -389,8 +387,6 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		CapabilityVerifiedAt:      v.CapabilityVerifiedAt,
 		StreamFirstTokenTimeoutMS: v.StreamFirstTokenTimeoutMS,
 		StreamIdleTimeoutMS:       v.StreamIdleTimeoutMS,
-		InputUSDPerMTok:           v.InputUSDPerMTok,
-		OutputUSDPerMTok:          v.OutputUSDPerMTok,
 		ContextLength:             v.ContextLength,
 		BlockedByKeyIDs:           v.BlockedByKeyIDs,
 	}

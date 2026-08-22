@@ -8,7 +8,6 @@ import UiSkeleton from '../../shared/ui/UiSkeleton.vue'
 import UiStatCard from '../../shared/ui/UiStatCard.vue'
 import { formatTimeOfDay } from '../../shared/format'
 import { usePolling } from '../../shared/usePolling'
-import CostPanel from './CostPanel.vue'
 import FailureFeed from './FailureFeed.vue'
 import { formatAverageLatency, formatInteger, formatPercent, formatTokens } from './format'
 import HealthTimeline from './HealthTimeline.vue'
@@ -587,9 +586,8 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
           </section>
         </div>
 
-        <!-- 下排：成本排行 + 最近失败请求。 -->
-        <div class="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-          <CostPanel />
+        <!-- 下排：最近失败请求。 -->
+        <div class="mt-3">
           <FailureFeed
             :logs="failureLogs"
             :error="failureError"

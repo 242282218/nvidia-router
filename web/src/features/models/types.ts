@@ -40,8 +40,6 @@ export interface Model extends Candidate {
   // "use the global setting".
   stream_first_token_timeout_ms?: number
   stream_idle_timeout_ms?: number
-  input_usd_per_mtok?: number
-  output_usd_per_mtok?: number
   // Operator-declared context window (tokens); 0/undefined means undeclared and
   // /v1/models omits the field so clients fall back to their own defaults.
   context_length?: number
@@ -102,8 +100,6 @@ export interface ModelPatch {
   reasoning_wire_format?: string
   stream_first_token_timeout_ms?: number
   stream_idle_timeout_ms?: number
-  input_usd_per_mtok?: number
-  output_usd_per_mtok?: number
   context_length?: number
 }
 

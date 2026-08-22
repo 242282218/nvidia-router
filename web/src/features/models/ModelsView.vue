@@ -138,8 +138,6 @@ function isModel(value: unknown): value is Model {
     && (value.blocked_by_key_ids === undefined
       || (Array.isArray(value.blocked_by_key_ids) && value.blocked_by_key_ids.every(isFiniteNumber)))
     && (value.capability_verified_at === undefined || typeof value.capability_verified_at === 'string')
-    && (value.input_usd_per_mtok === undefined || typeof value.input_usd_per_mtok === 'number')
-    && (value.output_usd_per_mtok === undefined || typeof value.output_usd_per_mtok === 'number')
     && (value.stream_first_token_timeout_ms === undefined || typeof value.stream_first_token_timeout_ms === 'number')
     && (value.stream_idle_timeout_ms === undefined || typeof value.stream_idle_timeout_ms === 'number')
     && (value.context_length === undefined || typeof value.context_length === 'number')
@@ -445,29 +443,6 @@ async function unblockModel(keyId: number, model: Model): Promise<void> {
 function replaceModel(updated: Model): void {
   const index = modelList.value.findIndex((model) => model.id === updated.id)
   if (index >= 0 && models.value) models.value[index] = updated
-}
-
-async function savePricing(model: Model, inputUsd: number, outputUsd: number): Promise<void> {
-  busyId.value = model.id
-  errorMessage.value = ''
-  try {
-    const updated: unknown = await modelsApi.patch(model.id, {
-      input_usd_per_mtok: inputUsd,
-      output_usd_per_mtok: outputUsd,
-    })
-    if (isDisposed()) return
-    if (!isModel(updated)) {
-      throw new TypeError('Invalid model patch response.')
-    }
-    replaceModel(updated)
-    toastSuccess(`模型「${updated.display_name}」单价已更新。`)
-  } catch (error) {
-    if (isDisposed()) return
-    errorMessage.value = error instanceof ApiError ? error.message : '保存模型单价失败。'
-    toastError(errorMessage.value)
-  } finally {
-    if (!isDisposed()) busyId.value = null
-  }
 }
 
 async function saveContextLength(model: Model, contextLength: number): Promise<void> {
@@ -799,7 +774,6 @@ async function cancelCurrentTest(): Promise<void> {
               :selected-candidate-keys="selectedCandidateKeys"
               @toggle="toggleModel"
               @unblock="unblockModel"
-              @save-pricing="savePricing"
               @save-context-length="saveContextLength"
               @delete="pendingDelete = $event"
               @toggle-test="toggleTestModel"

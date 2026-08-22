@@ -209,16 +209,12 @@ func (r *Repository) Patch(ctx context.Context, id int64, patch Patch, now time.
 	updatedAt := formatRevisionTime(now, model.updatedAt)
 	result, err := tx.ExecContext(ctx, `UPDATE models SET upstream_id = ?, display_name = ?, kind = ?, enabled = ?, supports_vision = ?, supports_tools = ?, supports_reasoning = ?, reasoning_status = ?, reasoning_wire_format = ?, reasoning_levels = ?, reasoning_min_budget = ?, reasoning_max_budget = ?, reasoning_zero_allowed = ?, reasoning_dynamic_allowed = ?, capability_verified_at = ?,
 		provider = CASE WHEN ? IS NULL THEN provider ELSE ? END,
-		input_usd_per_mtok  = CASE WHEN ? IS NULL THEN input_usd_per_mtok  ELSE ? END,
-		output_usd_per_mtok = CASE WHEN ? IS NULL THEN output_usd_per_mtok ELSE ? END,
 		stream_first_token_timeout_ms = CASE WHEN ? IS NULL THEN stream_first_token_timeout_ms ELSE ? END,
 		stream_idle_timeout_ms        = CASE WHEN ? IS NULL THEN stream_idle_timeout_ms        ELSE ? END,
 		context_length                = CASE WHEN ? IS NULL THEN context_length                ELSE ? END,
 		updated_at = ? WHERE id = ?`,
 		selection.UpstreamID, selection.DisplayName, selection.Kind, boolInt(selection.Enabled), boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningStatus, selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget, selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed), optionalTimestamp(selection.CapabilityVerifiedAt),
 		patch.Provider, patchDerefString(patch.Provider),
-		patch.InputUSDPerMTok, patchDeref(patch.InputUSDPerMTok),
-		patch.OutputUSDPerMTok, patchDeref(patch.OutputUSDPerMTok),
 		patch.StreamFirstTokenTimeoutMS, patchDerefInt(patch.StreamFirstTokenTimeoutMS),
 		patch.StreamIdleTimeoutMS, patchDerefInt(patch.StreamIdleTimeoutMS),
 		patch.ContextLength, patchDerefInt(patch.ContextLength),
@@ -546,7 +542,7 @@ const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, pro
 		reasoning_levels, reasoning_min_budget, reasoning_max_budget, reasoning_zero_allowed, reasoning_dynamic_allowed,
 		capability_verified_at, created_at, updated_at,
 		stream_first_token_timeout_ms, stream_idle_timeout_ms,
-		input_usd_per_mtok, output_usd_per_mtok, context_length FROM models`
+		context_length FROM models`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -614,10 +610,9 @@ func scanModel(row rowScanner) (Model, error) {
 	var reasoningLevels string
 	var reasoningMin, reasoningMax int
 	var streamFirstToken, streamIdle sql.NullInt64
-	var inputPrice, outputPrice sql.NullFloat64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
 		&model.Provider, &enabled, &vision, &tools, &reasoning, &model.ReasoningStatus, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
-		&streamFirstToken, &streamIdle, &inputPrice, &outputPrice, &model.ContextLength); err != nil {
+		&streamFirstToken, &streamIdle, &model.ContextLength); err != nil {
 		return Model{}, err
 	}
 	if model.Provider == "" {
@@ -671,14 +666,6 @@ func scanModel(row rowScanner) (Model, error) {
 	if streamIdle.Valid {
 		v := int(streamIdle.Int64)
 		model.StreamIdleTimeoutMS = &v
-	}
-	if inputPrice.Valid {
-		value := inputPrice.Float64
-		model.InputUSDPerMTok = &value
-	}
-	if outputPrice.Valid {
-		value := outputPrice.Float64
-		model.OutputUSDPerMTok = &value
 	}
 	return model, nil
 }
@@ -755,15 +742,6 @@ func optionalTimestamp(value *time.Time) any {
 		return nil
 	}
 	return formatTimestamp(*value)
-}
-
-// patchDeref is the ELSE branch of the pricing CASE: nil preserves the stored
-// price (omitted field), a non-nil value (including explicit 0.0) replaces it.
-func patchDeref(value *float64) any {
-	if value == nil {
-		return nil
-	}
-	return *value
 }
 
 // patchDerefString is the ELSE branch of the provider CASE: nil preserves the

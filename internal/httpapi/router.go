@@ -58,9 +58,6 @@ func newAdminRouter(management, settings, runtimeSummary, stats, monitoring, eve
 	mux.Handle("/admin/api/settings", settings)
 	mux.Handle("/admin/api/runtime/summary", runtimeSummary)
 	mux.Handle("/admin/api/stats", stats)
-	// Without this the cost panel's request falls through to the management
-	// handler, which has no such route and answers 404.
-	mux.Handle("/admin/api/stats/cost", stats)
 	mux.Handle("/admin/api/errors", stats)
 	mux.Handle("/admin/api/monitoring/", monitoring)
 	mux.Handle("/admin/api/events/stream", eventStream)

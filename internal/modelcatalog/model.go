@@ -68,11 +68,6 @@ type Model struct {
 	// StreamIdleTimeoutMS overrides the global stream_idle_timeout_ms for this
 	// model when non-nil.
 	StreamIdleTimeoutMS *int
-	// InputUSDPerMTok / OutputUSDPerMTok are optional per-token prices (USD per
-	// 1M tokens) used for cost estimation in the monitoring surface. A nil
-	// value means the model is not priced and counts as $0.
-	InputUSDPerMTok  *float64
-	OutputUSDPerMTok *float64
 	// ContextLength is the operator-declared context window in tokens. 0 means
 	// undeclared: neither upstream exposes context metadata, so /v1/models omits
 	// the field rather than fabricating a value clients would plan around.
@@ -158,11 +153,7 @@ type Patch struct {
 	// columns seeded by migration 016/022; a nil value leaves the current value.
 	StreamFirstTokenTimeoutMS *int `json:"stream_first_token_timeout_ms,omitempty"`
 	StreamIdleTimeoutMS       *int `json:"stream_idle_timeout_ms,omitempty"`
-	// Pricing is kept separate from capability Selection (which models
-	// upstream-discovered attributes): these are operator-owned cost columns.
-	InputUSDPerMTok  *float64 `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok *float64 `json:"output_usd_per_mtok,omitempty"`
-	// ContextLength is operator-owned like pricing: 0 clears the declaration
+	// ContextLength is operator-owned: 0 clears the declaration
 	// back to "unknown", a positive value replaces it.
 	ContextLength *int `json:"context_length,omitempty"`
 }

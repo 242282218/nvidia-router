@@ -21,7 +21,6 @@ const (
 type statsStore interface {
 	ListDailyStats(context.Context, time.Time) ([]observability.DailyStat, error)
 	ListRecentErrors(context.Context, int) ([]observability.RecentError, error)
-	ListDailyCosts(context.Context, time.Time, time.Time) ([]observability.DailyModelCost, error)
 }
 
 type Stats struct {
@@ -44,8 +43,6 @@ func (h *Stats) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/admin/api/stats":
 		h.daily(writer, request)
-	case "/admin/api/stats/cost":
-		h.cost(writer, request)
 	case "/admin/api/errors":
 		h.errors(writer, request)
 	default:
@@ -82,23 +79,6 @@ func (h *Stats) errors(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"data": errorsList})
-}
-
-func (h *Stats) cost(writer http.ResponseWriter, request *http.Request) {
-	days, err := parseBoundedPositive(request.URL.Query().Get("days"), defaultStatsDays, maxStatsDays)
-	if err != nil {
-		writeInvalidRequest(writer, "The statistics range is invalid.", err)
-		return
-	}
-	now := h.clock.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	since := today.AddDate(0, 0, -(days - 1))
-	costs, err := h.store.ListDailyCosts(request.Context(), since, today.AddDate(0, 0, 1))
-	if err != nil {
-		writeInternalError(writer, err)
-		return
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{"data": costs})
 }
 
 func parseBoundedPositive(raw string, defaultValue, maximum int) (int, error) {

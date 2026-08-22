@@ -9,7 +9,6 @@ vi.mock('./api', () => ({
   statisticsApi: {
     getSummary: vi.fn(),
     getLogs: vi.fn(),
-    getCosts: vi.fn(),
   },
 }))
 
@@ -107,7 +106,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(statisticsApi.getSummary).mockResolvedValue({ data: snapshot })
   vi.mocked(statisticsApi.getLogs).mockResolvedValue({ data: logs })
-  vi.mocked(statisticsApi.getCosts).mockResolvedValue({ data: [] })
 })
 
 describe('StatisticsView monitoring dashboard', () => {
@@ -125,7 +123,7 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(wrapper.get('[data-testid="traffic-chart"]').text()).toContain('流量趋势')
     expect(wrapper.get('[data-testid="health-timeline"]').text()).toContain('健康时间线')
     expect(wrapper.get('[data-testid="monitoring-outcome-list"]').text()).toContain('结果分布')
-    expect(wrapper.get('[data-testid="cost-panel"]').text()).toContain('模型成本排行')
+    expect(wrapper.find('[data-testid="cost-panel"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="failure-feed"]').text()).toContain('最近失败请求')
 
     // 行卡明细：核心列 + 展开区收纳次要字段。

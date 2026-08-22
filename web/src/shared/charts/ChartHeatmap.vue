@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-// 热力图：日×模型成本矩阵、日×状态密度等网格数据。
+// 热力图：日×模型密度、日×状态密度等网格数据。
 // 无障碍红线（memory 2026-08-20）：每个格子必须同时提供文字 title，
 // 不能只依赖颜色深浅传达数值。
 defineOptions({ name: 'ChartHeatmap' })
@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<{
   values: readonly (readonly (number | null)[])[]
   /** 色标基色（CSS 变量），透明度按数值比例映射。 */
   color: string
-  /** 数值格式化（如成本带 $ 前缀）。 */
+  /** 数值格式化（如带单位或前缀）。 */
   format?: (value: number) => string
   ariaLabel: string
 }>(), {

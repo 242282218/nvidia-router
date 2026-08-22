@@ -25,19 +25,12 @@ withDefaults(defineProps<{
 const emit = defineEmits<{
   toggle: [model: Model]
   unblock: [keyId: number, model: Model]
-  savePricing: [model: Model, inputUsd: number, outputUsd: number]
   saveContextLength: [model: Model, contextLength: number]
   delete: [model: Model]
   toggleTest: [model: Model, selected: boolean]
   toggleCandidate: [candidate: Candidate, selected: boolean]
   test: [model: Model]
 }>()
-
-// editingPricing tracks the row currently in price-edit mode; raw inputs start
-// from the model's stored prices so the operator tweaks rather than retypes.
-const editingPrice = ref<number | null>(null)
-const inputDraft = ref('')
-const outputDraft = ref('')
 
 // Same inline-edit pattern for the operator-owned context window declaration.
 const editingContext = ref<number | null>(null)
@@ -63,39 +56,6 @@ function submitContextEdit(model: Model): void {
   if (!Number.isInteger(value) || value <= 0) return
   emit('saveContextLength', model, value)
   editingContext.value = null
-}
-
-function beginPricingEdit(model: Model): void {
-  editingPrice.value = model.id
-  inputDraft.value = model.input_usd_per_mtok !== undefined ? String(model.input_usd_per_mtok) : ''
-  outputDraft.value = model.output_usd_per_mtok !== undefined ? String(model.output_usd_per_mtok) : ''
-}
-
-function cancelPricingEdit(): void {
-  editingPrice.value = null
-}
-
-function submitPricingEdit(model: Model): void {
-  const input = parsePrice(inputDraft.value)
-  const output = parsePrice(outputDraft.value)
-  if (input === null || output === null) return
-  emit('savePricing', model, input, output)
-  editingPrice.value = null
-}
-
-// parsePrice: empty means "no price" ($0 contribution), a number must be a
-// non-negative USD figure per 1M tokens.
-function parsePrice(raw: string): number | null {
-  const trimmed = raw.trim()
-  if (trimmed === '') return 0
-  const value = Number(trimmed)
-  if (Number.isNaN(value) || value < 0) return null
-  return value
-}
-
-function formatPrice(value?: number): string {
-  if (value === undefined) return '未定价'
-  return `$${value} /1M`
 }
 
 // formatStreamTimeout renders the per-model streaming timeout override, or the
@@ -205,12 +165,6 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               scope="col"
             >
               能力
-            </th>
-            <th
-              class="data-table-th"
-              scope="col"
-            >
-              单价 (USD /1M)
             </th>
             <th
               class="data-table-th"
@@ -380,64 +334,6 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   :dot="false"
                 />
               </div>
-            </td>
-            <td class="data-table-td">
-              <div
-                v-if="editingPrice === model.id"
-                :data-testid="`model-pricing-edit-${model.id}`"
-              >
-                <div class="flex items-center gap-1 text-xs">
-                  <span class="text-[var(--color-text-muted)]">入</span>
-                  <input
-                    :value="inputDraft"
-                    class="input-field h-8 w-20 px-2 text-xs"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    data-testid="model-input-price"
-                    @input="(e: Event) => { inputDraft = (e.target as HTMLInputElement).value }"
-                  >
-                  <span class="text-[var(--color-text-muted)]">出</span>
-                  <input
-                    :value="outputDraft"
-                    class="input-field h-8 w-20 px-2 text-xs"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    data-testid="model-output-price"
-                    @input="(e: Event) => { outputDraft = (e.target as HTMLInputElement).value }"
-                  >
-                </div>
-                <div class="mt-1.5 flex items-center gap-1.5">
-                  <UiButton
-                    variant="primary"
-                    size="sm"
-                    data-testid="model-save-price"
-                    :loading="busyId === model.id"
-                    loading-label="保存中…"
-                    @click="submitPricingEdit(model)"
-                  >
-                    保存
-                  </UiButton>
-                  <UiButton
-                    variant="ghost"
-                    size="sm"
-                    @click="cancelPricingEdit"
-                  >
-                    取消
-                  </UiButton>
-                </div>
-              </div>
-              <button
-                v-else
-                class="rounded-[6px] px-2 py-1 font-mono-data text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]"
-                type="button"
-                data-testid="model-edit-price"
-                title="点击编辑单价"
-                @click="beginPricingEdit(model)"
-              >
-                {{ formatPrice(model.input_usd_per_mtok) }} / {{ formatPrice(model.output_usd_per_mtok) }}
-              </button>
             </td>
             <td class="data-table-td">
               <div

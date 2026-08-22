@@ -135,8 +135,6 @@ const model = object({
   reasoning_status: scalar('string'),
   reasoning_wire_format: optional(scalar('string')),
   capability_verified_at: optional(scalar('string')),
-  input_usd_per_mtok: optional(scalar('number')),
-  output_usd_per_mtok: optional(scalar('number')),
   context_length: scalar('number'),
   blocked_by_key_ids: optional(array(scalar('number'))),
 })

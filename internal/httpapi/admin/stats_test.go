@@ -64,7 +64,7 @@ func TestStatsHandlerReturnsDailyDimensionsAndSafeRecentErrors(t *testing.T) {
 
 func TestStatsHandlerRejectsInvalidQueryAndMethods(t *testing.T) {
 	handler := NewStats(&statsStoreStub{}, fixedAdminClock{now: time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)})
-	for _, target := range []string{"/admin/api/stats?days=0", "/admin/api/stats?days=abc", "/admin/api/errors?limit=0", "/admin/api/stats/cost?days=0"} {
+	for _, target := range []string{"/admin/api/stats?days=0", "/admin/api/stats?days=abc", "/admin/api/errors?limit=0"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
 		if recorder.Code != http.StatusBadRequest {
@@ -78,36 +78,18 @@ func TestStatsHandlerRejectsInvalidQueryAndMethods(t *testing.T) {
 	}
 }
 
-func TestStatsHandlerReturnsDailyCosts(t *testing.T) {
-	store := &statsStoreStub{
-		costs: []observability.DailyModelCost{{
-			Day: "2026-07-30", ModelID: "meta/llama-3.1-8b-instruct",
-			PromptTokens: 1_000_000, CompletionTokens: 500_000,
-			InputCostUSD: 0.20, OutputCostUSD: 0.20, TotalCostUSD: 0.40, Priced: true,
-		}},
-	}
-	handler := NewStats(store, fixedAdminClock{now: time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)})
-
+func TestStatsHandlerDoesNotExposeCostEndpoint(t *testing.T) {
+	handler := NewStats(&statsStoreStub{}, fixedAdminClock{now: time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/stats/cost?days=7", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("cost status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-	var body struct {
-		Data []observability.DailyModelCost `json:"data"`
-	}
-	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
-		t.Fatalf("decode cost: %v", err)
-	}
-	if len(body.Data) != 1 || body.Data[0].TotalCostUSD != 0.40 || !body.Data[0].Priced {
-		t.Fatalf("cost body = %#v", body.Data)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("cost endpoint status = %d, want 404", recorder.Code)
 	}
 }
 
 type statsStoreStub struct {
 	stats  []observability.DailyStat
 	errors []observability.RecentError
-	costs  []observability.DailyModelCost
 	since  time.Time
 	limit  int
 }
@@ -120,10 +102,6 @@ func (s *statsStoreStub) ListDailyStats(_ context.Context, since time.Time) ([]o
 func (s *statsStoreStub) ListRecentErrors(_ context.Context, limit int) ([]observability.RecentError, error) {
 	s.limit = limit
 	return s.errors, nil
-}
-
-func (s *statsStoreStub) ListDailyCosts(_ context.Context, _, _ time.Time) ([]observability.DailyModelCost, error) {
-	return s.costs, nil
 }
 
 type fixedAdminClock struct{ now time.Time }
