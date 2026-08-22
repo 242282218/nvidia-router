@@ -692,23 +692,27 @@ async function cancelCurrentTest(): Promise<void> {
             </UiButton>
           </template>
 
-          <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem]">
+          <div
+            data-testid="model-filter-toolbar"
+            class="model-filter-toolbar grid gap-4 border-b border-[var(--color-border-subtle)] pb-5 md:grid-cols-[minmax(0,1fr)_12rem]"
+          >
             <label class="block">
-              <span class="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">搜索模型</span>
+              <span class="mb-2 block text-xs font-medium tracking-[0.02em] text-[var(--color-text-secondary)]">搜索模型</span>
               <input
                 v-model="candidateSearch"
                 data-testid="model-search"
-                class="input-field"
+                class="input-field border-[var(--color-border)] bg-[var(--color-surface)] shadow-none focus:border-[var(--color-border-strong)]"
                 type="search"
                 autocomplete="off"
                 placeholder="模型 ID、显示名、渠道、类型或能力"
               >
             </label>
             <label class="block">
-              <span class="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">渠道筛选</span>
+              <span class="mb-2 block text-xs font-medium tracking-[0.02em] text-[var(--color-text-secondary)]">渠道筛选</span>
               <UiSelect
                 v-model="providerFilter"
                 data-testid="model-provider-filter"
+                class="border-[var(--color-border)] bg-[var(--color-surface)] shadow-none focus:border-[var(--color-border-strong)]"
                 aria-label="渠道筛选"
               >
                 <option value="all">全部渠道</option>
@@ -723,44 +727,61 @@ async function cancelCurrentTest(): Promise<void> {
             </label>
           </div>
 
-          <div class="mt-4 flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] pb-4">
-            <UiButton
-              data-testid="select-all-candidates"
-              variant="ghost"
-              size="sm"
-              :disabled="filteredCandidates.length === 0"
-              @click="selectAllCandidates"
+          <div
+            data-testid="model-selection-toolbar"
+            class="model-selection-toolbar mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3"
+          >
+            <div
+              class="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="候选模型批量选择"
             >
-              全选当前筛选结果
-            </UiButton>
-            <span class="text-xs text-[var(--color-text-muted)]">
-              候选已选 {{ candidateSelectedCount }} / {{ candidates.length }}
-            </span>
-            <span
-              class="mx-1 hidden h-4 w-px bg-[var(--color-border)] sm:block"
-              aria-hidden="true"
-            />
-            <UiButton
-              data-testid="select-enabled-test-models"
-              variant="ghost"
-              size="sm"
-              :disabled="filteredModels.length === 0"
-              @click="selectEnabledTestModels"
+              <UiButton
+                data-testid="select-all-candidates"
+                variant="secondary"
+                size="sm"
+                :disabled="filteredCandidates.length === 0"
+                @click="selectAllCandidates"
+              >
+                全选当前筛选结果
+              </UiButton>
+              <span
+                data-testid="model-candidate-count"
+                class="whitespace-nowrap text-xs tabular-nums text-[var(--color-text-muted)]"
+              >
+                候选 {{ candidateSelectedCount }} / {{ candidates.length }}
+              </span>
+            </div>
+            <div
+              class="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="测试模型批量选择"
             >
-              选中启用模型
-            </UiButton>
-            <UiButton
-              data-testid="select-all-test-models"
-              variant="ghost"
-              size="sm"
-              :disabled="filteredModels.length === 0"
-              @click="selectAllTestModels"
-            >
-              全选当前筛选模型
-            </UiButton>
-            <span class="text-xs text-[var(--color-text-muted)]">
-              测试已选 {{ selectedTestModelList.length }} 项
-            </span>
+              <UiButton
+                data-testid="select-enabled-test-models"
+                variant="ghost"
+                size="sm"
+                :disabled="filteredModels.length === 0"
+                @click="selectEnabledTestModels"
+              >
+                选中启用模型
+              </UiButton>
+              <UiButton
+                data-testid="select-all-test-models"
+                variant="ghost"
+                size="sm"
+                :disabled="filteredModels.length === 0"
+                @click="selectAllTestModels"
+              >
+                全选当前筛选模型
+              </UiButton>
+              <span
+                data-testid="model-test-count"
+                class="whitespace-nowrap text-xs tabular-nums text-[var(--color-text-muted)]"
+              >
+                测试 {{ selectedTestModelList.length }} 项
+              </span>
+            </div>
           </div>
 
           <div

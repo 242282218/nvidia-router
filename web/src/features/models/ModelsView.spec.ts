@@ -194,6 +194,23 @@ describe('ModelsView', () => {
     expect(wrapper.get('[data-testid="mobile-model-hint"]').text()).toContain('桌面端')
   })
 
+  it('keeps model filters and batch actions in separate toolbars', async () => {
+    vi.mocked(modelsApi.list).mockResolvedValue({
+      data: [makeModel(), makeModel({ id: 2, public_id: 'free-model', provider: 'opencodefree' })],
+    })
+    const wrapper = mount(ModelsView)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="model-filter-toolbar"]').classes()).toEqual(
+      expect.arrayContaining(['model-filter-toolbar']),
+    )
+    expect(wrapper.get('[data-testid="model-selection-toolbar"]').classes()).toEqual(
+      expect.arrayContaining(['model-selection-toolbar']),
+    )
+    expect(wrapper.get('[data-testid="model-candidate-count"]').text()).toContain('候选')
+    expect(wrapper.get('[data-testid="model-test-count"]').text()).toContain('测试')
+  })
+
   it('blocks enabling unverified ASR and TTS but allows verified audio models', async () => {
     vi.mocked(modelsApi.list).mockResolvedValue({
       data: [

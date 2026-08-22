@@ -325,3 +325,17 @@ curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
 - 切换前备份：`backups/predeploy-20260823-main-366f3ce/router.db`，权限 600、属主 `10001:10001`、SHA-256 `2e34e592acd2cd3c5f3a2b7a1656f74e9da93145017b7a6697271cda529a820d`；回滚点为 `20260822-ui-refine-63359b5`。
 - 部署后：app `running/healthy`、重启 0、OOM false；live/ready、18080/18081/6020 健康端点均 200；根页和 embed 资源 `index-BTU_L3ah.css`/`index-DRw6sFaS.js` 均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；公网 `/health/live` 200；近 10 分钟无 panic/fatal/migration/flush 错误签名。
 - 未执行管理员会话、真实模型请求、代理轮换或 CONNECT 业务矩阵；缺少运行时凭据时不将健康检查宣称为完整 live/E2E。
+
+## 2026-08-23 截图区域前端精致化部署
+
+- 本轮只改两个视觉区域：`web/src/shared/components/AppShell.vue` 的品牌锁定/搜索入口/折叠钮，以及 `web/src/features/models/ModelsView.vue` 的筛选与批量操作工具栏；保留现有 Warm Restraint token、交互和 testId，不增加拟物纹理或厚重阴影。
+- 视觉行为回归测试分别落在 `AppShell.spec.ts` 与 `ModelsView.spec.ts`；前端构建后仍需同步 `internal/web/dist`，再运行 `scripts/check-web-dist.sh`。
+- 非交互环境执行 pnpm 时，Codex 运行时可能因自动安装触发 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` 或 `ERR_PNPM_IGNORED_BUILDS`；可在 `CI=true` 下先安装，验证阶段直接调用 bundled Node 的 `eslint`、`vue-tsc`、`vitest` 和 `vite` CLI，避免修改项目配置文件。
+- `scripts/deploy/deploy_remote.py` 只打包 `git archive HEAD`。未提交工作树需要临时发布包覆盖改动文件后再通过 `hangzhou2-2` 的 Paramiko 配置上传；不要为部署擅自创建提交，也不要把 `.env`、XApi 或 Key 放进临时包。
+- 本轮发布 release `/opt/nvidia-router-releases/20260823-ui-polish-worktree`、镜像 `nvidia-router:deploy-20260823-ui-polish-worktree`；沿用旧 release 的运行时 `.env` 与 deploy override，切换前由旧镜像备份 `nvr-data`，无数据库迁移。
+- 部署后复核应等待容器 health 从 `starting` 进入 `healthy`，再核对 live/ready、根页、18080/18081/6020 健康端点与关键端口；本轮未使用运行时凭据执行管理员、模型、代理轮换或 CONNECT 业务矩阵，不将免认证健康检查称为完整 live/E2E。
+## 2026-08-23 本地启动配置排障
+
+- 本地旧 `nvidia-router.exe` 可能早于当前 `internal/web/dist`；启动当前源码前先用 `go build -o tmp\\nvidia-router-local.exe .\\cmd\\nvidia-router`，避免误把旧嵌入前端当成最新版本。
+- `NVIDIA_ROUTER_MASTER_KEY` 必须是无 `=` 尾部填充的 Raw URL Base64；若去掉填充后仍出现 crypto sentinel 解密失败，说明它与现有 `data` 数据库不是同一把密钥。不要生成新密钥覆盖数据库，使用匹配数据库的运行时 Secret，且不写入日志或新配置文件。
+- 本地 `.env` 未配置 `NVIDIA_ROUTER_XK_UPSTREAM_URL` 时，服务仍可启动并通过 `/health/live`、`/health/ready`；`validation_all_failed` 仅表示代理池未配置/未就绪，不等同于应用启动失败。

@@ -266,20 +266,26 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       aria-label="管理侧栏"
     >
       <div
-        class="flex h-16 items-center gap-3 px-5"
+        data-testid="sidebar-brand"
+        class="sidebar-brand flex h-16 items-center gap-3 border-b border-[var(--color-border-subtle)] px-5"
         :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
       >
-        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)] shadow-[0_2px_12px_var(--border-glow-to)]">
-          N
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center">
+          <span
+            data-testid="sidebar-brand-mark"
+            class="sidebar-brand-mark flex h-8 w-8 items-center justify-center rounded-[9px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)]"
+          >
+            N
+          </span>
         </div>
         <div
           v-if="!railCollapsed"
           class="min-w-0"
         >
-          <p class="truncate text-sm font-semibold">
+          <p class="truncate text-[13px] font-semibold tracking-[0.01em]">
             NVIDIA Router
           </p>
-          <p class="text-xs text-[var(--color-text-muted)]">
+          <p class="mt-0.5 text-[11px] tracking-[0.02em] text-[var(--color-text-muted)]">
             管理控制台
           </p>
         </div>
@@ -287,11 +293,11 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 
       <!-- 命令面板入口：幽灵极简——透明底+发丝描边，交互时才显形（Warm Restraint） -->
       <div
-        class="px-5 pb-2 pt-4"
+        class="px-5 pb-3 pt-4"
         :class="railCollapsed ? 'lg:px-3' : ''"
       >
         <button
-          class="flex h-9 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-transparent px-3 text-sm text-[var(--color-text-subtle)] transition-[background-color,border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          class="flex h-10 w-full items-center gap-2.5 rounded-[9px] border border-[var(--color-border)] bg-transparent px-3 text-sm text-[var(--color-text-secondary)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
           :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
           type="button"
           data-testid="open-command-palette"
@@ -309,7 +315,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           >搜索…</span>
           <kbd
             v-if="!railCollapsed"
-            class="rounded bg-[var(--color-canvas)] px-1.5 py-0.5 text-[11px] leading-none text-[var(--color-text-muted)]"
+            class="rounded-[5px] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-1.5 py-1 text-[10px] leading-none text-[var(--color-text-muted)]"
           >{{ searchKbd }}</kbd>
         </button>
       </div>
@@ -508,7 +514,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 
       <!-- 折叠开关：仅桌面显示 -->
       <button
-        class="absolute -right-3.5 top-[70px] hidden h-7 w-7 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text-muted)] shadow-[var(--shadow-sm)] transition-[background-color,color,transform] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] lg:flex"
+        class="sidebar-rail-toggle absolute -right-3.5 top-[70px] hidden h-7 w-7 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] lg:flex"
         type="button"
         data-testid="toggle-rail"
         :aria-label="railCollapsed ? '展开侧栏' : '折叠侧栏'"

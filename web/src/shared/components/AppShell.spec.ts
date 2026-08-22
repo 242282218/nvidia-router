@@ -159,4 +159,16 @@ describe('AppShell sidebar chrome', () => {
     expect(aside.text()).toContain('管理员')
     expect(aside.find('[aria-label="管理员，会话有效"]').exists()).toBe(true)
   })
+
+  it('uses a flat brand lockup and a restrained rail toggle', async () => {
+    const wrapper = await mountShell(false)
+    const brand = wrapper.get('[data-testid="sidebar-brand"]')
+    const toggle = wrapper.get('[data-testid="toggle-rail"]')
+
+    expect(brand.classes()).toEqual(expect.arrayContaining(['sidebar-brand']))
+    expect(brand.find('[data-testid="sidebar-brand-mark"]').classes()).toEqual(
+      expect.arrayContaining(['sidebar-brand-mark']),
+    )
+    expect(toggle.classes()).toEqual(expect.arrayContaining(['sidebar-rail-toggle']))
+  })
 })
