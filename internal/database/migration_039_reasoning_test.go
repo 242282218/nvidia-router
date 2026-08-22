@@ -17,7 +17,7 @@ func TestLatestMigrationsAddReasoningConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	settings, err := runtimeconfig.New(context.Background(), db)
 	if err != nil {
@@ -56,7 +56,7 @@ func TestModelSelectionPreservesProbeReasoningVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	repository := modelcatalog.NewRepository(db)
 	now := time.Now().UTC()

@@ -14,7 +14,7 @@ func TestMigrationAddsModelContextLength(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	repository := modelcatalog.NewRepository(db)
 	if err := repository.SaveSelections(context.Background(), []modelcatalog.Selection{{
