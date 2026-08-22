@@ -6,8 +6,10 @@
 import type { Component } from 'vue'
 import {
   Activity,
+  ArrowDown,
   ArrowRight,
   ArrowUpDown,
+  ArrowUp,
   ArrowUpRight,
   Boxes,
   CalendarClock,
@@ -152,6 +154,8 @@ export const icons = {
   'chevron-right': ChevronRight,
   'arrow-right': ArrowRight,
   'arrow-up-right': ArrowUpRight,
+  'arrow-up': ArrowUp,
+  'arrow-down': ArrowDown,
   sort: ArrowUpDown,
   table: Table,
   rows: Rows3,

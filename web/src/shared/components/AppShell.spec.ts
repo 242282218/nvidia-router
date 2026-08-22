@@ -138,3 +138,25 @@ describe('AppShell mobile drawer focus management', () => {
     expect(document.activeElement).toBe(menuButton)
   })
 })
+
+describe('AppShell sidebar chrome', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // 快捷键提示必须与 useHotkeys.formatCombo 同源（Ctrl 在所有平台都生效），
+  // 防止再次出现侧栏 ⌘K 与命令面板 Ctrl K 两套口径。
+  it('derives the search hotkey hint from formatCombo instead of a hardcoded glyph', async () => {
+    const wrapper = await mountShell(false)
+    const entry = wrapper.get('[data-testid="open-command-palette"]')
+    expect(entry.text()).toContain('Ctrl K')
+    expect(entry.attributes('title')).toBe('搜索（Ctrl K）')
+  })
+
+  it('renders the account identity with an inline status, not a dedicated line', async () => {
+    const wrapper = await mountShell(false)
+    const aside = wrapper.get('#admin-sidebar')
+    expect(aside.text()).toContain('管理员')
+    expect(aside.find('[aria-label="管理员，会话有效"]').exists()).toBe(true)
+  })
+})

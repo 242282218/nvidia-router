@@ -38,6 +38,11 @@ const emit = defineEmits<{
 const sortKey = ref<string | null>(null)
 const sortDir = ref<'asc' | 'desc'>('asc')
 
+function sortIconName(key: string): 'sort' | 'arrow-up' | 'arrow-down' {
+  if (sortKey.value !== key) return 'sort'
+  return sortDir.value === 'asc' ? 'arrow-up' : 'arrow-down'
+}
+
 function toggleSort(column: DataTableColumn<T>): void {
   if (!column.sortable) return
   if (sortKey.value === column.key) {
@@ -159,17 +164,19 @@ const padClass = computed(() => (props.density === 'compact'
             >
               <component
                 :is="column.sortable ? 'button' : 'span'"
-                :class="column.sortable ? 'inline-flex cursor-pointer items-center gap-1 hover:text-[var(--color-text)]' : ''"
+                :class="column.sortable ? 'group/sort inline-flex cursor-pointer items-center gap-1.5 transition-colors duration-[var(--duration-micro)] hover:text-[var(--color-text)]' : ''"
                 :type="column.sortable ? 'button' : undefined"
                 @click="toggleSort(column)"
               >
-                {{ column.label }}
+                <span :class="sortKey === column.key ? 'text-[var(--color-text-secondary)]' : ''">{{ column.label }}</span>
                 <UiIcon
                   v-if="column.sortable"
-                  name="sort"
-                  :size="12"
-                  :class="sortKey === column.key ? 'text-[var(--color-text)]' : 'opacity-40'"
-                  :style="sortKey === column.key && sortDir === 'desc' ? 'transform: rotate(180deg)' : undefined"
+                  :name="sortIconName(column.key)"
+                  :size="13"
+                  class="shrink-0 transition-opacity duration-[var(--duration-micro)]"
+                  :class="sortKey === column.key
+                    ? 'text-[var(--color-text)]'
+                    : 'text-[var(--color-text-subtle)] opacity-55 group-hover/sort:opacity-100'"
                 />
               </component>
             </th>

@@ -21,7 +21,7 @@ const emit = defineEmits<{
 const columns: DataTableColumn<NVIDIAKey>[] = [
   { key: 'masked', label: 'Key' },
   { key: 'state', label: '状态', sortable: true, value: (row) => (row.enabled && !row.auth_invalid ? 0 : 1) },
-  { key: 'failures', label: '失败 / 最近错误', sortable: true, value: (row) => row.consecutive_failures },
+  { key: 'failures', label: '失败', sortable: true, value: (row) => row.consecutive_failures },
   { key: 'actions', label: '操作', align: 'right', width: 'w-44' },
 ]
 
