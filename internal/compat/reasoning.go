@@ -38,6 +38,7 @@ var reasoningBudgets = map[ReasoningLevel]int{
 
 var reasoningAliases = map[string]ReasoningLevel{
 	"none": ReasoningNone, "off": ReasoningNone, "disabled": ReasoningNone,
+	"no_think": ReasoningNone, "no-think": ReasoningNone,
 	"auto": ReasoningAuto, "default": ReasoningAuto, "on": ReasoningAuto,
 	"minimal": ReasoningMinimal, "tiny": ReasoningMinimal,
 	"low":    ReasoningLow,
@@ -154,19 +155,41 @@ func AutoReasoningSpec(profile ReasoningProfile) (ReasoningSpec, bool) {
 		return ReasoningSpec{}, false
 	}
 	levels := availableLevels(profile)
-	for index := len(levels) - 1; index >= 0; index-- {
-		if levels[index] == ReasoningNone {
+	// A silent default must be moderate. Auto-injection fires on requests that
+	// never mentioned reasoning, so picking the heaviest level gave every such
+	// request the slowest path — and for upstreams whose accepted vocabulary
+	// stops below the top (e.g. no_think/low/high) it produced an effort value
+	// the upstream rejects outright. Choose the strongest level no heavier than
+	// "medium"; only when every level is heavier, fall back to the cheapest.
+	// "none" carries no instruction and "auto" is not a wire-safe OpenAI effort,
+	// so neither is ever injected.
+	ceiling := budgetForLevel(ReasoningMedium)
+	best := ReasoningLevel("")
+	for _, level := range levels {
+		if level == ReasoningNone || level == ReasoningAuto {
 			continue
 		}
-		level := levels[index]
-		return ReasoningSpec{
-			Requested: true,
-			Level:     level,
-			Budget:    budgetForLevel(level),
-			Source:    "auto-inject",
-		}, true
+		if budgetForLevel(level) <= ceiling {
+			best = level
+		}
 	}
-	return ReasoningSpec{}, false
+	if best == "" {
+		for _, level := range levels {
+			if level != ReasoningNone && level != ReasoningAuto {
+				best = level
+				break
+			}
+		}
+	}
+	if best == "" {
+		return ReasoningSpec{}, false
+	}
+	return ReasoningSpec{
+		Requested: true,
+		Level:     best,
+		Budget:    budgetForLevel(best),
+		Source:    "auto-inject",
+	}, true
 }
 
 func ResolveReasoning(spec ReasoningSpec, profile ReasoningProfile) (ReasoningDecision, error) {

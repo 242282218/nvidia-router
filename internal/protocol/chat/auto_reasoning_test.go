@@ -7,7 +7,11 @@ import (
 	"nvidia-router/internal/modelcatalog"
 )
 
-func TestMarshalForWithOptionsInjectsHighestReasoning(t *testing.T) {
+// Auto-injection defaults to the strongest level no heavier than "medium":
+// a request that never mentioned reasoning must not silently get the slowest
+// path (and vocabularies that stop below max stay in range). For this
+// none/low/high/max profile that is low.
+func TestMarshalForWithOptionsInjectsModerateReasoning(t *testing.T) {
 	request, err := Parse([]byte(`{"model":"public/model","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -34,8 +38,8 @@ func TestMarshalForWithOptionsInjectsHighestReasoning(t *testing.T) {
 	if err := json.Unmarshal(fields["reasoning_effort"], &effort); err != nil {
 		t.Fatal(err)
 	}
-	if effort != "max" {
-		t.Fatalf("reasoning_effort = %q, want max", effort)
+	if effort != "low" {
+		t.Fatalf("reasoning_effort = %q, want low", effort)
 	}
 }
 

@@ -7,6 +7,9 @@ import (
 	"nvidia-router/internal/modelcatalog"
 )
 
+// Auto-injection defaults to the strongest level no heavier than "medium"
+// (see internal/compat.AutoReasoningSpec): for this none/low/high/max
+// profile the injected effort is low, never the heaviest level.
 func TestMarshalForWithOptionsInjectsReasoningIntoChatPayload(t *testing.T) {
 	request, err := Parse([]byte(`{"model":"public/model","input":"hi"}`))
 	if err != nil {
@@ -34,7 +37,7 @@ func TestMarshalForWithOptionsInjectsReasoningIntoChatPayload(t *testing.T) {
 	if err := json.Unmarshal(fields["reasoning_effort"], &effort); err != nil {
 		t.Fatal(err)
 	}
-	if effort != "max" {
-		t.Fatalf("reasoning_effort = %q, want max", effort)
+	if effort != "low" {
+		t.Fatalf("reasoning_effort = %q, want low", effort)
 	}
 }

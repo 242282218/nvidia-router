@@ -376,11 +376,22 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 	}
 	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, opts)
 	observability.SetReasoningResponse(ctx, reasoningPresent, reasoningChars)
-	if err == nil || (err == sse.ErrStreamInterrupted && commit.Committed()) || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
-		// Clean completion, an interrupted stream whose first byte already reached
-		// the client, or a write stall after commit (the client stopped reading and
-		// the stream was torn down to release the lease): the client observes
-		// truncation and nothing more can be written.
+	if err == nil || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
+		// Clean completion, or a write stall after commit (the client stopped
+		// reading and the stream was torn down to release the lease): the client
+		// is not consuming, so nothing more can be delivered either way.
+		return
+	}
+	if err == sse.ErrStreamInterrupted && commit.Committed() {
+		// EOF before [DONE] with bytes already delivered is a truncated
+		// generation, not a completion. The status can no longer change, but
+		// silently closing made agents treat the partial output — an empty
+		// reply in the worst case — as a successful completion. Append the
+		// OpenAI mid-stream error shape so SDKs surface the failure and the
+		// caller can retry. Observability keeps stream_done=0 because the
+		// upstream never completed.
+		writeStreamTruncated(writer)
+		observability.RequestLogger(ctx).Warn("stream_truncated_after_commit", "error", err)
 		return
 	}
 	// Context cancelled or other error after commit - nothing we can do.
@@ -412,6 +423,29 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		return
 	}
 	observability.RequestLogger(ctx).Warn("stream_truncated_after_commit", "error", err)
+}
+
+// writeStreamTruncated appends the in-stream error event for a committed SSE
+// stream whose upstream ended before [DONE]. The trailing [DONE] lets event
+// loops that wait for the marker terminate instead of hanging until their idle
+// timeout; SDKs that inspect chunk contents raise on the error payload first.
+func writeStreamTruncated(writer http.ResponseWriter) {
+	payload, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": "The upstream service ended the stream before completion; the response is truncated. Retry the request.",
+			"type":    "server_error",
+			"code":    "upstream_stream_truncated",
+		},
+	})
+	if err != nil {
+		return
+	}
+	encoder := sse.NewEncoder(writer)
+	_ = encoder.Encode(sse.Event{Data: []string{string(payload)}})
+	_ = encoder.Encode(sse.Event{Data: []string{"[DONE]"}})
+	if flusher, ok := writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func snapshotFromBudget(ctx context.Context) runtimeconfig.Snapshot {

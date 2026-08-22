@@ -358,6 +358,34 @@ func TestChatStreamResponseUncommittedInterruptionWritesError(t *testing.T) {
 	assertChatError(t, response, http.StatusBadGateway, "upstream_protocol_error")
 }
 
+// TestChatStreamCommittedInterruptionAppendsErrorEvent locks the contract for
+// a stream that delivered events and then hit EOF without [DONE]: the client
+// must receive an in-stream error event (plus a terminal [DONE]) so agents
+// retry instead of treating the partial output as a complete answer. Before
+// this the handler closed silently, and an upstream blip surfaced as an
+// empty-but-successful completion.
+func TestChatStreamCommittedInterruptionAppendsErrorEvent(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")),
+	}
+	logger := &recordingLogHandler{}
+	ctx := observability.WithRequestLogger(context.Background(), slog.New(logger))
+	response := httptest.NewRecorder()
+	NewChat(nil, nil, nil).streamResponse(ctx, response, upstream)
+	body := response.Body.String()
+	if !strings.Contains(body, "upstream_stream_truncated") {
+		t.Fatalf("body = %q, want in-stream truncation error event", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("body = %q, want terminal [DONE] after the error event", body)
+	}
+	if !logger.contains("stream_truncated_after_commit") {
+		t.Fatalf("committed interruption was not logged; got %v", logger.messages())
+	}
+}
+
 // TestChatStreamTruncationAfterCommitLogsWarn locks in that a stream which
 // committed its first event and then died on an upstream error is logged at
 // Warn. Before this, the error was swallowed: the client observed a truncated
