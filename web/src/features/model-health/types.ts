@@ -1,6 +1,6 @@
 export type ModelHealthRange = '1h' | '6h' | '24h' | '7d'
 export type ModelHealthGroup = 'default' | 'provider' | 'kind'
-export type ModelHealthSort = 'availability' | 'recent' | 'volume'
+export type ModelHealthSort = 'quality' | 'availability' | 'latency' | 'volume' | 'name' | 'recent'
 export type ModelHealthStatus = 'healthy' | 'degraded' | 'unavailable' | 'unchecked' | 'stale' | 'unconfigured' | string
 export type ModelHealthOutcome = 'success' | 'failure' | 'timeout' | 'skipped' | 'canceled' | 'mixed' | 'empty' | string
 

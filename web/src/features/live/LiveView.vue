@@ -290,7 +290,7 @@ function latencyColor(duration: number): string {
           <Transition name="fade">
             <button
               v-if="!pinnedToTop && events.length > 0"
-              class="absolute bottom-4 right-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] shadow-[var(--shadow-overlay)] transition-colors hover:text-[var(--color-text)] pointer-coarse:px-4 pointer-coarse:py-2.5"
+              class="absolute bottom-4 right-4 rounded-full border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text)] pointer-coarse:px-4 pointer-coarse:py-2.5"
               type="button"
               @click="scrollToTop"
             >

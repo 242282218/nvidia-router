@@ -32,7 +32,7 @@ const emit = defineEmits<{ change: [value: boolean] }>()
     @click="emit('change', !checked)"
   >
     <span
-      class="h-5 w-5 rounded-full shadow-[var(--shadow-sm)]"
+      class="h-5 w-5 rounded-full"
       :class="disabled ? 'bg-[var(--color-disabled-foreground)]' : 'bg-white'"
       aria-hidden="true"
     />

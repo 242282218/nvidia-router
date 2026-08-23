@@ -1,341 +1,148 @@
-# 记忆 — 可复用经验、约束与验证方法
+# 记忆 — 可复用约束、部署方法与排障结论
 
-> 约束：本文件不记录密钥、URL 凭据、日志原文、临时数据或普通测试通过结果；只沉淀可复用的方法、命令、限制与排障结论。密钥与完整 XApi 地址仅通过运行时 Secret 注入。
+> 本文件只保留长期有效信息。不得记录密钥、完整 URL 凭据、Cookie、Access Key、日志原文、临时数据或普通测试流水账。
 
-## 1. 项目约束（必读）
+## 1. 项目边界与安全
 
-- 强制部署环境：国内 `114.55.25.190`（`hangzhou2-2`），国外 `149.71.241.250` 不用于星空代理联调。部署前依次读取 `D:\PROJECT_ZZZZZZZZZ\服务器管理\AGENTS.md`、`hangzhou2-2/AGENTS.md`、`hangzhou2-2/memory.md` 及本项目 `docker-compose*.yml`。
-- 连接：`ssh -F .\ssh_config_local hangzhou2-2`（宿主机）或 `paramiko` 4.x 直连 `114.55.25.190:22`；Windows 无 `sshpass/plink`。
-- 架构：单体 `nvida反代` 内置 XApi 采集→验证→池管理→CONNECT，不依赖独立代理池服务；空池/未就绪时不静默直连，返回临时不可用（`proxy pool disabled/no healthy proxy`）。
-- 安全：`NVIDIA_ROUTER_XK_UPSTREAM_URL` 完整地址仅运行时注入，Web/日志/API 只返回脱敏 endpoint；不在 Git/文档/脚本/日志中写入真实凭据。
-- XApi 特性：国内出口才可用，`qty=2` 为当前套餐上限（`qty=3` 返回 506），`host:port` TXT 解析，验证期望 `404`（`NVIDIA_ROUTER_XK_VALIDATION_STATUS`）。
+- 星空代理真实联调、部署、重启和线上检查只在国内目标 hangzhou2-2 执行；国外机器不用于星空代理。
+- 处理服务器前依次读取：项目 AGENTS.md、服务器管理/AGENTS.md、目标目录 AGENTS.md 与 memory.md、部署脚本、Compose 和部署说明。
+- 单体路由器内置 XApi 采集、验证、池管理和 CONNECT；池未就绪时必须失败，不得静默直连。
+- XApi 完整地址、provider 凭据、主密钥、管理员密码、NVIDIA Key 和 SSH 私钥只通过运行时 Secret 注入；命令输出、日志、Git、文档和记忆中只允许出现脱敏值。
+- 当前公网入口为 HTTP；管理员密码、Cookie、Access Key、请求和响应存在明文传输风险。生产 HTTPS 需要受信反向代理、Secure Cookie、External Origin 和 Trusted Proxy CIDR。
 
-## 2. 核心配置与默认值
+## 2. 镜像与发布版本
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `NVIDIA_ROUTER_MASTER_KEY` | 必填 32B RawURLBase64 | `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`，不落盘 |
-| `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD` | 必填 ≥12 | 首次改密前代理与敏感管理面不可用，`/health/ready` 非就绪 |
-| `NVIDIA_ROUTER_XK_COLLECT_INTERVAL` | `5s` | 采集周期 |
-| `NVIDIA_ROUTER_XK_PROXY_TTL` | `120s` | TTL；Grace 续期 `TTL/2=60s`，上限 `TTL*2=240s` 锚定 `ValidatedAt` |
-| `NVIDIA_ROUTER_XK_EXPECTED_QTY` | `4`（2026-08-19 由 2→4） | 2–10，`4` 为生产推荐缓冲；需与上游 `qty` 套餐上限一致 |
-| `NVIDIA_ROUTER_XK_CONCURRENCY` | `3`（由 2→3） | 1–10，验证并发 |
-| `stream_first_token_timeout_ms` | `60000` | 推理模型建议 120s 客户端同步 |
-| `stream_idle_timeout_ms` | `180000` | DeepSeek 长思考需大窗口 |
-| 监听 | `0.0.0.0:3756`，Compose 绑定 `127.0.0.1:3756:3756` | 公网需受信反向代理 + `TRUSTED_PROXY_CIDRS` + `ADMIN_EXTERNAL_ORIGIN` + `ADMIN_SECURE_COOKIE=true` |
+- 版本格式：YYYYMMDD-变更主题-git短SHA；每次发布必须唯一，禁止生产使用 latest、local、dev 或其他漂移标签。
+- 同一版本号必须同时对应 Git HEAD、Release 目录、镜像和回滚记录：
+  - /opt/nvidia-router-releases/<version>
+  - nvidia-router:deploy-<version>
+- 标准发布命令：python scripts/deploy/deploy_remote.py <version>。脚本使用 git archive HEAD，继承现网 .env 与 deploy override，使用 goproxy.cn 构建，切换前由旧镜像备份数据库。
+- 同一 Release 已存在备份时不得覆盖；源码或配置变化必须生成新版本号。部署后核对容器实际镜像、工作目录、Git SHA、备份路径和回滚版本。
+- 版本、备份、回滚点和未完成验证项要更新到本节“当前线上状态”；详细历史放在目标服务器记忆或专项文档。
 
-## 3. 已知限制与坑位
+## 3. 架构与关键配置
 
-- **Validator HTTP/2**：验证与请求两条 transport 都必须 `ForceAttemptHTTP2: true`（`internal/xkproxy/validator.go:transportFor`、`manager.go:newTransport`、`upstream/nvidia/chat.go`），否则 CONNECT 到 CDN 后 `malformed HTTP response` 导致全量验证失败，池靠 Grace 无限续命 stale 出口。回归测试 `TestValidatorTransportEnablesHTTP2`。
-- **Grace 续命**：上限必须锚定 `ValidatedAt` 而非 `now`，且跳过 `ValidatedAt=0` 的从未验证出口，否则每 5s 周期都会把 `ExpiresAt` 推到 `now+240s` 导致永不过期。测试 `TestPoolGraceCapAnchoredToValidatedAt`。
-- **Collector 重试**：`validation_all_failed` 应在 `fetch` 内有界重试 3 次（利用 TXT 随机性抓活 IP），最终失败返回 `false` 触发退避（`nextInterval(true)` 重置会空耗配额）。
-- **质量选路**：`orderByQuality` 的相对慢速阈值 `fastest*3` 仅比较 `RequestLatencyEWMA`，不混入 `probe` 延迟；冷启动期（无 req 样本）用 `probe` 兜底（>3s -15 / >2s -8 / >1s -3），有样本后切回 request。长尾从 20s→11s→3.4s。
-- **Transport 错误映射**：`ReasonTransportFailed` 必须分类为 `Retryable` 的 `ScopeUpstreamGlobal` fault（`upstream_proxy_unavailable`）让 `attempt.Run` 换 Key 重试；否则直接 `return err` 短路，换 Key 循环不生效（并发 502 根因）。
-- **OpenCodeFree 错误透传**：`serveOpenCodeFree` 对 `status>=300` 必须先映射（404→`upstream_model_not_found`/429→`upstream_unavailable`/其余→`upstream_error`），`ValidateNonstreamChat` 的 `ErrProtocol/ErrEmptyResponse` 需映射为 `fault.Protocol/EmptyResponse`，否则 `writeChatError` fallback 500 掩盖模型下线。
-- **499 单列**：推理模型首字节 60–90s 易被客户端 60s 超时中断记 `499`，已单列为 `outcome=canceled`（`daily_stats.canceled_count` + `idx_request_logs_canceled_created`），`SuccessRate` 在分母中扣除 `canceled`，`/metrics` 与 `monitoring` 单独暴露，避免 30% 的 499 拖成 70% 失败率。迁移 `033_canceled_outcome.sql` 含 legacy fallback。
-- **410 Gone**：裸 `deepseek-v4-flash` 已 410，迁移 015 映射到 `deepseek-ai/deepseek-v4-flash-0731`；白名单发现与 gateway 同步缺口会导致已下线 free 模型仍 enabled（需 `opencodefree.Client.Models` 定时禁用）。
-- **Race**：无 CGO 时 `go test -race` 不可用，依赖锁结构与并发测试覆盖；`go vet` 必过。
-- **多实例**：限流与池状态为内存态，不跨实例共享，需 Redis 才可多实例（当前不做）。
-- **部署镜像行已参数化**（`docker-compose.deploy.yml` 的 image 行 = `${NVIDIA_ROUTER_IMAGE:-nvidia-router:local}`）：构建/启动直接注入 `NVIDIA_ROUTER_IMAGE=nvidia-router:deploy-<tag>` 即可，不要再用 sed 改镜像行；`git archive HEAD` 打包后 `cp` 旧 release 的 `.env`（chmod 600）+ `docker-compose.deploy.yml`，无新增迁移时 DB 直接兼容。
-- **性能基线（2026-08-20 两轮优化后）**：详见 `docs/plans/2026-08-20-性能优化调研与实施.md` 与调研底稿 `docs/代码全量调研与优化建议.md`（含逐条状态）。要点：不需要换语言（Go 最优，Rust 仅窄模块 15% 收益）；热点对照表（crypto GCM 实例缓存、eventhub O(1) 环形、SSE AfterFunc 去 goroutine、MarshalFor raw 快路径、collector worker 池、validator keep-alive、manager RWMutex+Clone 外移、SQLite 035/036 索引）可直接复用；前端改动必须重建并提交 `internal/web/dist`（go:embed）。
-- **SQLite 迁移命名坑**：`CREATE INDEX IF NOT EXISTS` 同名已存在时是 no-op，升级索引必须换新名字（035 的 model/access 部分索引因与 002 同名失效，036 用 `_v2` 后缀重建，`docs/代码全量调研与优化建议.md` #6）。新增迁移前先核对 `002_indexes.sql` 已有索引名。
-- **opencodefree 请求体零拷贝**：`client.go:79` 已由 `strings.NewReader(string(body))` 改 `bytes.NewReader(body)`，25MiB 上限场景省全量拷贝。
-- **契约红 = 前后端类型漂移**：后端 migration/结构体加字段后，`web/src/features/statistics/types.ts` 与 `contract.spec.ts` 必须同步（`canceled_count` 教训），跑 `pnpm --dir web run test` 验证。
+- 监听：应用容器 0.0.0.0:3756；默认 Compose 绑定回环，公网部署 override 绑定 0.0.0.0:3756。
+- XApi：当前国内套餐 qty=2；qty>2 曾返回 506，NVIDIA_ROUTER_XK_EXPECTED_QTY 必须先与实际套餐确认，不能凭旧记录调高。
+- 常用默认：采集间隔 5s、代理 TTL 120s、验证期望状态 404、验证并发 2；慢推理模型客户端首字节超时建议至少 120s，流式 idle 超时建议 180s。
+- 数据卷：生产使用外部 Docker volume nvr-data；不得执行 docker compose down -v。
+- SQLite 迁移：新增或升级索引必须核对旧索引名；CREATE INDEX IF NOT EXISTS 同名时不会重建索引。
 
-## 4. 验证方法（最小充分）
+## 4. 标准部署流程
 
-```bash
-# 本地（需 Go/Node/pnpm）
+### 发布前
+
+~~~powershell
+Set-Location 'D:\PROJECT_ZZZZZZZZZ\服务器管理\hangzhou2-2'
+ssh -F .\ssh_config_local hangzhou2-2
+~~~
+
+- 先检查远端 app、端口、数据库卷、健康接口和近期错误，再开始构建。
+- 本地确认工作树和目标提交：git status --short、git diff --check、git rev-parse --short HEAD。
+- 有新增迁移时，必须确认旧镜像备份成功后再切换；不要把 .env、key/、data/、依赖或本地二进制放进发布包。
+
+### 切换
+
+~~~powershell
+python scripts/deploy/deploy_remote.py 20260823-redeploy-cfcaecf
+~~~
+
+- 脚本流程：读取现网 release/image → 创建唯一 Release → git archive HEAD 上传 → 继承 .env/deploy override → 构建版本镜像 → 停 app → 旧镜像备份 nvr-data → 启动新 app → live/ready 校验。
+- Compose 生产覆盖文件通过 NVIDIA_ROUTER_IMAGE 注入版本镜像；不要手工改回 nvidia-router:local，不要使用 --remove-orphans 删除预期存在的容器。
+
+### 回滚
+
+- 使用带版本号的旧 Release、旧镜像和同一组基础 Compose + deploy override；不得依赖默认镜像标签。
+- 回滚前确认数据库迁移兼容性；数据库恢复只能使用明确的备份文件，且备份权限保持 600。
+- 管理员密码重置必须先停 app 释放 SQLite 锁，密码仅通过 stdin 注入；不得写入 argv、文件、日志或记忆。
+
+## 5. 最小充分验证
+
+### 本地
+
+~~~bash
 go vet ./...
-go test ./...                          # 全量；tests/mocknvidia 含代理集成
-pnpm --dir web run lint
+go test ./...
 pnpm --dir web run typecheck
-pnpm --dir web run test                # 172+ 用例
+pnpm --dir web run test
 pnpm --dir web run build
-docker compose config                  # 需注入 NVIDIA_ROUTER_MASTER_KEY
-bash -n scripts/test/live-xk-proxy.sh
-NVIDIA_ROUTER_XK_PROXY_LIVE_SELF_TEST=1 bash scripts/test/live-nvidia.sh
+git diff --check
+~~~
 
-# 单测聚焦
-go test ./internal/xkproxy -run TestValidatorTransport
-go test ./internal/xkproxy -run TestPoolGrace
-go test ./internal/httpapi/v1 -run TestChat
-go test ./internal/observability -run TestMetrics
+前端改动必须同步 internal/web/dist（go:embed），并运行 scripts/check-web-dist.sh；Go race 在无 CGO/GCC 的本机无法验证时，交给 CI。
 
-# 真实联调（国内 hangzhou2-2，运行时注入）
-# 需：NVIDIA_ROUTER_XK_UPSTREAM_URL / NVIDIA_ROUTER_LIVE_KEY / ADMIN_PASSWORD / BASE_URL / 模型名
-bash scripts/test/live-nvidia.sh              # 全端点含代理链路
-bash scripts/test/live-xk-proxy.sh            # 内置池静态检查
-curl --fail http://127.0.0.1:3756/health/live
-curl --fail http://127.0.0.1:3756/health/ready   # 首次改密前非就绪为预期
-curl -H "Authorization: Bearer <ak>" http://127.0.0.1:3756/v1/models
-# 监控：GET /admin/api/monitoring/summary?range=24h 观察 success/canceled/failure 分桶
-# 指标：GET /metrics | grep nvidia_router_proxy_pool
-```
+### 远端免认证
 
-- **判定**：`SKIP` 非 `PASS`；无逐 case `status=PASS` 不得宣称 live/E2E 通过；`live-nvidia.sh` 的租约/热连接指标 `BLOCKED` 时不算加速通过。
-- **14 维测试**：见 `docs/项目测试方案.md`（D1 长任务/D2 思考/D3 输出/D4 工具/D5 协议/D6 链路/D7 性能/D8 容错 + M1 池/M2 Key/M3 认证/M4 目录/M5 可观测/M6 适配），并行编排将 70min 串行压缩至 30min（A 组 6 代理并行 + Soak 后台，B/C 独占串行）。
+- 容器：running/healthy、重启次数为 0、OOM 为 false。
+- 接口：/health/live、/health/ready、代理池和 OpenCodeFree 健康端点返回 200。
+- 端口：3756 以及本次涉及的 18080、18081、6020 监听正常。
+- 根页及其 JS/CSS 资源返回 200；匿名 /v1/models、/metrics 应返回 401。
+- 读取 schema_migrations 最大版本、enabled 模型数量和部署后错误签名；不输出数据库内容或日志原文。
 
-## 5. 排障速查
+### 真实联调
 
-| 现象 | 定位 | 处置 |
-|---|---|---|
-| 池 `healthy 300+ latency_samples 0 remaining 240s` | Grace 续命 + validator h2 缺失 | 检查 `ForceAttemptHTTP2`，确认 `ValidatedAt` 锚定，清理 stale 后观察 `latency_samples=1` |
-| 流式 240s 超时但非流式 200 | 池全死 IP + reasoning 长首字节 | 修 validator；客户端超时提至 120s，走 `opencode-free` 快路径验证 |
-| 并发 502 `upstream_proxy_unavailable` 串行 0 失败 | 廉价共享租约并发上限，非换 Key 代码 | 降低并发或提高 `expected_qty/concurrency`，记录为物理边界 |
-| `6 模型 500 internal_error` | `serveOpenCodeFree` 未映射非 2xx | 检查 `chat.go:198` 的 status 分支与 `ErrProtocol` 映射；禁用已下线模型 |
-| 成功率 60% 含大量 499 | 客户端 60s 超时 vs NVIDIA 90s TTFT | 客户端/文档对齐 120s，监控用 `canceled_count` 单列 |
+- 只在 hangzhou2-2，通过运行时 Secret 执行 scripts/test/live-nvidia.sh、live-xk-proxy.sh 或专项探针。
+- 重启后先等待代理池预热，再判断 NVIDIA 渠道；优先看鉴权 metrics 中的池健康 gauge。
+- 逐 case PASS 才能宣称通过；SKIP、BLOCKED、缺凭据或仅健康检查都不能宣称完整 live/E2E。
 
-## 6. 文档与脚本约定
+## 6. 高频排障结论
 
-- 有效文档：`docs/*.md`（`docs/README.md` 索引）；历史归档：`docs/archive/*.md`（`archive/README.md` 说明）；阶段报告：`docs/plans/YYYY-MM-DD-*.md`。
-- 代码调研底稿：`docs/代码全量调研与优化建议.md`（P0-P3 问题清单 + 对标项目 + 语言重写评估；实施前先读）。
-- 测试脚本：可复用 `scripts/test/{live-nvidia,compose-acceptance,proxy-pool-integration-test,run-deepseek-stability,verify_remote}.sh`，诊断归档 `scripts/test/_archive/`（ignored）。
-- 新增脚本：含 Secret 的必须 `umask 077` + `mktemp 600`，不打印 Key/URL；一次性诊断优先写 `D:\tmp\temp\`，用后删除。
-- 日志/产物：根 `*.log`/`*.exe`/`.tmp-*`/`tmp/` 按 `.gitignore` 清理；`data/` 与 `key/` 不提交。
+- 池健康数高但 latency_samples 为 0：优先检查 validator 和请求 transport 是否启用 ForceAttemptHTTP2；Grace 上限必须锚定 ValidatedAt，不能锚定当前时间，也不能续命从未验证的出口。
+- validation_all_failed：先看池 gauge 和实际请求，不要只依赖 INFO 日志；XApi TXT 随机性需要在 fetch 内有界重试，最终失败必须触发退避。
+- 代理快速 502：ReasonTransportFailed 必须映射为可重试的全局上游故障，让请求换 Key；共享租约并发上限可能造成瞬时无健康出口。
+- OpenCodeFree 638/502：内网 gateway 只走直连，不要经外部 XApi；非 2xx、空响应和协议错误必须映射为明确的上游错误，不能回退成泛化 500。
+- 大量 499：通常是客户端 60 秒超时与 NVIDIA 慢首字节冲突；监控中将 canceled 单列，不要直接归因于路由器故障。
+- 管理 API 401/403：先确认运行时密码是否为当前值；变更请求需要匹配 Host 的 Origin。管理员登录页面验证应等待 URL 离开 /admin/login。
+- 前后端契约漂移：后端迁移、DTO 或结构体加字段时，同步前端类型、contract spec 和 embed 产物；模型能力或 context_length 由运营数据维护时不要在候选发现中编造默认值。
 
-## 7. 代码库要点（2026-08-20 全量调研沉淀）
+## 7. Windows 与发布工具坑
 
-- **语言结论**：Go 是最优解，不换语言；Python/Node/Rust 均不划算。
-- **热点瓶颈**（均已验证，详见 docs/代码全量调研与优化建议.md）：
-  - 读查询未走 reader 池：`nvidiakey/repository.go:200 LoadEncrypted` 与 `modelcatalog/repository.go` 全走单写连接（MaxOpenConns(1)），与写事务争抢 → 吞吐天花板；`busy_timeout` 触发主因。
-  - 同一 body 重复全量 JSON 解析 2-3 次：`chat.go:82,94,96` + `responses.go:62,77,79` 的 `ReasoningLevelFromBody/ReasoningFieldsFromBody` 各做一次完整 unmarshal。
-  - 流式每 token 全量 unmarshal（chat.go:515 reasoning 采样），应先字节级短路。
-  - `opencodefree/client.go:79` 应改 `bytes.NewReader(body)` 零拷贝。
-  - 后台 goroutine 无 panic recover（collector.go:116,382,405）；`manager.Close`/`settings.Update` 锁内长阻塞（wg.Wait 上限 ~27s）。
-- **已知坑**：`035_perf_indexes.sql` 部分索引因同名 no-op 未生效（002 已有同名索引）；`pool.go StickyGet` 双重 Unlock panic（死代码，启用即崩）；`ShouldBackOff` 未接入采集退避。
-- **对标结论**：架构已覆盖通用方案（transport 池化、换 Key 重试防重放、读写池分离、SSE 硬上限）；可借鉴：出口 backup 分级、冷却渐进恢复、按错误类型分冷却阈值、重试/冷却事件指标、保池策略（healthy<expected 提前采集）、限流标准响应头。
+- Windows 无 sshpass/plink；使用目标目录的 SSH 配置或部署脚本内 Paramiko 配置。
+- PowerShell 管道传 gzip/归档可能破坏二进制；优先用 git archive + SFTP。
+- PowerShell 读写中文文件可能改变编码；批量替换使用 apply_patch 或明确 UTF-8 的工具。
+- 本地 3756 可能被旧 nvidia-router.exe 占用；运行 E2E/视觉探针前确认实际端口和嵌入资源版本。
+- 一次性诊断脚本放临时目录，含 Secret 时使用 umask 077/权限 600，验证后清理。
 
-## 9. 2026-08-20 OpenCodeFree 协议重试与真实模型矩阵
+## 8. 当前线上状态（最后核验：2026-08-23）
 
-- `nearestLevel` 的 tie-break 根因：请求了具体 reasoning level 时，若它与 `auto` 的预算距离相同，旧排序可能先选 `auto`，导致 `low` 被错误归一化。修复顺序为精确请求值优先，其次非 `auto` 值之间按预算距离和较小预算排序；回归测试覆盖 concrete `low` 不降级。
-- OpenCodeFree 非流式请求遇到 HTTP 200 但空响应或 malformed JSON 时，仅在响应尚未交付给客户端前重试一次；429 和流式请求不重试，避免放大网关限流或重放不可重放的流。
-- `scripts/test/live-model-matrix.py` 的 `strength`、`low_repeat`、`output`、`repeat` profile 可复用；运行时只从 `NVIDIA_ROUTER_ADMIN_PASSWORD` 读取密码，并通过 `hangzhou2-2` 的 SSH 配置执行，不能把密码、Key 或完整上游地址写入参数、输出或记忆。
-- 本轮 OpenCodeFree 三个白名单模型已覆盖 reasoning low/none、low/medium/high、native thinking、流式、工具、长输入、输出预算和重复稳定性；`hy3` 在 reasoning 消耗输出预算时可能以 `finish_reason=length` 结束，属于预算现象，不应误判为协议失败。
-- 外部限制：OpenCodeFree DeepSeek 可能进入约 30 秒的上游 `429` 限流窗口，等待后恢复；该现象应单列为上游限流，不归因于路由器重试逻辑。`thinking disabled` 的 reasoning 输出在不同上游模型间不一致，现有 preserve-native-thinking 契约暂不改动。
+- 源码：main@cfcaecf。
+- Release：/opt/nvidia-router-releases/20260823-redeploy-cfcaecf。
+- 镜像：nvidia-router:deploy-20260823-redeploy-cfcaecf。
+- 回滚点：20260823-ui-polish-worktree / nvidia-router:deploy-20260823-ui-polish-worktree。
+- 切换前数据库备份：/opt/nvidia-router-releases/20260823-redeploy-cfcaecf/backups/predeploy-20260823-redeploy-cfcaecf/router.db，权限 600。
+- 已核验：app healthy、重启 0、OOM false；schema 42；enabled 模型 10 个；live/ready、关键健康端点、根页和新静态资源正常；匿名业务与 metrics 鉴权正常；部署后错误签名为 0。
+- 最近一次确认性重部署未执行管理员会话、真实模型、代理轮换或 CONNECT 矩阵；不要把上述免认证结果当作完整 live/E2E。
 
-## 8. 2026-08-20 模型白名单 UI 修复
+## 9. 价格功能移除（2026-08-23）
 
-- 测试任务后端按单一 provider 校验模型 ID，因此前端测试选择也必须按当前渠道维护：批量“选中启用模型/全选”只作用于当前渠道，切换渠道清空旧选择，勾选其他渠道模型时自动切换渠道并保留该模型。
-- OpenCodeFree 已由后端允许启用，模型表格和卡片不能再用 provider 条件禁用停用模型的启用按钮；音频模型的能力验证门禁仍保留。
-- 页面级验证应等待 URL 离开 `/admin/login`，不能用宽泛的 `/admin/*` 正则（该正则会立即匹配登录页）；登录响应、会话、模型 API 和可见复选框需分别核对。
-- 离线 CLI 操作受应用进程锁保护：运行 `db backup` 或 `admin reset-password` 前先停止 app；备份目录若由 root 创建，临时 Compose 容器使用应用 UID 10001 时需先调整目录属主，备份文件保持 0600。密码仅通过 stdin 注入。
-- 候选发现排序约定（`internal/modelcatalog/candidate_sort.go` 的 `sortCandidates`）：OpenCodeFree `-free` 模型最前（按 ID 字母序）→ NVIDIA 按参数量（`(\d+)b` 正则，如 550b/120b/31b）从大到小，识别不出大小的按厂商前缀（`/` 前的 vendor）分组排序 → 其余非 free 的 OpenCodeFree 模型最后。排序在后端 `DiscoverCandidates` 完成，前端按返回顺序直出。
+- 价格字段、模型单价编辑、成本统计接口和成本面板已从运行时代码移除；迁移 043 负责从现有 `models` 表删除遗留价格列。历史迁移 019/027/029/031 保持不变，以免破坏已应用迁移的 checksum 和升级链。
+- 前端构建配置直接把 Vite 输出写入 `internal/web/dist`；Windows 下 pnpm 非交互安装可能被 `ERR_PNPM_IGNORED_BUILDS` 拦截，可直接调用 `web/node_modules/.bin/vue-tsc.cmd`、`vitest.cmd` 和 `vite.cmd` 完成本地校验。`scripts/check-web-dist.sh` 需要可用的 POSIX bash。
 
-## 2026-08-20 观测批量写入外键修复与部署
+## 10. 渠道状态页卡片重设计（2026-08-23）
 
-- 根因：请求观测异步缓冲中的 `RequestRecord` 可能在 AccessKey/NVIDIAKey 删除后才刷盘；SQLite 的 `ON DELETE SET NULL` 只处理已落库行，不能处理队列中的旧 ID，导致整批 `RecordBatch` 因外键约束回滚。
-- 修复：`internal/observability/repository.go` 在插入批次的同一事务内核对两个外键表，将已删除引用归一化为 `NULL`；`internal/observability/buffer_test.go` 增加删除后批量写入回归测试。
-- 本地验证：观测模块测试、`go vet ./...`、`go test ./...` 通过；远端 `live-nvidia.sh` 的 `bash -n` 与 parser self-test 通过。
-- 发布：`/opt/nvidia-router-releases/20260820-observability-fk-fix`，镜像 `nvidia-router:deploy-20260820-observability-fk-fix`；切换前 `nvr-data` 备份保存在该 release 的 `backups/`，权限为 `600`。回滚需使用同一基础 Compose + deploy override，保留外部 `nvr-data` 与 `router-internal`。
-- 真实回归：创建临时 AccessKey，调用 `/v1/models` 和 OpenCodeFree Chat，立即删除 Key，等待超过默认 `BufferRecorder` 的 30 秒 flush interval；请求日志继续落库，删除后的 `access_key_id` 为 `NULL`，无新的 FK/flush/panic/fatal 错误。临时 Key 已清理。
-- 认证教训：登录探针必须从运行时 Secret 注入目标密码；本地环境变量与目标值不一致会产生误导性的 401。CLI 密码重置必须停 app、备份数据卷并通过 stdin 注入，密码不落盘、不写入日志或记忆。
-- 限制：目标机没有 Go，`live-nvidia.sh` 完整 Go live suite 不能仅凭远端 parser self-test 宣称通过；完整模型矩阵仍需具备运行时模型/Key 的条件，不能把 `SKIP` 当作 `PASS`。
+- 渠道状态卡片应将成功率、探测次数、连续失败和最近延迟作为首屏固定信息；时间段只保留紧凑时间线和单段标题提示，不再用可展开的长详情列表，避免卡片高度随交互跳变。
+- 这类前端改动的最小验证组合：`web/node_modules/.bin/eslint.cmd`、`vitest.cmd run`、`vue-tsc.cmd --noEmit`、`vite.cmd build`，再用 Playwright 在桌面三列和 390px 单列检查无展开入口、无横向溢出；构建后同步检查 `internal/web/dist` 的静态资源引用闭包。
 
-## 2026-08-20 渠道状态 / 模型健康度
+## 11. 本地统一启动（2026-08-23）
 
-- 管理页面入口位于“资源接入”分组、代理池之后，用户可见标题为“渠道状态”，路由为 `/admin/channel-status`；内部接口保持 `/admin/api/model-health/*`，统一经过管理会话和 Origin 校验。
-- 模型健康检测默认关闭，频率默认 60 秒、允许 10～3600 秒，并发默认 2、允许 1～8；启用后立即触发首轮，后续按持久化频率调度。立即检测只入队，不阻塞管理请求。
-- 扫描使用模型白名单的完整列表（包括停用模型）；NVIDIA 模型使用当前可用 Key，OpenCodeFree 不传 NVIDIA Key。探测复用只读 `modelcatalog.TestModel`，不修改白名单、Key 状态、封禁状态或请求监控统计。
-- 探测记录独立存储在 `model_health_probes` / `model_health_latest`，用安全错误类别和成功/失败/超时/跳过/取消状态展示；页面固定 60 段时间格，必须同时提供文字状态/详情，不能只依赖颜色。
-- 前端生产构建后必须运行 `scripts/check-web-dist.sh`；Vite 路由懒加载的 JS/CSS 资源由入口 JS 的依赖图间接引用，检查器需要递归追踪依赖，否则会误报 stale asset。Windows 可用 `D:\Program Files\Git\bin\bash.exe scripts/check-web-dist.sh`。
-- 只读视觉检查可用 Playwright 注入模拟 `/admin/api/auth/session` 和 `/admin/api/model-health/summary` 响应，在 1440/768/375/320 宽度验证三列/单列卡片、移动抽屉、无横向溢出和频率控件；不要连接真实上游。
-- 摘要接口的事件、latest 和设置必须通过 `modelhealth.Repository.SummarySnapshot` 的同一只读事务读取；设置 PATCH 必须在写事务内读取当前行并应用字段级 patch，避免两个管理页面互相覆盖。
-- 频率控件使用可编辑数字输入而不是有限 preset，显示秒单位，前端与后端共同限制 10～3600；摘要聚合需单独返回 `stale_count`，不能把过期状态并入 `unchecked_count`。
+- 本地唯一启动入口为 `start.bat`，它只包装 `scripts/start-local.ps1`；脚本从当前源码启动 `go run ./cmd/nvidia-router serve`，再启动 `web/node_modules/.bin/vite.cmd --host 127.0.0.1 --strictPort`。
+- 前端开发地址固定为 `http://127.0.0.1:5173`，Vite 的 `/admin/api` 请求代理到 `3756`；`3756` 在本地开发中只作为 API 服务，不作为前端页面入口。
+- `internal/web/dist` 是 Docker/生产 Go 内嵌前端产物，不能作为本地实时开发入口删除或替代 Vite。
+- 启动器在 `tmp/local-start-state.json` 记录自己拉起的进程及启动时间；无登记的端口占用会安全失败，不得按通用 `node`/`go` 进程名误杀其他服务。启动失败时要清理本次已拉起的进程。
+- 本地 `.env` 的主密钥必须与现有 `data` 匹配；不匹配会触发 AES-GCM authentication failure。密钥只通过本机运行时环境注入，不能写入启动脚本、日志或记忆；不得删除或重建 `data`。
+- 启动自检：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test/start-local_test.ps1`；它检查 `3756/health/live=200`、`5173/=200`、`5173/@vite/client=200` 和 `/admin/api/models=401` 代理边界，前端改动只在 `5173` 页面验证 HMR。
 
-## 2026-08-20 全量审查 + 部署 20260820-full-review（= main bf409ce）
+## 12. Flat Outline 遮罩与响应式浮层（2026-08-23）
 
-- **在机联调法（最省事、无外网明文）**：Windows 用 paramiko + `hangzhou2-2/ssh_host_key`（无需密码）连 `114.55.25.190`，把探针 py 上传到远端 `/tmp` 用 `python3` 跑，命中 `127.0.0.1:3756`。管理 API 的**变更请求（POST/PATCH/DELETE）必须带 `Origin: http://127.0.0.1:3756`**（同源 CSRF 守卫），否则 403 `invalid_origin`。JSON 结构：`/admin/api/proxy-pool` 与 `/admin/api/models` 都在 `data` 键下；monitoring `range` **仅 24h/7d/30d**（`1h/6h` 是 model-health 的，打到 monitoring 会 400）。AccessKey：`POST /admin/api/access-keys {name}` → 201，明文在 `key` 字段（一次性）；测试后 `DELETE` + `logout`。
-- **代码健康结论**：`go vet`/`go build`/`go test ./...`/web lint+typecheck+test+build 全绿（修掉 1 个陈旧单测后）。全链路验证 OK：minimax-m3 经 下游→路由器→内置代理池→NVIDIA **797ms** 正确返回，流式 `[DONE]` 到达，思考强度 low/high 区分有效（deepseek reasoning_len 0→186）。
-- **55% 成功率是外部驱动，非路由器 bug**（测试方案要求分层归因）：① `deepseek-ai/deepseek-v4-flash-0731` NVIDIA 侧病态慢，reasoning_effort=none + max_tokens=24 仍需 **88–150s**（首字节远超客户端 60s → 记 499/失败），是该模型上游延迟不是路由器；② OpenCodeFree 网关阶段性整体宕机，所有模型返回非标准 `HTTP 638`，路由器正确映射 502 `upstream_error`（`serveOpenCodeFree` 未知≥300→502）；③ `z-ai/glm-5.2` 偶发 `upstream_proxy_unavailable` 502（97ms 快速失败），根因是 XApi 出口薄（qty=2 套餐上限）导致瞬时无健康出口，属 fail-safe 正确行为。
-- **`XK_EXPECTED_QTY` = XApi 请求的 `qty` 参数**（`upstream.go:119 query.Set("qty")`），当前套餐 `qty>2 → 506`，所以生产必须保持 `2`；memory 早前"推荐 4"与 506 现实冲突，**不要贸然调 4**（会致 fetch 全失败、池枯竭）。`XK_MAX_LATENCY` 未配=0（慢速门槛禁用）。
-- **日志级别坑**：`slog.Default()` 默认 INFO，`pool_updated`/`proxy_validation_failed` 是 **DEBUG（不可见）**，只有 `validation_all_failed`（整批失败）是 WARN。**不能因看不到 `pool_updated` 就断定"0 次成功验证"**；应以 `/metrics` 的 `nvidia_router_proxy_pool_healthy` 和实际请求成功率为准。诊断验证失败用远端直连复现：读容器 env 的 XApi/验证 URL（不回显），`curl --proxy http://ip:port --http2 <validation_url>` 期望 404——实测多数代理 0.6–2s 返回 404/h2 成功，偶发 CONNECT 失败（curl_exit=56）。
-- **改 admin 密码**：DB 已存在 admin 时 `INITIAL_ADMIN_PASSWORD` 无效，必须 CLI `admin reset-password`（app 必须先停、持进程锁、密码走 stdin）；`ResetPassword` 置 `must_change_password=0`，改完可直接登录且 `/health/ready` 保持就绪。部署顺序：停 app → **旧镜像** `db backup`（迁移前快照，`database.Open` 会跑迁移）→ **新镜像** `admin reset-password`（顺带应用迁移 037）→ `compose up` → 健康校验。孤儿容器 `nvidia-router-proxy-pool-1`（旧 release 20260811）与当前单体无关，属预期 warning。
+- 前端浮层验收应覆盖 1440px 与 390px：基础页、移动侧栏、命令面板、快捷键帮助、Modal、菜单和 tooltip 均检查 `scrollWidth - clientWidth`、可见浮层矩形是否在视口内、活动焦点中心是否仍可命中；完整页面检查用 Playwright，认证只从本地运行时配置读取，不回显凭据。
+- UnoCSS 下移动抽屉的显示/隐藏位移类必须互斥；基础类同时保留 `-translate-x-full`、再动态追加 `translate-x-0` 可能因生成顺序继续应用隐藏变换。使用条件类只输出一个移动位移状态，并保留 `lg:translate-x-0` 桌面覆盖。
+- 单列 CSS Grid 的卡片子项默认 `min-width:auto`，内部 flex 标题与固定操作按钮可能把轨道撑出视口；卡片 grid item 与可收缩的标题内容容器都应按需加 `min-w-0`，不能只依赖 `body { overflow-x: hidden }`。
+- Flat Outline 视觉回归同时做源码扫描和浏览器计算样式检查：生产源码不得出现阴影、文字阴影、drop-shadow、backdrop-filter、backdrop-blur、mask-image、animate-ping 或 shadow 工具类；功能性半透明 scrim 保留，面板层级使用底色与描边。
+- Windows 本机没有可用 POSIX bash 时，`scripts/check-web-dist.sh` 用等价 Python 闭包检查：从 `internal/web/dist/index.html` 递归跟踪静态引用与指纹文件名，确认无缺失资源和孤立旧 hash；随后用 `web/node_modules/.bin/vite.cmd build` 重建嵌入产物。
 
-## 2026-08-20 模型审计与预提交超时
+## 13. Flat Outline 交互与移动布局补充（2026-08-23）
 
-- NVIDIA 真实矩阵确认 `nvidia/nemotron-3-ultra-550b-a55b` 与 `stepfun-ai/step-3.7-flash` 会输出 `reasoning_content`；若白名单仍标记 `supports_reasoning=false`，小 `max_tokens` 会被思考消耗并出现空内容/`length`。迁移 038 将两者回填为 `thinking` 原生线格式，descriptor 也必须同步能力提示。
-- 代理池请求在写出请求后等不到响应头属于目标/模型首字节超时，不应被默认 504 failover matcher 再次扩散到所有 Key；用 typed fault 覆盖 matcher，连接在写出前失败仍保留重试。
-- NVIDIA pooled Acquire 的短暂空池应复用 `AcquireWithWait`，但等待 context 必须绑定本次 `FirstByteDeadline`，不能让流式请求的补池等待越过 retry budget。
-- OpenCodeFree 网关曾返回非标准 436；非流式首次遇到 436/标准瞬时 5xx 可重试一次，最终必须写出 502 `upstream_unavailable`，不能留下空 200。
-
-## 2026-08-20 模型白名单多维审计与推理预算对账
-
-- 审计方法：`scripts/test/remote_exec.py` + `model_whitelist_audit_remote.py`（在机探针，密码走 stdin）→ `orchestrate_audit.py` 分阶段 → `aggregate_audit.py`（逐用例）/ `summarize_audit.py`（总分、失败分布、延迟分位）；渠道归因用 `channel_baseline_remote.py`。报告见 `docs/plans/2026-08-20-模型白名单多维审计报告.md`。
-- **`orchestrate_audit.py` 用 `capture_output=True`，阶段中途被杀会丢该阶段全部数据**（本次 stability 即如此）。需要中途可观察时改流式落盘。
-- **能力模型无运行时闭环**：`supports_reasoning` 只来自 `descriptor.go` 硬编码列表、SQL 迁移、管理端 PATCH；`reasoning_content` 只在 `internal/observability/reasoning.go` 记指标，从不回写 catalog；`modelcatalog/service.go:344` 的能力探测只测可达性。声明与上游实际行为漂移会直接变成用户可见故障。
-- **P0/P1 同源**：声明为 false 但实际会思考 → `chat.go:454-461` 返回 501（过度拒绝）；声明支持但级别无强制力 → 思考吃光预算返回空内容。两者都是"路由器推导的数与上游行为无因果连接"。**只修 P0 会把症状平移成 P1**，必须成对修。
-- **`openai` 线格式丢弃数值预算**（`compat/reasoning.go` 的 openai 分支只发裸 `reasoning_effort` 字符串），所以 NVIDIA openai 线格式模型的 low/medium/high **没有任何节流作用**；实测 m3、glm-5.2 各档 reasoning 长度非单调，只有 `none` / `thinking:disabled` 的关断是确定性的。据此新增 `ReasoningProfile.AdvisoryLevels`（`Provider==nvidia && wire==openai` 时为真），把所有启用档归一为标准值 `high`，只保留开/关语义。**不能归一到 `auto`——那不是 OpenAI 标准取值，上游可能 422。**
-- **`thinking` 线格式才有真实杠杆**：`ApplyReasoning` 现将 `budget_tokens` 压到 `max_tokens`（含 `max_completion_tokens`/`max_output_tokens` 拼写）的 3/4，为答案保留 1/4；无 `max_tokens` 时不压（无从对账），`auto`(-1) 与 `disabled` 不受影响。回归测试 `internal/compat/reasoning_budget_test.go`。
-- 测试 profile 坑：`ZeroAllowed=false` 时 `availableLevels` 会丢掉 `none`，`thinking:{"type":"disabled"}` 会被 `nearestLevel` 拉回 enabled。构造推理 profile 的单测必须显式设 `ZeroAllowed: true`。
-- 模型实测结论（NVIDIA 渠道，2026-08-20）：nemotron-3-ultra-550b 最均衡（94%，长文 14274 内容 / 236 思考）；glm-5.2 工具调用 6/6 全绿但流式最大空档 4.3s，客户端 idle 超时不应低于 10s；minimax-m3 长上下文预填充最快（8K 仅 3.9s）但长文生成会把预算全烧在思考上；step-3.7-flash 长任务能力弱（8K 预填充 191s，TTFT 可达 173s）。`deepseek-ai/deepseek-v4-flash-0731` 120s 无首字节，建议停用。
-
-## 2026-08-20 OpenCodeFree 502 根因与代理边界
-
-- **内网网关不能走出口代理**：网关是 Compose 服务别名（单标签主机名，端口 6020），只有本机网络可达；`opencodefree/client.go` 的 `do()` 原先在代理已配置时把每次调用都送去外部 XApi 出口，出口无路由到私有地址，返回**非标准状态 638**，被映射成 502 `upstream_error`，看起来像整渠道宕机。属 `c0cafc7`「代理池接入」的回归。修复：`NewClient` 用 `isLocalHost` 判定回环/私有网段/链路本地/未指定地址/不含点的单标签名 → 直连。**判断代理是否该介入的准则：代理只为对公网端点隐藏来源地址；目标只有本机可达时，代理既不可行也无意义。**
-- **638 会污染代理池**：`attemptThroughProxy` 对 `status>=500` 调 `ReportHTTPFailure`，于是这个配置层错误把健康出口按 HTTP 失败隔离，持续劣化质量排序。排查代理池异常时，先确认是否有非标准状态在被当作真实上游失败上报。
-- **诊断方法（网关容器无 curl/wget/python3，但有 node）**：`docker exec -i <gateway> node -e <script>`，Key 从 app 容器 `printenv` 读取后经 **stdin** 注入 node（不进 argv、不进宿主机进程表），并在输出前 `replace(key,'[redacted]')`。脚本 `scripts/test/opencodefree_{diagnose,authed_probe,model_probe}_remote.py` 可复用：分别覆盖路由器侧、网关侧直连、单模型多形态。
-- **区分"渠道故障"与"链路故障"的通用手法**：同一时刻做两侧对照——经路由器探测 vs 从上游容器内用同一把 Key 直连。两侧结论不一致即说明故障在中间链路，不要凭路由器侧的 5xx 就判定上游宕机。
-- **`muse-spark-1.2-contributor-free` 不可用**：网关返回 403 `RegionError`「This model is not available in your country.」，非流式/流式/长推理三形态稳定复现。出站由网关自身发起、不经路由器出口池，且 XApi 出口本身即国内，换出口无效。**已决定不支持**。网关另有 `mimo-v2.5-free`、`nemotron-3.5-lightning-free`、`laguna-s-2.1-free` 及一批 claude/gemini 模型未纳入白名单，纳入前必须逐个实测而非只看 `/v1/models` 列表。
-- **代理错误 reason 此前完全不可观测**：`xkproxy` 四种 `ErrorReason` 中 `TransportFailed` 与 `ProxyRejected` 共用 502 与完全相同的公开文案，`Error()` 返回常量字符串不含 reason，全链路无一处记录。已在 `attempt.go` 补 `slog.Warn("proxy_error", reason, cause_type, key_id)`——只记 cause 的**类型名**，不记文本（可能内嵌出口地址）。
-- **反查代理失败类型的特征表**（不依赖日志时可用）：`ReasonNoHealthyProxy` → **503** +「upstream proxy **pool** is temporarily unavailable」；`ReasonTransportFailed` → **502** +「upstream proxy is temporarily unavailable」；`ReasonProxyRejected` → 经 `writeChatError` → **502** + 同一文案。另：NVIDIA 与 OCF 路径都接了 `AcquireWithWait`，空池会轮询等待，**首个 tick 250ms**——失败快于 250ms 即可排除"池空"。
-
-## 2026-08-21 全量审查、发布 main 与部署 20260821-full-audit
-
-- **部署脚本**：`scripts/deploy/deploy_remote.py <tag>`，一条命令完成打包→上传→继承 `.env`/`docker-compose.deploy.yml`→构建→停 app→旧镜像备份→新镜像启动→健康校验，失败即停且打印回滚坐标。线上结构固定为：release 目录 `/opt/nvidia-router-releases/<tag>`、镜像 `nvidia-router:deploy-<tag>`、compose 用 `docker-compose.yml + docker-compose.deploy.yml`、数据卷 `nvr-data`（external）。
-- **国内构建必须传 GOPROXY**：目标机访问不了 `proxy.golang.org`，`docker build` 必须带 `--build-arg GOPROXY=https://goproxy.cn,direct`（Dockerfile 第 27-28 行已注明）。漏了会在 `go mod download` 卡 90s 后超时失败。
-- **审查方法**：按包分域并行下发子代理（router/pool、xkproxy/upstream、httpapi/安全、database、protocol/sse/app），要求每条结论给 file:line + 具体失败场景 + 标注未验证项。34.5k 行代码一轮产出 24 项发现，其中约 1/3 是真缺陷。
-- **甄别纪律（本轮两次主动回退）**：子代理报的"缺陷"若与**带理据注释的既有测试**冲突，先判断是不是有意设计，不要单方面推翻。`xkproxy` 系统性故障期计数饱和（`http_failure_test.go` 断言 audit H8 有意为之）与 `Retry-After` 归零冷却（`TestClassifierPreservesPastRetryAfterAsZeroCooldown`，HTTP-date 传输途中过期时立即重试是对的）两项都已回退，留作待决。
-- **回归测试必须能失败**：每个修复都用「临时注掉修复行 → 测试必须失败 → 恢复 → 必须通过」验证过。曾写出一个空转测试（断言守卫响应头，但该头由包装器设置、与内层 handler 无关），必须额外断言内层 handler 的实际产物。
-- 本轮修复的真缺陷：`MarshalFor` 快路径丢弃消息归一化（P0，legacy 工具历史请求被上游 422）；`/metrics` 无鉴权（P0）；模型测试探针未 `MarkComplete` 导致健康出口被记失败、颠倒整池质量排序（P1）；前端契约要求 `success+failure==request_count` 但 canceled 单列，一个 499 即让统计页全空（P1）；`adminaudit.Recorder` 从不设 `CreatedAt` 导致审计时间戳恒为零值（P1）；`model_health_probes` 只写不删而摘要最宽只读 7 天（P1）；`/admin/api/stats/cost` 未注册导致成本面板 404、审计把硬删除记成 revoke（P2）。
-- **上线后验证的最小集**：`/metrics` 匿名必须 401、带会话 200；能力位是否随迁移落库（`GET /admin/api/models` 查 `supports_reasoning`/`reasoning_wire_format`）；此前 501 的模型改为 200；小 `max_tokens` + high 档下 `content_chars > 0`。脚本 `scripts/test/post_deploy_verify_remote.py`。
-- **注意**：`AdvisoryLevels`（openai 线格式档位归一）当前对线上四个 chat 模型**空转**，因为它们都已是 `thinking` 线格式。真正生效的是预算对账。
-
-## 2026-08-21 二轮全量审查、发布 main 与部署 20260821-review-2
-
-- **推理"关断"被误判为能力需求（本轮最大缺陷，链路已逐行确认）**：`parseReasoningEffort`/`parseThinking`/`parseReasoningFields` 对 `none`/`off`/`disabled`/`thinking:false` 一律置 `Requested: true`（调用方确实提了这个参数），而 `chat/request.go:97` 与 `responses/request.go:133` 直接把 `Requested` 当作 `Requirements.Reasoning` → `modelcatalog/capabilities.go` 判 `!model.SupportsReasoning` → `ErrCapabilityUnsupported` → `httpapi/v1/chat.go:477` **501 not_implemented**。后果：任何把 `reasoning_effort` 当全局默认发送的客户端，会丢掉全部非推理模型。修法是新增 `ReasoningSpec.RequiresReasoning() = Requested && Level != none`。
-- **必须成对修，否则症状平移**：只放宽能力判定后，`MarshalFor` 的快路径会把 `reasoning_effort` 原样转发给 NIM，而 NIM 对 schema 外字段答 **422**（同理由见 `chat/request.go:186` 删 `max_completion_tokens`）。所以同时加 `compat.StripReasoning`（一次清掉 `reasoning_effort`/`reasoning`/`thinking` 三个互冗余别名）并把快路径条件收紧到 `!r.reasoning.Requested`。**收窄范围很关键**：strip 只在"显式关断 + 模型不支持推理"时触发，不能扩到 `Requested` 全集——`responses/request_test.go:236` 有带理据的既有测试，故意把推理请求转发给本地标记为非推理的模型交由上游裁决。
-- **安全审计误报会撞上防泄漏测试**：修好 `checkProductionSecurity` 的监听地址判定后，`tests/mocknvidia` 的 `TestSecretsAndBodiesDoNotLeakIntoResponsesLogsOrSQLite` 稳定失败——告警文案里含 `Cookie` 字样，而泄漏扫描是 `bytes.Contains(artifact, []byte("Cookie"))` 裸子串匹配。**根因不在测试**：测试 harness 手搭 `config.Config`，`ListenAddress` 为空；而 `config.Load` 永远会补默认值（`config.go:137` + `valueOrDefault`），所以空地址只可能来自"自带 listener 的进程内 harness"，此时无 socket 可审计，直接 early return。**不要为了让测试过而削弱泄漏断言**。定位手法：在 HEAD 建 `git worktree` 跑同一测试，确认是本轮引入。
-- **gofmt 此前无 CI 门禁**：golangci-lint 不带配置文件运行时，v2 默认**不启用** gofmt linter，于是 26 个文件已漂移，其中 3 个是真畸形（函数签名与首语句挤在一行）：`crypto/rotation.go`、`httpapi/v1/chat.go`、`observability/stats.go`。已在 `ci.yml` 加 `gofmt -l .` 门禁。
-- **本机无法跑 `-race`**：`go test -race` 需要 cgo，本机 `CGO_ENABLED=0` 且 PATH 无 gcc。竞态只能靠 CI（`go test -race ./...` + `./tests/mocknvidia -count=10`），交付时要明说这条缺口。
-- **改 admin 密码已脚本化**：`scripts/deploy/reset_admin_password_remote.py`，自身从 stdin 读密码 → 停 app（释放进程锁）→ `docker run --rm -i` 把密码只写进容器 stdin → 起 app → 登录 200 + 匿名 `/metrics` 401 双验证。脚本内无任何凭据，密码不进 argv/文件/日志/远端进程表。`admin reset-password` 只读**一行** stdin、无二次确认，且 `openExistingRouterDatabase` 仅 `database.Open`，**不需要主密钥/env-file**（与 `db backup` 同）。
-- **在机验证推理矩阵**：`scripts/test/reasoning_off_probe_remote.py`（6 形态 × 2 线格式）、`scripts/test/reasoning_profile_dump_remote.py`（导出启用模型的完整 reasoning profile）。线上 12 个用例全 200。
-- **一次被数据否掉的假设，记下来避免重犯**：观察到 `stepfun-ai/step-3.7-flash` 即使收到 `thinking:{"type":"disabled"}` 仍返回 `reasoning_content`，先怀疑是 `availableLevels`（`compat/reasoning.go:429` 在 `ZeroAllowed=false` 时丢掉 `none`，被 `nearestLevel` 拉回 enabled）。**实测证伪**：该模型 `zero_allowed=true` 且 levels 含 `none`，路由器确实发了 disabled，是 NVIDIA 上游不理会 → 外部归因。对照组同时证明路由器侧正确：`openai` 线格式的 `opencode-free/nemotron-3-ultra-free` 在 `none` 下 `completion_tokens` 39→2、`reasoning_chars=0`。**判定"关断是否生效"必须跨线格式做对照，不能只看单模型。**
-- **501 缺陷在当前生产不可达**：线上 11 个模型里三个非推理模型（`meta/llama-3.2-90b-vision-instruct`、`openai/gpt-oss-120b`、`opencodefree/x-preview-f-free`）**全部处于停用**，而停用模型在能力门禁之前就被拒。所以该修复的线上证据只能是"单测 + 部署产物含修复"，不能靠线上复现；用 `grep` 校验 release 目录源码（`/opt/nvidia-router-releases/<tag>/`）来确认镜像确实由含修复的源码构建。
-- **子代理汇报的踩坑**：第一轮 7 个审查子代理里 6 个用 SendMessage 催报全部无响应。**根因是把"汇报"设计成了旁路信道**；改为让每个子代理的**最终返回文本就是报告全文**（Agent 工具的返回值），并在 prompt 里固定 `## 结论/覆盖范围/发现/未覆盖` 段式、限定最多 5 条、要求 file:line + 具体失败场景，才稳定拿到结果。
-
-## 2026-08-21 前端前沿化改造发布与部署（efa5d93）
-
-- GitHub `main` 提交 `efa5d93`（feat: 前端前沿化改造——暗色模式、命令面板、图表升级与登录页重设计），84 文件 +1925/-237，已推送 origin/main。工作区里上一轮未提交的前端修复（KeepAlive 轮询挂起、UnoCSS 扫描安全 variant 映射、pointer-coarse 触控目标）一并入库；提交前确认这些改动与本轮同主题且合并状态全量验证通过。
-- 部署：`python scripts/deploy/deploy_remote.py 20260821-web-ui-efa5d93` 一条命令完成（git archive HEAD → 继承 `20260122-fix-cde` 的 `.env`/deploy override → GOPROXY=goproxy.cn 构建 → 停 app → 旧镜像备份 → 切换 → live/ready 校验）。本次无数据库迁移，DB 直接兼容。
-- 备份：`/opt/nvidia-router-releases/20260821-web-ui-efa5d93/backups/predeploy-20260821-web-ui-efa5d93/router.db`（600，5.86MB）。
-- 上线后验证（全部实测）：容器 healthy、restarts=0、OOM=false；近 3 分钟日志 panic/fatal 计数 0；嵌入 HTML 引用新资源 hash `index-CzSL9L4X.css`/`index-DRm58z-c.js` 且均 HTTP 200；匿名 `/v1/models`、`/metrics`、`/admin/api/models` 均 401，根路径 200；公网 `114.55.25.190:3756` health/live 与登录页均 200。
-- 回滚链：20260821-web-ui-efa5d93 → 20260122-fix-cde。
-- 未做（缺运行时凭据）：管理员会话级验证、真实模型请求与代理池预热后渠道判定。按既有教训，重启后 NVIDIA 渠道有预热期假 502，判定渠道故障前先读 `/metrics` 的 `proxy_pool_healthy`。
-
-## 2026-08-21 前端「前沿高级」改造（Dark/命令面板/图表/登录页）
-
-- **双主题落地方式**：`theme.css` 用 `:root`（Light）+ `[data-theme='dark']` 属性选择器两套 token；`shared/useTheme.ts` 模块级单例管理偏好（light/dark/system，localStorage `nvr-theme`），`initTheme()` 必须在 `main.ts` 首帧前调用防 FOUC；watch 用 `{ flush: 'sync' }` 让 DOM 属性立即落地。View Transitions 圆形扩散切换：`document.startViewTransition` + WAAPI 驱动 `::view-transition-new(root)` 的 clip-path，需在 CSS 里关掉默认交叉淡化；不支持/reduced-motion 直接瞬时切换。
-- **对比度红线**：任何新文本/背景配对先跑 `python scripts/calc_contrast.py`（已含 DARK 段与 `_tint_on_surface()` 复现 color-mix），登记进 `docs/前端对比度配对表.md` 后才能进代码；当前 74/74。暗色状态色用提亮变体（success #4ac269 / warning #d9a53f / danger #f47067 / info #85b6ff），tint 底混 surface 不混白。
-- **shortcuts.spec 硬约束**：UnoCSS 任意值里禁止 `bg-[var(--x)]/50` 这类 alpha 修饰符，半透明一律写 `color-mix(in srgb, ...)`。
-- **ESLint no-undef 坑**：web 的 eslint 对 `.vue` 不注入 DOM 全局，类型位置必须写 `globalThis.HTMLElement` / `globalThis.KeyboardEvent` 等（AppShell 既有约定）。
-- **vitest+happy-dom 环境怪癖**：命令面板带输入查询时，从事件派发上下文发起含懒加载组件的 `router.push` 会永远 pending（守卫跑完、afterEach 不触发）；同状态从测试主体直接 push 一切正常。单测断言面板契约用 `vi.spyOn(router, 'push')`，完整导航集成交给 router/AppShell spec。真实浏览器无此问题。
-- **模块级单例测试法**：useTheme/useCommandPalette 是模块级 ref 单例，跨用例污染状态；用 `vi.resetModules()` + 动态 `await import()` 在 beforeEach 里拿干净实例。
-- **图表升级要点**：折线图改 Catmull-Rom→Bézier 平滑曲线 + 渐变面积（SVG defs 渐变 id 必须实例唯一，用 Math.random）；hover 十字线 tooltip 用 HTML 覆盖层按百分比定位；失败趋势保留虚线作色盲第二编码。UiStat 支持 `sparkline`（归一化 viewBox+non-scaling-stroke）与数值 count-up（`useCountUp`，reduced-motion 直跳）。
-- **验证命令不变**：lint/typecheck/test/build 全绿后 `go build ./...` 确认 embed；前端改动产物已重建进 `internal/web/dist`。
-
-## 2026-08-21 第二轮修复（发布 20260821-review-3）与未决清单
-
-- **`%w` 包 nil 仍是非 nil error**：`fmt.Errorf("...: %w", f())` 中 `f()` 返回 nil 时，得到的是文本为 `%!w(<nil>)` 的**非 nil** error。`modelcatalog/saveSelection` 因此让已存储的 opencodefree 模型永远无法再启用，且 `SaveSelectionsResult` 是单事务，同批次无关模型一并回滚。线上 Vue 页面 `ModelsView.vue` 的 `saveCandidates` 会先过滤掉已配置模型，所以 UI 走不到——**缺陷藏在"前端恰好绕过"的路径里，直接调 API 的脚本会立刻命中**。
-- **修这条时踩的坑（重要方法论）**：最初按"该守卫是死代码"整段删除，结果既有测试 `TestSaveSelectionRejectsEnablingExistingNonNVIDIAProvider` 失败——它 seed 的是 `provider='openai_compatible'`，**不属于两种受支持 provider**，`validateEnabledProvider` 对它确实返回错误。所以守卫真正的作用是拦住"存储 provider 不受支持的历史行被 upsert 静默改写成 nvidia 并启用"。正确修法是只把 `%w` 包装收进 `if err != nil`。**教训：判断一段校验是不是死代码，必须把它的所有输入取值域走一遍，而不是只看当前业务里常见的那两个值；既有测试是取值域的现成证据。**
-- **`EarliestCooldownExpiry` 缺 `> now` 过滤 → 健康检查空转烧配额**：`cooldown_until` 只有 `markSuccess` 会清除，探测持续失败的 Key 永久保留过去时间戳；`nextDelay` 对 `remaining<=0` 返回 0，于是扫描循环以"探测耗时"为唯一节流持续跑，每轮都发真实 NVIDIA `/v1/models`。**不要改 `nextDelay` 的 return 0**（`healthchecker_test.go:307` 有理据断言，关闭 half-open 间隙是有意的），错在 SQL。钩子签名改为接收 checker 自身 `clock.Now()`，让"是否仍在冷却"与"还要等多久"用同一时间源。
-- **`nvidiakey.formatTimestamp` 是 `Truncate(time.Second) + RFC3339`**（定长），所以 `cooldown_until` 的字符串比较与时间序一致，SQL 里直接 `> ?` 是安全的。注意 `modelhealth` 用的是 `RFC3339Nano`（**变长**，去尾随零），字典序在小数位是前缀关系时会反转——两处不要混用同一套比较假设。
-- **写"只删单条缓存"的回归测试要避开 TTL 混淆**：accesskey 认证缓存 TTL 30s。若用"推进 1 分钟让 Key 过期"来构造，survivor 的缓存条目也被 TTL 清掉，测试即使在有 bug 时也会失败/在修好后也不通过。正确构造是**让 Key 的过期时间短于缓存 TTL**（如 10s 过期 + 推进 15s），这样缓存条目仍在、走的才是"命中缓存但身份已过期"那个分支。
-- **子代理配额耗尽的应对**：本轮 16 个子代理因 API 配额（`403 pre-consume quota failed`）集体失败。**失败前先 `git status` 确认它们没留下半成品编辑**——本次工作树是干净的，可直接自己接手。让子代理"最终返回文本即报告全文"这个改法是有效的（rev-catalog、rev-protocol 都交回了完整可用的报告）。
-- **本轮已修**：见上一条 commit。**未修、已确认值得做的**（下一批）：
-  1. P1 `responses/nonstream.go:177-203` `extractText` 只接受字符串/`[{type,text}]` 形态的 `reasoning_content`，对象形态使成功的 200 变成 502 并触发换 Key 重试；而 `upstream/nvidia/chat.go:287-317` 的 `hasTextValue` 和流式 `delta.go:107-138` 都容忍对象形态 → **同模型同形态，流式 200 / 非流式 502**。同函数 `:118` 的"reasoning aliases disagree"同样把 200 变 502。
-  2. P2 `responses/stream.go:185-204` 流式工具调用的 `id` 只对 `name` 做迟到补正，`id` 迟到时 `call_id` 全程为空，客户端无法回提交工具结果；非流式 `nonstream.go:141-143` 有 `call_%d` 兜底可对齐。
-  3. P2 `modelhealth` 在"所有 NVIDIA Key 都在冷却"时把模型报成 `no_credential`/未配置，与"真的没配 Key"混为一谈，运维处置动作完全不同。
-  4. P2 `chat/request.go:144-155` raw 快路径把重复顶层键原样转发上游（慢路径 `marshalFields` 从 map 重建天然去重），"校验看到的字节"与"转发的字节"不是同一份。
-  5. P3 拼错的 `reasoning_effort`（如 `"hgih"`）在 `!DynamicAllowed` 时被最近邻拉到 `none`，用户以为开了最高强度、实际关闭思考且无任何告警。
-- **重启后立刻探测 NVIDIA 渠道会得到假 502**：容器重启会把 XApi 出口池清空重建，采集+验证完成前 NVIDIA 渠道返回 502 `upstream_proxy_unavailable`（OpenCodeFree 渠道不经出口池，同一时刻全 200，正好是天然对照组）。**部署后验证必须先读 `/metrics` 的 `proxy_pool_healthy` 再判定渠道故障**，否则会把预热期误报成回归。脚本 `scripts/test/pool_warmup_check_remote.py`（读池 gauge + 间隔重试 5 次）。本轮实测：预热后 healthy=23，NVIDIA 连续 5/5 全 200。
-
-## 2026-08-22 前端全量重构「暖纸工作室 Warm Studio」（6cb85c2..0cb8ba4，五阶段）
-
-- **五阶段提交链**：①地基 token/图标/图表/表格 → ②壳层 → ③高频页 → ④资源页 → ⑤观测页。设计文档 `docs/plans/2026-08-21-前端全量重构-design.md`；对比度 74→88 配对全过（新增 canvas-deep/surface-raised 两层）。
-- **依赖**：`motion-v@2.4.0` + `@lucide/vue@1.33.0`（lucide-vue-next 已 deprecated 换官方继任包）。图标走 `shared/ui/icons.ts` curated 映射 + `<UiIcon name>` 不变；UiIcon 用 style width/height 而非 size prop（lucide 的 size 类型是 number）。lucide 新命名：Filter→Funnel、CircleHelp→CircleQuestionMark、History→FileClock。
-- **pnpm store 坑**：本机 node_modules 曾由 store v11 链接而 pnpm 10.28.2 只认 v10；`CI=true pnpm install --store-dir D:\tmp\pnpm-store` 重链接即可，esbuild build-script 忽略警告不影响 vite。
-- **PowerShell 往返写坏 UTF-8**：`(Get-Content) -replace | Set-Content` 会按 GBK 读中文再写坏（spec 文件曾损坏靠 git checkout 恢复）。批量替换一律用 `python -c io.open(encoding='utf-8')` 或 Edit 工具。
-- **既有测试是行为契约**：CreateAccessKeyDialog 的 legacy copy（textarea+execCommand）测试带理据——管理面板可能跑在 HTTP 明文下 navigator.clipboard 不可用。换 UiCopyField 时必须把降级逻辑收进组件而不是删测试；复制成功/失败要有可见文字反馈。
-- **组件契约红线**：`[data-testid="key-table"]` 的响应式类（hidden md:block）也被断言；视图加 useRoute/useRouter 后 bare mount 的 spec 要补 memory-history router（ProxyPoolView 先例）；emit 多参数处理器参数顺序必须与 emits 声明一致。
-- **动效策略落地**：关键弹层（命令面板）保留 Vue Transition + 过冲 bezier `cubic-bezier(0.34,1.4,0.64,1)`（避免双动画系统），Motion/motion-v 用于批量操作条、AuthLayout 入场；reduced-motion 全局 CSS 守卫 + `useReducedMotion()` 显式判空双保险。
-- **明确放弃项（记录防重复劳动）**：表格虚拟滚动不做（全部表格已分页 ≤200 行/页，语义化 table 结构优先）；ModelsView(899 行) 拆 composables 未做（风险大于收益，本轮只做视觉统一），后续单独任务再做。
-
-## 2026-08-22 Warm Restraint 精炼克制（a52825a..c5fd8bc，四批）
-
-- 设计文档 `docs/plans/2026-08-22-warm-restraint-design.md`（用户逐节批准：暖纸奢华进化/Linear 式克制；样板间=监控+渠道+代理池）。四批提交：①token v4+细线图标 ②壳层 ③三仪表 ④embed 产物。
-- **UiMenu 新原语**（`shared/ui/UiMenu.vue` + spec）：触发钮+上浮/下挂面板，slot props 暴露 `close()`；Esc 关闭归还焦点、document capture pointerdown 关外部点击。菜单项用共享 shortcut `menu-item`。`.vue` 内 `document`/`HTMLElement` 必须写 `globalThis.*`（eslint no-undef 老坑再现）。
-- **happy-dom × motion-v 陷阱**：Motion 面板停在 initial opacity:0，`isVisible()` 会误报不可见——单测断言用 `exists()` 不用 `isVisible()`。
-- **SVG pathLength=1 会把 stroke-dasharray 单位归一化**：虚线第二编码（失败趋势 '6 4'）在 pathLength 下变成实线。生长动画与 dashed 互斥：`:pathLength="dashed ? undefined : 1"` + `.chart-line-static` 关动画。
-- **控件收进菜单的测试适配模式**：e2e 直接 `getByTestId` 点按钮的（如 logout 收进侧栏「账户操作」菜单），先点 `getByRole('button', { name: '<菜单名>' })` 展开；单测同理由 `wrapper.get('button[aria-haspopup="menu"][aria-label=…]')` 进入。testid 保持不变是契约。
-- token v4 要点：`--color-border #ece8e0`（装饰无对比度义务，calc_contrast 只断言 border-strong）；双层柔影 shadow-sm；tracking 变量 display/-0.02em、title/+0.01em（font 简写不含字距需独立变量）；卡片留白整体升一档（card p-6/metric-card p-5）；count-up 加 >5% 变化阈值防空跳。
-- 本地 E2E 可跑：Git Bash 在 `D:\Program Files\Git\bin\bash.exe`（memory 早前"未安装"已过时），`& "D:\Program Files\Git\bin\bash.exe" tests/e2e/run.sh` 一条命令起 harness+playwright，8/8 通过含移动端响应式。
-
-## 2026-08-22 观测拆分与 CPA 布局复刻（分支 codex/observability-split-20260822）
-
-- 设计文档：docs/plans/2026-08-22-观测拆分与CPA布局复刻设计.md（方案 B：纯前端拆分 + CPA 布局 × Warm 皮肤）。commit：设计 2fe4776 → WIP 收编 2605d7c → 功能 a76ce60 → embed ea58c50 → 文档 8528402。未 push。
-- **工作区剥离态恢复**：部署打包后的工作树会删掉全部测试/docs/CI 并剥离 package.json 的 test 脚本与 vitest/playwright/eslint devDeps、截短根 pnpm-lock.yaml。恢复顺序：`git ls-files -z --deleted` 逐一 restore（**绝不能** `git checkout -- web/` 整目录，会连带回滚 model-health/models/runtime 的未提交 WIP 源码）→ `git restore web/package.json pnpm-lock.yaml .gitignore` → `CI=true pnpm --dir web install`（CI 标志避开 NO_TTY；lockfile 不还原会 frozen-lockfile 失败）。
-- **WIP 依赖的提交自洽**：新代码若依赖未提交 WIP 的类型/组件（RuntimeSettings.auto_reasoning_enabled、model-health/status.ts），提交前必须在临时 worktree（`git worktree add --detach`，不能 add 已 checkout 的分支名）跑 vue-tsc + vitest 验证已提交状态独立可绿。
-- **本地 3756 端口有常驻旧 nvidia-router.exe**：e2e harness 起不来时会静默绑随机端口（日志首行打印实际 URL）。跑 overflow probe 或手工调试前先 `netstat -ano | findstr :3756` 确认目标，否则会打到处着旧 embed 的本地实例上（症状：登录口令全错、资产哈希与 dist 不符）。
-- e2e harness 初始口令：`NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD=e2e-initial-admin-password`（tests/e2e/harness/main.go），全新库首登强制改密；用例统一口令 e2e-admin-password-2026。
-- 响应式 0px 溢出探针：scripts/test/web_overflow_probe.mjs（320/390/768/1280/1440/1699+200%×3 页面；SSE 页面不能等 networkidle，用 load+固定稳定窗；Playwright 解析用 createRequire 指 web/package.json，ESM 不读 NODE_PATH）。
-- 监控 series 桶粒度由后端定死：24h→24 小时桶（ISO `YYYY-MM-DDTHH:00:00Z`）、7d/30d→天桶（`YYYY-MM-DD`），无 10 分钟粒度；图表短标签用 statistics/format.ts 的 formatBucketLabel，保持 UTC 不换算（与拆分前数据表口径一致）。
-- Vue 模板里绑定表达式必须写 `:attr`，JSX 式 `attr={`...`}` 会以 SyntaxError 使整个 SFC 解析失败（vitest 表现为 Failed Suite 无用例）。
-
-## 2026-08-22 Codex/OpenCodeFree 能力链路审查
-
-- 可选上游接口返回 `(*http.Response)(nil), nil` 或 `response.Body == nil` 时，Chat 与 Responses 处理器都必须在访问状态码/Body 前转成 `upstream_empty_response`，并用两种形态的回归测试覆盖，避免 panic。
-- 模型能力迁移后，Repository 直写路径也要补齐 `reasoning_status` 默认值；不能只依赖 Service 层的归一化，否则迁移夹具、导入和直接 upsert 会触发 SQLite CHECK 失败。
-- Responses 的 `include` 不能因兼容 Codex 而整体放行；只接受明确的 `reasoning.encrypted_content` 提示，其余 hosted include 继续拒绝，并单测非数组、未知项和合法项。
-- 提交前最小验证组合：`go test ./...`、`go vet ./...`、`pnpm --dir web run build`、`git diff --check`；临时联调脚本不得写入具体服务器地址或凭据。
-
-## 2026-08-22 vibe 场景优化轮（context_length 闭环 + 契约漂移 + flaky 测试）
-
-- **review-3 未决清单已过时**：其 P1（非流式对象形态 reasoning_content 502）、P2（流式工具 call_id 迟到为空）、P3（拼错 effort 静默降级）早已在 `26def3d`/`0c4138c` 修复并有回归测试（`TestFromChatKeepsAnswerWhenReasoningIsObjectShaped`、`TestStreamAdoptsLateToolCallID`、`TestResolveReasoningRejectsUnknownLevelWhenDynamicDisallowed`）；动手前先跑这些测试确认现状。
-- **context_length 是 operator-owned 列**（迁移 042）：NVIDIA/OCF 的 `/v1/models` 都不返回上下文元数据，因此不进候选 Selection upsert（重新保存白名单不会抹掉手工值），只走 PATCH 的 `CASE WHEN ? IS NULL` 模式（与 pricing/流式超时同款）；0=未声明，`/v1/models` 仅 >0 时透出（OpenRouter 风格 `context_length` 字段），绝不编造默认值——值由管理端手工维护，vibe 客户端读它做压缩决策。
-- **后端加字段必须同步 `web/src/shared/api/contract.spec.ts` 的 shape**：c7761be 的最小验证组合不含 `pnpm --dir web run test`，导致 `auto_reasoning_enabled`（settings）与 candidate `reasoning_status` 两处契约漂移潜伏到本轮才爆红；后端 DTO/迁移加字段时，contract 快照（`go test ./internal/httpapi/admin -update`）与前端 shape 两处都要动。
-- **flaky 测试根因模式（毫秒半开区间）**：observability `formatTime` 是定长毫秒（`2006-01-02T15:04:05.000Z`），监控窗口为半开 `[From, To)` 且两侧都向下截断到毫秒。测试用 `time.Now()` 作 `CreatedAt` 后立即再用 `time.Now()` 查询时，两次取时落在同一毫秒 → 存储值 == To → `created_at < To` 把刚写的记录排除。修复：请求日志类测试的 `CreatedAt` 一律回拨 1 秒（真实语义也是"日志时刻早于查询时刻"）。判定此类 flake：单跑通过、`-count=2` 失败、`-count=5` 又通过。
-- **验证 go 侧改动与无关测试失败的关系**：`go list -deps <pkg>` 确认被改包不在失败包的依赖闭包里，即可排除因果（测试二进制相同）；再用 `git worktree add --detach` 跑干净 HEAD 对照（注意 CMD 无 `/dev/null`，重定向用 `>NUL`；`git stash push -u` 往返也可但更险）。
-- **CMD 环境坑汇总**：无 grep/head/heredoc（用 findstr、`git grep`、写临时 py 脚本执行）；多行 `python -c` 会偶发吞输出，重要补丁一律写成脚本文件跑完删除；`git grep` 无匹配 exit 1 会截断 `&&` 链，用 `;` 或分开跑。
-- 本轮验证全绿：`go vet`、`go test ./...`、`gofmt -l` 空、web lint/typecheck/test（261 用例）/build、`check-web-dist.sh`；未部署（用户指定本轮只本地验证）。
-
-## 2026-08-22 vibe 场景模型评测（10 分钟时间盒）
-
-- 报告：`docs/plans/2026-08-22-vibe场景模型评测报告.md`；可复用探针 `scripts/test/vibe_eval_remote.py`（门控筛选 + 5 维度矩阵 + 预算硬超时），运行方式 `python scripts/test/remote_exec.py scripts/test/vibe_eval_remote.py --stdin-env NVIDIA_ROUTER_ADMIN_PASSWORD`；总墙钟约 5 分钟。
-- **评测脚本设计坑**：emit/log 函数绝不能从用于控制流的 record dict 里 `pop` 字段——本轮 `tool_calls_raw` 被 pop 导致 tools_followup（多轮闭环）静默没跑，只能补探针。"输出序列化"与"控制流数据"必须是两份。
-- **用例设计坑**：needle recall 配 `max_tokens=64` 会被默认思考吃掉（内容空 + `finish_reason=length`），"验证内容正确性"的用例必须给足输出预算；判定失败前先区分预算现象与能力现象。
-- **CMD 坑**：`;` 不是命令分隔符，会被当作参数传给 argparse（`remote_exec.py: error: unrecognized arguments`）；链式命令用 `&&`，或分两次执行。
-- **登录 401 先怀疑本地密码变量过期**：线上 admin 密码经多次 CLI 重置后，本地 `NVIDIA_ROUTER_ADMIN_PASSWORD` 环境变量是陈旧值；凭据只运行时注入，不落盘。
-- 当日关键实测（详见报告）：`z-ai/glm-5.2` 上游 410 Gone（白名单仍 enabled）；`hy3-free` 被 auto-reasoning 注入的 `reasoning_effort` 打挂（上游仅接受 no_think/low/high）；`kimi-k3`/`x-preview-f-free` 声明非推理但默认输出 reasoning_content；`minimax-m3` 是 thinking 线格式里思考强度唯一单调可控的（0/69/930 字符），其 `supports_tools=false` 是元数据错误（08-16 实测支持）；`opencode-free/nemotron-3-ultra-free` 是唯一工具全绿（并行+流式+多轮闭环）的模型，但 12 次请求 2 次 HTTP 200 截断流（无 `[DONE]`/finish/内容）；m3 的 json_object 间歇输出 `{}`。
-
-## 2026-08-22 vibe 可用性优化轮（评测报告第五、七节全部落地）
-
-- 发布：release `20260822-vibe-optimization`（commit dd8098d + 79ce166，分支 codex/observability-split-20260822 未 push），回滚链 → 20260822-codex-responses-hints。处理结果全记录在评测报告第七节。
-- **auto-reasoning 温和默认**（`compat/reasoning.go` 的 `AutoReasoningSpec`）：注入不超过 `medium` 的最强档、全部超重回退最轻档、`none`/`auto` 永不注入。根因：旧行为选最高档，hy3-free 上游词汇表只有 no_think/low/high，被注入 `max` 后整模型无 effort 请求必 502。改行为需同步三处测试（compat、protocol/chat、protocol/responses 各有 auto_reasoning_test.go 钉行为）。
-- **流式截断显式化**（`httpapi/v1/chat.go` 的 `streamResponse`）：已 commit 的流在 `[DONE]` 前 EOF 不再静默返回，追加 OpenAI 流内错误事件（`upstream_stream_truncated`）+ 终止 `[DONE]`；`stream_done` 保持 0。Responses 路径本来就有 `response.failed`，无需改。OCF 与 NVIDIA 共用 `streamResponse`，修一处覆盖两渠道。
-- **OCF 上游词汇表漂移是一类问题**：hy3-free 与 x-preview 都拒绝 `none`/`medium`、只认 low/high（错误形如 "reasoning_effort must be one of: no_think, low, high"）。数据层修法：`PATCH reasoning_levels=["low","high"]`（zero_allowed 保持 true）。残差：客户端显式 `none` 会被 nearest 拉到 low（关断不可表达），因 router 无法发送 `no_think` 原生值——加 per-model wire 别名列才能根治（未做）。
-- **能力位回写模式（PATCH→实测→失败即回退）**：`PATCH /admin/api/models/{id}` 接受 `supports_tools/supports_reasoning/reasoning_wire_format/reasoning_levels/reasoning_zero_allowed/reasoning_dynamic_allowed`；先 PATCH 再用真实 tools/reasoning 请求验证，失败立即回写旧值。本轮成果：m3、kimi-k3、x-preview 三个模型 tools 打开并保留。
-- **验证结论**：kimi-k3 是主力 vibe 模型（Agent 五轮闭环 5/5、思考强度 0/1/342 字符可控、稳定性 5/5）；m3 工具通但有上游间歇 404 窗口；nemotron-free 截断流已显式化为 stream_error（客户端重试可吸收）；x-preview 机制通但终答质量差不建议 Agent。glm-5.2（410）/kimi-k2.6（404）/OCF deepseek-free（502）已禁用，`/v1/models` 收敛到 10 个。
-- **kimi-k3 两个小残差**：小 max_tokens（32）下 auto-inject 思考仍可能吃空内容（5 次稳定性中 2 次空内容但 200+done）；TTFT 5-25s 偏慢。
-
-## 2026-08-22 侧栏与表头视觉精修（63359b5，已部署）
-
-- 三处用户截图痛点：① Key 表头排序图标 12px/40% 太小太淡，被用户截图误读为乱码"T4"；② 侧栏账户区灰底人形头像存在感弱、恒真的「会话有效」独占一行；③ 侧栏搜索框硬编码 `⌘K` 与命令面板 `Ctrl K` 两套口径（Windows 上误导）。
-- 改动：UiDataTable 排序指示器 13px/55% 且 hover 显形（`group/sort` 命名分组）、激活态换 `arrow-up`/`arrow-down` 单向箭头（icons.ts 新注册 ArrowUp/ArrowDown）、激活列名提亮；KeyTable 列名「失败 / 最近错误」→「失败」（列内容已含最近错误时间）；AppShell 账户区品牌绿「管」字头像 + 角标状态点（`role="img" aria-label="管理员，会话有效"` 承载无障碍语义），「管理员」升主色 14px，折叠态头像同步；侧栏搜索快捷键复用 `useHotkeys.formatCombo('mod+k')`（mod 匹配 Ctrl/⌘，显示 Ctrl K 全平台正确）；品牌投影/折叠钮 hover 走 token（`--border-glow-to`）。
-- **e2e 契约红线**：账户区视觉可任意重构，但 UiMenu 触发钮 `aria-label="账户操作"` 与 `theme-toggle`/`logout` testid 不能动（admin.spec.ts 先按 role 展开菜单再点 testid）。
-- **3756 被本地旧实例占用时跑溢出探针**：一次性脚本「`go build` harness → 后台启动 → 日志首行读实际 URL → `node scripts/test/web_overflow_probe.mjs <URL>` → 清理」，不与常驻进程抢端口。
-- 验证全绿：lint/typecheck/vitest 263（新增 2 条侧栏断言）/build/check-web-dist/go build/溢出探针 21/e2e 10。
-- 部署：release `20260822-ui-refine-63359b5`（deploy_remote.py，继承 vibe-optimization 的 .env，无 DB 迁移）；线上截图核验三处改动全部生效（Ctrl K、品牌头像、表头「失败」）；登录 200/session 200/登出 204（密码运行时注入）；回滚 → `20260822-vibe-optimization`。
-
-## 2026-08-23 main 提交修复与重新部署（366f3ce）
-
-- `main` 最终推进到 `366f3ce`。首轮 CI `32582985252` 的 verify 因 3 处测试直接 `defer db.Close()` 被 `golangci-lint v2.4.0/errcheck` 拒绝；同版本本地复核又发现 1 处 `reasoning_source_test.go`，统一改为 `defer func() { _ = db.Close() }()` 后，第二轮 CI `32583818710` 的 verify 与 e2e 全部成功（e2e 10/10）。
-- 本地复核：精确 `golangci-lint v2.4.0` 0 issues，`go test ./...`、`go vet ./...`、前端 lint/typecheck/test/build、embed 检查和 E2E 均通过；本机无 gcc，Go race 由 CI 验证。
-- 用 `scripts/deploy/deploy_remote.py 20260823-main-366f3ce` 部署到国内 `hangzhou2-2`：release `/opt/nvidia-router-releases/20260823-main-366f3ce`，镜像 `nvidia-router:deploy-20260823-main-366f3ce`；继承旧 release 的运行时 `.env`（600）和 deploy override，复用外部 `nvr-data`，无新增数据库迁移。
-- 切换前备份：`backups/predeploy-20260823-main-366f3ce/router.db`，权限 600、属主 `10001:10001`、SHA-256 `2e34e592acd2cd3c5f3a2b7a1656f74e9da93145017b7a6697271cda529a820d`；回滚点为 `20260822-ui-refine-63359b5`。
-- 部署后：app `running/healthy`、重启 0、OOM false；live/ready、18080/18081/6020 健康端点均 200；根页和 embed 资源 `index-BTU_L3ah.css`/`index-DRw6sFaS.js` 均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；公网 `/health/live` 200；近 10 分钟无 panic/fatal/migration/flush 错误签名。
-- 未执行管理员会话、真实模型请求、代理轮换或 CONNECT 业务矩阵；缺少运行时凭据时不将健康检查宣称为完整 live/E2E。
-
-## 2026-08-23 截图区域前端精致化部署
-
-- 本轮只改两个视觉区域：`web/src/shared/components/AppShell.vue` 的品牌锁定/搜索入口/折叠钮，以及 `web/src/features/models/ModelsView.vue` 的筛选与批量操作工具栏；保留现有 Warm Restraint token、交互和 testId，不增加拟物纹理或厚重阴影。
-- 视觉行为回归测试分别落在 `AppShell.spec.ts` 与 `ModelsView.spec.ts`；前端构建后仍需同步 `internal/web/dist`，再运行 `scripts/check-web-dist.sh`。
-- 非交互环境执行 pnpm 时，Codex 运行时可能因自动安装触发 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` 或 `ERR_PNPM_IGNORED_BUILDS`；可在 `CI=true` 下先安装，验证阶段直接调用 bundled Node 的 `eslint`、`vue-tsc`、`vitest` 和 `vite` CLI，避免修改项目配置文件。
-- `scripts/deploy/deploy_remote.py` 只打包 `git archive HEAD`。未提交工作树需要临时发布包覆盖改动文件后再通过 `hangzhou2-2` 的 Paramiko 配置上传；不要为部署擅自创建提交，也不要把 `.env`、XApi 或 Key 放进临时包。
-- 本轮发布 release `/opt/nvidia-router-releases/20260823-ui-polish-worktree`、镜像 `nvidia-router:deploy-20260823-ui-polish-worktree`；沿用旧 release 的运行时 `.env` 与 deploy override，切换前由旧镜像备份 `nvr-data`，无数据库迁移。
-- 部署后复核应等待容器 health 从 `starting` 进入 `healthy`，再核对 live/ready、根页、18080/18081/6020 健康端点与关键端口；本轮未使用运行时凭据执行管理员、模型、代理轮换或 CONNECT 业务矩阵，不将免认证健康检查称为完整 live/E2E。
-## 2026-08-23 本地启动配置排障
-
-- 本地旧 `nvidia-router.exe` 可能早于当前 `internal/web/dist`；启动当前源码前先用 `go build -o tmp\\nvidia-router-local.exe .\\cmd\\nvidia-router`，避免误把旧嵌入前端当成最新版本。
-- `NVIDIA_ROUTER_MASTER_KEY` 必须是无 `=` 尾部填充的 Raw URL Base64；若去掉填充后仍出现 crypto sentinel 解密失败，说明它与现有 `data` 数据库不是同一把密钥。不要生成新密钥覆盖数据库，使用匹配数据库的运行时 Secret，且不写入日志或新配置文件。
-- 本地 `.env` 未配置 `NVIDIA_ROUTER_XK_UPSTREAM_URL` 时，服务仍可启动并通过 `/health/live`、`/health/ready`；`validation_all_failed` 仅表示代理池未配置/未就绪，不等同于应用启动失败。
+- 移动抽屉打开时，后渲染的 `aside` 若与顶部 Header 同为 `z-40`，会拦截菜单关闭按钮；打开态 Header 应提升到 `z-50`，并用真实点击回归验证关闭路径。
+- 移动端 Playwright 几何检查要等待抽屉 300ms 位移动画完成；登录跳转要等待明确的 `/admin/`，不能用会匹配 `/admin/login` 的宽泛 glob。
+- 代理池配置的全宽 Grid 子项若包含长说明和输入框，必须加 `min-w-0`；数据表自身可以保留在 `overflow-auto` 容器内，但不能依赖 `body { overflow-x: hidden }` 掩盖父级 Grid 外溢。
+- 本地统一启动器清理应以 `tmp/local-start-state.json` 的进程路径、启动时间和父 PID 做精确核验；子进程退出可能连带启动器消失，确认 3756/5173 已无监听后再清理状态和本轮日志。

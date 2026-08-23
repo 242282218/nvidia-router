@@ -71,7 +71,7 @@ const widthClass: Record<'sm' | 'md' | 'lg', string> = {
           </button>
         </header>
 
-        <div class="max-h-[70vh] overflow-y-auto px-6 py-5">
+        <div class="max-h-[min(70vh,calc(100dvh-9rem))] overflow-y-auto overscroll-contain px-6 py-5">
           <slot />
         </div>
 

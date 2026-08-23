@@ -7,6 +7,8 @@ import UiKbd from '../ui/UiKbd.vue'
 import type { IconName } from '../ui'
 import { toggleTheme } from '../useTheme'
 import { useCommandPalette } from '../useCommandPalette'
+import { useFocusTrap } from '../useFocusTrap'
+import { lockBodyScroll, unlockBodyScroll } from '../useScrollLock'
 import { peekExtraCommands } from '../composables/useCommandRegistry'
 import { useSession } from '../../features/auth/useSession'
 
@@ -28,7 +30,11 @@ const { open, hide } = useCommandPalette()
 const query = ref('')
 const activeIndex = ref(0)
 const inputRef = ref<globalThis.HTMLInputElement | null>(null)
+const panelRef = ref<globalThis.HTMLElement | null>(null)
 const listRef = ref<globalThis.HTMLElement | null>(null)
+let isPaletteLocked = false
+
+useFocusTrap(open, panelRef, hide)
 
 // 命令来源与侧边栏同源：路由 meta.nav 是导航命令的唯一事实来源。
 function navCommands(routerInstance: Router): CommandItem[] {
@@ -162,11 +168,21 @@ watch(flatResults, (results) => {
 })
 
 watch(open, async (isOpen) => {
-  if (!isOpen) return
-  query.value = ''
-  activeIndex.value = 0
-  await nextTick()
-  inputRef.value?.focus()
+  if (isOpen) {
+    if (!isPaletteLocked) {
+      lockBodyScroll()
+      isPaletteLocked = true
+    }
+    query.value = ''
+    activeIndex.value = 0
+    await nextTick()
+    inputRef.value?.focus()
+  } else {
+    if (isPaletteLocked) {
+      unlockBodyScroll()
+      isPaletteLocked = false
+    }
+  }
 })
 
 watch(query, () => {
@@ -221,6 +237,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (isPaletteLocked) {
+    unlockBodyScroll()
+    isPaletteLocked = false
+  }
   if (globalKeyHandler) globalThis.removeEventListener('keydown', globalKeyHandler)
 })
 </script>
@@ -230,14 +250,15 @@ onBeforeUnmount(() => {
     <Transition name="palette">
       <div
         v-if="open"
-        class="fixed inset-0 z-[60] flex items-start justify-center bg-[var(--color-overlay)] p-4 pt-[12vh] backdrop-blur-sm"
+        class="fixed inset-0 z-[60] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 pt-[12vh]"
         role="dialog"
         aria-modal="true"
         aria-label="命令面板"
-        @click.self="hide"
+        @mousedown.self="hide"
       >
         <div
-          class="w-full max-w-xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] shadow-[var(--shadow-overlay)] hairline-top"
+          ref="panelRef"
+          class="w-full max-h-[calc(100dvh-2rem)] max-w-xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)]"
           data-testid="command-palette"
         >
           <div class="flex items-center gap-3 border-b border-[var(--color-border)] px-4">
@@ -266,7 +287,7 @@ onBeforeUnmount(() => {
 
           <div
             ref="listRef"
-            class="max-h-[46vh] overflow-y-auto p-2"
+            class="max-h-[min(46vh,calc(100dvh-14rem))] overflow-y-auto overscroll-contain p-2"
           >
             <template v-if="flatResults.length > 0">
               <div

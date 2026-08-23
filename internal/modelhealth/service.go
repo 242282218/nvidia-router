@@ -234,6 +234,13 @@ func sortModelSummaries(items []ModelSummary, sortName string) {
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
 		switch sortName {
+		case "quality":
+			if left.SuccessRate != right.SuccessRate {
+				return left.SuccessRate > right.SuccessRate
+			}
+			if left.ProbeCount != right.ProbeCount {
+				return left.ProbeCount > right.ProbeCount
+			}
 		case "availability":
 			if statusRank(left.Status) != statusRank(right.Status) {
 				return statusRank(left.Status) < statusRank(right.Status)
@@ -241,13 +248,29 @@ func sortModelSummaries(items []ModelSummary, sortName string) {
 			if left.SuccessRate != right.SuccessRate {
 				return left.SuccessRate > right.SuccessRate
 			}
-		case "recent":
-			if compareTimes(left.LastProbeAt, right.LastProbeAt) != 0 {
-				return compareTimes(left.LastProbeAt, right.LastProbeAt) > 0
+		case "latency":
+			leftMs := int64(1<<62 - 1)
+			if left.LastDurationMS != nil {
+				leftMs = *left.LastDurationMS
+			}
+			rightMs := int64(1<<62 - 1)
+			if right.LastDurationMS != nil {
+				rightMs = *right.LastDurationMS
+			}
+			if leftMs != rightMs {
+				return leftMs < rightMs
 			}
 		case "volume":
 			if left.ProbeCount != right.ProbeCount {
 				return left.ProbeCount > right.ProbeCount
+			}
+		case "name":
+			if left.DisplayName != right.DisplayName {
+				return left.DisplayName < right.DisplayName
+			}
+		case "recent":
+			if compareTimes(left.LastProbeAt, right.LastProbeAt) != 0 {
+				return compareTimes(left.LastProbeAt, right.LastProbeAt) > 0
 			}
 		}
 		return left.PublicID < right.PublicID

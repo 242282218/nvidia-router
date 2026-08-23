@@ -125,7 +125,7 @@ func validModelHealthRange(value string) bool {
 
 func validModelHealthSort(value string) bool {
 	switch value {
-	case "availability", "recent", "volume":
+	case "quality", "availability", "latency", "volume", "name", "recent":
 		return true
 	default:
 		return false

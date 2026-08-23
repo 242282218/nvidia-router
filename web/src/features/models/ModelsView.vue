@@ -676,7 +676,7 @@ async function cancelCurrentTest(): Promise<void> {
               <input
                 v-model="candidateSearch"
                 data-testid="model-search"
-                class="input-field border-[var(--color-border)] bg-[var(--color-surface)] shadow-none focus:border-[var(--color-border-strong)]"
+                class="input-field border-[var(--color-border)] bg-[var(--color-surface)] focus:border-[var(--color-border-strong)]"
                 type="search"
                 autocomplete="off"
                 placeholder="模型 ID、显示名、渠道、类型或能力"
@@ -687,7 +687,7 @@ async function cancelCurrentTest(): Promise<void> {
               <UiSelect
                 v-model="providerFilter"
                 data-testid="model-provider-filter"
-                class="border-[var(--color-border)] bg-[var(--color-surface)] shadow-none focus:border-[var(--color-border-strong)]"
+                class="border-[var(--color-border)] bg-[var(--color-surface)] focus:border-[var(--color-border-strong)]"
                 aria-label="渠道筛选"
               >
                 <option value="all">全部渠道</option>

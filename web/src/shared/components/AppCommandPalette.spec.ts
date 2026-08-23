@@ -87,6 +87,23 @@ describe('AppCommandPalette', () => {
     palette.hide()
   })
 
+  it('keeps the fixed overlay and panel inside a short viewport', async () => {
+    await mountPalette()
+    const palette = useCommandPalette()
+    palette.show()
+    await flushPromises()
+
+    const overlay = document.body.querySelector('[role="dialog"]')
+    const panel = queryPanel()
+    expect(overlay).not.toBeNull()
+    expect(panel).not.toBeNull()
+    expect(overlay?.classList.contains('min-h-dvh')).toBe(true)
+    expect(overlay?.classList.contains('overflow-y-auto')).toBe(true)
+    expect(Array.from(panel?.classList ?? []).some((name) => name.startsWith('max-h-'))).toBe(true)
+    expect(panel?.classList.contains('overflow-hidden')).toBe(true)
+    palette.hide()
+  })
+
   it('filters commands by fuzzy query', async () => {
     await mountPalette()
     const palette = useCommandPalette()
@@ -150,5 +167,34 @@ describe('AppCommandPalette', () => {
     queryInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
     expect(palette.open.value).toBe(false)
+  })
+
+  it('traps Tab focus and returns focus to the opener after closing', async () => {
+    await mountPalette()
+    const opener = document.createElement('button')
+    opener.type = 'button'
+    opener.textContent = '打开命令面板'
+    document.body.append(opener)
+    opener.focus()
+
+    const palette = useCommandPalette()
+    palette.show()
+    await flushPromises()
+
+    const options = document.body.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette"] [role="option"]')
+    const first = queryInput()
+    const last = options[options.length - 1]
+    expect(last).toBeDefined()
+    last?.focus()
+
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    document.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(first)
+
+    palette.hide()
+    await flushPromises()
+    expect(document.activeElement).toBe(opener)
+    opener.remove()
   })
 })

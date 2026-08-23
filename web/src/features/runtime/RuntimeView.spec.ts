@@ -161,6 +161,20 @@ describe('RuntimeView', () => {
     expect(wrapper.get('[data-testid="runtime-channel-problems"]').text()).toContain('Kimi K2')
   })
 
+  it('lets the channel-health header copy shrink beside its action on narrow screens', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[aria-label="渠道健康"] > div > div').classes()).toContain('min-w-0')
+  })
+
+  it('lets the channel-health card shrink as a grid item on narrow screens', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[aria-label="渠道健康"]').classes()).toContain('min-w-0')
+  })
+
   it('shows settings when summary loading fails', async () => {
     vi.mocked(runtimeApi.getSummary).mockRejectedValue(new ApiError(503, {
       type: 'server_error',

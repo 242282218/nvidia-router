@@ -31,7 +31,7 @@ function onToastLeave(id: number, type: ToastType): void {
 
 <template>
   <div
-    class="pointer-events-none fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-50 flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2 md:right-6"
+    class="pointer-events-none fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-50 flex w-[min(20rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] min-w-0 flex-col gap-2 md:right-6"
     aria-live="polite"
     aria-atomic="false"
   >
@@ -40,7 +40,7 @@ function onToastLeave(id: number, type: ToastType): void {
         v-for="toast in toastState.toasts"
         :key="toast.id"
         :role="toastRole(toast.type)"
-        class="pointer-events-auto flex items-start gap-3 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-elevated)] px-3.5 py-3 shadow-[var(--shadow-overlay)]"
+        class="pointer-events-auto flex items-start gap-3 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-elevated)] px-3.5 py-3"
         @mouseenter="onToastEnter(toast.id)"
         @mouseleave="onToastLeave(toast.id, toast.type)"
         @focusin="onToastEnter(toast.id)"

@@ -50,11 +50,11 @@ export default defineConfig({
     },
     /* ── 按钮：四 variant × 两密度。btn-base 承载形状与动效，variant 只描述颜色。
        pointer-coarse 下触控目标提升到 44px（媒介/web P1#1 + 触控尺寸表硬约束）。
-       btn-primary 带暖琥珀环境光晕（Warm Studio 光效通道）。 ── */
+       扁平化：无阴影/内高光，层级靠填充色与描边。 ── */
     {
-      'btn-base': 'inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] px-3.5 text-sm font-medium transition-[background-color,border-color,box-shadow,color,transform] duration-[var(--duration-micro)] active:translate-y-px disabled:cursor-not-allowed disabled:border disabled:border-[var(--color-disabled-border)] disabled:bg-[var(--color-disabled-background)] disabled:text-[var(--color-disabled-foreground)] disabled:opacity-100 disabled:shadow-none focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
-      'btn-primary': 'btn-base bg-[var(--color-accent-background)] font-semibold text-[var(--color-accent-foreground)] shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-xs),0_4px_16px_var(--glow-accent)] hover:bg-[var(--color-accent-background-hover)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),var(--shadow-sm),0_6px_24px_var(--glow-accent-strong)] active:bg-[var(--color-accent-background)]',
-      'btn-secondary': 'btn-base border border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] shadow-[var(--shadow-xs)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] hover:shadow-[var(--shadow-sm)] active:bg-[var(--color-active)]',
+      'btn-base': 'inline-flex h-9 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-control)] px-3.5 text-sm font-medium transition-[background-color,border-color,color,transform] duration-[var(--duration-micro)] active:translate-y-px disabled:cursor-not-allowed disabled:border disabled:border-[var(--color-disabled-border)] disabled:bg-[var(--color-disabled-background)] disabled:text-[var(--color-disabled-foreground)] disabled:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
+      'btn-primary': 'btn-base bg-[var(--color-accent-background)] font-semibold text-[var(--color-accent-foreground)] hover:bg-[var(--color-accent-background-hover)] active:bg-[var(--color-accent-background)]',
+      'btn-secondary': 'btn-base border border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]',
       'btn-ghost': 'btn-base px-3 text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]',
       'btn-danger': 'btn-base border border-[var(--color-danger-text)] bg-transparent text-[var(--color-danger-text)] hover:border-[var(--color-danger-background)] hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)] active:bg-[var(--color-danger-background)]',
       // 行内紧凑操作：表格行、卡片角落
@@ -67,21 +67,18 @@ export default defineConfig({
     },
     /* ── 表单 ── */
     {
-      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] shadow-[inset_0_1px_2px_rgba(28,25,23,0.04)] transition-[background-color,border-color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-focus)_30%,transparent)] disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-11',
+      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-focus)_30%,transparent)] disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-11',
       'field-label': 'mb-1.5 block text-sm font-medium text-[var(--color-text-secondary)]',
     },
-    /* ── 卡片与面板 ── */
+    /* ── 卡片与面板（扁平：无阴影，层级靠底色亮度差 + 描边） ── */
     {
-      // Warm Restraint v4：卡片留白升档 p-5→p-6，静止阴影用双层柔影（theme --shadow-sm）。
-      'card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)]',
-      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-sm)] transition-[border-color,box-shadow,transform] duration-200 hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5',
-      // Warm Studio 卡片：发丝高光 + hover 渐变描边流光（材质类在 theme.css）
-      'card-studio': 'card hairline-top card-glow relative',
+      'card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)]',
+      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] transition-colors duration-200 hover:border-[var(--color-border-strong)]',
       'panel-inset': 'rounded-[var(--radius-control)] bg-[var(--color-sunken)]',
-      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-[var(--shadow-sm)] transition-[border-color,box-shadow] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)]',
+      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 transition-colors duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)]',
       // Static metric tile (no hover affordance — it is read-only telemetry,
       // not a clickable card). Distinct from stat-card which reacts to hover.
-      'metric-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-xs)]',
+      'metric-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5',
     },
     /* ── 页面骨架 ── */
     {
@@ -108,25 +105,25 @@ export default defineConfig({
       // Warm Restraint：hover 高亮压到 40% 透明，行扫过只留一丝暖意
       'data-table-row': 'transition-colors duration-[var(--duration-micro)] hover:bg-[color-mix(in_srgb,var(--color-hover)_40%,transparent)]',
     },
-    /* ── 浮层 ── */
+    /* ── 浮层（扁平：scrim 无 blur，面板靠描边与 raised 底色区分） ── */
     {
-      'modal-overlay': 'fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-overlay)] p-4 backdrop-blur-sm',
-      'modal-panel': 'w-full max-w-2xl rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] shadow-[var(--shadow-overlay)]',
+      'modal-overlay': 'fixed inset-0 z-50 flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center',
+      'modal-panel': 'w-full max-h-[calc(100dvh-2rem)] max-w-2xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)]',
       // UiMenu 菜单项：36px 行高、左对齐、圆角略小于面板（Warm Restraint）
       'menu-item': 'flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-[6px] px-3 text-left text-sm text-[var(--color-text-secondary)] transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--color-focus)]',
     },
     /* ── 导航 ── */
     {
       'nav-group-label': 'px-3 pb-1.5 pt-5 type-label first:pt-1',
-      'nav-link': 'flex h-9 items-center gap-2.5 rounded-[var(--radius-control)] px-3 text-sm text-[var(--color-text-muted)] transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
-      'nav-link-active': 'nav-link bg-[var(--color-active)] font-medium text-[var(--color-text)] shadow-[var(--shadow-xs)]',
+      'nav-link': 'flex h-9 items-center gap-2.5 rounded-[var(--radius-control)] px-3 text-sm text-[var(--color-text-muted)] transition-[background-color,color] duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11',
+      'nav-link-active': 'nav-link bg-[var(--color-active)] font-medium text-[var(--color-text)]',
     },
     /* ── 分段切换（时间范围等互斥单选）：共享基线 + 选中/未选中两态。
        触屏下高度提升到 44px，与 nav-link 同一触控组合。 ── */
     {
-      'segment-group': 'inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]',
-      'segment-item': 'h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-[var(--duration-micro)] pointer-coarse:h-11',
-      'segment-item-active': 'bg-[var(--color-elevated)] text-[var(--color-text)] shadow-[var(--shadow-xs)]',
+      'segment-group': 'inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1',
+      'segment-item': 'h-8 rounded-[var(--radius-control)] px-3 text-[13px] font-medium transition-[background-color,color] duration-[var(--duration-micro)] pointer-coarse:h-11',
+      'segment-item-active': 'bg-[var(--color-elevated)] text-[var(--color-text)]',
       'segment-item-idle': 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2',
     },
   ],

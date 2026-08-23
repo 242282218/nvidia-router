@@ -27,7 +27,7 @@ func TestModelHealthSummaryRejectsUnknownRangeAndSort(t *testing.T) {
 	handler := NewModelHealth(&modelHealthServiceFake{})
 	for _, path := range []string{
 		"/admin/api/model-health/summary?range=90d",
-		"/admin/api/model-health/summary?sort=latency",
+		"/admin/api/model-health/summary?sort=unknown_sort",
 	} {
 		response := performAdminRequest(handler, http.MethodGet, path, "")
 		if response.Code != http.StatusBadRequest {

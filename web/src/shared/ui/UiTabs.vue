@@ -79,7 +79,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 
 <template>
   <div
-    class="relative inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1 shadow-[var(--shadow-xs)]"
+    class="relative inline-flex items-center gap-0.5 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-sunken)] p-1"
     role="tablist"
     :aria-label="ariaLabel"
     @keydown="onKeydown"
@@ -87,7 +87,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <!-- 滑动激活胶囊：跟随当前 tab 平移 -->
     <div
       v-if="indicator.visible"
-      class="absolute top-1 bottom-1 rounded-[calc(var(--radius-control)-2px)] bg-[var(--color-elevated)] shadow-[var(--shadow-xs)] transition-[transform,width,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
+      class="absolute top-1 bottom-1 rounded-[calc(var(--radius-control)-2px)] border border-[var(--color-border)] bg-[var(--color-elevated)] transition-[transform,width,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
       :style="{ transform: `translateX(${indicator.left}px)`, width: `${indicator.width}px` }"
       aria-hidden="true"
     />

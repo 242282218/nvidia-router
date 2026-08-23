@@ -22,6 +22,19 @@ ssh -F .\ssh_config_local hangzhou2-2
 
 不得使用其他服务器目录或国外环境执行本项目部署和星空代理真实联调。部署前先检查远端服务、端口和数据库状态；每一步改动后必须验证健康检查、关键端口和业务接口。XApi 完整地址、provider 凭据、SSH 私钥及其他密钥只允许通过运行时 Secret 注入，不得写入 Git、规则文件、脚本、`memory.md`、日志或命令输出。
 
+## 镜像与发布版本管理（强制）
+
+- 每次构建和部署必须使用唯一、不可漂移的版本号，禁止生产使用 `latest`、`local`、`dev` 或其他无版本标签。
+- 版本号格式统一为 `YYYYMMDD-变更主题-git短SHA`；同日同主题重复发布时追加序号或时间后缀。例如：`20260823-redeploy-cfcaecf`。
+- 同一版本号必须同时用于：
+  - Git 源码对应的 `HEAD` 短 SHA；
+  - Release 目录 `/opt/nvidia-router-releases/<版本号>`；
+  - 镜像标签 `nvidia-router:deploy-<版本号>`；
+  - 部署记录中的回滚点和验证结果。
+- 标准发布必须调用 `scripts/deploy/deploy_remote.py <版本号>`，通过 `git archive HEAD` 打包；构建前核对 `HEAD` 与版本号中的短 SHA 一致。源码、数据库状态或配置发生变化时不得复用旧版本号。
+- Compose 生产覆盖文件必须通过 `NVIDIA_ROUTER_IMAGE` 注入版本化镜像；不得回退到 `nvidia-router:local`，不得用未版本化镜像启动或回滚。
+- 发布后必须检查容器实际镜像标签、Release 工作目录、Git SHA、数据库备份路径和健康验证结果；任务完成后将版本映射、备份位置、回滚版本和未完成验证项写入 `memory.md`。同一版本的 Release 已存在备份时不得覆盖，必须生成新版本号。
+
 ## 测试机信息
 
 ### 国内测试机（星空代理联调用，必选）

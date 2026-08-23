@@ -9,6 +9,8 @@ import type { IconName } from '../ui'
 import AppCommandPalette from './AppCommandPalette.vue'
 import ShortcutHelpOverlay from './ShortcutHelpOverlay.vue'
 import { useCommandPalette } from '../useCommandPalette'
+import { useFocusTrap } from '../useFocusTrap'
+import { lockBodyScroll, unlockBodyScroll } from '../useScrollLock'
 import { formatCombo, registerHotkey } from '../composables/useHotkeys'
 import { toggleTheme, useTheme } from '../useTheme'
 
@@ -35,6 +37,7 @@ const menuButton = ref<globalThis.HTMLButtonElement | null>(null)
 const sidebar = ref<globalThis.HTMLElement | null>(null)
 const palette = useCommandPalette()
 const theme = useTheme()
+let isDrawerLocked = false
 
 // ── 桌面图标栏模式：折叠后只留图标（68px），偏好持久化。
 // 仅影响 lg+ 布局；移动端抽屉始终全宽。 ──
@@ -82,17 +85,32 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (isDrawerLocked) {
+    unlockBodyScroll()
+    isDrawerLocked = false
+  }
   globalThis.removeEventListener('keydown', onKeydown)
   mediaQuery?.removeEventListener('change', onMediaChange)
+  globalThis.removeEventListener('resize', syncIndicator)
 })
 
-// Focus the drawer when it opens and return focus to the menu button when it
-// closes, so keyboard users never lose their place in the document. Runs
-// post-flush: the inert attribute must be removed before focus() will land on
-// a drawer link (inert elements are unfocusable by spec).
+// Focus cycling is shared with modal surfaces through useFocusTrap. The
+// mobile shell still prefers the first navigation link on open and the menu
+// button on close, so those entry points remain stable for touch and keyboard users.
+useFocusTrap(sidebarOpen, sidebar, () => { sidebarOpen.value = false })
 watch(sidebarOpen, async (open) => {
-  if (!isMobile.value) return
+  if (open && isMobile.value) {
+    if (!isDrawerLocked) {
+      lockBodyScroll()
+      isDrawerLocked = true
+    }
+  } else if (isDrawerLocked) {
+    unlockBodyScroll()
+    isDrawerLocked = false
+  }
+
   await nextTick()
+  if (!isMobile.value) return
   if (open) {
     sidebar.value?.querySelector<globalThis.HTMLAnchorElement>('nav a')?.focus()
   } else {
@@ -196,7 +214,10 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 <template>
   <div class="min-h-screen text-[var(--color-text)]">
     <!-- Mobile header -->
-    <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-canvas)_92%,transparent)] px-4 backdrop-blur-md lg:hidden">
+    <header
+      class="fixed inset-x-0 top-0 flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-canvas-deep)] px-4 lg:hidden"
+      :class="sidebarOpen ? 'z-50' : 'z-40'"
+    >
       <button
         ref="menuButton"
         class="icon-btn"
@@ -249,7 +270,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <Transition name="fade">
       <button
         v-if="sidebarOpen"
-        class="fixed inset-0 z-30 cursor-default bg-[var(--color-overlay)] backdrop-blur-sm lg:hidden"
+        class="fixed inset-0 z-30 cursor-default bg-[var(--color-overlay)] lg:hidden"
         type="button"
         aria-label="关闭菜单"
         @click="sidebarOpen = false"
@@ -260,8 +281,8 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <aside
       id="admin-sidebar"
       ref="sidebar"
-      class="fixed inset-y-0 left-0 z-40 flex w-60 -translate-x-full flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
-      :class="[sidebarOpen ? 'translate-x-0' : '', railCollapsed ? 'lg:w-[68px]' : '']"
+      class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
+      :class="[sidebarOpen ? 'translate-x-0' : '-translate-x-full', railCollapsed ? 'lg:w-[68px]' : '']"
       :inert="isMobile && !sidebarOpen"
       aria-label="管理侧栏"
     >
@@ -331,7 +352,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           <!-- 滑动激活指示器：跟随当前项平移，而非逐项切换背景 -->
           <div
             v-if="indicator.visible"
-            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] shadow-[var(--shadow-xs)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
+            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
             :style="{ transform: `translateY(${indicator.top}px)`, height: `${indicator.height}px` }"
             aria-hidden="true"
           />
@@ -390,7 +411,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
             role="img"
             aria-label="管理员，会话有效"
           >
-            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)] shadow-[0_1px_8px_var(--border-glow-to)]">
+            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)]">
               管
             </div>
             <span class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--color-surface)] bg-[var(--color-success)]" />
@@ -459,7 +480,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           >
             <template #trigger>
               <span
-                class="relative flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)] shadow-[0_1px_8px_var(--border-glow-to)]"
+                class="relative flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)]"
                 role="img"
                 aria-label="管理员，会话有效"
               >

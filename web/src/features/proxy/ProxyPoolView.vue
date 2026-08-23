@@ -303,7 +303,7 @@ async function refreshPool(): Promise<void> {
           </div>
 
           <div class="mt-6 grid gap-x-5 gap-y-4 md:grid-cols-2">
-            <div class="md:col-span-2">
+            <div class="md:col-span-2 min-w-0">
               <span class="field-label">XApi 上游地址</span>
               <div
                 data-testid="proxy-upstream-summary"

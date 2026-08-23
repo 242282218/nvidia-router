@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 
 import { formatChartValue, niceMidpoint, smoothPath, type Point } from './geometry'
+import { horizontalPlacement } from '../ui/overlayPosition'
 
 // 通用面积/折线图：由 MonitoringTrendChart 泛化而来。
 // 语义色由调用方以 CSS 变量传入（数据可视化红线：每条序列一个语义色），
@@ -82,8 +83,9 @@ const hoverStyle = computed(() => {
   const hover = hoverPoint.value
   if (!hover) return null
   const percent = (hover.x / viewBoxWidth) * 100
-  const flip = percent > 78 ? '-translate-x-full' : (percent < 22 ? 'translate-x-0' : '-translate-x-1/2')
-  return { left: `${percent}%`, class: flip }
+  const placement = horizontalPlacement(hover.x, viewBoxWidth)
+  const translate = placement === 'start' ? 'translate-x-0' : placement === 'end' ? '-translate-x-full' : '-translate-x-1/2'
+  return { left: `${percent}%`, class: translate }
 })
 
 const yAxisLabels = computed(() => [
@@ -189,7 +191,7 @@ const yAxisLabels = computed(() => [
 
     <div
       v-if="hoverPoint && hoverStyle"
-      class="pointer-events-none absolute top-6 z-10 min-w-32 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-3 py-2 shadow-[var(--shadow-md)]"
+      class="chart-tooltip pointer-events-none absolute top-6 z-10 min-w-32 max-w-[calc(100vw-2rem)] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-3 py-2"
       :class="hoverStyle.class"
       :style="{ left: hoverStyle.left }"
       role="status"
@@ -208,6 +210,10 @@ const yAxisLabels = computed(() => [
 </template>
 
 <style scoped>
+.chart-tooltip {
+  overflow-wrap: anywhere;
+}
+
 /* Warm Restraint 数据仪式：线条从左到右生长 700ms，面积同步淡入。
    pathLength=1 归一化周长，dashoffset 1→0 即完整描画一次；
    虚线（失败趋势）依赖 dasharray 表达第二编码，不参与生长动画。

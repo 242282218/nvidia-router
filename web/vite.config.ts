@@ -42,7 +42,7 @@ function cleanEmbeddedDist(): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const proxyOrigin = env.VITE_PROXY_ORIGIN || 'http://localhost:3756'
+  const proxyOrigin = env.VITE_PROXY_ORIGIN || 'http://127.0.0.1:3756'
 
   return {
     plugins: [cleanEmbeddedDist(), vue(), UnoCSS()],

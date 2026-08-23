@@ -4,6 +4,7 @@ import { AnimatePresence, Motion, useReducedMotion } from 'motion-v'
 
 import UiIcon from './UiIcon.vue'
 import { springSoft } from '../motion'
+import { horizontalPlacement, type HorizontalPlacement } from './overlayPosition'
 
 // 轻量菜单原语：图标触发钮 + 上浮/下挂面板（surface-raised 柔影）。
 // 交互契约：Esc 关闭并归还焦点到触发钮；点击面板外关闭；reduced-motion 直切。
@@ -22,9 +23,11 @@ const props = withDefaults(defineProps<{
 const open = ref(false)
 const rootRef = ref<globalThis.HTMLElement | null>(null)
 const buttonRef = ref<globalThis.HTMLButtonElement | null>(null)
+const horizontalSide = ref<Extract<HorizontalPlacement, 'start' | 'end'>>('start')
 const reducedMotion = useReducedMotion()
 
 function toggle(): void {
+  if (!open.value) updateHorizontalSide()
   open.value = !open.value
 }
 
@@ -41,17 +44,33 @@ function onDocumentPointerDown(event: globalThis.PointerEvent): void {
   if (event.target instanceof globalThis.Node && !root.contains(event.target)) close(false)
 }
 
+function updateHorizontalSide(): void {
+  const root = rootRef.value
+  if (!root) return
+  const rect = root.getBoundingClientRect()
+  const edge = horizontalPlacement(rect.left + rect.width / 2, globalThis.innerWidth)
+  horizontalSide.value = props.placement === 'top-start'
+    ? edge === 'end' ? 'end' : 'start'
+    : edge === 'start' ? 'start' : 'end'
+}
+
 onMounted(() => {
   globalThis.document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  globalThis.addEventListener('resize', updateHorizontalSide)
 })
 
 onBeforeUnmount(() => {
   globalThis.document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  globalThis.removeEventListener('resize', updateHorizontalSide)
 })
 
 const panelClass = computed(() => props.placement === 'bottom-end'
-  ? 'top-full right-0 mt-2 origin-top-right'
-  : 'bottom-full left-0 mb-2 origin-bottom-left')
+  ? horizontalSide.value === 'end'
+    ? 'top-full right-0 mt-2 origin-top-right'
+    : 'top-full left-0 mt-2 origin-top-left'
+  : horizontalSide.value === 'end'
+    ? 'bottom-full right-0 mb-2 origin-bottom-right'
+    : 'bottom-full left-0 mb-2 origin-bottom-left')
 
 const enterFrom = computed(() => props.placement === 'bottom-end'
   ? { opacity: 0, scale: 0.96, y: -4 }
@@ -89,7 +108,7 @@ const enterFrom = computed(() => props.placement === 'bottom-end'
         tag="div"
         role="menu"
         :aria-label="label"
-        class="absolute z-50 min-w-[188px] rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-1 shadow-[var(--shadow-overlay)]"
+        class="absolute z-50 min-w-[188px] max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-1"
         :class="panelClass"
         :initial="reducedMotion ? { opacity: 0 } : enterFrom"
         :animate="{ opacity: 1, scale: 1, y: 0 }"

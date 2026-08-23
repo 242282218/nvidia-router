@@ -152,7 +152,7 @@ const enabledCount = computed(() => providerList.value.filter((p) => p.enabled).
         empty-icon="provider"
         @retry="load"
       >
-        <div class="card hairline-top overflow-hidden">
+        <div class="card overflow-hidden">
           <ul
             class="divide-y divide-[var(--color-border-subtle)]"
             aria-label="OpenAI 兼容提供商列表"

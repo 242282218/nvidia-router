@@ -38,16 +38,18 @@ const groups: Array<{ value: ModelHealthGroup; label: string }> = [
 ]
 
 const sorts: Array<{ value: ModelHealthSort; label: string }> = [
+  { value: 'quality', label: '质量优先' },
   { value: 'availability', label: '异常优先' },
-  { value: 'recent', label: '最近检测优先' },
+  { value: 'latency', label: '响应最快' },
   { value: 'volume', label: '探测量优先' },
+  { value: 'name', label: '模型名称' },
 ]
 
 const statusLegend = [
-  { key: 'healthy', label: '健康', hint: '85%+', color: 'var(--color-success)' },
-  { key: 'degraded', label: '降级', hint: '50%+', color: 'var(--color-warning)' },
-  { key: 'unavailable', label: '异常', hint: '低于 50%', color: 'var(--color-danger)' },
-  { key: 'unchecked', label: '无数据', hint: '暂无探测', color: 'var(--color-text-subtle)' },
+  { key: 'healthy', label: '健康', hint: '85%+', color: '#10b981' },
+  { key: 'degraded', label: '降级', hint: '50%+', color: '#f59e0b' },
+  { key: 'unavailable', label: '异常', hint: '低于 50%', color: '#f43f5e' },
+  { key: 'unchecked', label: '无数据', hint: '暂无探测', color: '#94a3b8' },
 ]
 
 const availabilityRank: Record<string, number> = {
@@ -61,7 +63,7 @@ const availabilityRank: Record<string, number> = {
 
 const range = ref<ModelHealthRange>('6h')
 const group = ref<ModelHealthGroup>('default')
-const sort = ref<ModelHealthSort>('availability')
+const sort = ref<ModelHealthSort>('quality')
 const scope = ref<'all' | 'enabled'>('all')
 const search = ref('')
 const summary = ref<ModelHealthSummary | null>(null)
@@ -95,11 +97,51 @@ const filteredModels = computed<ModelHealthModel[]>(() => {
     return [model.display_name, model.public_id, model.provider, model.kind]
       .some((value) => value.toLowerCase().includes(needle))
   })
-  if (sort.value !== 'availability') return models
 
   return models
     .map((model, index) => ({ model, index }))
-    .sort((left, right) => (availabilityRank[displayStatus(left.model)] ?? 2) - (availabilityRank[displayStatus(right.model)] ?? 2) || left.index - right.index)
+    .sort((left, right) => {
+      const a = left.model
+      const b = right.model
+
+      switch (sort.value) {
+        case 'quality': {
+          // 质量优先：成功率高排前，同成功率按探测量降序
+          if (a.success_rate !== b.success_rate) return b.success_rate - a.success_rate
+          if (a.probe_count !== b.probe_count) return b.probe_count - a.probe_count
+          break
+        }
+        case 'availability': {
+          // 异常优先：unavailable(0) -> degraded(1) -> unchecked(2) -> healthy(3)
+          const rankA = availabilityRank[displayStatus(a)] ?? 2
+          const rankB = availabilityRank[displayStatus(b)] ?? 2
+          if (rankA !== rankB) return rankA - rankB
+          if (a.success_rate !== b.success_rate) return a.success_rate - b.success_rate
+          break
+        }
+        case 'latency': {
+          // 响应最快：最近延迟低排前，无延迟排最后
+          const latA = a.last_duration_ms ?? Number.MAX_SAFE_INTEGER
+          const latB = b.last_duration_ms ?? Number.MAX_SAFE_INTEGER
+          if (latA !== latB) return latA - latB
+          break
+        }
+        case 'volume': {
+          // 探测量优先：探测总数高排前
+          if (a.probe_count !== b.probe_count) return b.probe_count - a.probe_count
+          break
+        }
+        case 'name': {
+          // 模型名称：A-Z 字典序
+          const nameA = a.display_name || a.public_id
+          const nameB = b.display_name || b.public_id
+          const cmp = nameA.localeCompare(nameB)
+          if (cmp !== 0) return cmp
+          break
+        }
+      }
+      return left.index - right.index
+    })
     .map(({ model }) => model)
 })
 
@@ -394,23 +436,23 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
 
       <div
         data-testid="model-health-legend"
-        class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[var(--radius-panel)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-3 py-2.5"
+        class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface-subtle,var(--color-sunken))] px-3.5 py-2"
         role="list"
         aria-label="渠道状态图例"
       >
-        <span class="text-xs font-medium text-[var(--color-text-secondary)]">状态图例</span>
+        <span class="text-xs font-semibold text-[var(--color-text)]">状态图例</span>
         <span
           v-for="item in statusLegend"
           :key="item.key"
-          class="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]"
+          class="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
           role="listitem"
         >
           <span
-            class="h-2.5 w-2.5 shrink-0 rounded-[3px]"
+            class="h-2 w-2 shrink-0 rounded-full"
             :style="{ backgroundColor: item.color }"
             aria-hidden="true"
           />
-          <span>{{ item.label }}</span>
+          <span class="font-medium text-[var(--color-text)]">{{ item.label }}</span>
           <span class="text-[var(--color-text-subtle)]">（{{ item.hint }}）</span>
         </span>
       </div>

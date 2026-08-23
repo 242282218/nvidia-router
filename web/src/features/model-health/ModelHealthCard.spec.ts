@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import ModelHealthCard from './ModelHealthCard.vue'
 import type { ModelHealthModel } from './types'
@@ -72,5 +72,36 @@ describe('ModelHealthCard', () => {
     // 不再依赖颜色或具体原因文案区分。
     expect(wrapper.text()).toContain('无数据')
     expect(wrapper.text()).toContain('0.0%')
+  })
+
+  it('aligns the timeline tooltip to keep edge buckets inside the track', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 200,
+      height: 20,
+      top: 0,
+      right: 200,
+      bottom: 20,
+      left: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    const wrapper = mount(ModelHealthCard, { props: { model } })
+    const buckets = wrapper.findAll('[role="img"]')
+    expect(buckets).toHaveLength(3)
+
+    await buckets[0]!.trigger('mouseenter', { clientX: 8 })
+    expect(wrapper.get('[data-testid="model-health-tooltip"]').classes()).toContain('translate-x-0')
+
+    await buckets[1]!.trigger('mouseenter', { clientX: 100 })
+    expect(wrapper.get('[data-testid="model-health-tooltip"]').classes()).toContain('-translate-x-1/2')
+
+    await buckets[2]!.trigger('mouseenter', { clientX: 192 })
+    const tooltip = wrapper.get('[data-testid="model-health-tooltip"]')
+    expect(tooltip.classes()).toContain('-translate-x-full')
+    expect(tooltip.classes()).toContain('model-health-tooltip')
+
+    vi.restoreAllMocks()
   })
 })

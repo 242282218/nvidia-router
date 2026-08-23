@@ -388,7 +388,7 @@ function scrollToSettings(): void {
         <!-- 中排三卡：Key 池分布 / 渠道健康 / 运行参数快照。 -->
         <div class="mt-3 grid gap-3 xl:grid-cols-3">
           <section
-            class="card p-5"
+            class="card min-w-0 p-5"
             aria-label="Key 池状态分布"
           >
             <h2 class="type-heading">
@@ -427,11 +427,11 @@ function scrollToSettings(): void {
           </section>
 
           <section
-            class="card flex flex-col p-5"
+            class="card flex min-w-0 flex-col p-5"
             aria-label="渠道健康"
           >
             <div class="flex items-start justify-between gap-3">
-              <div>
+              <div class="min-w-0">
                 <h2 class="type-heading">
                   渠道健康
                 </h2>
@@ -494,7 +494,7 @@ function scrollToSettings(): void {
           </section>
 
           <section
-            class="card p-5"
+            class="card min-w-0 p-5"
             aria-label="运行参数快照"
           >
             <div class="flex items-start justify-between gap-3">

@@ -80,6 +80,13 @@ describe('ProxyPoolView', () => {
     expect(wrapper.text()).toContain('运行正常')
   })
 
+  it('allows the full-width configuration field group to shrink on mobile', async () => {
+    const wrapper = await mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[class~="md:col-span-2"]').classes()).toContain('min-w-0')
+  })
+
   it('saves collector settings and does not send a fixed proxy credential', async () => {
     const wrapper = await mountView()
     await flushPromises()

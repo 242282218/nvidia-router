@@ -105,6 +105,26 @@ describe('AppShell mobile drawer focus management', () => {
     expect(sidebar.attributes('inert')).toBeUndefined()
   })
 
+  it('uses one mobile drawer translation state at a time', async () => {
+    const wrapper = await mountShell(true)
+    const sidebar = wrapper.get('#admin-sidebar')
+
+    expect(sidebar.classes()).toContain('-translate-x-full')
+    await wrapper.get('[aria-label="切换菜单"]').trigger('click')
+
+    expect(sidebar.classes()).toContain('translate-x-0')
+    expect(sidebar.classes()).not.toContain('-translate-x-full')
+  })
+
+  it('keeps the mobile header above the open drawer for the close control', async () => {
+    const wrapper = await mountShell(true)
+    const header = wrapper.get('header')
+
+    await wrapper.get('[aria-label="切换菜单"]').trigger('click')
+
+    expect(header.classes()).toContain('z-50')
+  })
+
   it('never applies inert on desktop where the rail is always visible', async () => {
     const wrapper = await mountShell(false)
     expect(wrapper.get('#admin-sidebar').attributes('inert')).toBeUndefined()

@@ -89,7 +89,7 @@ describe('ModelHealthView', () => {
     expect(wrapper.text()).toContain('监控 2 个模型')
     expect(wrapper.get('[data-testid="model-health-card-1"]').text()).toContain('Healthy Model')
     expect(wrapper.get('[data-testid="model-health-card-2"]').text()).toContain('停用')
-    expect(modelHealthApi.getSummary).toHaveBeenCalledWith('6h', 'default', 'availability', expect.any(AbortSignal))
+    expect(modelHealthApi.getSummary).toHaveBeenCalledWith('6h', 'default', 'quality', expect.any(AbortSignal))
   })
 
   it('reloads when range, grouping, or sorting changes', async () => {
@@ -98,10 +98,10 @@ describe('ModelHealthView', () => {
 
     await wrapper.get('[data-testid="model-health-range"]').setValue('24h')
     await wrapper.get('[data-testid="model-health-group"]').setValue('provider')
-    await wrapper.get('[data-testid="model-health-sort"]').setValue('recent')
+    await wrapper.get('[data-testid="model-health-sort"]').setValue('name')
     await flushPromises()
 
-    expect(modelHealthApi.getSummary).toHaveBeenLastCalledWith('24h', 'provider', 'recent', expect.any(AbortSignal))
+    expect(modelHealthApi.getSummary).toHaveBeenLastCalledWith('24h', 'provider', 'name', expect.any(AbortSignal))
   })
 
   it('persists detection switch and frequency, and can trigger an immediate run', async () => {

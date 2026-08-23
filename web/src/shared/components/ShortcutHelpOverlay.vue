@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { formatCombo, registerHotkey, useHotkeyRegistry } from '../composables/useHotkeys'
+import { useFocusTrap } from '../useFocusTrap'
+import { lockBodyScroll, unlockBodyScroll } from '../useScrollLock'
 import UiIcon from '../ui/UiIcon.vue'
 import UiKbd from '../ui/UiKbd.vue'
 
@@ -10,6 +12,8 @@ import UiKbd from '../ui/UiKbd.vue'
 defineOptions({ name: 'ShortcutHelpOverlay' })
 
 const open = ref(false)
+const panel = ref<globalThis.HTMLElement | null>(null)
+let isHelpLocked = false
 
 registerHotkey({
   id: 'help.toggle',
@@ -43,9 +47,32 @@ const groups = computed(() => {
 // Esc 关闭由注册表处理器负责；这里兜底路由离开时收起
 watch(() => groups.value.length, () => { /* keep reactive */ })
 
+watch(open, (isOpen) => {
+  if (isOpen) {
+    if (!isHelpLocked) {
+      lockBodyScroll()
+      isHelpLocked = true
+    }
+  } else {
+    if (isHelpLocked) {
+      unlockBodyScroll()
+      isHelpLocked = false
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  if (isHelpLocked) {
+    unlockBodyScroll()
+    isHelpLocked = false
+  }
+})
+
 function close(): void {
   open.value = false
 }
+
+useFocusTrap(open, panel, close)
 </script>
 
 <template>
@@ -53,11 +80,12 @@ function close(): void {
     <Transition name="help-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--color-overlay)] p-4 backdrop-blur-sm"
+        class="fixed inset-0 z-[60] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center"
         @mousedown.self="close"
       >
         <div
-          class="w-full max-w-lg rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] p-6 shadow-[var(--shadow-overlay)]"
+          ref="panel"
+          class="w-full max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto overscroll-contain rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)] p-6"
           role="dialog"
           aria-modal="true"
           aria-label="键盘快捷键"

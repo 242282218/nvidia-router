@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import UiMenu from './UiMenu.vue'
 
@@ -34,6 +34,37 @@ describe('UiMenu', () => {
     // 不用 isVisible：motion-v 在测试环境停留在初始 opacity:0，可见性断言会误报
     expect(wrapper.find('[role="menu"]').exists()).toBe(true)
     expect(wrapper.get('button[aria-haspopup="menu"]').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('bounds the menu height and keeps long content scrollable', async () => {
+    const wrapper = mountMenu()
+    await wrapper.get('button[aria-haspopup="menu"]').trigger('click')
+
+    const menu = wrapper.get('[role="menu"]')
+    expect(menu.classes().some((name) => name.startsWith('max-h-'))).toBe(true)
+    expect(menu.classes()).toContain('overflow-y-auto')
+    expect(menu.classes()).toContain('overscroll-contain')
+  })
+
+  it('aligns the panel inward when the trigger is near the viewport edge', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 100,
+      height: 36,
+      top: 0,
+      right: 1000,
+      bottom: 36,
+      left: 900,
+      x: 900,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    const wrapper = mountMenu()
+    await wrapper.get('button[aria-haspopup="menu"]').trigger('click')
+
+    const menu = wrapper.get('[role="menu"]')
+    expect(menu.classes()).toContain('right-0')
+    expect(menu.classes()).not.toContain('left-0')
   })
 
   it('runs the item action path by exposing close() through the slot', async () => {

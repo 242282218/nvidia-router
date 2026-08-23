@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>渠道状态与模型健康监控 - 现代浅色风 (方案 B 最终版)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #f8fafc;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      padding: 28px 24px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .font-mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* 顶部导航与控制栏 */
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot-live {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #10b981;
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #64748b;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
+      transition: background 0.15s;
+    }
+    .btn-primary:hover {
+      background: #1e293b;
+    }
+
+    /* 过滤与排序栏 */
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .select-mock {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 6px 28px 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #334155;
+      position: relative;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      cursor: pointer;
+    }
+    .select-mock.highlight {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 1px #3b82f6;
+      color: #1d4ed8;
+      font-weight: 600;
+    }
+
+    /* 状态图例栏 (全新升级配色与呼吸光泽) */
+    .legend-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 18px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 12px;
+    }
+    .legend-title {
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #475569;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+    .legend-hint {
+      color: #94a3b8;
+      font-size: 11px;
+    }
+
+    /* 网格布局 */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 6px;
+    }
+
+    /* 浅色现代卡片 */
+    .light-card {
+      background: #ffffff;
+      border-radius: 16px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .light-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.06);
+    }
+    .light-card.error {
+      border-color: #fecdd3;
+    }
+    .light-card.error:hover {
+      border-color: #fda4af;
+    }
+    .light-card.healthy {
+      border-color: #bbf7d0;
+    }
+    .light-card.healthy:hover {
+      border-color: #86efac;
+    }
+
+    .light-card-body {
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .status-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 9999px;
+    }
+    .status-tag.error {
+      background: #fff1f2;
+      color: #e11d48;
+    }
+    .status-tag.healthy {
+      background: #ecfdf5;
+      color: #059669;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .status-dot.error { background: #e11d48; box-shadow: 0 0 6px rgba(225, 29, 72, 0.4); }
+    .status-dot.healthy { background: #059669; box-shadow: 0 0 6px rgba(5, 150, 105, 0.4); }
+
+    .tag-light {
+      background: #f1f5f9;
+      color: #475569;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .model-name-light {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+
+    .btn-icon {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-icon:hover {
+      color: #0f172a;
+      background: #f1f5f9;
+    }
+
+    /* 4 列指标 (彻底消灭框中框：无沉重底色，通透极简) */
+    .metrics-row-light {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid #f1f5f9;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .m-label-light {
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 1px;
+      font-weight: 500;
+    }
+    .m-val-light {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .m-val-light.error { color: #e11d48; }
+    .m-val-light.healthy { color: #059669; }
+    .m-val-light.warning { color: #d97706; }
+    .m-val-light.normal { color: #0f172a; }
+    .m-unit { font-size: 10px; font-weight: 400; color: #64748b; margin-left: 1px; }
+
+    /* 条形码音波时间线 */
+    .timeline-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .tl-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+    }
+    .tl-title { color: #64748b; font-weight: 500; }
+    .tl-meta-error { color: #e11d48; font-weight: 600; }
+    .tl-meta-healthy { color: #059669; font-weight: 600; }
+
+    .tl-bars-light {
+      display: flex;
+      align-items: flex-end;
+      gap: 1.5px;
+      height: 20px;
+      padding: 2px 3px;
+      background: #f8fafc;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+    }
+    .tl-bar-light {
+      flex: 1;
+      border-radius: 1px;
+      transition: transform 0.15s;
+      cursor: pointer;
+    }
+    .tl-bar-light:hover { transform: scaleY(1.3); filter: brightness(1.15); }
+    .tl-bar-light.idle { height: 4px; background: #e2e8f0; }
+    .tl-bar-light.healthy { height: 12px; background: #10b981; }
+    .tl-bar-light.warn { height: 9px; background: #f59e0b; }
+    .tl-bar-light.error { height: 15px; background: #f43f5e; }
+
+    .tl-scale {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #94a3b8;
+    }
+
+    /* 底部操作条 */
+    .light-footer-error {
+      background: #fff1f2;
+      border-top: 1px solid #ffe4e6;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #be123c;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+
+    <!-- 顶部状态栏 -->
+    <header class="header">
+      <div class="header-left">
+        <div class="title-row">
+          <h1 class="title">
+            <span class="dot-live"></span>
+            渠道状态
+          </h1>
+          <span style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;" class="font-mono">
+            3 MODELS · 窗口 6 小时
+          </span>
+        </div>
+        <div class="subtitle">主动探测模型白名单中的全部模型，状态与真实请求监控分离。</div>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn-primary">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          立即检测
+        </button>
+      </div>
+    </header>
+
+    <!-- 过滤器与全新排序栏 -->
+    <div class="filter-bar">
+      <div class="select-mock">6 小时</div>
+      <div class="select-mock">默认分组</div>
+      <div class="select-mock">全部模型</div>
+      <!-- 质量优先全新下拉 (高亮展示) -->
+      <div class="select-mock highlight font-mono">
+        质量优先
+      </div>
+      <span style="font-size: 11px; color: #64748b; margin-left: 4px;">（可选：质量优先 · 异常优先 · 响应最快 · 探测量优先 · 模型名称）</span>
+    </div>
+
+    <!-- 状态图例栏 (全新升级纯净色彩) -->
+    <div class="legend-bar">
+      <span class="legend-title">状态图例</span>
+      <div class="legend-item">
+        <span class="legend-dot" style="background-color: #10b981;"></span>
+        <span style="font-weight: 600; color: #0f172a;">健康</span>
+        <span class="legend-hint">（85%+）</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-dot" style="background-color: #f59e0b;"></span>
+        <span style="font-weight: 600; color: #0f172a;">降级</span>
+        <span class="legend-hint">（50%+）</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-dot" style="background-color: #f43f5e;"></span>
+        <span style="font-weight: 600; color: #0f172a;">异常</span>
+        <span class="legend-hint">（低于 50%）</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-dot" style="background-color: #94a3b8;"></span>
+        <span style="font-weight: 600; color: #0f172a;">无数据</span>
+        <span class="legend-hint">（暂无探测）</span>
+      </div>
+    </div>
+
+    <!-- 卡片网格 (按“质量优先”排序呈现：健康优质模型在前，异常在后) -->
+    <div class="grid">
+
+      <!-- ==================== 卡片 1: 质量第一名 (Llama-3.2-90b 96.3%) ==================== -->
+      <div class="light-card healthy">
+        <div class="light-card-body">
+          <div class="status-row">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div class="status-tag healthy">
+                <span class="status-dot healthy"></span>
+                <span>健康</span>
+              </div>
+              <span class="tag-light font-mono">VISION</span>
+              <span class="tag-light font-mono">停用</span>
+            </div>
+            <button class="btn-icon" title="复制模型标识">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </button>
+          </div>
+
+          <div>
+            <div class="model-name-light font-mono">meta/llama-3.2-90b-vision-instruct</div>
+          </div>
+
+          <!-- 4 列指标 (无内嵌底盒，通透呼吸) -->
+          <div class="metrics-row-light">
+            <div>
+              <div class="m-label-light">可用率</div>
+              <div class="m-val-light font-mono healthy">96.3%</div>
+            </div>
+            <div>
+              <div class="m-label-light">最新延迟</div>
+              <div class="m-val-light font-mono warning">1642<span class="m-unit font-mono">ms</span></div>
+            </div>
+            <div>
+              <div class="m-label-light">探测次数</div>
+              <div class="m-val-light font-mono normal">273</div>
+            </div>
+            <div>
+              <div class="m-label-light">连续失败</div>
+              <div class="m-val-light font-mono normal">0</div>
+            </div>
+          </div>
+
+          <!-- 音波时间线 -->
+          <div class="timeline-container">
+            <div class="tl-header">
+              <span class="tl-title">状态时间线</span>
+              <span class="tl-meta-healthy font-mono">96.3% SLA 达标</span>
+            </div>
+            <div class="tl-bars-light">
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light healthy"></div>
+              <div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light healthy"></div>
+              <div class="tl-bar-light healthy"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div>
+              <div class="tl-bar-light healthy"></div>
+            </div>
+            <div class="tl-scale font-mono">
+              <span>08:29</span>
+              <span>10:00</span>
+              <span style="color:#0f172a">现在 (11:29)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 卡片 2: 质量第二名 (Nemotron-3 92.3%) ==================== -->
+      <div class="light-card healthy">
+        <div class="light-card-body">
+          <div class="status-row">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div class="status-tag healthy">
+                <span class="status-dot healthy"></span>
+                <span>健康</span>
+              </div>
+              <span class="tag-light font-mono">CHAT</span>
+              <span class="tag-light font-mono">停用</span>
+            </div>
+            <button class="btn-icon" title="复制模型标识">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </button>
+          </div>
+
+          <div>
+            <div class="model-name-light font-mono">nvidia/nemotron-3-ultra-550b-a55b</div>
+          </div>
+
+          <div class="metrics-row-light">
+            <div>
+              <div class="m-label-light">可用率</div>
+              <div class="m-val-light font-mono healthy">92.3%</div>
+            </div>
+            <div>
+              <div class="m-label-light">最新延迟</div>
+              <div class="m-val-light font-mono normal">773<span class="m-unit font-mono">ms</span></div>
+            </div>
+            <div>
+              <div class="m-label-light">探测次数</div>
+              <div class="m-val-light font-mono normal">272</div>
+            </div>
+            <div>
+              <div class="m-label-light">连续失败</div>
+              <div class="m-val-light font-mono normal">0</div>
+            </div>
+          </div>
+
+          <div class="timeline-container">
+            <div class="tl-header">
+              <span class="tl-title">状态时间线</span>
+              <span class="tl-meta-healthy font-mono">92.3% 可用</span>
+            </div>
+            <div class="tl-bars-light">
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div>
+              <div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div>
+              <div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div><div class="tl-bar-light healthy"></div><div class="tl-bar-light warn"></div>
+              <div class="tl-bar-light healthy"></div>
+            </div>
+            <div class="tl-scale font-mono">
+              <span>08:29</span>
+              <span>10:00</span>
+              <span style="color:#0f172a">现在 (11:29)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 卡片 3: 异常模型 (Kimi-k3 7.3%) ==================== -->
+      <div class="light-card error">
+        <div class="light-card-body">
+          <div class="status-row">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div class="status-tag error">
+                <span class="status-dot error"></span>
+                <span>异常</span>
+              </div>
+              <span class="tag-light font-mono">CHAT</span>
+              <span class="tag-light font-mono">停用</span>
+            </div>
+            <button class="btn-icon" title="复制模型标识">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </button>
+          </div>
+
+          <div>
+            <div class="model-name-light font-mono">moonshotai/kimi-k3</div>
+          </div>
+
+          <div class="metrics-row-light">
+            <div>
+              <div class="m-label-light">可用率</div>
+              <div class="m-val-light font-mono error">7.3%</div>
+            </div>
+            <div>
+              <div class="m-label-light">最新延迟</div>
+              <div class="m-val-light font-mono normal">360<span class="m-unit font-mono">ms</span></div>
+            </div>
+            <div>
+              <div class="m-label-light">探测次数</div>
+              <div class="m-val-light font-mono normal">273</div>
+            </div>
+            <div>
+              <div class="m-label-light">连续失败</div>
+              <div class="m-val-light font-mono error">43</div>
+            </div>
+          </div>
+
+          <div class="timeline-container">
+            <div class="tl-header">
+              <span class="tl-title">状态时间线</span>
+              <span class="tl-meta-error font-mono">近 1 小时全部阻断</span>
+            </div>
+            <div class="tl-bars-light">
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div><div class="tl-bar-light idle"></div>
+              <div class="tl-bar-light warn"></div><div class="tl-bar-light warn"></div><div class="tl-bar-light error"></div><div class="tl-bar-light error"></div>
+              <div class="tl-bar-light error"></div><div class="tl-bar-light error"></div><div class="tl-bar-light error"></div><div class="tl-bar-light error"></div>
+              <div class="tl-bar-light error"></div><div class="tl-bar-light error"></div><div class="tl-bar-light error"></div><div class="tl-bar-light error"></div>
+              <div class="tl-bar-light error"></div>
+            </div>
+            <div class="tl-scale font-mono">
+              <span>08:29</span>
+              <span>10:00</span>
+              <span style="color:#0f172a">现在 (11:29)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="light-footer-error">
+          <span class="font-mono">最近异常：探测失败 (Upstream 504)</span>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+</body>
+</html>

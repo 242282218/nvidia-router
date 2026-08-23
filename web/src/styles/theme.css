@@ -90,23 +90,8 @@
   --radius-panel: 12px;
   --radius-overlay: 16px;
 
-  /* ── 分层阴影系统：质感核心。暖调投影（基于 #1c1917），低透明、多层次。
-     Warm Restraint v4：sm 升为「近触底 + 远柔影」双层，静止即有浮起感。 ── */
-  --shadow-xs: 0 1px 2px rgba(28, 25, 23, 0.05);
-  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.06);
-  --shadow-md: 0 2px 6px rgba(28, 25, 23, 0.05), 0 12px 32px rgba(28, 25, 23, 0.08);
-  --shadow-overlay: 0 8px 24px rgba(28, 25, 23, 0.10), 0 24px 64px rgba(28, 25, 23, 0.14);
+  /* ── 遮罩：模态/抽屉的纯色半透明 scrim（无 blur，保证弹层内容干净可读） ── */
   --color-overlay: rgba(28, 25, 23, 0.42);
-
-  /* ── Warm Studio 光效：暖琥珀环境光晕 + 卡片顶部发丝高光 + hover 渐变描边。
-     全部为装饰性通道（非文本/非控件边界），无对比度义务，登记于配对表备注。 ── */
-  --glow-accent: rgba(217, 165, 63, 0.22);
-  --glow-accent-strong: rgba(217, 165, 63, 0.34);
-  --hairline: rgba(255, 255, 255, 0.85);
-  --border-glow-from: rgba(217, 165, 63, 0.55);
-  --border-glow-to: rgba(118, 185, 0, 0.40);
-  /* 纸纹噪点：feTurbulence 平铺，极低透明度铺满视口 */
-  --grain-opacity: 0.032;
 
   /* ── 间距刻度（4px 基网） ── */
   --space-1: 4px;
@@ -189,20 +174,8 @@
   --color-brand: #76b900;
   --color-brand-foreground: #081000;
 
-  /* 暗色下阴影弱化为纯黑低透明；层次主要靠表面亮度差 + 描边 */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.30), 0 12px 32px rgba(0, 0, 0, 0.38);
-  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.42), 0 24px 64px rgba(0, 0, 0, 0.52);
-  --color-overlay: rgba(8, 6, 5, 0.62);
-
-  /* Warm Studio 光效（暗色）：光晕压暗、发丝线降为微光、渐变描边提亮 */
-  --glow-accent: rgba(217, 165, 63, 0.14);
-  --glow-accent-strong: rgba(217, 165, 63, 0.22);
-  --hairline: rgba(255, 255, 255, 0.07);
-  --border-glow-from: rgba(217, 165, 63, 0.45);
-  --border-glow-to: rgba(118, 185, 0, 0.38);
-  --grain-opacity: 0.05;
+  /* ── 遮罩（暗色）：纯黑 scrim，去掉 blur 后微降一档避免过重 ── */
+  --color-overlay: rgba(8, 6, 5, 0.58);
 
   --scrollbar-thumb: rgba(168, 162, 158, 0.28);
   --scrollbar-thumb-hover: rgba(168, 162, 158, 0.46);
@@ -237,12 +210,8 @@ html {
 body {
   margin: 0;
   overflow-x: hidden;
-  /* Warm Studio 氛围：更深的暖纸基底，右上暖光 + 左下极淡品牌绿回声 */
-  background:
-    radial-gradient(1100px 520px at 85% -8%, rgba(255, 242, 220, 0.60), transparent 62%),
-    radial-gradient(900px 480px at 6% 106%, rgba(118, 185, 0, 0.05), transparent 58%),
-    var(--color-canvas-deep);
-  background-attachment: fixed;
+  /* 扁平基底：比卡片深一档的暖纸底，层级只靠表面亮度差 + 描边 */
+  background: var(--color-canvas-deep);
   color: var(--color-text);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 15px;
@@ -250,27 +219,6 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-/* 纸纹噪点：feTurbulence 平铺铺满视口，pointer-events 直通。
-   盖在最上层（含弹层）是刻意的——胶片颗粒式全局材质，透明度极低不扰内容。 */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 2147483647;
-  pointer-events: none;
-  opacity: var(--grain-opacity);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 160px 160px;
-}
-
-/* 暗色氛围：暖橙余晖 + 一缕品牌绿极光，透明度压到不干扰内容 */
-[data-theme='dark'] body {
-  background:
-    radial-gradient(1100px 520px at 85% -8%, rgba(217, 165, 63, 0.08), transparent 62%),
-    radial-gradient(900px 480px at 8% 108%, rgba(118, 185, 0, 0.06), transparent 60%),
-    var(--color-canvas-deep);
 }
 
 button,
@@ -310,22 +258,20 @@ summary:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── 路由级页面过渡：旧页 blur+上移让位，新页轻浮起 + 淡入 ── */
+/* ── 路由级页面过渡：纯淡入淡出 + 轻微位移，不加 blur/scale ── */
 .page-enter-active {
-  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter), filter var(--duration-local) var(--ease-enter);
+  transition: opacity var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
 }
 .page-leave-active {
-  transition: opacity var(--duration-micro) var(--ease-exit), transform var(--duration-micro) var(--ease-exit), filter var(--duration-micro) var(--ease-exit);
+  transition: opacity var(--duration-micro) var(--ease-exit), transform var(--duration-micro) var(--ease-exit);
 }
 .page-enter-from {
   opacity: 0;
-  transform: translateY(10px) scale(0.998);
-  filter: blur(3px);
+  transform: translateY(8px);
 }
 .page-leave-to {
   opacity: 0;
-  transform: translateY(-4px) scale(0.996);
-  filter: blur(2px);
+  transform: translateY(-4px);
 }
 
 /* ── 骨架屏微光：骨架块扫过一道暖色高光，比 spinner 更克制 ── */
@@ -391,48 +337,7 @@ summary:focus-visible {
   animation-delay: calc(min(var(--stagger-index, 0), 6) * 28ms);
 }
 
-/* ── Warm Studio 组件级材质 ── */
-
-/* 卡片顶部发丝高光：玻璃/纸面受光的暗示，配合 elevated 底色使用 */
-.hairline-top {
-  position: relative;
-}
-.hairline-top::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  border-radius: inherit;
-  background: linear-gradient(90deg, transparent, var(--hairline) 18%, var(--hairline) 82%, transparent);
-  pointer-events: none;
-}
-
-/* hover 渐变描边流光：mask 挖空只留 1px 描边环，暖琥珀→品牌绿 */
-.card-glow {
-  transition: box-shadow var(--duration-local) var(--ease-enter), transform var(--duration-local) var(--ease-enter);
-}
-.card-glow::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(135deg, var(--border-glow-from), var(--border-glow-to));
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity var(--duration-local) var(--ease-enter);
-  pointer-events: none;
-}
-.card-glow:hover::after,
-.card-glow:focus-within::after {
-  opacity: 1;
-}
-.card-glow:hover {
-  box-shadow: var(--shadow-md);
-}
+/* ── 组件级材质（扁平） ── */
 
 /* 键盘按键芯片：快捷键提示专用 */
 .kbd {
@@ -444,7 +349,6 @@ summary:focus-visible {
   padding: 0 5px;
   border-radius: 5px;
   border: 1px solid var(--color-border);
-  border-bottom-width: 2px;
   background: var(--color-sunken);
   color: var(--color-text-muted);
   font-family: inherit;
@@ -457,7 +361,7 @@ summary:focus-visible {
 /* 浮动提示面板：UiTooltip / 帮助浮层共用表面 */
 .tooltip-surface {
   z-index: 70;
-  max-width: 260px;
+  max-width: min(260px, calc(100vw - 2rem));
   padding: 6px 10px;
   border-radius: 8px;
   border: 1px solid var(--color-border);
@@ -465,7 +369,8 @@ summary:focus-visible {
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.45;
-  box-shadow: var(--shadow-md);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 错误抖动：表单级失败反馈（配合 :key 重触发） */
