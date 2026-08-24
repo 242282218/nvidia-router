@@ -194,7 +194,7 @@ function testStatusClass(status: string): string {
           </div>
         </div>
         <div
-          class="max-h-[min(42vh,360px)] overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
+          class="max-h-[min(42vh,360px)] overflow-auto focus-within:outline-2 focus-within:-outline-offset-2 focus-within:outline-[var(--color-focus)]"
           tabindex="0"
           aria-label="批量导入结果，可横向滚动"
         >

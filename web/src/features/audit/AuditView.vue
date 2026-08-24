@@ -299,7 +299,7 @@ const toneDotClass: Record<string, string> = {
                   </template>
                   <span
                     v-if="parseDetail(entry.detail)"
-                    class="ml-2 inline-block max-w-[280px] truncate align-bottom font-mono-data text-[var(--color-text-subtle)]"
+                    class="mt-0.5 block truncate font-mono-data text-[var(--color-text-subtle)] sm:ml-2 sm:mt-0 sm:inline-block sm:max-w-[280px] sm:align-bottom"
                     :title="parseDetail(entry.detail)"
                   >{{ parseDetail(entry.detail) }}</span>
                 </p>

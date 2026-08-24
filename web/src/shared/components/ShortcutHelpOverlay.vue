@@ -91,7 +91,7 @@ useFocusTrap(open, panel, close)
           aria-label="键盘快捷键"
         >
           <header class="mb-4 flex items-center justify-between">
-            <h2 class="type-heading flex items-center gap-2 text-base">
+            <h2 class="type-heading flex items-center gap-2">
               <UiIcon
                 name="keyboard"
                 :size="18"

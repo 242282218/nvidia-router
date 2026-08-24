@@ -130,62 +130,62 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
       role="region"
       aria-label="模型白名单表，可横向滚动"
     >
-      <table class="data-table">
+      <table class="data-table table-fixed min-w-[66rem]">
         <caption class="sr-only">
           模型白名单，共 {{ models.length }} 条
         </caption>
         <thead>
           <tr>
             <th
-              class="data-table-th w-20"
+              class="data-table-th w-24"
               scope="col"
             >
               测试/保存
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-56"
               scope="col"
             >
               模型
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-24"
               scope="col"
             >
               渠道
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-24"
               scope="col"
             >
               Kind
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-40"
               scope="col"
             >
               能力
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-20"
               scope="col"
             >
               上下文
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-22"
               scope="col"
             >
               流式超时
             </th>
             <th
-              class="data-table-th"
+              class="data-table-th w-22"
               scope="col"
             >
               状态
             </th>
             <th
-              class="data-table-th text-right"
+              class="data-table-th w-38 text-right"
               scope="col"
             >
               操作
@@ -199,10 +199,10 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             class="data-table-row bg-[var(--color-sunken)]"
           >
             <td class="data-table-td">
-              <label class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+              <label class="checkbox-row whitespace-nowrap text-xs text-[var(--color-text-muted)]">
                 <input
                   :checked="selectedCandidateKeys.has(candidateSelectionKey(candidate))"
-                  class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+                  class="checkbox-control"
                   :data-testid="`candidate-table-${candidateSelectionKey(candidate)}`"
                   type="checkbox"
                   :aria-label="`保存候选模型 ${candidate.display_name}`"
@@ -283,10 +283,10 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
             class="data-table-row"
           >
             <td class="data-table-td">
-              <label class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+              <label class="checkbox-row whitespace-nowrap text-xs text-[var(--color-text-muted)]">
                 <input
                   :checked="selectedModelIds.has(model.id)"
-                  class="h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
+                  class="checkbox-control"
                   :data-testid="`test-model-${model.id}`"
                   type="checkbox"
                   :aria-label="`将模型 ${model.display_name} 加入测试`"
@@ -374,7 +374,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               </div>
               <button
                 v-else
-                class="rounded-[6px] px-2 py-1 font-mono-data text-xs transition-colors hover:bg-[var(--color-hover)]"
+                class="rounded-[6px] px-2 py-1 text-left font-mono-data text-xs transition-colors hover:bg-[var(--color-hover)]"
                 :class="model.context_length !== undefined && model.context_length > 0 ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-subtle)]'"
                 type="button"
                 data-testid="model-edit-context"

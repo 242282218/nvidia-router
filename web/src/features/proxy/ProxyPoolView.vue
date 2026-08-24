@@ -295,7 +295,7 @@ async function refreshPool(): Promise<void> {
               <input
                 v-model="enabled"
                 data-testid="proxy-enabled"
-                class="h-4 w-4 accent-[var(--color-accent)]"
+                class="checkbox-control"
                 type="checkbox"
               >
               <span>启用内置代理池</span>

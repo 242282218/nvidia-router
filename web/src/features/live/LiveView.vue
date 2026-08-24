@@ -259,7 +259,7 @@ function latencyColor(duration: number): string {
               <li
                 v-for="event in reversedEvents"
                 :key="event.request_id"
-                class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-[var(--color-hover)]"
+                class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm transition-colors hover:bg-[var(--color-hover)] sm:grid sm:grid-cols-[4.5rem_minmax(0,1.4fr)_minmax(0,1.6fr)_5rem_minmax(0,1fr)_auto] sm:gap-x-3"
               >
                 <span class="font-mono-data text-xs text-[var(--color-text-muted)]">
                   {{ formatClock(event.created_at) }}
@@ -267,18 +267,21 @@ function latencyColor(duration: number): string {
                 <code class="truncate font-mono-data text-xs text-[var(--color-info)]">{{ event.model_id || '—' }}</code>
                 <code class="truncate font-mono-data text-xs text-[var(--color-text-secondary)]">{{ event.endpoint }}</code>
                 <UiBadge
+                  class="justify-self-start"
                   :variant="statusBadge(event.http_status).variant"
                   :label="statusBadge(event.http_status).label"
                   :dot="false"
                 />
+                <!-- 始终占位：错误码缺失时若整格不渲染，后面的耗时会滑进本列，
+                     行与行之间的列就对不齐了。 -->
                 <span
-                  v-if="event.error_code"
                   class="truncate text-xs text-[var(--color-warning)]"
+                  :class="event.error_code ? '' : 'hidden sm:block'"
                 >
                   {{ event.error_code }}
                 </span>
                 <span
-                  class="ml-auto font-mono-data text-xs"
+                  class="ml-auto font-mono-data text-xs sm:ml-0 sm:text-right"
                   :class="latencyColor(event.duration_ms)"
                 >
                   {{ formatLatency(event.duration_ms) }}

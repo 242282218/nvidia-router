@@ -26,15 +26,6 @@ export default defineConfig({
     },
   ],
   shortcuts: [
-    /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0）。
-       Warm Restraint v4：display 收紧 -0.02em 专供 KPI 主数字，title 微松 +0.01em；
-       type-label 维持既有 uppercase + 0.1em（眉题效果已达标，不再收紧）。 ── */
-    {
-      'type-display': 'font-[var(--text-display)] tracking-[var(--tracking-display)] text-[var(--color-text)]',
-      'type-title': 'font-[var(--text-title)] tracking-[var(--tracking-title)] text-[var(--color-text)]',
-      'type-heading': 'font-[var(--text-heading)] text-[var(--color-text)]',
-      'type-label': 'font-[var(--text-label)] uppercase tracking-[0.1em] text-[var(--color-text-subtle)]',
-    },
     /* ── 基底 ── */
     {
       'bg-surface': 'bg-[var(--color-surface)]',
@@ -67,8 +58,17 @@ export default defineConfig({
     },
     /* ── 表单 ── */
     {
-      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] focus:outline-none focus:ring-2 focus:ring-[color-mix(in_srgb,var(--color-focus)_30%,transparent)] disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-11',
+      'input-field': 'h-9 w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-sunken)] px-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-subtle)] transition-[background-color,border-color] duration-[var(--duration-micro)] hover:bg-[var(--color-surface)] focus:border-[var(--color-focus)] focus:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:h-11',
       'field-label': 'mb-1.5 block text-sm font-medium text-[var(--color-text-secondary)]',
+      /* 复选框：原生控件忽略 background/border/text 等属性，只有 accent-color
+         真正生效，所以这里是唯一权威配方——实例不要再各自拼一套。
+         16px 是视觉尺寸；命中区靠 checkbox-hit（裸控件）或外层 label 的
+         min-h 撑到 24px 下限。 */
+      'checkbox-control': 'h-4 w-4 shrink-0 cursor-pointer accent-[var(--color-accent)] disabled:cursor-not-allowed',
+      /* 无文字标签的裸复选框（表格选择列）：包一层把命中区补到 24px。 */
+      'checkbox-hit': 'inline-flex h-6 w-6 cursor-pointer items-center justify-center pointer-coarse:h-11 pointer-coarse:w-11',
+      /* 带文字的复选框行：文字只有 12px 时行高不足 24px，需要显式下限。 */
+      'checkbox-row': 'flex min-h-6 cursor-pointer items-center gap-2 pointer-coarse:min-h-11',
     },
     /* ── 卡片与面板（扁平：无阴影，层级靠底色亮度差 + 描边） ── */
     {
@@ -86,11 +86,11 @@ export default defineConfig({
       'content-wrapper': 'mx-auto max-w-[1280px]',
       'section-header': 'mb-6 flex flex-wrap items-end justify-between gap-x-4 gap-y-3',
       'page-title': 'type-title',
-      'page-subtitle': 'mt-1.5 max-w-2xl text-sm text-[var(--color-text-muted)]',
+      'page-subtitle': 'mt-2 max-w-2xl text-sm text-[var(--color-text-muted)]',
     },
     /* ── 徽章 ── */
     {
-      'badge': 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium leading-none',
+      'badge': 'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium leading-none',
       'badge-success': 'badge border-[var(--color-success-background)] bg-[var(--color-success-background)] text-[var(--color-success-foreground)]',
       'badge-warning': 'badge border-[var(--color-warning-background)] bg-[var(--color-warning-background)] text-[var(--color-warning-foreground)]',
       'badge-danger': 'badge border-[var(--color-danger-background)] bg-[var(--color-danger-background)] text-[var(--color-danger-foreground)]',
@@ -99,8 +99,11 @@ export default defineConfig({
     },
     /* ── 数据表 ── */
     {
-      'data-table': 'w-full text-left text-sm',
-      'data-table-th': 'border-b border-[var(--color-border)] px-4 py-3 text-left type-label',
+      // border-collapse 不只是省掉 UA 默认 border-spacing:2px 带来的额外宽度
+      //（9 列表格凭空多 20px，足以在 1440 下逼出横向滚动条），也让行分隔用的
+      // 1px border-b 连成整线，而不是每格之间断开。
+      'data-table': 'w-full border-collapse text-left text-sm',
+      'data-table-th': 'border-b border-[var(--color-border)] px-4 py-3 text-left type-label whitespace-nowrap',
       'data-table-td': 'border-b border-[var(--color-border-subtle)] px-4 py-3 text-[var(--color-text-secondary)]',
       // Warm Restraint：hover 高亮压到 40% 透明，行扫过只留一丝暖意
       'data-table-row': 'transition-colors duration-[var(--duration-micro)] hover:bg-[color-mix(in_srgb,var(--color-hover)_40%,transparent)]',
@@ -128,6 +131,24 @@ export default defineConfig({
     },
   ],
   rules: [
+    /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0）。
+       Warm Restraint v4：display 收紧 -0.02em 专供 KPI 主数字，title 微松 +0.01em；
+       type-label 维持既有 uppercase + 0.1em（眉题效果已达标，不再收紧）。
+
+       这四条必须是 rule 而不是 shortcut：--text-* 是 font **简写**值
+       （weight size/line-height family），而 UnoCSS 的 `font-[...]` 编译成
+       font-family。把简写赋给 font-family 是无效声明，会被整条丢弃，标题
+       于是一路回落到浏览器默认（h1 30px/700、h2 22.5px/700，眉题 15px），
+       四层阶梯从未真正生效。这里显式输出 font 简写。 ── */
+    ['type-display', { font: 'var(--text-display)', 'letter-spacing': 'var(--tracking-display)', color: 'var(--color-text)' }],
+    ['type-title', { font: 'var(--text-title)', 'letter-spacing': 'var(--tracking-title)', color: 'var(--color-text)' }],
+    ['type-heading', { font: 'var(--text-heading)', color: 'var(--color-text)' }],
+    ['type-label', {
+      font: 'var(--text-label)',
+      'letter-spacing': '0.1em',
+      'text-transform': 'uppercase',
+      color: 'var(--color-text-subtle)',
+    }],
     ['animate-fade-in', { animation: 'fadeIn var(--duration-local) var(--ease-enter) both' }],
     ['animate-slide-up', { animation: 'slideUp var(--duration-local) var(--ease-enter) both' }],
     ['animate-scale-in', { animation: 'scaleIn 0.2s var(--ease-enter) both' }],

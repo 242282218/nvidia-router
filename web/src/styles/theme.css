@@ -229,6 +229,59 @@ select {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* No global CSS reset is installed: without this, raw <button> elements
+   (sort controls, icon buttons, menu triggers) keep the UA border, grey
+   ButtonFace background, UA padding and menu font instead of the design
+   system's flat surface. Component buttons re-declare everything they need. */
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Same reason: every RouterLink (sidebar nav, menu items, breadcrumbs) was
+   rendering with the UA underline and link colour. Text links that do want an
+   underline opt in with the `underline` utility. */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ── 最小 reset：本项目的间距、字阶和列表样式全部由工具类显式声明，
+   UA 默认值只会与之打架。以下每一条都对应实测到的可见缺陷：
+   - 标题/段落的 em 外边距落在 4px 网格之外（实测 13/14/18.675px），
+     且只有 margin-top 会被 mt-* 覆盖，margin-bottom 全部残留；
+   - <ul>/<ol> 的 disc/decimal 与 40px 内缩，让状态行出现"圆点 + 状态点"
+     双点并整体右移；
+   - <dd> 的 40px 起始缩进破坏定义列表对齐；
+   - 表单控件不继承字体，回落到 Arial，与全站 Inter 不一致。
+   字号与字重仍由 type-* 阶梯和工具类决定，这里只清零 UA 干扰。 ── */
+h1, h2, h3, h4, h5, h6,
+p, figure, blockquote, pre,
+dl, dd, dt,
+ul, ol {
+  margin: 0;
+}
+
+ul, ol {
+  padding: 0;
+  list-style: none;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
 button,
 a {
   touch-action: manipulation;

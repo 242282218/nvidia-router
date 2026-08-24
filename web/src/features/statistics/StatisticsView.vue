@@ -463,7 +463,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
             口径：窗口内全部请求元数据聚合 · 窗口：{{ rangeLabel }} · 来源：请求元数据
           </p>
           <div
-            class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8"
+            class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
             data-testid="monitoring-kpi-row"
           >
             <UiStatCard

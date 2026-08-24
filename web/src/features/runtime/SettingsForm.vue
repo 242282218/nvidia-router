@@ -243,7 +243,7 @@ function fieldError(param: SettingParam): string {
         <input
           v-model="fields.latency_routing_enabled"
           data-testid="latency-routing-enabled"
-          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
+          class="checkbox-control mt-0.5"
           type="checkbox"
         >
         <span>
@@ -256,7 +256,7 @@ function fieldError(param: SettingParam): string {
         <input
           v-model="fields.auto_reasoning_enabled"
           data-testid="auto-reasoning-enabled"
-          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
+          class="checkbox-control mt-0.5"
           type="checkbox"
         >
         <span>
@@ -269,7 +269,7 @@ function fieldError(param: SettingParam): string {
         <input
           v-model="fields.embedding_cache_enabled"
           data-testid="embedding-cache-enabled"
-          class="mt-0.5 h-4 w-4 rounded accent-[var(--color-accent)]"
+          class="checkbox-control mt-0.5"
           type="checkbox"
         >
         <span>

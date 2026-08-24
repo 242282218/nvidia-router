@@ -46,13 +46,16 @@ const timeParts = computed(() => {
   >
     <button
       type="button"
-      class="grid w-full grid-cols-2 items-center gap-x-3 gap-y-2 p-3 text-left transition-colors duration-[var(--duration-micro)] hover:bg-[color-mix(in_srgb,var(--color-hover)_40%,transparent)] md:grid-cols-[minmax(150px,1.9fr)_minmax(110px,1.3fr)_minmax(78px,0.8fr)_minmax(92px,0.9fr)_minmax(92px,0.9fr)_minmax(52px,0.5fr)_minmax(96px,0.9fr)_28px] md:gap-x-2 md:p-0"
+      class="grid w-full grid-cols-2 items-center gap-x-3 gap-y-2 p-3 text-left transition-colors duration-[var(--duration-micro)] hover:bg-[color-mix(in_srgb,var(--color-hover)_40%,transparent)] md:grid-cols-[minmax(0,1.9fr)_minmax(0,1.3fr)_minmax(78px,0.8fr)_minmax(92px,0.9fr)_minmax(92px,0.9fr)_minmax(52px,0.5fr)_minmax(96px,0.9fr)_28px] md:gap-x-2 md:p-0"
       :aria-expanded="expanded"
       :data-testid="`request-row-${log.request_id}`"
       @click="expanded = !expanded"
     >
       <!-- 密钥 / 模型 -->
-      <div class="md:px-3 md:py-2.5">
+      <!-- Grid items default to min-width:auto, so the nowrap model id below
+           sets the track's minimum to its full text width and pushes the row
+           past the card, which then clips it. min-w-0 lets truncate win. -->
+      <div class="min-w-0 md:px-3 md:py-2.5">
         <p class="truncate font-mono-data text-xs font-medium text-[var(--color-text)]">
           {{ log.model_id ?? '未知模型' }}
         </p>
@@ -62,17 +65,17 @@ const timeParts = computed(() => {
       </div>
 
       <!-- 端点 / 流式 -->
-      <div class="md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="min-w-0 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <p class="truncate text-xs text-[var(--color-text-secondary)]">
           {{ log.endpoint }}
         </p>
-        <p class="mt-1 text-xs text-[var(--color-text-subtle)]">
+        <p class="mt-1 truncate text-xs text-[var(--color-text-subtle)]">
           {{ streamLabel }}
         </p>
       </div>
 
       <!-- 状态 -->
-      <div class="flex items-center gap-1.5 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="flex min-w-0 items-center gap-1.5 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <span
           class="h-2 w-2 shrink-0 rounded-full"
           :class="log.outcome === 'success' ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]'"
@@ -86,7 +89,7 @@ const timeParts = computed(() => {
       </div>
 
       <!-- 耗时：首字 / 总耗 -->
-      <div class="md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="min-w-0 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <p class="font-mono-data text-xs text-[var(--color-text)]">
           <span class="text-[var(--color-text-subtle)]">总耗 </span>{{ formatAverageLatency(log.duration_ms) }}
         </p>
@@ -96,7 +99,7 @@ const timeParts = computed(() => {
       </div>
 
       <!-- Token -->
-      <div class="md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="min-w-0 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <p class="font-mono-data text-xs font-medium text-[var(--color-text)]">
           {{ totalTokens > 0 ? formatTokens(totalTokens) : '—' }}
         </p>
@@ -115,7 +118,7 @@ const timeParts = computed(() => {
       </div>
 
       <!-- 重试 -->
-      <div class="md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="min-w-0 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <UiBadge
           v-if="log.attempt_count > 1"
           variant="warning"
@@ -128,7 +131,7 @@ const timeParts = computed(() => {
       </div>
 
       <!-- 时间 -->
-      <div class="md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
+      <div class="min-w-0 md:border-l md:border-[var(--color-border-subtle)] md:px-3 md:py-2.5">
         <p class="font-mono-data text-xs text-[var(--color-text-secondary)]">
           {{ timeParts.date }}
         </p>
@@ -162,7 +165,7 @@ const timeParts = computed(() => {
           <dt class="text-[var(--color-text-muted)]">
             请求 ID
           </dt>
-          <dd class="truncate font-mono-data text-[var(--color-text-secondary)]">
+          <dd class="min-w-0 truncate font-mono-data text-[var(--color-text-secondary)]">
             {{ log.request_id }}
           </dd>
         </div>
@@ -186,7 +189,7 @@ const timeParts = computed(() => {
           <dt class="text-[var(--color-text-muted)]">
             思考参数
           </dt>
-          <dd class="truncate text-[var(--color-text-secondary)]">
+          <dd class="min-w-0 truncate text-[var(--color-text-secondary)]">
             请求 {{ log.reasoning_requested ? '是' : '否' }} · 响应 {{ log.reasoning_present ? '是' : '否' }} · {{ log.reasoning_chars ?? '—' }} 字
             <template v-if="log.reasoning_wire_fields">
               （{{ log.reasoning_wire_fields }}）
@@ -197,7 +200,7 @@ const timeParts = computed(() => {
           <dt class="text-[var(--color-text-muted)]">
             路由模式
           </dt>
-          <dd class="truncate font-mono-data text-[var(--color-text-secondary)]">
+          <dd class="min-w-0 truncate font-mono-data text-[var(--color-text-secondary)]">
             {{ log.route_mode ?? '—' }}
           </dd>
         </div>
@@ -205,7 +208,7 @@ const timeParts = computed(() => {
           <dt class="text-[var(--color-text-muted)]">
             错误码
           </dt>
-          <dd class="truncate font-mono-data text-[var(--color-danger-text)]">
+          <dd class="min-w-0 truncate font-mono-data text-[var(--color-danger-text)]">
             {{ log.error_code ?? '—' }}
           </dd>
         </div>
@@ -213,7 +216,7 @@ const timeParts = computed(() => {
           <dt class="text-[var(--color-text-muted)]">
             上游请求 ID
           </dt>
-          <dd class="truncate font-mono-data text-[var(--color-text-secondary)]">
+          <dd class="min-w-0 truncate font-mono-data text-[var(--color-text-secondary)]">
             {{ log.upstream_request_id ?? '—' }}
           </dd>
         </div>

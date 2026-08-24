@@ -14,58 +14,49 @@ const props = defineProps<{ model: ModelHealthModel }>()
 type BadgeVariant = 'success' | 'warning' | 'danger' | 'muted'
 type StatusMeta = { label: string; variant: BadgeVariant; color: string; dotColor: string; borderColor: string }
 
+// 状态色一律走主题 token：写死的 Tailwind 色阶在暗色主题下不会跟着切换，
+// 而本项目的暗色是 [data-theme='dark'] 而不是 .dark，`dark:` 变体根本不生效。
+// 卡片描边用状态色与边框 token 混色，浅色/暗色都得到同一份语义强度。
+function statusBorder(token: string): string {
+  return `border-[color-mix(in_srgb,${token}_30%,var(--color-border))] hover:border-[color-mix(in_srgb,${token}_55%,var(--color-border))]`
+}
+
+const mutedStatus: StatusMeta = {
+  label: '无数据',
+  variant: 'muted',
+  color: 'var(--color-text-subtle)',
+  dotColor: 'var(--color-text-subtle)',
+  borderColor: 'border-[var(--color-border)] hover:border-[var(--color-border-strong)]',
+}
+
 const statusMeta: Record<string, StatusMeta> = {
   healthy: {
     label: '健康',
     variant: 'success',
     color: 'var(--color-success)',
-    dotColor: '#10b981',
-    borderColor: 'border-emerald-200/80 dark:border-emerald-500/20 hover:border-emerald-300 dark:hover:border-emerald-500/40',
+    dotColor: 'var(--color-success)',
+    borderColor: statusBorder('var(--color-success)'),
   },
   degraded: {
     label: '降级',
     variant: 'warning',
     color: 'var(--color-warning)',
-    dotColor: '#f59e0b',
-    borderColor: 'border-amber-200/80 dark:border-amber-500/20 hover:border-amber-300 dark:hover:border-amber-500/40',
+    dotColor: 'var(--color-warning)',
+    borderColor: statusBorder('var(--color-warning)'),
   },
   unavailable: {
     label: '异常',
     variant: 'danger',
     color: 'var(--color-danger)',
-    dotColor: '#f43f5e',
-    borderColor: 'border-rose-200/90 dark:border-rose-500/30 hover:border-rose-300 dark:hover:border-rose-500/50',
+    dotColor: 'var(--color-danger)',
+    borderColor: statusBorder('var(--color-danger)'),
   },
-  unchecked: {
-    label: '无数据',
-    variant: 'muted',
-    color: 'var(--color-text-subtle)',
-    dotColor: '#94a3b8',
-    borderColor: 'border-[var(--color-border-subtle)] hover:border-[var(--color-border-strong)]',
-  },
-  stale: {
-    label: '无数据',
-    variant: 'muted',
-    color: 'var(--color-text-subtle)',
-    dotColor: '#94a3b8',
-    borderColor: 'border-[var(--color-border-subtle)] hover:border-[var(--color-border-strong)]',
-  },
-  unconfigured: {
-    label: '无数据',
-    variant: 'muted',
-    color: 'var(--color-text-subtle)',
-    dotColor: '#94a3b8',
-    borderColor: 'border-[var(--color-border-subtle)] hover:border-[var(--color-border-strong)]',
-  },
+  unchecked: mutedStatus,
+  stale: mutedStatus,
+  unconfigured: mutedStatus,
 }
 
-const uncheckedStatus: StatusMeta = {
-  label: '无数据',
-  variant: 'muted',
-  color: 'var(--color-text-subtle)',
-  dotColor: '#94a3b8',
-  borderColor: 'border-[var(--color-border-subtle)] hover:border-[var(--color-border-strong)]',
-}
+const uncheckedStatus: StatusMeta = mutedStatus
 
 const visualStatus = computed(() => displayStatus(props.model))
 const status = computed(() => statusMeta[visualStatus.value] ?? uncheckedStatus)
@@ -141,31 +132,34 @@ function outcomeLabel(outcome: ModelHealthOutcome): string {
   }
 }
 
-// 高饱和纯净色彩（现代云原生监控风格）
+// 时间线条形色：与状态 token 同源，hover 只降不透明度，不换色相。
 function outcomeBarClass(outcome: ModelHealthOutcome, isHovered: boolean): string {
+  const tone = (token: string) => (isHovered
+    ? `bg-[color-mix(in_srgb,${token}_72%,var(--color-surface))]`
+    : `bg-[${token}]`)
   switch (outcome) {
     case 'success':
-      return isHovered ? 'bg-emerald-400 dark:bg-emerald-400' : 'bg-emerald-500 dark:bg-emerald-500'
+      return tone('var(--color-success)')
     case 'failure':
-      return isHovered ? 'bg-rose-400 dark:bg-rose-400' : 'bg-rose-500 dark:bg-rose-500'
+      return tone('var(--color-danger)')
     case 'timeout':
     case 'mixed':
-      return isHovered ? 'bg-amber-300 dark:bg-amber-300' : 'bg-amber-400 dark:bg-amber-400'
+      return tone('var(--color-warning)')
     case 'skipped':
     case 'canceled':
     case 'empty':
     default:
-      return isHovered ? 'bg-zinc-300 dark:bg-zinc-600' : 'bg-zinc-200/80 dark:bg-zinc-800'
+      return isHovered ? 'bg-[var(--color-border-strong)]' : 'bg-[var(--color-muted-border)]'
   }
 }
 
 function outcomeColor(outcome: ModelHealthOutcome): string {
   switch (outcome) {
-    case 'success': return '#10b981'
-    case 'failure': return '#f43f5e'
+    case 'success': return 'var(--color-success)'
+    case 'failure': return 'var(--color-danger)'
     case 'timeout':
-    case 'mixed': return '#f59e0b'
-    default: return '#9ca3af'
+    case 'mixed': return 'var(--color-warning)'
+    default: return 'var(--color-text-subtle)'
   }
 }
 
@@ -205,75 +199,69 @@ function providerLabel(provider: string): string {
 
 <template>
   <article
-    class="model-health-card relative min-w-0 flex flex-col justify-between overflow-hidden rounded-2xl border bg-[var(--color-surface)] p-4 transition-colors duration-200 sm:p-4.5"
+    class="model-health-card relative min-w-0 flex flex-col justify-between overflow-hidden rounded-[var(--radius-panel)] border bg-[var(--color-surface)] p-4 transition-colors duration-[var(--duration-micro)] sm:p-5"
     :class="status.borderColor"
     :data-testid="`model-health-card-${model.model_id}`"
     :data-status="visualStatus"
     :aria-labelledby="titleId"
   >
     <div>
-      <!-- 头部第一行：状态 Badge + 提供商/类型标签 + 纯扁平快捷复制 -->
-      <div class="flex items-center justify-between gap-2">
+      <!-- 头部第一行：状态徽章 + 渠道/类型标签 + 快捷复制 -->
+      <div class="flex items-start justify-between gap-2">
         <div class="flex min-w-0 flex-wrap items-center gap-1.5">
-          <!-- 状态徽章 (呼吸指示点) -->
+          <!-- 状态徽章：复用全站 badge 词汇，避免这里再拼一套配色 -->
           <span
-            class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide transition-colors"
             :class="{
-              'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400': status.variant === 'success',
-              'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400': status.variant === 'warning',
-              'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400': status.variant === 'danger',
-              'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400': status.variant === 'muted',
+              'badge-success': status.variant === 'success',
+              'badge-warning': status.variant === 'warning',
+              'badge-danger': status.variant === 'danger',
+              'badge-muted': status.variant === 'muted',
             }"
           >
             <span
-              class="relative flex h-2 w-2"
+              class="h-1.5 w-1.5 shrink-0 rounded-full"
+              :style="{ backgroundColor: status.dotColor }"
               aria-hidden="true"
-            >
-              <span
-                class="relative inline-flex h-2 w-2 rounded-full"
-                :style="{ backgroundColor: status.dotColor }"
-              />
-            </span>
+            />
             <span>{{ status.label }}</span>
           </span>
 
-          <!-- 提供商 Badge -->
-          <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-700 dark:bg-zinc-800 dark:text-zinc-300">
+          <!-- 渠道标签 -->
+          <span class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-[0.04em] text-[var(--color-text-muted)]">
             {{ providerLabel(model.provider) }}
           </span>
 
-          <!-- 类型 Tag -->
+          <!-- 类型标签 -->
           <span
             v-if="model.kind"
-            class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500 dark:bg-zinc-800/60 dark:text-zinc-400"
+            class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.04em] text-[var(--color-text-subtle)]"
           >
             {{ model.kind }}
           </span>
 
-          <!-- 停用 Tag -->
+          <!-- 停用标签 -->
           <span
             v-if="!model.enabled"
-            class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 dark:bg-zinc-800/40 dark:text-zinc-500"
+            class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs text-[var(--color-text-subtle)]"
           >
             停用
           </span>
         </div>
 
-        <!-- 极简扁平 Ghost 复制按钮 -->
+        <!-- 快捷复制：扁平 ghost，命中区不低于 24px -->
         <button
           type="button"
-          class="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] transition-colors hover:bg-slate-100 hover:text-[var(--color-text)] active:scale-95 dark:hover:bg-zinc-800"
+          class="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-xs font-medium transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:min-h-11"
+          :class="copied ? 'text-[var(--color-success-text)]' : 'text-[var(--color-text-muted)]'"
           :title="`复制模型 ID: ${model.public_id || model.display_name}`"
           @click="handleCopy"
         >
           <UiIcon
             :name="copied ? 'check' : 'copy'"
-            :size="12"
-            :class="copied ? 'text-emerald-500' : 'text-[var(--color-text-muted)]'"
+            :size="13"
+            class="shrink-0"
           />
-          <span :class="copied ? 'font-semibold text-emerald-600 dark:text-emerald-400' : ''">
-            {{ copied ? '已复制' : '复制 ID' }}
-          </span>
+          <span>{{ copied ? '已复制' : '复制 ID' }}</span>
         </button>
       </div>
 
@@ -281,31 +269,31 @@ function providerLabel(provider: string): string {
       <div class="mt-2.5">
         <h2
           :id="titleId"
-          class="m-0 truncate font-mono text-[14px] font-bold tracking-tight text-[var(--color-text)]"
+          class="m-0 truncate font-mono-data text-sm font-semibold text-[var(--color-text)]"
           :title="model.display_name || model.public_id"
         >
           {{ model.display_name || model.public_id }}
         </h2>
         <p
           v-if="model.display_name && model.display_name !== model.public_id"
-          class="m-0 truncate font-mono text-[11px] text-[var(--color-text-muted)]"
+          class="m-0 mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]"
           :title="model.public_id"
         >
           {{ model.public_id }}
         </p>
       </div>
 
-      <!-- 核心指标栏 (消除框中框：开放式 4 列排版，上下细分割线) -->
-      <div class="my-3 grid grid-cols-4 gap-2 border-y border-slate-100 py-2.5 dark:border-zinc-800/80">
-        <!-- 成功率 -->
+      <!-- 核心指标栏：开放式 4 列，上下细分割线，不做框中框 -->
+      <div class="my-3 grid grid-cols-2 gap-x-2 gap-y-2.5 border-y border-[var(--color-border-subtle)] py-2.5 sm:grid-cols-4">
+        <!-- 可用率 -->
         <div class="min-w-0">
-          <span class="block truncate text-[11px] font-medium text-[var(--color-text-muted)]">可用率</span>
+          <span class="block truncate text-xs text-[var(--color-text-muted)]">可用率</span>
           <span
-            class="mt-0.5 block truncate font-mono text-[16px] font-bold tracking-tight"
+            class="mt-0.5 block truncate font-mono-data text-base font-semibold"
             :class="{
-              'text-emerald-600 dark:text-emerald-400': model.success_rate >= 85 && model.probe_count > 0,
-              'text-amber-600 dark:text-amber-400': model.success_rate < 85 && model.success_rate >= 50 && model.probe_count > 0,
-              'text-rose-600 dark:text-rose-400': model.success_rate < 50 && model.probe_count > 0,
+              'text-[var(--color-success-text)]': model.success_rate >= 85 && model.probe_count > 0,
+              'text-[var(--color-warning-text)]': model.success_rate < 85 && model.success_rate >= 50 && model.probe_count > 0,
+              'text-[var(--color-danger-text)]': model.success_rate < 50 && model.probe_count > 0,
               'text-[var(--color-text)]': model.probe_count === 0,
             }"
             :data-testid="`model-health-rate-${model.model_id}`"
@@ -314,12 +302,12 @@ function providerLabel(provider: string): string {
           </span>
         </div>
 
-        <!-- 最近延迟 -->
+        <!-- 最新延迟 -->
         <div class="min-w-0">
-          <span class="block truncate text-[11px] font-medium text-[var(--color-text-muted)]">最新延迟</span>
-          <span class="mt-0.5 block truncate font-mono text-[16px] font-bold tracking-tight text-[var(--color-text)]">
+          <span class="block truncate text-xs text-[var(--color-text-muted)]">最新延迟</span>
+          <span class="mt-0.5 block truncate font-mono-data text-base font-semibold text-[var(--color-text)]">
             <template v-if="model.last_duration_ms !== undefined">
-              {{ model.last_duration_ms }}<span class="ml-0.5 text-[11px] font-normal text-[var(--color-text-muted)]">ms</span>
+              {{ model.last_duration_ms }}<span class="ml-0.5 text-xs font-normal text-[var(--color-text-muted)]">ms</span>
             </template>
             <template v-else>
               —
@@ -327,31 +315,31 @@ function providerLabel(provider: string): string {
           </span>
         </div>
 
-        <!-- 探测总数 -->
+        <!-- 探测次数 -->
         <div class="min-w-0">
-          <span class="block truncate text-[11px] font-medium text-[var(--color-text-muted)]">探测次数</span>
-          <span class="mt-0.5 block truncate font-mono text-[16px] font-bold tracking-tight text-[var(--color-text)]">
+          <span class="block truncate text-xs text-[var(--color-text-muted)]">探测次数</span>
+          <span class="mt-0.5 block truncate font-mono-data text-base font-semibold text-[var(--color-text)]">
             {{ model.probe_count }}
           </span>
         </div>
 
         <!-- 连续失败 -->
         <div class="min-w-0">
-          <span class="block truncate text-[11px] font-medium text-[var(--color-text-muted)]">连续失败</span>
+          <span class="block truncate text-xs text-[var(--color-text-muted)]">连续失败</span>
           <span
-            class="mt-0.5 block truncate font-mono text-[16px] font-bold tracking-tight"
-            :class="model.consecutive_failures > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-[var(--color-text)]'"
+            class="mt-0.5 block truncate font-mono-data text-base font-semibold"
+            :class="model.consecutive_failures > 0 ? 'text-[var(--color-danger-text)]' : 'text-[var(--color-text)]'"
           >
             {{ model.consecutive_failures }}
           </span>
         </div>
       </div>
 
-      <!-- 状态时间线 (纯净条形码轨道与微交互) -->
+      <!-- 状态时间线 -->
       <div class="relative mt-1">
-        <div class="mb-1 flex items-center justify-between text-[11px]">
+        <div class="mb-1.5 flex items-center justify-between gap-2 text-xs">
           <span class="font-medium text-[var(--color-text-secondary)]">状态时间线</span>
-          <span class="font-mono text-[10px] text-[var(--color-text-subtle)]">
+          <span class="shrink-0 font-mono-data text-[var(--color-text-subtle)]">
             {{ model.buckets.length ? `${model.buckets.length} 个时间段` : '暂无数据' }}
           </span>
         </div>
@@ -360,7 +348,7 @@ function providerLabel(provider: string): string {
         <div
           ref="timelineTrackRef"
           :data-testid="`model-health-timeline-${model.model_id}`"
-          class="relative flex h-5.5 items-stretch gap-[1.5px] rounded-md bg-slate-100/90 p-[2px] dark:bg-zinc-800/80"
+          class="relative flex h-6 items-stretch gap-[1.5px] rounded-[var(--radius-control)] bg-[var(--color-sunken)] p-[2px]"
           role="group"
           :aria-label="timelineLabel(model)"
           @mouseleave="handleTrackLeave"
@@ -369,31 +357,31 @@ function providerLabel(provider: string): string {
           <div
             v-if="hoveredBucket"
             data-testid="model-health-tooltip"
-            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+6px)] z-30 flex flex-col items-center whitespace-normal rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-2.5 py-1.5 transition-transform duration-75 ease-out"
+            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+6px)] z-30 flex flex-col items-center whitespace-normal rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] px-2.5 py-1.5"
             :class="tooltipPlacement === 'start' ? 'translate-x-0' : tooltipPlacement === 'end' ? '-translate-x-full' : '-translate-x-1/2'"
             :style="{ left: `${tooltipX}px` }"
           >
-            <div class="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--color-text)]">
+            <div class="flex items-center gap-1.5 text-xs font-semibold text-[var(--color-text)]">
               <span
-                class="inline-block h-2 w-2 rounded-full"
+                class="inline-block h-2 w-2 shrink-0 rounded-full"
                 :style="{ backgroundColor: outcomeColor(hoveredBucket.outcome) }"
               />
               <span>{{ outcomeLabel(hoveredBucket.outcome) }}</span>
-              <span class="text-[var(--color-text-muted)]">· {{ hoveredBucket.probe_count }} 次探测</span>
+              <span class="font-normal text-[var(--color-text-muted)]">· {{ hoveredBucket.probe_count }} 次探测</span>
             </div>
-            <div class="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-[var(--color-text-muted)]">
+            <div class="mt-0.5 flex items-center gap-2 font-mono-data text-xs text-[var(--color-text-muted)]">
               <span>{{ formatDate(hoveredBucket.start, { seconds: true }) }}</span>
-              <span v-if="hoveredBucket.average_duration_ms > 0">⚡ {{ hoveredBucket.average_duration_ms }}ms</span>
+              <span v-if="hoveredBucket.average_duration_ms > 0">{{ hoveredBucket.average_duration_ms }}ms</span>
             </div>
-            <!-- 小三角箭头 -->
+            <!-- 指向宿主格子的小三角 -->
             <div
-              class="absolute -bottom-1 h-1.5 w-1.5 rotate-45 border-b border-r border-[var(--color-border-strong)] bg-[var(--color-surface)]"
+              class="absolute -bottom-1 h-1.5 w-1.5 rotate-45 border-b border-r border-[var(--color-border-strong)] bg-[var(--color-surface-raised)]"
             />
           </div>
 
           <span
             v-if="model.buckets.length === 0"
-            class="min-w-0 flex-1 rounded-[1.5px] border border-dashed border-slate-300 dark:border-zinc-700"
+            class="min-w-0 flex-1 rounded-[2px] border border-dashed border-[var(--color-muted-border)]"
             aria-hidden="true"
           />
 
@@ -401,7 +389,7 @@ function providerLabel(provider: string): string {
             v-for="(bucket, index) in model.buckets"
             :key="`${bucket.start}-${index}`"
             :data-testid="`model-health-bucket-${model.model_id}-${index}`"
-            class="min-w-0 flex-1 cursor-pointer rounded-[1px] transition-colors duration-100"
+            class="min-w-0 flex-1 cursor-pointer rounded-[1px] transition-colors duration-[var(--duration-micro)]"
             :class="outcomeBarClass(bucket.outcome, hoveredIndex === index)"
             :title="bucketTitle(bucket)"
             :aria-label="bucketTitle(bucket)"
@@ -411,29 +399,27 @@ function providerLabel(provider: string): string {
           />
         </div>
 
-        <!-- 时间刻度 (HH:mm) -->
-        <div class="mt-1 flex justify-between font-mono text-[10px] text-[var(--color-text-subtle)]">
-          <span>{{ model.buckets.length ? formatScaleTime(model.buckets[0]?.start) : '—' }}</span>
-          <span>{{ model.buckets.length > 1 ? formatScaleTime(model.buckets[Math.floor(model.buckets.length / 2)]?.start) : '—' }}</span>
-          <span class="font-medium text-[var(--color-text-muted)]">现在</span>
+        <!-- 时间刻度 -->
+        <div class="mt-1.5 flex justify-between gap-2 font-mono-data text-xs text-[var(--color-text-subtle)]">
+          <span class="truncate">{{ model.buckets.length ? formatScaleTime(model.buckets[0]?.start) : '—' }}</span>
+          <span class="truncate">{{ model.buckets.length > 1 ? formatScaleTime(model.buckets[Math.floor(model.buckets.length / 2)]?.start) : '—' }}</span>
+          <span class="truncate text-[var(--color-text-muted)]">现在</span>
         </div>
       </div>
     </div>
 
-    <!-- 底部异常警示条 (仅在有异常时优雅展示) -->
+    <!-- 底部异常提示条 -->
     <div
       v-if="model.last_error_code"
-      class="mt-3 flex items-center justify-between gap-2 rounded-lg border border-rose-200/80 bg-rose-50/70 px-2.5 py-1.5 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-400"
+      class="mt-3 flex min-w-0 items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--color-danger-background)] bg-[var(--color-danger-background)] px-2.5 py-1.5 text-xs text-[var(--color-danger-foreground)]"
     >
-      <div class="flex items-center gap-1.5 min-w-0">
-        <UiIcon
-          name="warning"
-          :size="13"
-          class="shrink-0 text-current"
-          aria-hidden="true"
-        />
-        <span class="truncate font-mono">最近异常：{{ errorLabel(model.last_error_code) }}</span>
-      </div>
+      <UiIcon
+        name="warning"
+        :size="13"
+        class="shrink-0 text-current"
+        aria-hidden="true"
+      />
+      <span class="truncate">最近异常：{{ errorLabel(model.last_error_code) }}</span>
     </div>
   </article>
 </template>

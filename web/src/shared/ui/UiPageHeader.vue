@@ -19,7 +19,7 @@ withDefaults(defineProps<{
       >
         {{ eyebrow }}
       </p>
-      <h1 class="type-title mt-1">
+      <h1 class="type-title mt-1.5">
         {{ title }}
       </h1>
       <p

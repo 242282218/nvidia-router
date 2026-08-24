@@ -146,3 +146,48 @@ git diff --check
 - 移动端 Playwright 几何检查要等待抽屉 300ms 位移动画完成；登录跳转要等待明确的 `/admin/`，不能用会匹配 `/admin/login` 的宽泛 glob。
 - 代理池配置的全宽 Grid 子项若包含长说明和输入框，必须加 `min-w-0`；数据表自身可以保留在 `overflow-auto` 容器内，但不能依赖 `body { overflow-x: hidden }` 掩盖父级 Grid 外溢。
 - 本地统一启动器清理应以 `tmp/local-start-state.json` 的进程路径、启动时间和父 PID 做精确核验；子进程退出可能连带启动器消失，确认 3756/5173 已无监听后再清理状态和本轮日志。
+
+## 14. 全站视觉 QA 环境与基线（2026-08-24）
+
+### 隔离 QA 环境（不碰本地 data 与 3756/5173）
+
+- `node scripts/test/web_qa_env.mjs [--port 5175] [--no-seed]`：编译并拉起 `tests/e2e/harness`（临时目录 SQLite + mock NVIDIA 上游），播种数据，再起一个独立 Vite，把 `/admin/api` 代理到 harness；连接信息写 `tmp/web-qa-env.json`。用它而不是直接对本地实例做 QA：本地库的管理员口令存在库里且可能已改，隔离库既能稳定播种又不会写坏数据。
+- `node scripts/test/web_visual_qa.mjs [--out dir] [--only substr]`：13 个页面 × 4 视口（390/768/**1024**/1440）× 双主题 × 6 种浮层态截图 + 几何审计。1024 是 lg 断点第一格，侧栏刚占 240px 而正文比 768 更窄，是全站最容易溢出的宽度，必须单独测。
+- `Vite` 的代理目标由 `VITE_PROXY_ORIGIN` 决定，可指向任意后端；spawn Vite 用 `node node_modules/vite/bin/vite.js` 而非 `.bin/vite.cmd`，避免 shell 拼参与进程树回收不确定。
+- 管理端登录限流是**每 IP+用户名 1 分钟 5 次**，多视口各自登录必然被拒；探针必须登录一次后用 `context.addCookies` 复用会话。
+
+### 播种契约（易踩）
+
+- `POST /admin/api/auth/change-password` 只收 `current_password`/`new_password`（多传字段会 400），且会换发 cookie，jar 必须跟着更新。所有写请求都要带与 baseURL 完全一致的 `Origin`。
+- `POST /admin/api/nvidia-keys/batch` 的 `keys` 是**换行分隔字符串**，不是数组。
+- `POST /admin/api/models` 不校验候选是否来自上游发现，可离线批量播种；但 `selectionDTO` 不含 `context_length`/`stream_*`（只能后续 PATCH），且 `kind=asr/tts` 直接 `enabled:true` 会被能力校验拒绝。
+- `PATCH /admin/api/proxy-pool` 的 `upstream_url` 必须带 provider 查询凭据，QA 播种应留空而不是伪造凭据串。
+- 请求日志只有请求热路径一个写入口，且 `BufferRecorder` 默认 **30s** 才 flush；打完流量要等够时间，否则监控/统计页是空的。
+
+### 几何审计的假阳性规则（缺了会被噪声埋掉真缺陷）
+
+- 判定必须**祖先感知**：滚动容器内的宽内容、收起抽屉（`[inert]` 或整体位于画布外）的后代、`.sr-only` 子树都要排除。
+- `overflow:visible` 的"撑破"不丢内容，属于越界范畴；只报真正裁切的容器，且带 `text-overflow:ellipsis` + `nowrap` 的单行截断是设计意图。
+- 命中测试要跳过铺满视口的 scrim，以及被打开的 `[role=menu/dialog/tooltip/listbox]` 浮层正常覆盖的底层控件。
+- 触控尺寸按最近的 `<label>` 命中区算，而不是 16px 的 `input` 本体。
+
+### 本轮定位到的系统性根因（都已修，勿回退）
+
+- **项目没有任何 CSS reset**，UA 默认值曾在每页泄漏：`<a>` 全站带下划线；169 个 `<p>` 带 13–14px 非网格外边距（`mt-*` 只覆盖 top，bottom 全残留）；`<ul>/<ol>` 带 disc 与 40px 内缩，让状态行出现"圆点 + 状态点"双点；`<dd>` 有 40px 缩进；表单控件不继承字体回落 **Arial**。reset 现集中在 `web/src/styles/theme.css`，改动前先确认不是在重新引入这些。
+- **UnoCSS 的 `font-[...]` 编译成 `font-family`**，而 `--text-display/title/heading/label` 是 `font` **简写**值，赋给 font-family 是无效声明会被整条丢弃——四层字体阶梯从未生效，标题一路回落到 UA（h1 30px/700、h2 22.5px/700、眉题 15px）。现改为 `uno.config.ts` 的 rule 显式输出 `font` 简写；`type-*` 不要再与 `text-base` 等字号工具类混用（简写会重置字号）。
+- 表格默认 `border-spacing: 2px`，9 列表格凭空多 20px 足以逼出横向滚动条；`data-table` 已加 `border-collapse`，同时让 1px 行分隔连成整线。
+- `table-layout: auto` 下"不能换行"的列先吃满 max-content，可换行的模型列只分到剩渣（实测 115px，长模型名折 8 行），声明宽度被整体忽略。密集表用 `table-fixed` + 显式列宽 + `min-w`，宽度分配才可控；给单元格加 `whitespace-nowrap` 会让该列变刚性并饿死邻列，是有代价的。
+- `ring-*` 工具类编译成 box-shadow，与 Flat Outline 冲突，且会和 `theme.css` 的 `:focus-visible` outline 叠成多层焦点指示。焦点统一只用 outline。
+- 颜色只允许来自 theme.css 语义 token：`dark:` 变体走 `.dark` 选择器，与本项目的 `[data-theme='dark']` 永不相交，写了就是死代码（组件会停在亮色配色上）。
+- 以上三条已固化为回归守卫：`web/src/styles/flat-visual.spec.ts` 断言无 `ring-\d`、无 `dark:` 变体、无原始调色板色阶。
+
+### 最小验证组合
+
+~~~bash
+web/node_modules/.bin/eslint.cmd .
+web/node_modules/.bin/vue-tsc.cmd --noEmit
+web/node_modules/.bin/vitest.cmd run
+web/node_modules/.bin/vite.cmd build
+python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 POSIX bash 时替代 check-web-dist.sh）
+~~~
+

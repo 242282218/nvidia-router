@@ -48,7 +48,7 @@ const widthClass: Record<'sm' | 'md' | 'lg', string> = {
       >
         <header class="flex items-start justify-between gap-4 border-b border-[var(--color-border)] px-6 py-4">
           <div class="min-w-0">
-            <h2 class="type-heading text-base">
+            <h2 class="type-heading">
               {{ title }}
             </h2>
             <p

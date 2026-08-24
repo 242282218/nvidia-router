@@ -77,13 +77,16 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
       class="card border-dashed p-4"
     >
       <div class="flex items-start gap-3">
-        <input
-          :checked="selectedCandidateKeys.has(candidateSelectionKey(candidate))"
-          class="mt-0.5 h-4 w-4 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-          :data-testid="`candidate-${candidateSelectionKey(candidate)}`"
-          type="checkbox"
-          @change="onCandidateChange(candidate, $event)"
-        >
+        <label class="checkbox-hit shrink-0">
+          <input
+            :checked="selectedCandidateKeys.has(candidateSelectionKey(candidate))"
+            class="checkbox-control"
+            :data-testid="`candidate-${candidateSelectionKey(candidate)}`"
+            type="checkbox"
+            :aria-label="`保存候选模型 ${candidate.display_name}`"
+            @change="onCandidateChange(candidate, $event)"
+          >
+        </label>
         <div class="min-w-0 flex-1">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
@@ -133,13 +136,16 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
     >
       <div class="flex items-start justify-between gap-3">
         <div class="flex min-w-0 items-start gap-2">
-          <input
-            :checked="selectedModelIds.has(model.id)"
-            class="mt-0.5 h-4 w-4 shrink-0 rounded border-[var(--color-text-subtle)] bg-[var(--color-sunken)] text-[var(--color-accent)] focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)]"
-            :data-testid="`test-model-card-${model.id}`"
-            type="checkbox"
-            @change="onModelTestChange(model, $event)"
-          >
+          <label class="checkbox-hit shrink-0">
+            <input
+              :checked="selectedModelIds.has(model.id)"
+              class="checkbox-control"
+              :data-testid="`test-model-card-${model.id}`"
+              type="checkbox"
+              :aria-label="`选中测试模型 ${model.display_name}`"
+              @change="onModelTestChange(model, $event)"
+            >
+          </label>
           <div class="min-w-0">
             <h3 class="text-sm font-medium text-[var(--color-text)]">
               {{ model.display_name }}

@@ -125,7 +125,7 @@ const padClass = computed(() => (props.density === 'compact'
     :data-testid="testId"
   >
     <div
-      class="overflow-auto focus-within:ring-2 focus-within:ring-[color-mix(in_srgb,var(--color-focus)_40%,transparent)]"
+      class="relative overflow-auto focus-within:outline-2 focus-within:-outline-offset-2 focus-within:outline-[var(--color-focus)]"
       :style="maxHeight ? { maxHeight } : undefined"
       tabindex="0"
       role="region"
@@ -145,14 +145,16 @@ const padClass = computed(() => (props.density === 'compact'
               class="data-table-th w-10"
               scope="col"
             >
-              <input
-                type="checkbox"
-                class="h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
-                :checked="allSelected"
-                :indeterminate="someSelected && !allSelected"
-                aria-label="全选"
-                @change="toggleAll"
-              >
+              <label class="checkbox-hit">
+                <input
+                  type="checkbox"
+                  class="checkbox-control"
+                  :checked="allSelected"
+                  :indeterminate="someSelected && !allSelected"
+                  aria-label="全选"
+                  @change="toggleAll"
+                >
+              </label>
             </th>
             <th
               v-for="column in columns"
@@ -164,7 +166,7 @@ const padClass = computed(() => (props.density === 'compact'
             >
               <component
                 :is="column.sortable ? 'button' : 'span'"
-                :class="column.sortable ? 'group/sort inline-flex cursor-pointer items-center gap-1.5 transition-colors duration-[var(--duration-micro)] hover:text-[var(--color-text)]' : ''"
+                :class="column.sortable ? 'group/sort inline-flex min-h-6 cursor-pointer items-center gap-1.5 transition-colors duration-[var(--duration-micro)] hover:text-[var(--color-text)] pointer-coarse:min-h-11' : ''"
                 :type="column.sortable ? 'button' : undefined"
                 @click="toggleSort(column)"
               >
@@ -235,13 +237,15 @@ const padClass = computed(() => (props.density === 'compact'
               class="data-table-td w-10"
               :class="padClass"
             >
-              <input
-                type="checkbox"
-                class="h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
-                :checked="isSelected(row)"
-                :aria-label="`选择第 ${index + 1} 行`"
-                @change="toggleRow(row)"
-              >
+              <label class="checkbox-hit">
+                <input
+                  type="checkbox"
+                  class="checkbox-control"
+                  :checked="isSelected(row)"
+                  :aria-label="`选择第 ${index + 1} 行`"
+                  @change="toggleRow(row)"
+                >
+              </label>
             </td>
             <td
               v-for="column in columns"
