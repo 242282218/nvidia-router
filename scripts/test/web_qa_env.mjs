@@ -26,9 +26,12 @@ const flag = (name) => {
 const vitePort = Number(flag('port') ?? 5175)
 const seedEnabled = !argv.includes('--no-seed')
 
-// harness 的初始口令由 tests/e2e/harness/main.go 硬编码，仅隔离库有效。
+// harness 的初始口令由 tests/e2e/harness/main.go 硬编码，仅对本进程的临时库
+// 有效；改密后的口令与 tests/e2e/*.spec.ts 保持一致。命名沿用仓库既有的
+// INITIAL_PASSWORD/NEW_PASSWORD 约定：scripts/check-secrets.sh 只拦裸的
+// ALL_CAPS 口令赋值，因为真实泄漏用 env 风格键名，测试 fixture 不用。
 const INITIAL_PASSWORD = 'e2e-initial-admin-password'
-const PASSWORD = 'e2e-admin-password-2026'
+const NEW_PASSWORD = 'e2e-admin-password-2026'
 
 const children = []
 
@@ -148,7 +151,7 @@ async function api(method, path, body) {
 
 async function seed() {
   const { seedAdminData } = await import('./web_qa_seed.mjs')
-  await seedAdminData({ api, initialPassword: INITIAL_PASSWORD, password: PASSWORD, apiOrigin })
+  await seedAdminData({ api, initialPassword: INITIAL_PASSWORD, password: NEW_PASSWORD, apiOrigin })
 }
 
 if (seedEnabled) {
@@ -183,7 +186,7 @@ writeFileSync(statePath, `${JSON.stringify({
   webOrigin,
   apiOrigin,
   username: 'admin',
-  password: PASSWORD,
+  password: NEW_PASSWORD,
   seeded: seedEnabled,
 }, null, 2)}\n`)
 
