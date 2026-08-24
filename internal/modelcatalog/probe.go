@@ -1,5 +1,7 @@
 package modelcatalog
 
+import "time"
+
 const (
 	ProbeStatusSuccess     = "success"
 	ProbeStatusFailed      = "failed"
@@ -22,5 +24,6 @@ type probeCapabilityUpdate struct {
 	SupportsReasoning   *bool
 	ReasoningStatus     *string
 	ReasoningWireFormat *string
-	SupportsTools       *bool
+	ToolsStatus         *string
+	ToolsVerifiedAt     *time.Time
 }

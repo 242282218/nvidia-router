@@ -56,6 +56,7 @@ type candidateDTO struct {
 	Capabilities            []string          `json:"capabilities"`
 	SupportsVision          bool              `json:"supports_vision"`
 	SupportsTools           bool              `json:"supports_tools"`
+	ToolsStatus             string            `json:"tools_status"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
 	ReasoningStatus         string            `json:"reasoning_status"`
 	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
@@ -75,6 +76,8 @@ type modelDTO struct {
 	Enabled                 bool              `json:"enabled"`
 	SupportsVision          bool              `json:"supports_vision"`
 	SupportsTools           bool              `json:"supports_tools"`
+	ToolsStatus             string            `json:"tools_status"`
+	ToolsVerifiedAt         *time.Time        `json:"tools_verified_at,omitempty"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
 	ReasoningStatus         string            `json:"reasoning_status"`
 	ReasoningWireFormat     string            `json:"reasoning_wire_format"`
@@ -350,10 +353,14 @@ func toCandidateDTO(v modelcatalog.Candidate) candidateDTO {
 	if publicID == "" {
 		publicID = v.UpstreamID
 	}
+	toolsStatus := v.ToolsStatus
+	if toolsStatus == "" {
+		toolsStatus = modelcatalog.ToolsStatusUnknown
+	}
 	return candidateDTO{
 		PublicID: publicID, UpstreamID: v.UpstreamID, DisplayName: v.DisplayName, Kind: v.Kind,
 		Provider: provider, Channel: channel, Badge: badge, Status: status, Capabilities: capabilities,
-		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, SupportsReasoning: v.SupportsReasoning,
+		SupportsVision: v.SupportsVision, SupportsTools: v.SupportsTools, ToolsStatus: toolsStatus, SupportsReasoning: v.SupportsReasoning,
 		ReasoningStatus:     v.ReasoningStatus,
 		ReasoningWireFormat: v.ReasoningWireFormat,
 		ReasoningLevels:     v.ReasoningLevels, ReasoningMinBudget: v.ReasoningMinBudget,
@@ -366,6 +373,10 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 	if provider == "" {
 		provider = "nvidia"
 	}
+	toolsStatus := v.ToolsStatus
+	if toolsStatus == "" {
+		toolsStatus = modelcatalog.ToolsStatusUnknown
+	}
 	return modelDTO{
 		ID:                        v.ID,
 		PublicID:                  v.PublicID,
@@ -376,6 +387,8 @@ func toModelDTO(v modelcatalog.Model) modelDTO {
 		Enabled:                   v.Enabled,
 		SupportsVision:            v.SupportsVision,
 		SupportsTools:             v.SupportsTools,
+		ToolsStatus:               toolsStatus,
+		ToolsVerifiedAt:           v.ToolsVerifiedAt,
 		SupportsReasoning:         v.SupportsReasoning,
 		ReasoningStatus:           v.ReasoningStatus,
 		ReasoningWireFormat:       v.ReasoningWireFormat,

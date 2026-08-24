@@ -203,6 +203,7 @@ func (h *Responses) streamResponse(ctx context.Context, writer http.ResponseWrit
 func (h *Responses) streamResponseWithConfig(ctx context.Context, writer http.ResponseWriter, upstream *http.Response, responseID, model string, config responsesprotocol.ResponseConfig) {
 	commit := &router.CommitState{}
 	emitter := &responsesSSEEmitter{
+		ctx:     ctx,
 		encoder: sse.NewEncoder(commit.Wrap(writer)),
 		commit:  commit,
 		flusher: writer,
@@ -313,6 +314,7 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 // responsesSSEEmitter writes Responses events to the HTTP response and commits
 // on the first event. The done event is rendered as the final [DONE] marker.
 type responsesSSEEmitter struct {
+	ctx         context.Context
 	encoder     *sse.Encoder
 	commit      *router.CommitState
 	flusher     http.ResponseWriter
@@ -328,6 +330,9 @@ type responsesSSEEmitter struct {
 }
 
 func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
+	if e.ctx != nil && e.commit.Committed() && e.ctx.Err() != nil {
+		return e.ctx.Err()
+	}
 	if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
 		return err
 	}

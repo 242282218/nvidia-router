@@ -383,6 +383,10 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		return
 	}
 	if err == sse.ErrStreamInterrupted && commit.Committed() {
+		if ctx.Err() != nil {
+			observability.RequestLogger(ctx).Debug("stream_context_cancelled_after_commit", "error", err)
+			return
+		}
 		// EOF before [DONE] with bytes already delivered is a truncated
 		// generation, not a completion. The status can no longer change, but
 		// silently closing made agents treat the partial output — an empty
@@ -422,6 +426,7 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		observability.RequestLogger(ctx).Debug("stream_context_cancelled_after_commit", "error", err)
 		return
 	}
+	writeStreamTruncated(writer)
 	observability.RequestLogger(ctx).Warn("stream_truncated_after_commit", "error", err)
 }
 
@@ -529,9 +534,13 @@ func modelError(err error) error {
 			Message: "The requested model is not available.",
 		}
 	}
-	if errors.Is(err, modelcatalog.ErrModelKindMismatch) ||
-		errors.Is(err, modelcatalog.ErrCapabilityUnsupported) ||
-		errors.Is(err, modelcatalog.ErrCapabilityUnverified) {
+	if errors.Is(err, modelcatalog.ErrCapabilityUnverified) {
+		return &apierror.Error{
+			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "capability_unverified",
+			Message: "The requested model capability has not been verified.",
+		}
+	}
+	if errors.Is(err, modelcatalog.ErrModelKindMismatch) || errors.Is(err, modelcatalog.ErrCapabilityUnsupported) {
 		return &apierror.Error{
 			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "not_implemented",
 			Message: "The requested model capability is not implemented.",

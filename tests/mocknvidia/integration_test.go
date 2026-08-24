@@ -840,7 +840,7 @@ func seedChatModel(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	err := modelcatalog.NewRepository(db).SaveSelections(context.Background(), []modelcatalog.Selection{{
 		PublicID: publicChatModel, UpstreamID: upstreamChatModel, DisplayName: "Integration Chat",
-		Kind: modelcatalog.KindChat, Enabled: true, SupportsVision: true, SupportsTools: true,
+		Kind: modelcatalog.KindChat, Enabled: true, SupportsVision: true, SupportsTools: true, ToolsStatus: modelcatalog.ToolsStatusSupported,
 		ReasoningWireFormat: "none",
 	}}, time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
 	if err != nil {

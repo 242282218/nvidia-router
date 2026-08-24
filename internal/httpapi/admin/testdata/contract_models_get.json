@@ -15,6 +15,7 @@
       "supports_reasoning": true,
       "supports_tools": true,
       "supports_vision": true,
+      "tools_status": "unknown",
       "upstream_id": "meta/llama-3.3-70b"
     },
     {
@@ -33,6 +34,7 @@
       "supports_reasoning": false,
       "supports_tools": false,
       "supports_vision": false,
+      "tools_status": "unknown",
       "upstream_id": "nvidia/embed-qa-4"
     }
   ]

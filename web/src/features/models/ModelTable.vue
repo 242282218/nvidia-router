@@ -8,6 +8,7 @@ import {
   candidateSelectionKey,
   capabilityLabels,
   normalizeProvider,
+  toolsStatusLabel,
 } from './types'
 import type { Candidate, Model } from './types'
 
@@ -324,8 +325,8 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
                   :dot="false"
                 />
                 <UiBadge
-                  :variant="model.supports_tools ? 'success' : 'muted'"
-                  :label="`Tools ${model.supports_tools ? '✓' : '—'}`"
+                  :variant="model.tools_status === 'supported' ? 'success' : 'muted'"
+                  :label="toolsStatusLabel(model.tools_status)"
                   :dot="false"
                 />
                 <UiBadge

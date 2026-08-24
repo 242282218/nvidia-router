@@ -1,5 +1,6 @@
 export type ModelKind = 'chat' | 'embedding' | 'asr' | 'tts' | string
 export type ModelProvider = 'nvidia' | 'opencodefree' | string
+export type ToolsStatus = 'unknown' | 'inferred' | 'supported' | 'unsupported' | string
 export type ModelTestMode = 'sequential' | 'concurrent'
 export type ModelTestJobStatus =
   | 'queued'
@@ -13,6 +14,8 @@ export type ModelTestJobStatus =
 export interface ModelCapabilities {
   supports_vision: boolean
   supports_tools: boolean
+  tools_status?: ToolsStatus
+  tools_verified_at?: string
   supports_reasoning: boolean
   reasoning_status?: string
   reasoning_wire_format?: string
@@ -133,4 +136,13 @@ export function capabilityLabels(model: ModelCapabilities & { capabilities?: str
   if (model.supports_tools) labels.push('tools')
   if (model.supports_reasoning) labels.push('reasoning')
   return [...new Set(labels.map((label) => label.trim()).filter(Boolean))]
+}
+
+export function toolsStatusLabel(status?: ToolsStatus): string {
+  switch (status) {
+    case 'supported': return 'Tools 已验证'
+    case 'inferred': return 'Tools 推断'
+    case 'unsupported': return 'Tools 不支持'
+    default: return 'Tools 未知'
+  }
 }

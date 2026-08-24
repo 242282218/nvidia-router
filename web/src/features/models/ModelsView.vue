@@ -138,6 +138,7 @@ function isModel(value: unknown): value is Model {
     && (value.blocked_by_key_ids === undefined
       || (Array.isArray(value.blocked_by_key_ids) && value.blocked_by_key_ids.every(isFiniteNumber)))
     && (value.capability_verified_at === undefined || typeof value.capability_verified_at === 'string')
+    && (value.tools_verified_at === undefined || typeof value.tools_verified_at === 'string')
     && (value.stream_first_token_timeout_ms === undefined || typeof value.stream_first_token_timeout_ms === 'number')
     && (value.stream_idle_timeout_ms === undefined || typeof value.stream_idle_timeout_ms === 'number')
     && (value.context_length === undefined || typeof value.context_length === 'number')

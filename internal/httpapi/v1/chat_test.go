@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"nvidia-router/internal/apierror"
 	"nvidia-router/internal/clock"
 	"nvidia-router/internal/config"
 	"nvidia-router/internal/fault"
@@ -28,6 +29,16 @@ import (
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
 )
+
+func TestModelErrorDistinguishesUnverifiedCapability(t *testing.T) {
+	publicErr, ok := modelError(modelcatalog.ErrCapabilityUnverified).(*apierror.Error)
+	if !ok {
+		t.Fatalf("modelError type = %T, want *apierror.Error", modelError(modelcatalog.ErrCapabilityUnverified))
+	}
+	if publicErr.Status != http.StatusNotImplemented || publicErr.Code != "capability_unverified" {
+		t.Fatalf("modelError = status %d code %q, want 501 capability_unverified", publicErr.Status, publicErr.Code)
+	}
+}
 
 func TestChatRejectsOversizedBody(t *testing.T) {
 	handler := NewChat(nil, nil, nil)
@@ -383,6 +394,48 @@ func TestChatStreamCommittedInterruptionAppendsErrorEvent(t *testing.T) {
 	}
 	if !logger.contains("stream_truncated_after_commit") {
 		t.Fatalf("committed interruption was not logged; got %v", logger.messages())
+	}
+}
+
+func TestChatStreamMalformedAfterCommitAppendsErrorEvent(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &scriptedBody{
+			chunks: [][]byte{[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")},
+			err:    errors.New("malformed SSE"),
+		},
+	}
+	response := httptest.NewRecorder()
+	NewChat(nil, nil, nil).streamResponse(context.Background(), response, upstream)
+
+	body := response.Body.String()
+	if !strings.Contains(body, "upstream_stream_truncated") {
+		t.Fatalf("body = %q, want in-stream truncation error for malformed SSE", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("[DONE] count = %d, want 1; body = %q", strings.Count(body, "data: [DONE]"), body)
+	}
+}
+
+func TestChatStreamClientCancellationOnEOFAfterCommitSkipsTruncation(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")),
+	}
+	logger := &recordingLogHandler{}
+	ctx, cancel := context.WithCancel(observability.WithRequestLogger(context.Background(), slog.New(logger)))
+	cancel()
+	response := httptest.NewRecorder()
+	NewChat(nil, nil, nil).streamResponse(ctx, response, upstream)
+
+	body := response.Body.String()
+	if strings.Contains(body, "upstream_stream_truncated") {
+		t.Fatalf("client cancellation must not append truncation error: %q", body)
+	}
+	if !logger.contains("stream_context_cancelled_after_commit") {
+		t.Fatalf("client cancellation was not logged at Debug; got %v", logger.messages())
 	}
 }
 

@@ -27,6 +27,13 @@ const (
 	ReasoningStatusUnsupported = "unsupported"
 )
 
+const (
+	ToolsStatusUnknown     = "unknown"
+	ToolsStatusInferred    = "inferred"
+	ToolsStatusSupported   = "supported"
+	ToolsStatusUnsupported = "unsupported"
+)
+
 const defaultModelProvider = ProviderNVIDIA
 
 type Kind string
@@ -48,6 +55,8 @@ type Model struct {
 	Enabled                 bool
 	SupportsVision          bool
 	SupportsTools           bool
+	ToolsStatus             string
+	ToolsVerifiedAt         *time.Time
 	SupportsReasoning       bool
 	ReasoningStatus         string
 	ReasoningWireFormat     string
@@ -95,6 +104,7 @@ type Candidate struct {
 	CapabilityTags          []string
 	SupportsVision          bool
 	SupportsTools           bool
+	ToolsStatus             string
 	SupportsReasoning       bool
 	ReasoningStatus         string
 	ReasoningWireFormat     string
@@ -114,6 +124,8 @@ type Selection struct {
 	Enabled                 bool
 	SupportsVision          bool
 	SupportsTools           bool
+	ToolsStatus             string
+	ToolsVerifiedAt         *time.Time
 	SupportsReasoning       bool
 	ReasoningStatus         string
 	ReasoningWireFormat     string

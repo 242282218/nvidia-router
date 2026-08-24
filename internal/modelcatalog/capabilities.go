@@ -43,6 +43,9 @@ func normalizeSelection(selection Selection) (Selection, error) {
 	if err := normalizeReasoningStatus(&selection); err != nil {
 		return Selection{}, err
 	}
+	if err := normalizeToolsStatus(&selection); err != nil {
+		return Selection{}, err
+	}
 	if err := normalizeReasoningProfile(&selection); err != nil {
 		return Selection{}, err
 	}
@@ -50,6 +53,31 @@ func normalizeSelection(selection Selection) (Selection, error) {
 		return Selection{}, ErrCapabilityUnverified
 	}
 	return selection, nil
+}
+
+func normalizeToolsStatus(selection *Selection) error {
+	if selection.ToolsStatus == "" {
+		if selection.SupportsTools {
+			selection.ToolsStatus = ToolsStatusInferred
+		} else {
+			selection.ToolsStatus = ToolsStatusUnknown
+		}
+	}
+	switch selection.ToolsStatus {
+	case ToolsStatusUnknown, ToolsStatusInferred, ToolsStatusSupported, ToolsStatusUnsupported:
+	default:
+		return fmt.Errorf("unsupported tools status %q", selection.ToolsStatus)
+	}
+	if selection.ToolsStatus == ToolsStatusSupported && !selection.SupportsTools {
+		return errors.New("supported tools status requires tools support")
+	}
+	if selection.ToolsStatus == ToolsStatusInferred && !selection.SupportsTools {
+		return errors.New("inferred tools status requires tools support")
+	}
+	if selection.ToolsStatus == ToolsStatusUnsupported && selection.SupportsTools {
+		return errors.New("unsupported tools status cannot claim tools support")
+	}
+	return nil
 }
 
 func normalizeReasoningStatus(selection *Selection) error {
@@ -140,8 +168,16 @@ func validateRequirements(model Model, requirements Requirements) error {
 	if model.Kind != requirements.Kind {
 		return ErrModelKindMismatch
 	}
-	if requirements.Vision && !model.SupportsVision || requirements.Tools && !model.SupportsTools || requirements.Reasoning && !model.SupportsReasoning {
+	if requirements.Vision && !model.SupportsVision || requirements.Reasoning && !model.SupportsReasoning {
 		return ErrCapabilityUnsupported
+	}
+	if requirements.Tools {
+		if !model.SupportsTools {
+			return ErrCapabilityUnsupported
+		}
+		if model.ToolsStatus != ToolsStatusSupported {
+			return ErrCapabilityUnverified
+		}
 	}
 	if requiresVerification(model.Kind) && model.CapabilityVerifiedAt == nil {
 		return ErrCapabilityUnverified

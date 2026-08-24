@@ -684,6 +684,7 @@ func candidateFromHint(modelID string, hint nvidia.CapabilityHint) Candidate {
 		Capabilities:            capabilityTags(Kind(hint.Kind), hint.SupportsVision, hint.SupportsTools, hint.SupportsReasoning),
 		SupportsVision:          hint.SupportsVision,
 		SupportsTools:           hint.SupportsTools,
+		ToolsStatus:             toolStatusForCapabilities(hint.SupportsTools),
 		SupportsReasoning:       hint.SupportsReasoning,
 		ReasoningStatus:         reasoningStatusForCapabilities(hint.SupportsReasoning),
 		ReasoningWireFormat:     string(hint.ReasoningWireFormat),
@@ -708,6 +709,13 @@ func reasoningStatusForCapabilities(supported bool) string {
 	return ReasoningStatusUnknown
 }
 
+func toolStatusForCapabilities(supported bool) string {
+	if supported {
+		return ToolsStatusInferred
+	}
+	return ToolsStatusUnknown
+}
+
 func candidateFromOpenCodeFree(modelID string) Candidate {
 	hint := openCodeFreeCapabilityHint(modelID)
 	return Candidate{
@@ -722,6 +730,7 @@ func candidateFromOpenCodeFree(modelID string) Candidate {
 		Capabilities:            capabilityTags(KindChat, hint.SupportsVision, hint.SupportsTools, hint.SupportsReasoning),
 		SupportsVision:          hint.SupportsVision,
 		SupportsTools:           hint.SupportsTools,
+		ToolsStatus:             toolStatusForCapabilities(hint.SupportsTools),
 		SupportsReasoning:       hint.SupportsReasoning,
 		ReasoningStatus:         hint.ReasoningStatus,
 		ReasoningWireFormat:     hint.ReasoningWire,

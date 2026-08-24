@@ -657,6 +657,26 @@ func TestResponsesStreamMalformedAfterCommitEmitsFailedTerminal(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamClientCancellationDoesNotEmitFailedTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")),
+	}
+	response := httptest.NewRecorder()
+	NewResponses(nil, nil, nil).streamResponse(ctx, response, upstream, "resp_cancel", "public-chat")
+
+	body := response.Body.String()
+	if strings.Contains(body, "event: response.failed") {
+		t.Fatalf("client cancellation must not emit response.failed:\n%s", body)
+	}
+	if strings.Contains(body, "event: response.completed") {
+		t.Fatalf("client cancellation must not emit response.completed:\n%s", body)
+	}
+}
+
 // serveStreamResponses wires a Responses handler against a scripted upstream// Chat SSE stream and returns the recorder alongside the tracked lease.
 func serveStreamResponses(t *testing.T, sseBody string) (*httptest.ResponseRecorder, *releaseTrackingLease) {
 	t.Helper()

@@ -14,5 +14,6 @@
   "supports_reasoning": false,
   "supports_tools": false,
   "supports_vision": false,
+  "tools_status": "unknown",
   "upstream_id": "nvidia/embed-qa-4"
 }

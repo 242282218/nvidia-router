@@ -271,8 +271,13 @@ func (s *Service) applyProbeTools(ctx context.Context, id int64, status string) 
 	if status != "supported" && status != ProbeStatusUnsupported {
 		return nil
 	}
-	supported := status == "supported"
-	return s.repository.applyProbe(ctx, id, probeCapabilityUpdate{SupportsTools: &supported}, s.clock.Now())
+	if status == "supported" {
+		status = ToolsStatusSupported
+	} else {
+		status = ToolsStatusUnsupported
+	}
+	verifiedAt := s.clock.Now()
+	return s.repository.applyProbe(ctx, id, probeCapabilityUpdate{ToolsStatus: &status, ToolsVerifiedAt: &verifiedAt}, verifiedAt)
 }
 
 func marshalProbeBody(model string, tools, reasoning map[string]any) ([]byte, error) {
@@ -346,14 +351,19 @@ func validateProbePayload(body []byte) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, probeValidationError(err)
 	}
-	return validated.Body, hasToolCalls(validated.Body), nil
+	return validated.Body, hasValidToolCalls(validated.Body), nil
 }
 
-func hasToolCalls(body []byte) bool {
+func hasValidToolCalls(body []byte) bool {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				ToolCalls []json.RawMessage `json:"tool_calls"`
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -361,8 +371,10 @@ func hasToolCalls(body []byte) bool {
 		return false
 	}
 	for _, choice := range payload.Choices {
-		if len(choice.Message.ToolCalls) > 0 {
-			return true
+		for _, call := range choice.Message.ToolCalls {
+			if call.Function.Name != "" && json.Valid([]byte(call.Function.Arguments)) {
+				return true
+			}
 		}
 	}
 	return false

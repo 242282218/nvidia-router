@@ -449,7 +449,7 @@ func TestResolveEnforcesKindAndCapabilities(t *testing.T) {
 	if err := service.SaveSelection(context.Background(), []Selection{
 		{
 			PublicID: "capable", UpstreamID: "vendor/capable", DisplayName: "Capable", Kind: KindChat, Enabled: true,
-			SupportsVision: true, SupportsTools: true, SupportsReasoning: true, ReasoningWireFormat: "openai",
+			SupportsVision: true, SupportsTools: true, ToolsStatus: ToolsStatusSupported, SupportsReasoning: true, ReasoningWireFormat: "openai",
 		},
 		{PublicID: "plain", UpstreamID: "vendor/plain", DisplayName: "Plain", Kind: KindChat, Enabled: true},
 		{PublicID: "embedding", UpstreamID: "vendor/embed", DisplayName: "Embedding", Kind: KindEmbedding, Enabled: true},
@@ -471,6 +471,19 @@ func TestResolveEnforcesKindAndCapabilities(t *testing.T) {
 	}
 	if _, err := service.Resolve(context.Background(), "embedding", Requirements{Kind: KindChat}); !errors.Is(err, ErrModelKindMismatch) {
 		t.Fatalf("kind mismatch error = %v", err)
+	}
+}
+
+func TestResolveRejectsInferredToolsCapability(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "inferred-tools", UpstreamID: "vendor/inferred-tools", DisplayName: "Inferred tools",
+		Kind: KindChat, Enabled: true, SupportsTools: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	if _, err := service.Resolve(context.Background(), "inferred-tools", Requirements{Kind: KindChat, Tools: true}); !errors.Is(err, ErrCapabilityUnverified) {
+		t.Fatalf("Resolve inferred tools error = %v, want ErrCapabilityUnverified", err)
 	}
 }
 

@@ -78,6 +78,13 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	if selection.Provider == "" {
 		selection.Provider = defaultModelProvider
 	}
+	if selection.ToolsStatus == "" {
+		if selection.SupportsTools {
+			selection.ToolsStatus = ToolsStatusInferred
+		} else {
+			selection.ToolsStatus = ToolsStatusUnknown
+		}
+	}
 	// Repository callers include migration fixtures and import paths that may not
 	// pass through Service.SaveSelection. Keep the persisted status valid for
 	// those callers instead of sending an empty string past the database CHECK.
@@ -119,10 +126,10 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO models (
 			public_id, upstream_id, display_name, kind, provider, enabled,
-			supports_vision, supports_tools, supports_reasoning, reasoning_status,
+			supports_vision, supports_tools, tools_status, tools_verified_at, supports_reasoning, reasoning_status,
 			reasoning_wire_format, reasoning_levels, reasoning_min_budget, reasoning_max_budget,
 			reasoning_zero_allowed, reasoning_dynamic_allowed, capability_verified_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(public_id) DO UPDATE SET
 			upstream_id = excluded.upstream_id,
 			display_name = excluded.display_name,
@@ -130,7 +137,9 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 			provider = excluded.provider,
 			enabled = excluded.enabled,
 			supports_vision = excluded.supports_vision,
-			supports_tools = excluded.supports_tools,
+			supports_tools = CASE WHEN models.tools_status IN ('supported', 'unsupported') THEN models.supports_tools ELSE excluded.supports_tools END,
+			tools_status = CASE WHEN models.tools_status IN ('supported', 'unsupported') THEN models.tools_status ELSE excluded.tools_status END,
+			tools_verified_at = CASE WHEN models.tools_status IN ('supported', 'unsupported') THEN models.tools_verified_at ELSE excluded.tools_verified_at END,
 			supports_reasoning = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.supports_reasoning ELSE excluded.supports_reasoning END,
 			reasoning_status = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.reasoning_status ELSE excluded.reasoning_status END,
 			reasoning_wire_format = CASE WHEN models.reasoning_status IN ('visible', 'hidden', 'unsupported') THEN models.reasoning_wire_format ELSE excluded.reasoning_wire_format END,
@@ -142,7 +151,7 @@ func saveSelection(ctx context.Context, tx *sql.Tx, selection Selection, now tim
 			capability_verified_at = excluded.capability_verified_at,
 			updated_at = excluded.updated_at
 	`, selection.PublicID, selection.UpstreamID, selection.DisplayName, selection.Kind, selection.Provider, boolInt(selection.Enabled),
-		boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), boolInt(selection.SupportsReasoning), selection.ReasoningStatus,
+		boolInt(selection.SupportsVision), boolInt(selection.SupportsTools), selection.ToolsStatus, optionalTimestamp(selection.ToolsVerifiedAt), boolInt(selection.SupportsReasoning), selection.ReasoningStatus,
 		selection.ReasoningWireFormat, mustReasoningLevelsJSON(selection.ReasoningLevels), selection.ReasoningMinBudget,
 		selection.ReasoningMaxBudget, boolInt(selection.ReasoningZeroAllowed), boolInt(selection.ReasoningDynamicAllowed),
 		verifiedAt, createdAt, updatedAt); err != nil {
@@ -538,7 +547,7 @@ func (r *Repository) ListBlocks(ctx context.Context) ([]keystate.ModelBlock, err
 }
 
 const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, provider, enabled,
-		supports_vision, supports_tools, supports_reasoning, reasoning_status, reasoning_wire_format,
+		supports_vision, supports_tools, tools_status, tools_verified_at, supports_reasoning, reasoning_status, reasoning_wire_format,
 		reasoning_levels, reasoning_min_budget, reasoning_max_budget, reasoning_zero_allowed, reasoning_dynamic_allowed,
 		capability_verified_at, created_at, updated_at,
 		stream_first_token_timeout_ms, stream_idle_timeout_ms,
@@ -547,7 +556,7 @@ const modelColumns = `SELECT id, public_id, upstream_id, display_name, kind, pro
 type rowScanner interface{ Scan(dest ...any) error }
 
 func selectionFromModel(model Model) Selection {
-	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Provider: model.Provider, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, SupportsReasoning: model.SupportsReasoning, ReasoningStatus: model.ReasoningStatus, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
+	return Selection{PublicID: model.PublicID, UpstreamID: model.UpstreamID, DisplayName: model.DisplayName, Kind: model.Kind, Provider: model.Provider, Enabled: model.Enabled, SupportsVision: model.SupportsVision, SupportsTools: model.SupportsTools, ToolsStatus: model.ToolsStatus, ToolsVerifiedAt: model.ToolsVerifiedAt, SupportsReasoning: model.SupportsReasoning, ReasoningStatus: model.ReasoningStatus, ReasoningWireFormat: model.ReasoningWireFormat, ReasoningLevels: append([]string(nil), model.ReasoningLevels...), ReasoningMinBudget: model.ReasoningMinBudget, ReasoningMaxBudget: model.ReasoningMaxBudget, ReasoningZeroAllowed: model.ReasoningZeroAllowed, ReasoningDynamicAllowed: model.ReasoningDynamicAllowed, CapabilityVerifiedAt: model.CapabilityVerifiedAt}
 }
 
 func applyPatch(selection *Selection, patch Patch) {
@@ -568,6 +577,12 @@ func applyPatch(selection *Selection, patch Patch) {
 	}
 	if patch.SupportsTools != nil {
 		selection.SupportsTools = *patch.SupportsTools
+		selection.ToolsVerifiedAt = nil
+		if *patch.SupportsTools {
+			selection.ToolsStatus = ToolsStatusInferred
+		} else {
+			selection.ToolsStatus = ToolsStatusUnknown
+		}
 	}
 	if patch.SupportsReasoning != nil {
 		selection.SupportsReasoning = *patch.SupportsReasoning
@@ -606,12 +621,13 @@ func scanModel(row rowScanner) (Model, error) {
 	var model Model
 	var enabled, vision, tools, reasoning int
 	var zeroAllowed, dynamicAllowed int
-	var verifiedAt, createdAt, updatedAt sql.NullString
+	var toolsVerifiedAt, verifiedAt, createdAt, updatedAt sql.NullString
+	var toolsStatus string
 	var reasoningLevels string
 	var reasoningMin, reasoningMax int
 	var streamFirstToken, streamIdle sql.NullInt64
 	if err := row.Scan(&model.ID, &model.PublicID, &model.UpstreamID, &model.DisplayName, &model.Kind,
-		&model.Provider, &enabled, &vision, &tools, &reasoning, &model.ReasoningStatus, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
+		&model.Provider, &enabled, &vision, &tools, &toolsStatus, &toolsVerifiedAt, &reasoning, &model.ReasoningStatus, &model.ReasoningWireFormat, &reasoningLevels, &reasoningMin, &reasoningMax, &zeroAllowed, &dynamicAllowed, &verifiedAt, &createdAt, &updatedAt,
 		&streamFirstToken, &streamIdle, &model.ContextLength); err != nil {
 		return Model{}, err
 	}
@@ -628,6 +644,14 @@ func scanModel(row rowScanner) (Model, error) {
 	model.Enabled = enabled == 1
 	model.SupportsVision = vision == 1
 	model.SupportsTools = tools == 1
+	model.ToolsStatus = toolsStatus
+	if model.ToolsStatus == "" {
+		if model.SupportsTools {
+			model.ToolsStatus = ToolsStatusInferred
+		} else {
+			model.ToolsStatus = ToolsStatusUnknown
+		}
+	}
 	model.SupportsReasoning = reasoning == 1
 	if reasoningLevels != "" {
 		if err := json.Unmarshal([]byte(reasoningLevels), &model.ReasoningLevels); err != nil {
@@ -638,6 +662,13 @@ func scanModel(row rowScanner) (Model, error) {
 	model.ReasoningMaxBudget = reasoningMax
 	model.ReasoningZeroAllowed = zeroAllowed == 1
 	model.ReasoningDynamicAllowed = dynamicAllowed == 1
+	if toolsVerifiedAt.Valid {
+		parsed, err := time.Parse(time.RFC3339, toolsVerifiedAt.String)
+		if err != nil {
+			return Model{}, fmt.Errorf("parse model tools verification time: %w", err)
+		}
+		model.ToolsVerifiedAt = &parsed
+	}
 	if verifiedAt.Valid {
 		parsed, err := time.Parse(time.RFC3339, verifiedAt.String)
 		if err != nil {

@@ -9,7 +9,7 @@ import (
 )
 
 func (r *Repository) applyProbe(ctx context.Context, id int64, update probeCapabilityUpdate, now time.Time) error {
-	if update.SupportsReasoning == nil && update.ReasoningStatus == nil && update.ReasoningWireFormat == nil && update.SupportsTools == nil {
+	if update.SupportsReasoning == nil && update.ReasoningStatus == nil && update.ReasoningWireFormat == nil && update.ToolsStatus == nil {
 		return nil
 	}
 	model, err := r.Get(ctx, id)
@@ -33,9 +33,12 @@ func (r *Repository) applyProbe(ctx context.Context, id int64, update probeCapab
 		sets = append(sets, "reasoning_wire_format = ?")
 		args = append(args, *update.ReasoningWireFormat)
 	}
-	if update.SupportsTools != nil {
-		sets = append(sets, "supports_tools = ?")
-		args = append(args, boolInt(*update.SupportsTools))
+	if update.ToolsStatus != nil {
+		if *update.ToolsStatus != ToolsStatusSupported && *update.ToolsStatus != ToolsStatusUnsupported {
+			return fmt.Errorf("invalid probe tools status %q", *update.ToolsStatus)
+		}
+		sets = append(sets, "tools_status = ?", "tools_verified_at = ?", "supports_tools = ?")
+		args = append(args, *update.ToolsStatus, optionalTimestamp(update.ToolsVerifiedAt), boolInt(*update.ToolsStatus == ToolsStatusSupported))
 	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, formatRevisionTime(now, model.updatedAt))

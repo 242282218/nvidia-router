@@ -8,6 +8,24 @@ import (
 	"testing"
 )
 
+func TestHasValidToolCallsRequiresFunctionAndJSONArguments(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "valid", body: `{"choices":[{"message":{"tool_calls":[{"function":{"name":"weather","arguments":"{\"city\":\"Hangzhou\"}"}}]}}]}`, want: true},
+		{name: "missing function name", body: `{"choices":[{"message":{"tool_calls":[{"function":{"arguments":"{}"}}]}}]}`, want: false},
+		{name: "invalid arguments", body: `{"choices":[{"message":{"tool_calls":[{"function":{"name":"weather","arguments":"not-json"}}]}}]}`, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasValidToolCalls([]byte(test.body)); got != test.want {
+				t.Fatalf("hasValidToolCalls() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // probeService prepares one chat model and returns everything a probe test needs.
 func probeService(t *testing.T, publicID string, availableKeys ...int64) (*Service, *fakeSecrets, *fakeDiscoverer, int64) {
 	t.Helper()
