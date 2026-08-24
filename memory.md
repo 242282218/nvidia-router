@@ -225,7 +225,7 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 
 ## 19. 2026-08-24 前端一致性发布与重新部署
 
-- GitHub `main` 已更新到 `08eb1c9`；最终发布版本为 `20260824-ui-consistency-08eb1c9`，release 为 `/opt/nvidia-router-releases/20260824-ui-consistency-08eb1c9`，镜像为 `nvidia-router:deploy-20260824-ui-consistency-08eb1c9`。
+- 运行时代码发布基线为 GitHub `main` 的 `08eb1c9`；最终发布版本为 `20260824-ui-consistency-08eb1c9`，release 为 `/opt/nvidia-router-releases/20260824-ui-consistency-08eb1c9`，镜像为 `nvidia-router:deploy-20260824-ui-consistency-08eb1c9`。随后仅追加本记录的文档提交已推送到 `main`，不改变运行时代码。
 - 切换前数据库备份位于 `backups/predeploy-20260824-ui-consistency-08eb1c9/router.db`，大小 9,445,376 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `95816c45052bd783995e09be7ab9c827cfdd3cac226f24807c456be8e3695b4d`；回滚点为 `20260824-vibe-optimization-b9704f3` / `nvidia-router:deploy-20260824-vibe-optimization-b9704f3`。
 - 发布后容器实际为目标镜像，`running/healthy`、重启 0、OOM false；release 工作目录与版本一致，迁移 `044_model_tools_status.sql` 存在；3756/18080/18081/6020 端口监听正常，3756 live/ready、18080/6020 healthz 均 200，根页和 index 引用的 2 个静态资源均 200。
 - 匿名 `/v1/models` 与 `/metrics` 均 401；管理员登录 200，会话、模型列表、运行时摘要均 200，注销 204，注销后的会话为 401。未执行真实模型请求、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
