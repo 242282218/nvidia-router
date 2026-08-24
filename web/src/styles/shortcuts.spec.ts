@@ -71,4 +71,12 @@ describe('semantic control colors', () => {
 
     expect(offenders).toEqual([])
   })
+
+  it('keeps shared shortcuts on canonical radius tokens', () => {
+    const offenders = Object.entries(shortcuts)
+      .filter(([, value]) => /rounded-\[\d+px\]/.test(value))
+      .map(([name, value]) => `${name}: ${value}`)
+
+    expect(offenders).toEqual([])
+  })
 })

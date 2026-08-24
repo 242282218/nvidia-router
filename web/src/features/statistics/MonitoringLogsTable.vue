@@ -24,7 +24,7 @@ const emit = defineEmits<{ retry: []; clearFilters: [] }>()
 <template>
   <p
     v-if="logsError"
-    class="m-4 flex flex-wrap items-center gap-3 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] p-4 text-sm text-[var(--color-danger)]"
+    class="m-4 flex flex-wrap items-center gap-3 rounded-[var(--radius-control)] border border-[var(--color-danger-background)] bg-[var(--color-danger-background)] p-4 text-sm text-[var(--color-danger)]"
     role="alert"
   >
     <span>{{ logsError }}</span>

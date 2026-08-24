@@ -191,3 +191,34 @@ web/node_modules/.bin/vite.cmd build
 python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 POSIX bash 时替代 check-web-dist.sh）
 ~~~
 
+## 15. 2026-08-24 main 提交与确认性重新部署（9f45568）
+
+- 发布时工作树 `HEAD`、本地 `main` 和 GitHub `origin/main` 均为 `9f45568`；执行 `git push origin HEAD:refs/heads/main` 返回 `Everything up-to-date`。发布前工作树保持干净。
+- 本地门禁已通过：`go test ./...`、`go vet ./...`、前端 lint、typecheck、284 个前端单测、前端生产构建、`git diff --check`；Windows 使用 `python -X utf8 scripts/test/check_web_dist_closure.py`，结果为引用 40、磁盘 40、缺失 0、孤立 0。
+- 使用标准 `python scripts/deploy/deploy_remote.py 20260824-redeploy-9f45568` 发布到 `/opt/nvidia-router-releases/20260824-redeploy-9f45568`，镜像为 `nvidia-router:deploy-20260824-redeploy-9f45568`；继承线上 `.env` 和 deploy override，复用外部 `nvr-data`，切换前由旧镜像生成数据库备份。
+- 切换前备份为 `/opt/nvidia-router-releases/20260824-redeploy-9f45568/backups/predeploy-20260824-redeploy-9f45568/router.db`，大小 8,806,400 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `4b40da6a7197ebd86f16b5bc07a99190086335401a586be2852291e61ee1d885`；回滚点为 `20260823-remove-pricing-59abdc9` / `nvidia-router:deploy-20260823-remove-pricing-59abdc9`。
+- 部署后 app 使用新镜像，`running/healthy`、重启 0、OOM false；`/health/live`、`/health/ready`、代理池 `18080/healthz`、OpenCodeFree `6020/healthz` 均 200；公网 3756 `/health/live`、根页和当前 JS/CSS 资源均 200；匿名 `/v1/models` 与 `/metrics` 均 401。
+- 管理烟测通过：管理员登录 200，鉴权 `/metrics`、模型、设置和 Access Key 列表均 200，模型总数 11、启用 10，注销 204。未执行真实模型请求、代理轮换或 CONNECT 矩阵；部署后代理验证日志仍出现有限的 `validation_all_failed` 预热告警，因此不能将本轮结果宣称为完整 live/E2E。公网 HTTP 明文风险保持不变。
+
+## 16. 2026-08-24 vibe 场景多维复测
+
+- 使用 `scripts/test/vibe_eval_remote.py` 和一次性补充探针，在 `hangzhou2-2` 的当前 release 上完成模型思考强度、thinking 开关、工具、流式、长输入、context needle、JSON、长输出和重复稳定性测试；未修改源码、运行配置或模型白名单。
+- 模型目录共 11 个，其中 10 个启用 Chat 模型；10 个基础请求中 7 个有效 HTTP 200，3 个 NVIDIA 模型为 `502 upstream_proxy_unavailable`：`deepseek-ai/deepseek-v4-flash-0731`、`meta/llama-3.2-90b-vision-instruct`、`minimaxai/minimax-m3`。
+- OpenCodeFree 深测覆盖 `opencode-free/nemotron-3-ultra-free` 与 `opencodefree/x-preview-f-free`，思考、工具、长输入主路径大部分为 200；Nemotron 完成流式样本无 malformed event，x-preview 出现一次流式 503。
+- 综合矩阵耗时约 127 秒，选中 `nvidia/nemotron-3-ultra-550b-a55b`、`stepfun-ai/step-3.7-flash`、`opencodefree/x-preview-f-free`、`opencode-free/hy3-free`；x-preview 完成双工具调用和 follow-up，另外三个选中模型的工具用例观察到 501 `not_implemented`。工具能力必须按模型判断。
+- 临时测试 Key 已删除，清理后管理注销 204、metrics 200、健康代理 27；最终容器为 `running/healthy`、重启 0、OOM false，live/ready、18080/healthz、6020/healthz 均 200。评测报告见 `docs/plans/2026-08-24-vibe场景多维复测报告.md`。
+- 限制：5 次重复不是长压测；context needle/长输入不等于已证明 32K/128K 上限；501/502/503 分别按能力未实现、代理出口不可用、上游瞬态失败区分，不能合并为单一故障。
+
+## 17. 2026-08-24 vibe 优化提交与重新部署
+
+- GitHub `main` 已推送到 `b9704f3`（`feat: tighten vibe model capability validation`）；发布前 worktree 干净，`go test ./...` 通过。
+- 标准发布版本为 `20260824-vibe-optimization-b9704f3`，release 为 `/opt/nvidia-router-releases/20260824-vibe-optimization-b9704f3`，镜像为 `nvidia-router:deploy-20260824-vibe-optimization-b9704f3`。
+- 切换前数据库备份位于 `backups/predeploy-20260824-vibe-optimization-b9704f3/router.db`，大小 9,023,488 字节，权限 `600`，SHA-256 为 `47336e880e4a290b4c2d9d85b1eb8d0b27aa68619bf23f0429eaeface52769c6`；回滚点为 `20260824-redeploy-9f45568` / `nvidia-router:deploy-20260824-redeploy-9f45568`。
+- 发布后容器 `running/healthy`、重启 0、OOM false；3756 live/ready、18080/6020 healthz、根页均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 端口监听正常；release 含 migration 044。
+- 本轮没有重复执行管理员会话、真实模型、代理轮换或 CONNECT 矩阵；不据此宣称完整 live/E2E，公网 HTTP 明文风险保持不变。
+
+## 18. 2026-08-24 前端整体美学一致性收敛
+
+- 视觉一致性守卫集中在 `web/src/styles/flat-visual.spec.ts` 与 `shortcuts.spec.ts`：组件源码不得直接写状态 hex、引用未定义 surface token、使用未命名的宏观圆角或把运行时值插入 UnoCSS 任意颜色 class；数据热力格、时间线刻度和状态点等数据形状可保留局部圆角。
+- `ModelHealthCard` 的动态 `border-[color-mix(...${token}...)]` 与 `bg-[...${token}]` 会让 Vite/esbuild 产生 CSS 语法警告；状态边框改为静态 token class 映射，时间线颜色改为原生 `:style` 的 `backgroundColor`，不要回退到运行时拼 UnoCSS class。
+- 全站视觉 QA 必须先启动隔离 `node scripts/test/web_qa_env.mjs --port 5175`，等待 `tmp/web-qa-env.json` 出现后再运行 `node scripts/test/web_visual_qa.mjs http://127.0.0.1:5175 --out <dir>`；环境未就绪时探针会误连本地实例并以错误登录失败，不能据此判断页面代码。

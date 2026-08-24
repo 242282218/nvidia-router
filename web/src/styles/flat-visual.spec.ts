@@ -63,4 +63,40 @@ describe('theme token discipline', () => {
       .filter((path) => palette.test(readFileSync(path, 'utf8')))
     expect(offenders).toEqual([])
   })
+
+  it('keeps component styles on semantic colors and defined surfaces', () => {
+    const componentSources = collectProductionSources(join(process.cwd(), 'src'))
+      .filter((path) => /[\\/]features[\\/]|[\\/]shared[\\/]/.test(path))
+      .filter((path) => /\.(ts|vue)$/.test(path))
+    const rawHex = /#[0-9a-f]{3,8}\b/i
+    const rawColorOffenders = componentSources
+      .filter((path) => rawHex.test(readFileSync(path, 'utf8')))
+    const undefinedSurfaceOffenders = componentSources
+      .filter((path) => readFileSync(path, 'utf8').includes('--color-surface-subtle'))
+
+    expect(rawColorOffenders).toEqual([])
+    expect(undefinedSurfaceOffenders).toEqual([])
+  })
+
+  it('keeps component surfaces on semantic radius tokens', () => {
+    const componentSources = collectProductionSources(join(process.cwd(), 'src'))
+      .filter((path) => /[\\/]features[\\/]|[\\/]shared[\\/]/.test(path))
+      .filter((path) => /\.vue$/.test(path))
+    const localRadius = /\brounded-(?:sm|md|lg|xl|2xl)\b/
+    const offenders = componentSources
+      .filter((path) => localRadius.test(readFileSync(path, 'utf8')))
+
+    expect(offenders).toEqual([])
+  })
+
+  it('does not interpolate runtime values into UnoCSS arbitrary color classes', () => {
+    const componentSources = collectProductionSources(join(process.cwd(), 'src'))
+      .filter((path) => /[\\/]features[\\/]|[\\/]shared[\\/]/.test(path))
+      .filter((path) => /\.(ts|vue)$/.test(path))
+    const dynamicArbitraryColor = /(?:bg|border|text)-\[[^\]]*\$\{/i
+    const offenders = componentSources
+      .filter((path) => dynamicArbitraryColor.test(readFileSync(path, 'utf8')))
+
+    expect(offenders).toEqual([])
+  })
 })

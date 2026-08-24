@@ -375,7 +375,7 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               </div>
               <button
                 v-else
-                class="rounded-[6px] px-2 py-1 text-left font-mono-data text-xs transition-colors hover:bg-[var(--color-hover)]"
+                class="rounded-[var(--radius-control)] px-2 py-1 text-left font-mono-data text-xs transition-colors hover:bg-[var(--color-hover)]"
                 :class="model.context_length !== undefined && model.context_length > 0 ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-subtle)]'"
                 type="button"
                 data-testid="model-edit-context"

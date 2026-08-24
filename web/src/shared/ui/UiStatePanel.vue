@@ -60,7 +60,7 @@ defineEmits<{ retry: [] }>()
     <div
       v-else-if="error"
       :data-testid="errorTestId || undefined"
-      class="card flex flex-wrap items-center justify-between gap-3 border-[var(--color-danger-background)] p-5"
+      class="card flex flex-wrap items-center justify-between gap-3 border-[var(--color-danger-background)] bg-[var(--color-danger-background)] p-5"
       role="alert"
     >
       <div class="flex min-w-0 items-start gap-2.5 text-sm text-[var(--color-danger)]">

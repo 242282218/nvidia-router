@@ -314,7 +314,7 @@ onBeforeUnmount(() => {
                   @mouseenter="activeIndex = flatResults.indexOf(item)"
                   @click="runCommand(item)"
                 >
-                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)]">
+                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)]">
                     <UiIcon
                       :name="item.icon"
                       :size="13"

@@ -56,7 +56,7 @@ const displayValue = computed(() => {
 </script>
 
 <template>
-  <div class="metric-card flex flex-col gap-2.5 p-4">
+  <div class="metric-card flex flex-col gap-2.5">
     <div class="flex items-center gap-2.5">
       <span
         v-if="icon"

@@ -49,7 +49,7 @@ export default defineConfig({
       'btn-ghost': 'btn-base px-3 text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:bg-[var(--color-active)]',
       'btn-danger': 'btn-base border border-[var(--color-danger-text)] bg-transparent text-[var(--color-danger-text)] hover:border-[var(--color-danger-background)] hover:bg-[var(--color-danger-background)] hover:text-[var(--color-danger-foreground)] active:bg-[var(--color-danger-background)]',
       // 行内紧凑操作：表格行、卡片角落
-      'btn-sm': 'h-8 rounded-[7px] px-2.5 text-xs pointer-coarse:h-11',
+      'btn-sm': 'h-8 rounded-[var(--radius-control)] px-2.5 text-xs pointer-coarse:h-11',
       // 紧凑纯图标操作（36px 见方）；触屏提升到 44px 见方，避免实例级 h-8/w-8
       // 覆盖 shortcut 的媒体查询变体导致触屏目标回退。
       'icon-btn-sm': 'icon-btn h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11',
@@ -112,8 +112,8 @@ export default defineConfig({
     {
       'modal-overlay': 'fixed inset-0 z-50 flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center',
       'modal-panel': 'w-full max-h-[calc(100dvh-2rem)] max-w-2xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)]',
-      // UiMenu 菜单项：36px 行高、左对齐、圆角略小于面板（Warm Restraint）
-      'menu-item': 'flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-[6px] px-3 text-left text-sm text-[var(--color-text-secondary)] transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--color-focus)]',
+      // UiMenu 菜单项：36px 行高、左对齐，与控件圆角基线一致。
+      'menu-item': 'flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-[var(--radius-control)] px-3 text-left text-sm text-[var(--color-text-secondary)] transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--color-focus)]',
     },
     /* ── 导航 ── */
     {

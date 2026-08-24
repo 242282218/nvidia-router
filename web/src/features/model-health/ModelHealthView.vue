@@ -46,10 +46,10 @@ const sorts: Array<{ value: ModelHealthSort; label: string }> = [
 ]
 
 const statusLegend = [
-  { key: 'healthy', label: '健康', hint: '85%+', color: '#10b981' },
-  { key: 'degraded', label: '降级', hint: '50%+', color: '#f59e0b' },
-  { key: 'unavailable', label: '异常', hint: '低于 50%', color: '#f43f5e' },
-  { key: 'unchecked', label: '无数据', hint: '暂无探测', color: '#94a3b8' },
+  { key: 'healthy', label: '健康', hint: '85%+', color: 'var(--color-success)' },
+  { key: 'degraded', label: '降级', hint: '50%+', color: 'var(--color-warning)' },
+  { key: 'unavailable', label: '异常', hint: '低于 50%', color: 'var(--color-danger)' },
+  { key: 'unchecked', label: '无数据', hint: '暂无探测', color: 'var(--color-text-subtle)' },
 ]
 
 const availabilityRank: Record<string, number> = {
@@ -436,7 +436,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
 
       <div
         data-testid="model-health-legend"
-        class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface-subtle,var(--color-sunken))] px-3.5 py-2"
+        class="panel-inset mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border border-[var(--color-border-subtle)] px-3.5 py-2"
         role="list"
         aria-label="渠道状态图例"
       >

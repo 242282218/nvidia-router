@@ -233,7 +233,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         />
       </button>
       <div class="flex min-w-0 flex-1 items-center gap-2.5">
-        <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--color-brand)] text-[11px] font-bold text-[var(--color-brand-foreground)]">
+        <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-brand)] text-[11px] font-bold text-[var(--color-brand-foreground)]">
           N
         </div>
         <p class="truncate text-sm font-semibold">
@@ -294,7 +294,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         <div class="flex h-8 w-8 shrink-0 items-center justify-center">
           <span
             data-testid="sidebar-brand-mark"
-            class="sidebar-brand-mark flex h-8 w-8 items-center justify-center rounded-[9px] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)]"
+            class="sidebar-brand-mark flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-brand)] text-sm font-bold text-[var(--color-brand-foreground)]"
           >
             N
           </span>
@@ -318,7 +318,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         :class="railCollapsed ? 'lg:px-3' : ''"
       >
         <button
-          class="flex h-10 w-full items-center gap-2.5 rounded-[9px] border border-[var(--color-border)] bg-transparent px-3 text-sm text-[var(--color-text-secondary)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          class="flex h-10 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-transparent px-3 text-sm text-[var(--color-text-secondary)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
           :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
           type="button"
           data-testid="open-command-palette"
@@ -336,7 +336,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           >搜索…</span>
           <kbd
             v-if="!railCollapsed"
-            class="rounded-[5px] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-1.5 py-1 text-[10px] leading-none text-[var(--color-text-muted)]"
+            class="kbd"
           >{{ searchKbd }}</kbd>
         </button>
       </div>

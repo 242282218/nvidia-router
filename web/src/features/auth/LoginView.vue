@@ -86,7 +86,7 @@ async function submit(): Promise<void> {
             :type="showPassword ? 'text' : 'password'"
           >
           <button
-            class="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] pointer-coarse:h-11 pointer-coarse:w-11"
+            class="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-subtle)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] pointer-coarse:h-11 pointer-coarse:w-11"
             type="button"
             :aria-label="showPassword ? '隐藏密码' : '显示密码'"
             :aria-pressed="showPassword"

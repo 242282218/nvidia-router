@@ -33,7 +33,7 @@ const entrance = computed(() => (reducedMotion.value ? { duration: 0 } : springS
     >
       <div class="mb-8 text-center">
         <div
-          class="relative mx-auto flex h-14 w-14 items-center justify-center rounded-2xl text-lg font-bold"
+          class="relative mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-panel)] text-lg font-bold"
           :class="badgeTone === 'brand'
             ? 'bg-[var(--color-brand)] text-[var(--color-brand-foreground)]'
             : 'bg-[var(--color-warning)] text-[var(--color-canvas)]'"

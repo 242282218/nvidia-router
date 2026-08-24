@@ -639,7 +639,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                 每页
                 <select
                   v-model="pageSize"
-                  class="input-field h-8 w-auto rounded-[7px] px-2 text-xs"
+                  class="input-field h-8 w-auto rounded-[var(--radius-control)] px-2 text-xs"
                   data-testid="monitoring-page-size"
                   @change="changePageSize"
                 >
@@ -666,7 +666,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   v-if="item !== 'ellipsis'"
                   :key="item"
                   :data-testid="`monitoring-page-${item}`"
-                  class="h-8 min-w-8 rounded-[7px] border text-xs transition-colors duration-[var(--duration-micro)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11 pointer-coarse:min-w-11"
+                  class="h-8 min-w-8 rounded-[var(--radius-control)] border text-xs transition-colors duration-[var(--duration-micro)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:h-11 pointer-coarse:min-w-11"
                   :class="item === page
                     ? 'border-[var(--color-border-strong)] bg-[var(--color-active)] font-semibold text-[var(--color-text)]'
                     : 'border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)]'"
@@ -709,7 +709,7 @@ function isMonitoringRange(value: unknown): value is MonitoringRange {
                   id="monitoring-jump-page"
                   v-model="jumpTarget"
                   data-testid="monitoring-jump-page"
-                  class="input-field h-8 w-16 rounded-[7px] px-2 text-xs"
+                  class="input-field h-8 w-16 rounded-[var(--radius-control)] px-2 text-xs"
                   type="number"
                   min="1"
                   :max="totalPages"

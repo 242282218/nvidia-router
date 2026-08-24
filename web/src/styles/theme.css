@@ -333,7 +333,7 @@ summary:focus-visible {
   to { background-position: -200% 0; }
 }
 .skeleton {
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: linear-gradient(
     90deg,
     var(--color-hover) 25%,
@@ -400,7 +400,7 @@ summary:focus-visible {
   min-width: 20px;
   height: 20px;
   padding: 0 5px;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-border);
   background: var(--color-sunken);
   color: var(--color-text-muted);
@@ -416,7 +416,7 @@ summary:focus-visible {
   z-index: 70;
   max-width: min(260px, calc(100vw - 2rem));
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-border);
   background: var(--color-surface-raised);
   color: var(--color-text-secondary);

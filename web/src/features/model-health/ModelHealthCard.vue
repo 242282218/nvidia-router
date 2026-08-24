@@ -17,9 +17,11 @@ type StatusMeta = { label: string; variant: BadgeVariant; color: string; dotColo
 // 状态色一律走主题 token：写死的 Tailwind 色阶在暗色主题下不会跟着切换，
 // 而本项目的暗色是 [data-theme='dark'] 而不是 .dark，`dark:` 变体根本不生效。
 // 卡片描边用状态色与边框 token 混色，浅色/暗色都得到同一份语义强度。
-function statusBorder(token: string): string {
-  return `border-[color-mix(in_srgb,${token}_30%,var(--color-border))] hover:border-[color-mix(in_srgb,${token}_55%,var(--color-border))]`
-}
+const statusBorder = {
+  healthy: 'border-[color-mix(in_srgb,var(--color-success)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-success)_55%,var(--color-border))]',
+  degraded: 'border-[color-mix(in_srgb,var(--color-warning)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-warning)_55%,var(--color-border))]',
+  unavailable: 'border-[color-mix(in_srgb,var(--color-danger)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-danger)_55%,var(--color-border))]',
+} as const
 
 const mutedStatus: StatusMeta = {
   label: '无数据',
@@ -35,21 +37,21 @@ const statusMeta: Record<string, StatusMeta> = {
     variant: 'success',
     color: 'var(--color-success)',
     dotColor: 'var(--color-success)',
-    borderColor: statusBorder('var(--color-success)'),
+    borderColor: statusBorder.healthy,
   },
   degraded: {
     label: '降级',
     variant: 'warning',
     color: 'var(--color-warning)',
     dotColor: 'var(--color-warning)',
-    borderColor: statusBorder('var(--color-warning)'),
+    borderColor: statusBorder.degraded,
   },
   unavailable: {
     label: '异常',
     variant: 'danger',
     color: 'var(--color-danger)',
     dotColor: 'var(--color-danger)',
-    borderColor: statusBorder('var(--color-danger)'),
+    borderColor: statusBorder.unavailable,
   },
   unchecked: mutedStatus,
   stale: mutedStatus,
@@ -133,10 +135,12 @@ function outcomeLabel(outcome: ModelHealthOutcome): string {
 }
 
 // 时间线条形色：与状态 token 同源，hover 只降不透明度，不换色相。
-function outcomeBarClass(outcome: ModelHealthOutcome, isHovered: boolean): string {
-  const tone = (token: string) => (isHovered
-    ? `bg-[color-mix(in_srgb,${token}_72%,var(--color-surface))]`
-    : `bg-[${token}]`)
+function outcomeBarStyle(outcome: ModelHealthOutcome, isHovered: boolean): { backgroundColor: string } {
+  const tone = (token: string) => ({
+    backgroundColor: isHovered
+      ? `color-mix(in srgb, ${token} 72%, var(--color-surface))`
+      : token,
+  })
   switch (outcome) {
     case 'success':
       return tone('var(--color-success)')
@@ -149,7 +153,7 @@ function outcomeBarClass(outcome: ModelHealthOutcome, isHovered: boolean): strin
     case 'canceled':
     case 'empty':
     default:
-      return isHovered ? 'bg-[var(--color-border-strong)]' : 'bg-[var(--color-muted-border)]'
+      return { backgroundColor: isHovered ? 'var(--color-border-strong)' : 'var(--color-muted-border)' }
   }
 }
 
@@ -227,14 +231,14 @@ function providerLabel(provider: string): string {
           </span>
 
           <!-- 渠道标签 -->
-          <span class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-[0.04em] text-[var(--color-text-muted)]">
+          <span class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-[0.04em] text-[var(--color-text-muted)]">
             {{ providerLabel(model.provider) }}
           </span>
 
           <!-- 类型标签 -->
           <span
             v-if="model.kind"
-            class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.04em] text-[var(--color-text-subtle)]"
+            class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.04em] text-[var(--color-text-subtle)]"
           >
             {{ model.kind }}
           </span>
@@ -242,7 +246,7 @@ function providerLabel(provider: string): string {
           <!-- 停用标签 -->
           <span
             v-if="!model.enabled"
-            class="rounded-[5px] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs text-[var(--color-text-subtle)]"
+            class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs text-[var(--color-text-subtle)]"
           >
             停用
           </span>
@@ -251,7 +255,7 @@ function providerLabel(provider: string): string {
         <!-- 快捷复制：扁平 ghost，命中区不低于 24px -->
         <button
           type="button"
-          class="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-xs font-medium transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:min-h-11"
+          class="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-xs font-medium transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:min-h-11"
           :class="copied ? 'text-[var(--color-success-text)]' : 'text-[var(--color-text-muted)]'"
           :title="`复制模型 ID: ${model.public_id || model.display_name}`"
           @click="handleCopy"
@@ -390,7 +394,7 @@ function providerLabel(provider: string): string {
             :key="`${bucket.start}-${index}`"
             :data-testid="`model-health-bucket-${model.model_id}-${index}`"
             class="min-w-0 flex-1 cursor-pointer rounded-[1px] transition-colors duration-[var(--duration-micro)]"
-            :class="outcomeBarClass(bucket.outcome, hoveredIndex === index)"
+            :style="outcomeBarStyle(bucket.outcome, hoveredIndex === index)"
             :title="bucketTitle(bucket)"
             :aria-label="bucketTitle(bucket)"
             role="img"
