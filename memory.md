@@ -230,3 +230,15 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 发布后容器实际为目标镜像，`running/healthy`、重启 0、OOM false；release 工作目录与版本一致，迁移 `044_model_tools_status.sql` 存在；3756/18080/18081/6020 端口监听正常，3756 live/ready、18080/6020 healthz 均 200，根页和 index 引用的 2 个静态资源均 200。
 - 匿名 `/v1/models` 与 `/metrics` 均 401；管理员登录 200，会话、模型列表、运行时摘要均 200，注销 204，注销后的会话为 401。未执行真实模型请求、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
 - 远端 loopback 静态探针应使用禁用代理的 opener，并将正则提取的 bytes 路径先 decode 成字符串；否则 Python 探针会把类型错误吞成资源失败，而 `curl` 与实际服务均正常。
+
+## 20. 2026-08-24 Teleport 测试隔离
+
+- 共享浮层组件真实 Teleport 到 `body` 后，业务视图单测中不要继续用 `wrapper.get/find` 查询菜单、Modal、确认按钮或 tooltip；用 `document.body.querySelector` 查询，并用原生 `click`/`change` 事件驱动交互，保留对真实 DOM 拓扑的覆盖。
+- 每个会打开浮层的测试套件在 `afterEach` 清理 `document.body`，避免未销毁的 Teleport 节点让后续用例命中旧菜单或旧弹窗；使用全局 `config.global.stubs` 的旧测试必须在 `afterEach` 恢复为空，不能污染其他套件。
+- `v-model.lazy` 的 Teleport 输入控件测试要设置 `HTMLInputElement.value` 后派发冒泡 `change`，仅派发 `input` 不会触发保存逻辑。
+
+## 21. 2026-08-24 Teleport 菜单无障碍与层级
+
+- `UiMenu` Teleport 到 `body` 后，打开时必须把焦点移入首个可操作项；菜单内使用 `ArrowUp/ArrowDown/Home/End` 移动焦点，关闭时再归还触发按钮。仅依赖 DOM 顺序会让键盘焦点跳过 body 末尾的 Teleport 节点。
+- Overlay token 的数值顺序必须与语义一致：popover 低于 modal，modal 低于 toast，tooltip 位于最上层；共享 shortcut 不得用 `z-50` 这类硬编码覆盖 token。
+- 当前机器默认 Vitest 文件并行时，路由/命令面板/AppShell 的 5 秒用例可能被 worker 竞争拖超时；遇到无失败堆栈但有超时，使用 `vitest run --maxWorkers=1 --no-file-parallelism` 做确定性全量复核，再结合定向并行测试判断是否为环境抖动。

@@ -108,6 +108,16 @@
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
+  /* Overlay scale: keep stacking decisions semantic and auditable. */
+  --z-sticky: 20;
+  --z-scrim: 30;
+  --z-drawer: 40;
+  --z-toolbar: 50;
+  --z-popover: 60;
+  --z-modal: 70;
+  --z-toast: 80;
+  --z-tooltip: 90;
+
   /* 滚动条与选区随主题切换（值登记于对比度表备注，非文本配对） */
   --scrollbar-thumb: rgba(87, 83, 78, 0.26);
   --scrollbar-thumb-hover: rgba(87, 83, 78, 0.44);
@@ -413,7 +423,7 @@ summary:focus-visible {
 
 /* 浮动提示面板：UiTooltip / 帮助浮层共用表面 */
 .tooltip-surface {
-  z-index: 70;
+  z-index: var(--z-tooltip);
   max-width: min(260px, calc(100vw - 2rem));
   padding: 6px 10px;
   border-radius: var(--radius-control);

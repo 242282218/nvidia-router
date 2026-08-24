@@ -1,57 +1,77 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import KeyTestDialog from './KeyTestDialog.vue'
+import type { KeyTestResult } from './types'
+
+const mountedDialogs: Array<{ unmount: () => void }> = []
+
+afterEach(() => {
+  for (const wrapper of mountedDialogs.splice(0)) wrapper.unmount()
+  document.body.innerHTML = ''
+})
+
+function mountDialog(options: { props: { open: boolean; results: KeyTestResult[] } }) {
+  const wrapper = mount(KeyTestDialog, options)
+  mountedDialogs.push(wrapper)
+  return wrapper
+}
+
+function bodyElement<T extends Element>(selector: string): T {
+  const element = document.body.querySelector<T>(selector)
+  if (!element) throw new Error(`Expected body element: ${selector}`)
+  return element
+}
 
 describe('KeyTestDialog', () => {
   it('renders a backend "valid" result as success (not the default warning)', () => {
-    const wrapper = mount(KeyTestDialog, {
+    mountDialog({
       props: {
         open: true,
         results: [{ id: 7, status: 'valid', models: ['vendor/chat'] }],
       },
     })
-    const badge = wrapper.get('[data-testid="key-test-results"] .badge-success')
-    expect(badge.text()).toBe('可用')
-    expect(wrapper.text()).toContain('Key #7')
+    const badge = bodyElement<HTMLElement>('[data-testid="key-test-results"] .badge-success')
+    expect(badge.textContent?.trim()).toBe('可用')
+    expect(bodyElement<HTMLElement>('[data-testid="key-test-results"]').textContent).toContain('Key #7')
   })
 
   it('renders "ok" results as success too (legacy status value)', () => {
-    const wrapper = mount(KeyTestDialog, {
+    mountDialog({
       props: {
         open: true,
         results: [{ id: 3, status: 'ok' }],
       },
     })
-    expect(wrapper.get('.badge-success').text()).toBe('可用')
+    expect(bodyElement<HTMLElement>('.badge-success').textContent?.trim()).toBe('可用')
   })
 
   it('renders error results with the danger badge and raw reason', () => {
-    const wrapper = mount(KeyTestDialog, {
+    mountDialog({
       props: {
         open: true,
         results: [{ id: 8, status: 'error', reason: 'upstream timeout' }],
       },
     })
-    expect(wrapper.get('.badge-danger').text()).toBe('失败')
-    expect(wrapper.text()).toContain('upstream timeout')
+    expect(bodyElement<HTMLElement>('.badge-danger').textContent?.trim()).toBe('失败')
+    expect(bodyElement<HTMLElement>('[data-testid="key-test-results"]').textContent).toContain('upstream timeout')
   })
 
   it('renders unknown statuses with the warning badge and the raw status', () => {
-    const wrapper = mount(KeyTestDialog, {
+    mountDialog({
       props: {
         open: true,
         results: [{ id: 9, status: 'indeterminate' }],
       },
     })
-    expect(wrapper.get('.badge-warning').text()).toBe('indeterminate')
+    expect(bodyElement<HTMLElement>('.badge-warning').textContent?.trim()).toBe('indeterminate')
   })
 
   it('does not render the dialog when closed or empty', () => {
-    const closed = mount(KeyTestDialog, { props: { open: false, results: [{ id: 1, status: 'valid' }] } })
-    expect(closed.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    mountDialog({ props: { open: false, results: [{ id: 1, status: 'valid' }] } })
+    expect(document.body.querySelector('[data-testid="key-test-results"]')).toBeNull()
 
-    const empty = mount(KeyTestDialog, { props: { open: true, results: [] } })
-    expect(empty.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    mountDialog({ props: { open: true, results: [] } })
+    expect(document.body.querySelector('[data-testid="key-test-results"]')).toBeNull()
   })
 })

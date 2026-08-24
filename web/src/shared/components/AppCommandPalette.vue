@@ -250,7 +250,7 @@ onBeforeUnmount(() => {
     <Transition name="palette">
       <div
         v-if="open"
-        class="fixed inset-0 z-[60] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 pt-[12vh]"
+        class="fixed inset-0 z-[var(--z-modal)] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 pt-[12vh]"
         role="dialog"
         aria-modal="true"
         aria-label="命令面板"

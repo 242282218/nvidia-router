@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ModelHealthView from './ModelHealthView.vue'
 import { modelHealthApi } from './api'
@@ -80,6 +80,16 @@ beforeEach(() => {
   vi.mocked(modelHealthApi.runNow).mockResolvedValue({ data: { accepted: true } })
 })
 
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+function bodyElement<T extends Element>(selector: string): T {
+  const element = document.body.querySelector<T>(selector)
+  if (!element) throw new Error(`Expected body element: ${selector}`)
+  return element
+}
+
 describe('ModelHealthView', () => {
   it('loads all whitelist models and renders the health summary', async () => {
     const wrapper = mount(ModelHealthView)
@@ -112,15 +122,17 @@ describe('ModelHealthView', () => {
     const trigger = wrapper.get('button[aria-haspopup="menu"][aria-label="检测设置"]')
     await trigger.trigger('click')
 
-    await wrapper.get('[data-testid="model-health-enabled"]').trigger('click')
+    bodyElement<HTMLButtonElement>('[data-testid="model-health-enabled"]').click()
     await flushPromises()
     expect(modelHealthApi.updateSettings).toHaveBeenCalledWith({ enabled: true, interval_seconds: 60, concurrency: 2 }, expect.any(AbortSignal))
 
-    await wrapper.get('[data-testid="model-health-interval"]').setValue('300')
+    const interval = bodyElement<HTMLInputElement>('[data-testid="model-health-interval"]')
+    interval.value = '300'
+    interval.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
     expect(modelHealthApi.updateSettings).toHaveBeenLastCalledWith({ enabled: true, interval_seconds: 300, concurrency: 2 }, expect.any(AbortSignal))
 
-    await wrapper.get('[data-testid="model-health-refresh"]').trigger('click')
+    bodyElement<HTMLButtonElement>('[data-testid="model-health-refresh"]').click()
     await flushPromises()
     // mount 加载 1 次 + 手动刷新 1 次
     expect(modelHealthApi.getSummary).toHaveBeenCalledTimes(2)
@@ -142,11 +154,12 @@ describe('ModelHealthView', () => {
     // 频率控件在「检测设置」菜单内，先展开
     await wrapper.get('button[aria-haspopup="menu"][aria-label="检测设置"]').trigger('click')
 
-    const interval = wrapper.get('[data-testid="model-health-interval"]')
-    expect(interval.element.tagName).toBe('INPUT')
-    expect((interval.element as HTMLInputElement).value).toBe('45')
+    const interval = bodyElement<HTMLInputElement>('[data-testid="model-health-interval"]')
+    expect(interval.tagName).toBe('INPUT')
+    expect(interval.value).toBe('45')
 
-    await interval.setValue('75')
+    interval.value = '75'
+    interval.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
     expect(modelHealthApi.updateSettings).toHaveBeenLastCalledWith({ enabled: false, interval_seconds: 75, concurrency: 2 }, expect.any(AbortSignal))
   })

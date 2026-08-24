@@ -53,7 +53,7 @@ export function useFocusTrap(open: Ref<boolean>, panel: Ref<HTMLElement | null>,
     globalThis.document.removeEventListener('keydown', onKeydown)
     previouslyFocused?.focus()
     previouslyFocused = null
-  })
+  }, { immediate: true })
 
   onBeforeUnmount(() => {
     globalThis.document.removeEventListener('keydown', onKeydown)

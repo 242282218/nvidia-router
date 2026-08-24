@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearToasts, toastState } from '../../shared/toast'
 import { nvidiaKeysApi } from './api'
@@ -47,8 +47,18 @@ beforeEach(() => {
   vi.mocked(nvidiaKeysApi.list).mockResolvedValue({ data: [] })
 })
 
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
 function hasErrorToast(needle: string): boolean {
   return toastState.toasts.some((toast) => toast.type === 'error' && toast.message.includes(needle))
+}
+
+function bodyElement<T extends Element>(selector: string): T {
+  const element = document.body.querySelector<T>(selector)
+  if (!element) throw new Error(`Expected body element: ${selector}`)
+  return element
 }
 
 describe('NvidiaKeysView', () => {
@@ -127,7 +137,7 @@ describe('NvidiaKeysView', () => {
     await flushPromises()
 
     expect(hasErrorToast('NVIDIA Key 测试失败')).toBe(true)
-    expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    expect(document.body.querySelector('[data-testid="key-test-results"]')).toBeNull()
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })
 
@@ -162,7 +172,7 @@ describe('NvidiaKeysView', () => {
     await flushPromises()
 
     expect(hasErrorToast('批量测活失败')).toBe(true)
-    expect(wrapper.find('[data-testid="key-test-results"]').exists()).toBe(false)
+    expect(document.body.querySelector('[data-testid="key-test-results"]')).toBeNull()
     expect((wrapper.vm as unknown as { testResults: KeyTestResult[] }).testResults).toEqual([])
   })
 
@@ -239,7 +249,7 @@ describe('NvidiaKeysView', () => {
     expect(nvidiaKeysApi.remove).not.toHaveBeenCalled()
 
     // Confirming in the dialog performs the removal.
-    await wrapper.get('[data-testid="confirm-delete-key"]').trigger('click')
+    bodyElement<HTMLButtonElement>('[data-testid="confirm-delete-key"]').click()
     await flushPromises()
     expect(nvidiaKeysApi.remove).toHaveBeenCalledWith(7)
   })
@@ -259,7 +269,7 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="key-card-test"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="key-card-delete"]').trigger('click')
-    await wrapper.get('[data-testid="confirm-delete-key"]').trigger('click')
+    bodyElement<HTMLButtonElement>('[data-testid="confirm-delete-key"]').click()
     await flushPromises()
 
     expect(nvidiaKeysApi.setEnabled).toHaveBeenCalledWith(8, false)
@@ -281,10 +291,10 @@ describe('NvidiaKeysView', () => {
     await wrapper.get('[data-testid="test-all-keys"]').trigger('click')
     await flushPromises()
 
-    const dialog = wrapper.get('[data-testid="key-test-results"]')
-    expect(dialog.text()).toContain('#7')
-    expect(dialog.text()).toContain('#8')
-    expect(dialog.text()).toContain('authentication failed')
+    const dialog = bodyElement<HTMLElement>('[data-testid="key-test-results"]')
+    expect(dialog.textContent).toContain('#7')
+    expect(dialog.textContent).toContain('#8')
+    expect(dialog.textContent).toContain('authentication failed')
   })
 
   it('surfaces a persistent load error with retry instead of an empty key list', async () => {

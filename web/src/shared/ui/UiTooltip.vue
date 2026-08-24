@@ -3,11 +3,9 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { horizontalPlacement, type HorizontalPlacement } from './overlayPosition'
 
-// 轻量浮动提示：hover / focus 延迟 350ms 出现，纯 CSS 定位（无浮层库）。
-// 触发器必须是单个可聚焦元素（按钮/链接），由默认插槽传入。
 defineOptions({ name: 'UiTooltip' })
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   text: string
   placement?: 'top' | 'bottom'
 }>(), { placement: 'top' })
@@ -15,18 +13,47 @@ withDefaults(defineProps<{
 const visible = ref(false)
 const hostRef = ref<globalThis.HTMLElement | null>(null)
 const horizontalSide = ref<HorizontalPlacement>('center')
+const actualPlacement = ref<'top' | 'bottom'>('top')
+const tooltipStyle = ref<Record<string, string>>({})
 let timer: ReturnType<typeof setTimeout> | undefined
 
-function updateHorizontalSide(): void {
+function updatePosition(): void {
   const host = hostRef.value
   if (!host) return
   const rect = host.getBoundingClientRect()
-  horizontalSide.value = horizontalPlacement(rect.left + rect.width / 2, globalThis.innerWidth)
+  const viewportWidth = globalThis.innerWidth
+  const viewportHeight = globalThis.innerHeight
+  horizontalSide.value = horizontalPlacement(rect.left + rect.width / 2, viewportWidth)
+  actualPlacement.value = props.placement === 'top' && rect.top < 56
+    ? 'bottom'
+    : props.placement === 'bottom' && rect.bottom > viewportHeight - 56
+      ? 'top'
+      : props.placement
+
+  const edge = 12
+  const anchor = horizontalSide.value === 'start'
+    ? rect.left
+    : horizontalSide.value === 'end'
+      ? rect.right
+      : rect.left + rect.width / 2
+  const left = Math.min(Math.max(anchor, edge), Math.max(edge, viewportWidth - edge))
+  const top = actualPlacement.value === 'top' ? rect.top - 8 : rect.bottom + 8
+  const translateX = horizontalSide.value === 'start'
+    ? '0'
+    : horizontalSide.value === 'end'
+      ? '-100%'
+      : '-50%'
+  const translateY = actualPlacement.value === 'top' ? '-100%' : '0'
+  tooltipStyle.value = {
+    left: `${left}px`,
+    top: `${Math.max(edge, Math.min(top, viewportHeight - edge))}px`,
+    transform: `translate(${translateX}, ${translateY})`,
+  }
 }
 
 function show(): void {
   clearTimeout(timer)
-  updateHorizontalSide()
+  updatePosition()
   timer = setTimeout(() => { visible.value = true }, 350)
 }
 
@@ -36,12 +63,14 @@ function hide(): void {
 }
 
 onMounted(() => {
-  globalThis.addEventListener('resize', updateHorizontalSide)
+  globalThis.addEventListener('resize', updatePosition)
+  globalThis.addEventListener('scroll', updatePosition, true)
 })
 
 onBeforeUnmount(() => {
   clearTimeout(timer)
-  globalThis.removeEventListener('resize', updateHorizontalSide)
+  globalThis.removeEventListener('resize', updatePosition)
+  globalThis.removeEventListener('scroll', updatePosition, true)
 })
 </script>
 
@@ -55,37 +84,28 @@ onBeforeUnmount(() => {
     @focusout="hide"
   >
     <slot />
+  </span>
+  <Teleport to="body">
     <Transition name="tooltip">
-      <!-- 外层只负责水平居中与纵向定位，内层承载动画，避免 transform 冲突 -->
       <span
         v-if="visible"
-        class="pointer-events-none absolute z-[70] flex max-w-[calc(100vw-2rem)]"
-        :class="[
-          placement === 'top' ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]',
-          horizontalSide === 'start' ? 'left-0' : horizontalSide === 'end' ? 'right-0' : 'left-1/2 -translate-x-1/2',
-        ]"
-      >
-        <span
-          class="tooltip-motion tooltip-surface w-max"
-          role="tooltip"
-        >{{ text }}</span>
-      </span>
+        class="tooltip-motion tooltip-surface pointer-events-none fixed flex w-max"
+        :style="tooltipStyle"
+        role="tooltip"
+      >{{ text }}</span>
     </Transition>
-  </span>
+  </Teleport>
 </template>
 
 <style scoped>
-.tooltip-enter-active .tooltip-motion {
+.tooltip-enter-active,
+.tooltip-leave-active {
   transition: opacity var(--duration-micro) var(--ease-enter), transform var(--duration-micro) var(--ease-enter);
 }
-.tooltip-leave-active .tooltip-motion {
-  transition: opacity var(--duration-micro) var(--ease-exit);
-}
-.tooltip-enter-from .tooltip-motion {
+.tooltip-enter-from {
   opacity: 0;
-  transform: translateY(4px);
 }
-.tooltip-leave-to .tooltip-motion {
+.tooltip-leave-to {
   opacity: 0;
 }
 </style>

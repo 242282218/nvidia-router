@@ -97,7 +97,7 @@ function cellTitle(point: TrafficPoint): string {
 
 <template>
   <section
-    class="card overflow-hidden"
+    class="card overflow-visible"
     aria-label="流量趋势"
     data-testid="traffic-chart"
   >

@@ -203,7 +203,7 @@ function providerLabel(provider: string): string {
 
 <template>
   <article
-    class="model-health-card relative min-w-0 flex flex-col justify-between overflow-hidden rounded-[var(--radius-panel)] border bg-[var(--color-surface)] p-4 transition-colors duration-[var(--duration-micro)] sm:p-5"
+    class="model-health-card relative min-w-0 flex flex-col justify-between overflow-visible rounded-[var(--radius-panel)] border bg-[var(--color-surface)] p-4 transition-colors duration-[var(--duration-micro)] sm:p-5"
     :class="status.borderColor"
     :data-testid="`model-health-card-${model.model_id}`"
     :data-status="visualStatus"
@@ -361,7 +361,7 @@ function providerLabel(provider: string): string {
           <div
             v-if="hoveredBucket"
             data-testid="model-health-tooltip"
-            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+6px)] z-30 flex flex-col items-center whitespace-normal rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] px-2.5 py-1.5"
+            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+6px)] z-[var(--z-tooltip)] flex flex-col items-center whitespace-normal rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] px-2.5 py-1.5"
             :class="tooltipPlacement === 'start' ? 'translate-x-0' : tooltipPlacement === 'end' ? '-translate-x-full' : '-translate-x-1/2'"
             :style="{ left: `${tooltipX}px` }"
           >

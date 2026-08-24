@@ -202,7 +202,7 @@ function testStatusClass(status: string): string {
             <caption class="sr-only">
               批量导入结果，共 {{ results.length }} 条
             </caption>
-            <thead class="sticky top-0 z-10 bg-[var(--color-surface)]">
+            <thead class="sticky top-0 z-[var(--z-sticky)] bg-[var(--color-surface)]">
               <tr>
                 <th
                   class="data-table-th w-16"

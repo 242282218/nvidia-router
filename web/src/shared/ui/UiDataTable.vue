@@ -138,7 +138,7 @@ const padClass = computed(() => (props.density === 'compact'
         >
           {{ caption }}
         </caption>
-        <thead class="sticky top-0 z-10 bg-[var(--color-surface)]">
+        <thead class="sticky top-0 z-[var(--z-sticky)] bg-[var(--color-surface)]">
           <tr>
             <th
               v-if="selectable"
@@ -271,7 +271,7 @@ const padClass = computed(() => (props.density === 'compact'
       <Motion
         v-if="selectable && selectedCount > 0"
         tag="div"
-        class="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-4 py-2.5"
+        class="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-1/2 z-[var(--z-toolbar)] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-4 py-2.5"
         role="toolbar"
         aria-label="批量操作"
         :initial="{ opacity: 0, y: 24, scale: 0.96 }"

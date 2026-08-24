@@ -55,7 +55,7 @@ const seriesColor = computed(() => {
 
 <template>
   <section
-    class="card overflow-hidden"
+    class="card overflow-visible"
     :aria-label="title"
   >
     <div class="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">

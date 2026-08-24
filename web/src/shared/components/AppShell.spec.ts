@@ -122,7 +122,7 @@ describe('AppShell mobile drawer focus management', () => {
 
     await wrapper.get('[aria-label="切换菜单"]').trigger('click')
 
-    expect(header.classes()).toContain('z-50')
+    expect(header.classes()).toContain('z-[var(--z-toolbar)]')
   })
 
   it('never applies inert on desktop where the rail is always visible', async () => {

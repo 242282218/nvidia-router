@@ -31,7 +31,7 @@ describe('BatchImportDialog', () => {
     )
     const wrapper = mount(BatchImportDialog, {
       props: { open: true },
-      global: { stubs: { Teleport: false } },
+      global: { stubs: { Teleport: true } },
     })
     const secret = 'nvapi-secret-that-must-not-remain'
 
@@ -72,7 +72,7 @@ describe('BatchImportDialog', () => {
     )
     const wrapper = mount(BatchImportDialog, {
       props: { open: true },
-      global: { stubs: { Teleport: false } },
+      global: { stubs: { Teleport: true } },
     })
 
     await wrapper.get('textarea').setValue('valid-token-123456')
@@ -101,7 +101,7 @@ describe('BatchImportDialog', () => {
 
     const wrapper = mount(BatchImportDialog, {
       props: { open: true },
-      global: { stubs: { Teleport: false } },
+      global: { stubs: { Teleport: true } },
     })
     await wrapper.get('textarea').setValue('nvapi-k1')
     await wrapper.get('form').trigger('submit')
@@ -120,7 +120,7 @@ describe('BatchImportDialog', () => {
   it('does not submit empty input', async () => {
     const wrapper = mount(BatchImportDialog, {
       props: { open: true },
-      global: { stubs: { Teleport: false } },
+      global: { stubs: { Teleport: true } },
     })
 
     await wrapper.get('form').trigger('submit')

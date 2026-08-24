@@ -29,61 +29,61 @@ const widthClass: Record<'sm' | 'md' | 'lg', string> = {
 </script>
 
 <template>
-  <!-- 内联渲染而非 Teleport：视图根没有 overflow/transform 祖先，fixed overlay
-       表现一致；同时保持测试与 e2e 的 DOM 查询路径稳定（查询宿主内即可完成）。 -->
-  <Transition name="modal">
-    <div
-      v-if="open"
-      class="modal-overlay"
-      @mousedown.self="emit('close')"
-    >
+  <Teleport to="body">
+    <Transition name="modal">
       <div
-        ref="panel"
-        class="modal-panel"
-        :class="widthClass[size]"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="title"
-        tabindex="-1"
+        v-if="open"
+        class="modal-overlay"
+        @mousedown.self="emit('close')"
       >
-        <header class="flex items-start justify-between gap-4 border-b border-[var(--color-border)] px-6 py-4">
-          <div class="min-w-0">
-            <h2 class="type-heading">
-              {{ title }}
-            </h2>
-            <p
-              v-if="subtitle"
-              class="mt-0.5 text-xs text-[var(--color-text-muted)]"
-            >
-              {{ subtitle }}
-            </p>
-          </div>
-          <button
-            class="icon-btn -mr-2 -mt-1"
-            type="button"
-            aria-label="关闭对话框"
-            @click="emit('close')"
-          >
-            <UiIcon
-              name="close"
-              :size="18"
-            />
-          </button>
-        </header>
-
-        <div class="max-h-[min(70vh,calc(100dvh-9rem))] overflow-y-auto overscroll-contain px-6 py-5">
-          <slot />
-        </div>
-
-        <footer
-          v-if="$slots.footer"
-          class="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--color-border)] px-6 py-4"
+        <div
+          ref="panel"
+          class="modal-panel"
+          :class="widthClass[size]"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="title"
+          tabindex="-1"
         >
-          <slot name="footer" />
-        </footer>
+          <header class="flex items-start justify-between gap-4 border-b border-[var(--color-border)] px-6 py-4">
+            <div class="min-w-0">
+              <h2 class="type-heading">
+                {{ title }}
+              </h2>
+              <p
+                v-if="subtitle"
+                class="mt-0.5 text-xs text-[var(--color-text-muted)]"
+              >
+                {{ subtitle }}
+              </p>
+            </div>
+            <button
+              class="icon-btn -mr-2 -mt-1"
+              type="button"
+              aria-label="关闭对话框"
+              @click="emit('close')"
+            >
+              <UiIcon
+                name="close"
+                :size="18"
+              />
+            </button>
+          </header>
+
+          <div class="max-h-[min(70vh,calc(100dvh-9rem))] overflow-y-auto overscroll-contain px-6 py-5">
+            <slot />
+          </div>
+
+          <footer
+            v-if="$slots.footer"
+            class="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--color-border)] px-6 py-4"
+          >
+            <slot name="footer" />
+          </footer>
+        </div>
       </div>
-    </div>
-  </Transition>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>

@@ -29,7 +29,7 @@ export function useDialog(open: Ref<boolean>, panel: Ref<HTMLElement | null>, on
         isLocked = false
       }
     }
-  })
+  }, { immediate: true })
 
   onBeforeUnmount(() => {
     if (isLocked) {

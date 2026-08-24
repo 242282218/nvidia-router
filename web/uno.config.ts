@@ -110,7 +110,7 @@ export default defineConfig({
     },
     /* ── 浮层（扁平：scrim 无 blur，面板靠描边与 raised 底色区分） ── */
     {
-      'modal-overlay': 'fixed inset-0 z-50 flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center',
+      'modal-overlay': 'fixed inset-0 z-[var(--z-modal)] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center',
       'modal-panel': 'w-full max-h-[calc(100dvh-2rem)] max-w-2xl overflow-hidden rounded-[var(--radius-overlay)] border border-[var(--color-border)] bg-[var(--color-elevated)]',
       // UiMenu 菜单项：36px 行高、左对齐，与控件圆角基线一致。
       'menu-item': 'flex h-9 w-full items-center gap-2.5 whitespace-nowrap rounded-[var(--radius-control)] px-3 text-left text-sm text-[var(--color-text-secondary)] transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:text-[var(--color-disabled-foreground)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--color-focus)]',

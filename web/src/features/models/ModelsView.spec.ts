@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { modelsApi } from './api'
 import ModelsView from './ModelsView.vue'
@@ -46,6 +46,16 @@ beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(modelsApi.list).mockResolvedValue({ data: [] })
 })
+
+afterEach(() => {
+  document.body.innerHTML = ''
+})
+
+function bodyElement<T extends Element>(selector: string): T {
+  const element = document.body.querySelector<T>(selector)
+  if (!element) throw new Error(`Expected body element: ${selector}`)
+  return element
+}
 
 describe('ModelsView', () => {
   it.each([
@@ -518,7 +528,7 @@ describe('ModelsView', () => {
     expect(modelsApi.delete).not.toHaveBeenCalled()
 
     // Confirming in the dialog performs the deletion.
-    await wrapper.get('[data-testid="confirm-delete-model"]').trigger('click')
+    bodyElement<HTMLButtonElement>('[data-testid="confirm-delete-model"]').click()
     await flushPromises()
 
     expect(modelsApi.delete).toHaveBeenCalledWith(8)

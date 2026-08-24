@@ -80,7 +80,7 @@ useFocusTrap(open, panel, close)
     <Transition name="help-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[60] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center"
+        class="fixed inset-0 z-[var(--z-modal)] flex min-h-dvh items-start justify-center overflow-y-auto bg-[var(--color-overlay)] p-4 sm:items-center"
         @mousedown.self="close"
       >
         <div

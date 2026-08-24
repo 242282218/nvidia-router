@@ -1,5 +1,5 @@
-﻿import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+﻿import { config, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearToasts, toastState } from '../../shared/toast'
 import { accessKeysApi } from './api'
@@ -39,11 +39,17 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  config.global.stubs = { Teleport: true }
   vi.clearAllMocks()
   clearToasts()
   vi.mocked(accessKeysApi.list).mockResolvedValue({ data: [listedKey] })
   vi.mocked(accessKeysApi.revoke).mockResolvedValue(undefined)
   vi.mocked(accessKeysApi.delete).mockResolvedValue(undefined)
+})
+
+afterEach(() => {
+  // Keep the Teleport stub local to this suite; leaking it changes later tests' DOM topology.
+  config.global.stubs = {}
 })
 
 describe('AccessKeysView', () => {

@@ -215,8 +215,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
   <div class="min-h-screen text-[var(--color-text)]">
     <!-- Mobile header -->
     <header
-      class="fixed inset-x-0 top-0 flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-canvas-deep)] px-4 lg:hidden"
-      :class="sidebarOpen ? 'z-50' : 'z-40'"
+      class="fixed inset-x-0 top-0 z-[var(--z-toolbar)] flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-canvas-deep)] px-4 lg:hidden"
     >
       <button
         ref="menuButton"
@@ -270,7 +269,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <Transition name="fade">
       <button
         v-if="sidebarOpen"
-        class="fixed inset-0 z-30 cursor-default bg-[var(--color-overlay)] lg:hidden"
+        class="fixed inset-0 z-[var(--z-scrim)] cursor-default bg-[var(--color-overlay)] lg:hidden"
         type="button"
         aria-label="关闭菜单"
         @click="sidebarOpen = false"
@@ -281,7 +280,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
     <aside
       id="admin-sidebar"
       ref="sidebar"
-      class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
+      class="fixed inset-y-0 left-0 z-[var(--z-drawer)] flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-transform duration-300 lg:translate-x-0"
       :class="[sidebarOpen ? 'translate-x-0' : '-translate-x-full', railCollapsed ? 'lg:w-[68px]' : '']"
       :inert="isMobile && !sidebarOpen"
       aria-label="管理侧栏"
@@ -383,11 +382,11 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
                 <UiIcon
                   :name="item.icon"
                   :size="16"
-                  class="relative z-10 shrink-0"
+                  class="relative z-[var(--z-sticky)] shrink-0"
                 />
                 <span
                   v-if="!railCollapsed"
-                  class="relative z-10"
+                  class="relative z-[var(--z-sticky)]"
                 >{{ item.label }}</span>
               </RouterLink>
             </div>
