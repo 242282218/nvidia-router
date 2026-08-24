@@ -242,3 +242,11 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - `UiMenu` Teleport 到 `body` 后，打开时必须把焦点移入首个可操作项；菜单内使用 `ArrowUp/ArrowDown/Home/End` 移动焦点，关闭时再归还触发按钮。仅依赖 DOM 顺序会让键盘焦点跳过 body 末尾的 Teleport 节点。
 - Overlay token 的数值顺序必须与语义一致：popover 低于 modal，modal 低于 toast，tooltip 位于最上层；共享 shortcut 不得用 `z-50` 这类硬编码覆盖 token。
 - 当前机器默认 Vitest 文件并行时，路由/命令面板/AppShell 的 5 秒用例可能被 worker 竞争拖超时；遇到无失败堆栈但有超时，使用 `vitest run --maxWorkers=1 --no-file-parallelism` 做确定性全量复核，再结合定向并行测试判断是否为环境抖动。
+
+## 22. 2026-08-25 UI 浮层视觉重构提交与重新部署（772fce2）
+
+- 部署前 GitHub `main` 与源码 `HEAD` 均为 `772fce2`（`feat: refine frontend overlays and visual tokens`）；本次只包含前端浮层、焦点无障碍、层级 token、回归测试和嵌入式资源更新，无数据库迁移。
+- 标准版本为 `20260825-ui-overlays-772fce2`，release 为 `/opt/nvidia-router-releases/20260825-ui-overlays-772fce2`，镜像为 `nvidia-router:deploy-20260825-ui-overlays-772fce2`。
+- 回滚点为 `/opt/nvidia-router-releases/20260824-ui-consistency-08eb1c9` / `nvidia-router:deploy-20260824-ui-consistency-08eb1c9`；切换前备份为 `/opt/nvidia-router-releases/20260825-ui-overlays-772fce2/backups/predeploy-20260825-ui-overlays-772fce2/router.db`，大小 9,494,528 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `9d363345872d8c101863832178d0068638db52a83d713a2b31b68d4fd022f495`。
+- 发布后 app 使用目标镜像，`running/healthy`、重启 0、OOM false；3756 live/ready、代理池 `18080/healthz`、OpenCodeFree `6020/healthz`、根页和公网 live 均 200；新静态资源 `/assets/index-CMOvBKXD.js`、`/assets/index-D5M_XNC2.css` 均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；部署后错误签名计数为 0。
+- 管理员烟测通过：登录 200，会话访问 models/settings/runtime summary/access-keys 均 200，注销 204。未执行真实模型请求、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
