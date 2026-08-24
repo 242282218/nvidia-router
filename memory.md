@@ -222,3 +222,11 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 视觉一致性守卫集中在 `web/src/styles/flat-visual.spec.ts` 与 `shortcuts.spec.ts`：组件源码不得直接写状态 hex、引用未定义 surface token、使用未命名的宏观圆角或把运行时值插入 UnoCSS 任意颜色 class；数据热力格、时间线刻度和状态点等数据形状可保留局部圆角。
 - `ModelHealthCard` 的动态 `border-[color-mix(...${token}...)]` 与 `bg-[...${token}]` 会让 Vite/esbuild 产生 CSS 语法警告；状态边框改为静态 token class 映射，时间线颜色改为原生 `:style` 的 `backgroundColor`，不要回退到运行时拼 UnoCSS class。
 - 全站视觉 QA 必须先启动隔离 `node scripts/test/web_qa_env.mjs --port 5175`，等待 `tmp/web-qa-env.json` 出现后再运行 `node scripts/test/web_visual_qa.mjs http://127.0.0.1:5175 --out <dir>`；环境未就绪时探针会误连本地实例并以错误登录失败，不能据此判断页面代码。
+
+## 19. 2026-08-24 前端一致性发布与重新部署
+
+- GitHub `main` 已更新到 `08eb1c9`；最终发布版本为 `20260824-ui-consistency-08eb1c9`，release 为 `/opt/nvidia-router-releases/20260824-ui-consistency-08eb1c9`，镜像为 `nvidia-router:deploy-20260824-ui-consistency-08eb1c9`。
+- 切换前数据库备份位于 `backups/predeploy-20260824-ui-consistency-08eb1c9/router.db`，大小 9,445,376 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `95816c45052bd783995e09be7ab9c827cfdd3cac226f24807c456be8e3695b4d`；回滚点为 `20260824-vibe-optimization-b9704f3` / `nvidia-router:deploy-20260824-vibe-optimization-b9704f3`。
+- 发布后容器实际为目标镜像，`running/healthy`、重启 0、OOM false；release 工作目录与版本一致，迁移 `044_model_tools_status.sql` 存在；3756/18080/18081/6020 端口监听正常，3756 live/ready、18080/6020 healthz 均 200，根页和 index 引用的 2 个静态资源均 200。
+- 匿名 `/v1/models` 与 `/metrics` 均 401；管理员登录 200，会话、模型列表、运行时摘要均 200，注销 204，注销后的会话为 401。未执行真实模型请求、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
+- 远端 loopback 静态探针应使用禁用代理的 opener，并将正则提取的 bytes 路径先 decode 成字符串；否则 Python 探针会把类型错误吞成资源失败，而 `curl` 与实际服务均正常。
