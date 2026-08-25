@@ -259,3 +259,10 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 元数据修复：llama(id=35) PATCH `reasoning_zero_allowed=true` 后 `reasoning_effort=none` 从 501 变 200（levels=["none"] 且 zero_allowed=false 时 nearestLevel 必失败）。
 - 探针假阴性已修：reasoning 模型在小 max_tokens 下会吃光预算产出空回复——stability 32→512、json_mode 256→1024、tools_parallel 512→1024；多函数代码块需执行式函数选择（同名 arity 的 helper 会遮蔽目标函数）。
 - 第二轮复测要点：kimi-k3 恢复可用且 needle/IF/推理/补测代码全对（偶发 502）；hy3 稳定性 3/3 exact OK；nemotron json_mode 仍输出超长非精确 JSON（真实弱点）。
+
+## 19. 2026-08-25 设计令牌提交与重新部署（ccc725d）
+
+- GitHub `main` 已推送至 `ccc725d`（`feat: refine design tokens and add capability eval probe`）：前端五层字体刻度（新增 caption/metric/mono）、间距半步与 data 圆角 token、panel-inset 描边、模型表截断提示、侧栏排版修正；含能力评测探针、2026-08-24 复测报告与设计文档；发布前门禁全过（go vet/test、typecheck、291 前端单测、dist 闭包 41/41）。
+- 标准版本 `20260825-design-tokens-ccc725d`，release `/opt/nvidia-router-releases/20260825-design-tokens-ccc725d`，镜像 `nvidia-router:deploy-20260825-design-tokens-ccc725d`；切换前备份 `backups/predeploy-20260825-design-tokens-ccc725d/router.db`（10,059,776 字节，600）；回滚点 `20260825-ui-overlays-772fce2`。
+- 首次构建失败：镜像加速器瞬时无法解析 `golang:1.24.0-bookworm` 元数据；远端直接 pull 精确 tag 后重试即成功。教训：加速器抖动先补拉精确 tag 重试，不改 Dockerfile、不换版本号。
+- 发布后验证：app `running/healthy`、重启 0、OOM false；live/ready、18080/6020 healthz、根页与新资源 `index-CweVNl6N.js`/`index-CIPy-lLW.css`、公网 live 均 200；匿名 `/v1/models` 与 `/metrics` 401；schema 44、enabled 模型 10；近 5 分钟错误签名 0。管理烟测：登录 200、受保护 API 全 200、注销 204。
