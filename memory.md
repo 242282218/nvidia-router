@@ -327,3 +327,12 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 错误归类要分开：`upstream_proxy_unavailable`/`upstream_unavailable` 对应代理或 provider 瞬态；`upstream_protocol_error` 对应上游协议异常；客户端超时对应慢或无响应；`validation_all_failed`、`proxy_rejected`、`proxy_transport_retired` 是出口池证据，不能合并成模型协议失败。
 - 模型健康探测的删除竞态根因是快照读取与事件写入之间模型行被删除；`internal/modelhealth/repository.go` 将 SQLite 外键错误映射为 `ErrModelDeleted`，`service.go` 跳过过期快照。`TestRunOnceIgnoresModelDeletedDuringProbe`、`go test ./...` 和 `go vet ./...` 是最小回归组合。当前修复仍在本地未提交状态，远端旧镜像未包含它。
 - 模型目录未声明 `none` 时，评测脚本不要强行发送 `reasoning_effort=none` 后再把小预算空回复判成上下文失败；应按 `reasoning_levels` 选择档位或跳过显式 reasoning 字段。
+
+## 26. 2026-08-26 模型健康探测竞态修复提交与重新部署（6d4b782）
+
+- GitHub `main` 与部署源码 `HEAD` 均为 `6d4b782`（`fix: handle deleted model health probes`）；修复模型健康探测快照与管理端删除模型之间的 SQLite 外键竞态，补充删除确认、`ErrModelDeleted` 归类及其他数据库错误不吞掉的回归测试；测试报告已纳入 `docs/plans/2026-08-25-vibe模型思考工具上下文稳定性测试报告.md`。
+- 使用标准 `python scripts/deploy/deploy_remote.py 20260826-model-health-race-6d4b782` 发布到 `/opt/nvidia-router-releases/20260826-model-health-race-6d4b782`，镜像为 `nvidia-router:deploy-20260826-model-health-race-6d4b782`；回滚点为 `/opt/nvidia-router-releases/20260825-channel-status-3f3ceae` / `nvidia-router:deploy-20260825-channel-status-3f3ceae`。
+- 切换前数据库备份为 `/opt/nvidia-router-releases/20260826-model-health-race-6d4b782/backups/predeploy-20260826-model-health-race-6d4b782/router.db`，权限 `600`、属主 `10001:10001`，SHA-256 为 `6758b87e256ed21fa3a604c8b669589f567a730743c15b876bedc02832537087`。
+- 发布后 app 实际使用目标镜像，容器 `running/healthy`、重启 0、OOM `false`；`/health/live`、`/health/ready`、代理池 `18080/healthz`、OpenCodeFree `6020/healthz`、根页和管理员页均返回 200；匿名 `/v1/models` 与 `/metrics` 均返回 401；`3756/18080/18081/6020` 监听正常。
+- 远端只读数据库核验：`schema_migrations` 最大版本 45，enabled 模型 5 个。发布后 5 分钟日志未发现 panic、fatal、migration 或 foreign-key 错误；管理员 reasoning 与预算请求均返回 200，临时测试 Key 已由清理逻辑删除。
+- 本地门禁通过：`go test ./...`、`go vet ./...`、19 个 Python 探针测试和 `git diff --check`；两轮代码审查无阻断问题。未将免认证健康检查或单模型结果宣称为完整模型矩阵、代理轮换或 CONNECT E2E。
