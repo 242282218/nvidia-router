@@ -3,6 +3,7 @@ package modelhealth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -137,6 +138,9 @@ func TestRepositoryRejectsUnknownModelAndInvalidEvent(t *testing.T) {
 	err := repository.Record(context.Background(), ProbeEvent{ModelID: 999, Outcome: OutcomeSuccess, CreatedAt: time.Now()})
 	if err == nil {
 		t.Fatal("Record unknown model succeeded")
+	}
+	if !errors.Is(err, ErrModelDeleted) {
+		t.Fatalf("Record unknown model error = %v, want ErrModelDeleted", err)
 	}
 	err = repository.Record(context.Background(), ProbeEvent{ModelID: 1, Outcome: "secret-response", CreatedAt: time.Now()})
 	if err == nil {

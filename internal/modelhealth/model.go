@@ -38,7 +38,12 @@ const (
 	MaxConcurrency         = 8
 )
 
-var ErrInvalidSettings = errors.New("invalid model health settings")
+var (
+	ErrInvalidSettings = errors.New("invalid model health settings")
+	// ErrModelDeleted marks a probe whose catalog row disappeared while it ran.
+	// The health tables cascade with model deletion, so this is an expected race.
+	ErrModelDeleted = errors.New("model health model was deleted")
+)
 
 type Settings struct {
 	Enabled         bool      `json:"enabled"`

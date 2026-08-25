@@ -310,4 +310,20 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
   - 静态资源 `/admin/` 正常返回 200；
   - 管理员认证：使用配置管理员密码 `POST /admin/api/auth/login` 返回 200 `authenticated: true`，获取 Session Cookie 请求 `/admin/api/model-health/summary` 正常返回 11 个白名单模型遥测数据。
 
+## 24. 2026-08-25 15 分钟 vibe 诊断与健康探测竞态修复
 
+- 本轮限定在国内目标机，未重启、未部署、未修改远端运行配置；远端仍使用 `nvidia-router:deploy-20260825-channel-status-3f3ceae`。管理员登录、匿名 metrics `401`、鉴权 metrics `200`、容器健康与版本化 Release 均复核通过。
+- 日志证据分为两类：`validation_all_failed`、`proxy_rejected`、`proxy_transport_retired`、`transport_failed` 是当前上游代理出口波动；公网监听产生的明文 HTTP 安全告警是已知配置风险；另有一次定时模型健康探测因 `model_health_probes.model_id` 外键失败，涉及已被删除的 `z-ai/glm-5.2` 与 `deepseek-ai/deepseek-v4-flash-0731`。
+- 根因：model-health 使用 reader 快照列出模型，探测并发执行期间模型可被管理端删除；writer 随后记录事件时目标模型行已经不存在，SQLite 合法触发外键约束，但服务把该预期竞态升级成整轮告警。修复在 `internal/modelhealth`：将 SQLite 外键错误归类为 `ErrModelDeleted`，健康循环跳过该过期快照；其他数据库错误保持失败。新增回归测试覆盖“探测期间删除模型”。
+- 本地验证：`go test ./...`、`go vet ./internal/modelhealth ./internal/modelcatalog`、`python -m unittest scripts/test/test_vibe_eval_remote.py`（14 tests）和 `git diff --check` 通过。相关模型健康/目录单测也单独通过。
+- 模型验证：管理员探针中 Nemotron reasoning 接受与高预算内容保留均返回 `200`；StepFun 返回 `502 upstream_proxy_unavailable`，按“只测稳定模型”排除。缩短矩阵脚本因其门控阶段仍使用全目录默认重复/预算，运行 244 秒达到硬超时，未产生可用完整矩阵结果，不得据此宣称本轮工具、长上下文和稳定性全覆盖；此前 2026-08-22/24 的已验证 vibe 结果继续以对应报告为准。
+- 临时测试 Key 清理探针确认测试标签残留数为 0；本轮未生成发布版本号、数据库备份或回滚点。后续若需要让远端日志告警消失，必须按标准唯一版本发布此本地修复后再做一次短健康探测。
+
+## 25. 2026-08-25 15 分钟 vibe 多维评测与日志排障
+
+- 稳定模型筛选应先对当前启用 Chat 目录逐模型执行两次最小请求，再只对连续 200 的模型进入矩阵；`stepfun-ai/step-3.7-flash` 的两次 35 秒客户端超时应在门控阶段排除，不能把它混入后续能力结论。
+- Windows 上 `remote_exec.py --arg` 传 JSON 模型过滤器时，PowerShell 会吞掉未转义的双引号；优先使用支持 `--models` 的 `live-model-matrix.py`，或确保参数中的引号经过 PowerShell 保留。全目录门控会吞掉 15 分钟预算。
+- 15 分钟内的可复用组合是：门控 2 次、思考强度、thinking 开关、stream、tools、约 8K 长输入、64/512/2048 输出、5 次重复，再对单个稳定模型补 2 个 AST-only 代码任务。结果只保留状态码、错误类别、finish、TTFT、长度、工具数量和 AST 布尔值，不保存响应正文或生成代码。
+- 错误归类要分开：`upstream_proxy_unavailable`/`upstream_unavailable` 对应代理或 provider 瞬态；`upstream_protocol_error` 对应上游协议异常；客户端超时对应慢或无响应；`validation_all_failed`、`proxy_rejected`、`proxy_transport_retired` 是出口池证据，不能合并成模型协议失败。
+- 模型健康探测的删除竞态根因是快照读取与事件写入之间模型行被删除；`internal/modelhealth/repository.go` 将 SQLite 外键错误映射为 `ErrModelDeleted`，`service.go` 跳过过期快照。`TestRunOnceIgnoresModelDeletedDuringProbe`、`go test ./...` 和 `go vet ./...` 是最小回归组合。当前修复仍在本地未提交状态，远端旧镜像未包含它。
+- 模型目录未声明 `none` 时，评测脚本不要强行发送 `reasoning_effort=none` 后再把小预算空回复判成上下文失败；应按 `reasoning_levels` 选择档位或跳过显式 reasoning 字段。

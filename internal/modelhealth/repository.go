@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/ncruces/go-sqlite3"
 )
 
 type Repository struct {
@@ -159,6 +161,9 @@ func (r *Repository) Record(ctx context.Context, event ProbeEvent) error {
 		VALUES (?, ?, ?, NULLIF(?, ''), ?)
 	`, event.ModelID, event.Outcome, event.DurationMS, event.ErrorCode, createdAt)
 	if err != nil {
+		if errors.Is(err, sqlite3.CONSTRAINT_FOREIGNKEY) {
+			return fmt.Errorf("model health event model %d was deleted: %w", event.ModelID, ErrModelDeleted)
+		}
 		return fmt.Errorf("insert model health event: %w", err)
 	}
 	if id, err := result.LastInsertId(); err == nil {

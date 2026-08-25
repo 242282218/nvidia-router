@@ -464,6 +464,9 @@ func (s *Service) probeOne(ctx context.Context, model modelcatalog.Model, keyID 
 		ModelID: model.ID, Outcome: outcome, DurationMS: duration,
 		ErrorCode: errorCode, CreatedAt: s.clock.Now(),
 	}); err != nil {
+		if errors.Is(err, ErrModelDeleted) {
+			return nil
+		}
 		return fmt.Errorf("record model %q health probe: %w", model.PublicID, err)
 	}
 	return nil
