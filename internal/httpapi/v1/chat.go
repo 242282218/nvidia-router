@@ -201,6 +201,7 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 					"model", upstreamModelFromBody(body),
 					"reasoning_chars", chars,
 				)
+				return response, fault.EmptyResponse(errors.New("reasoning consumed completion budget"))
 			}
 		}
 		markResponseComplete(response)
@@ -312,7 +313,7 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 			retryable = allowRetry && response.StatusCode != http.StatusTooManyRequests
 			if !retryable {
 				status := response.StatusCode
-				if status == 436 {
+				if status == http.StatusInternalServerError || status == 436 {
 					status = http.StatusBadGateway
 				}
 				writeChatError(writer, fault.New(status, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
@@ -354,6 +355,13 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 		writeChatError(writer, err)
 		return false
 	}
+	if observability.ReasoningStarvedFromBody(validated.Body) {
+		if allowRetry {
+			return true
+		}
+		writeChatError(writer, fault.EmptyResponse(errors.New("reasoning consumed completion budget")))
+		return false
+	}
 	markResponseComplete(response)
 	_ = response.Body.Close()
 	response.Body = io.NopCloser(bytes.NewReader(validated.Body))
@@ -374,6 +382,36 @@ func isOpenCodeFreeTransientStatus(status int) bool {
 	}
 }
 
+type chatStreamCompletion struct {
+	contentPresent  bool
+	toolCallPresent bool
+	finishLength    bool
+}
+
+func (s *chatStreamCompletion) observe(data string) {
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content   json.RawMessage   `json:"content"`
+				ToolCalls []json.RawMessage `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal([]byte(data), &chunk) != nil {
+		return
+	}
+	for _, choice := range chunk.Choices {
+		s.contentPresent = s.contentPresent || hasSSETextValue(choice.Delta.Content)
+		s.toolCallPresent = s.toolCallPresent || len(choice.Delta.ToolCalls) > 0
+		s.finishLength = s.finishLength || choice.FinishReason == "length"
+	}
+}
+
+func (s chatStreamCompletion) isEmpty() bool {
+	return s.finishLength && !s.contentPresent && !s.toolCallPresent
+}
+
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
 	commit := &router.CommitState{}
 	// Reasoning length sampling is gated on the request having asked for it;
@@ -382,6 +420,7 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 	trackReasoning := observability.ReasoningRequested(ctx)
 	var reasoningPresent bool
 	var reasoningChars int64
+	completion := &chatStreamCompletion{}
 	opts := sse.ProxyOptions{
 		CommitState: commit,
 		OnComplete: func() {
@@ -389,6 +428,12 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 			if marker, ok := upstream.Body.(interface{ MarkComplete() }); ok {
 				marker.MarkComplete()
 			}
+		},
+		BeforeComplete: func() error {
+			if completion.isEmpty() {
+				return sse.ErrStreamEmptyResponse
+			}
+			return nil
 		},
 		// TTFT is the first SSE data event reaching the client, distinct from
 		// the first-byte metric which also fires for error bodies before commit.
@@ -399,10 +444,11 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 		// the upstream closes (audit H6).
 		WriteIdleTimeout: streamWriteDeadline(ctx),
 	}
-	if trackReasoning {
-		// Accumulate reasoning_content character counts from the proxied deltas
-		// without ever retaining their text.
-		opts.OnData = func(data string) {
+	// Observe terminal metadata for the empty-answer guard and, when requested,
+	// accumulate reasoning character counts without retaining reasoning text.
+	opts.OnData = func(data string) {
+		completion.observe(data)
+		if trackReasoning {
 			if present, chars := observability.ReasoningDeltaChars([]byte(data)); present {
 				reasoningPresent = true
 				reasoningChars += chars
@@ -411,6 +457,11 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 	}
 	err := sse.Proxy(ctx, commit.Wrap(writer), upstream, opts)
 	observability.SetReasoningResponse(ctx, reasoningPresent, reasoningChars)
+	if err == sse.ErrStreamEmptyResponse && commit.Committed() {
+		writeStreamEmpty(writer)
+		observability.RequestLogger(ctx).Warn("stream_empty_response_after_commit", "error", err)
+		return
+	}
 	if err == nil || (err == sse.ErrStreamWriteStalled && commit.Committed()) {
 		// Clean completion, or a write stall after commit (the client stopped
 		// reading and the stream was torn down to release the lease): the client
@@ -470,11 +521,27 @@ func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, u
 // loops that wait for the marker terminate instead of hanging until their idle
 // timeout; SDKs that inspect chunk contents raise on the error payload first.
 func writeStreamTruncated(writer http.ResponseWriter) {
+	writeStreamError(
+		writer,
+		"upstream_stream_truncated",
+		"The upstream service ended the stream before completion; the response is truncated. Retry the request.",
+	)
+}
+
+func writeStreamEmpty(writer http.ResponseWriter) {
+	writeStreamError(
+		writer,
+		"upstream_empty_response",
+		"The upstream service completed without a user-visible answer. Retry the request.",
+	)
+}
+
+func writeStreamError(writer http.ResponseWriter, code, message string) {
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"message": "The upstream service ended the stream before completion; the response is truncated. Retry the request.",
+			"message": message,
 			"type":    "server_error",
-			"code":    "upstream_stream_truncated",
+			"code":    code,
 		},
 	})
 	if err != nil {
@@ -671,11 +738,23 @@ func semanticChatEvent(event sse.Event) (bool, error) {
 		bytes.Contains(dataBytes, []byte(`"thinking"`)) ||
 		bytes.Contains(dataBytes, []byte(`"tool_calls"`))
 
-	// If no reasoning fields are present, we only need to check for content
+	// If no reasoning fields are present, parse content so empty/null deltas do
+	// not make the attempt look semantic and commit a response prematurely.
 	if !hasReasoningFields {
-		// Quick check for non-empty content field
-		if bytes.Contains(dataBytes, []byte(`"content"`)) {
-			return true, nil
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(dataBytes, &chunk); err != nil {
+			return false, fmt.Errorf("decode upstream chat event: %w", err)
+		}
+		for _, choice := range chunk.Choices {
+			if hasSSETextValue(choice.Delta.Content) {
+				return true, nil
+			}
 		}
 		return false, nil
 	}

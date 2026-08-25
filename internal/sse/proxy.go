@@ -15,6 +15,7 @@ import (
 )
 
 var ErrStreamInterrupted = errors.New("upstream stream interrupted before [DONE]")
+var ErrStreamEmptyResponse = errors.New("upstream stream completed without a user-visible answer")
 var ErrWriteDeadlineUnsupported = errors.New("response writer does not support write deadlines")
 
 // ErrStreamWriteStalled reports that the client stopped reading for the whole
@@ -27,6 +28,10 @@ type ProxyOptions struct {
 	CommitState *router.CommitState
 	// OnComplete fires after a valid terminal [DONE] marker is forwarded.
 	OnComplete func()
+	// BeforeComplete runs after all preceding data has been flushed but before
+	// the terminal [DONE] marker is written. Returning an error aborts the
+	// terminal marker so the caller can emit an explicit in-stream failure.
+	BeforeComplete func() error
 	// OnFirstData fires exactly once, after the first SSE data event has been
 	// written and flushed to the client. It lets the streaming handler record
 	// time-to-first-token without coupling the proxy to observability.
@@ -166,6 +171,11 @@ func Proxy(ctx context.Context, writer http.ResponseWriter, upstream *http.Respo
 				return fmt.Errorf("write pending SSE events: %w", err)
 			}
 			pending.Reset()
+		}
+		if seenDone && opts.BeforeComplete != nil {
+			if err := opts.BeforeComplete(); err != nil {
+				return err
+			}
 		}
 
 		if err := encoder.Encode(event); err != nil {

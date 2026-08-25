@@ -62,6 +62,8 @@ _SAFE_STRING_FIELDS = {
 admin_opener = None
 v1_opener = None
 access_key = {"id": None, "key": None}
+# remote_exec.py replaces this placeholder for a bounded single-model run.
+REMOTE_MODEL_FILTER = "__REMOTE_MODEL_FILTER__"
 
 
 def _safe_token(value, fallback="redacted"):
@@ -231,6 +233,10 @@ def text_len(value):
     return len(str(value))
 
 
+def has_user_visible_output(content_chars, tool_call_count=0):
+    return bool(content_chars or tool_call_count)
+
+
 def _text_value(value):
     if value is None:
         return ""
@@ -283,6 +289,7 @@ def parse_sse_events(lines, started_at=None, clock=None, include_raw=False):
         "finish_reason": None,
     }
     slots = {}
+    content_parts = []
     first_event_at = None
     last_event_at = None
     for raw_line in lines:
@@ -318,7 +325,10 @@ def parse_sse_events(lines, started_at=None, clock=None, include_raw=False):
             stats["semantic_events"] += 1
         for choice in choices:
             delta = choice.get("delta") or {}
-            stats["content_chars"] += text_len(delta.get("content"))
+            content = _text_value(delta.get("content"))
+            stats["content_chars"] += len(content)
+            if content:
+                content_parts.append(content)
             stats["reasoning_chars"] += text_len(delta.get("reasoning_content"))
             for call in delta.get("tool_calls") or []:
                 index = call.get("index", len(slots))
@@ -338,6 +348,7 @@ def parse_sse_events(lines, started_at=None, clock=None, include_raw=False):
         stats["stream_error_code"] = "empty_stream"
     stats.update(_tool_call_metrics(slots.values()))
     if include_raw:
+        stats["_content_text"] = "".join(content_parts)
         stats["_tool_calls_raw"] = list(slots.values())
     return stats
 
@@ -349,7 +360,23 @@ def stream_record_ok(status, stats):
         and stats.get("semantic_events", 0) > 0
         and stats.get("malformed_events", 0) == 0
         and not stats.get("stream_error_code")
+        and has_user_visible_output(stats.get("content_chars", 0), stats.get("tool_call_count", 0))
     )
+
+
+def stability_record_ok(record):
+    return bool(
+        record.get("ok")
+        and _text_value(record.get("_content_text", "")).strip() == "OK"
+    )
+
+
+def gate_payload():
+    return {
+        "stream": False,
+        "max_tokens": 512,
+        "messages": user("Reply with exactly OK."),
+    }
 
 
 def chat(public_id, payload, timeout=REQ_TIMEOUT):
@@ -370,6 +397,7 @@ def chat(public_id, payload, timeout=REQ_TIMEOUT):
             if body.get("stream"):
                 stats = parse_sse_events(response, started_at=started, include_raw=True)
                 record.update({key: value for key, value in stats.items() if not key.startswith("_")})
+                record["_content_text"] = stats.get("_content_text", "")
                 record["_tool_calls_raw"] = stats.get("_tool_calls_raw", [])
                 record["total"] = round(time.monotonic() - started, 3)
                 record["ok"] = stream_record_ok(record["status"], stats)
@@ -395,10 +423,11 @@ def chat(public_id, payload, timeout=REQ_TIMEOUT):
                 record.update(_tool_call_metrics(raw_calls))
                 record["_tool_calls_raw"] = raw_calls
                 record["_content_text"] = _text_value(message.get("content"))
-                record["empty_response"] = not bool(
-                    record["content_chars"] or record["reasoning_chars"] or record["tool_call_count"]
+                record["empty_response"] = not has_user_visible_output(
+                    record["content_chars"], record["tool_call_count"]
                 )
                 record["completion_tokens"] = (value.get("usage") or {}).get("completion_tokens")
+                record["done"] = True
                 record["ok"] = record["status"] == 200 and not record["empty_response"]
     except urllib.error.HTTPError as error:
         record["status"] = error.code
@@ -456,7 +485,7 @@ def needle_payload(context_target=32768):
     document = filler[:midpoint] + " IMPORTANT: the secret access code is " + NEEDLE + ". " + filler[midpoint:]
     return {
         "stream": False,
-        "max_tokens": 64,
+        "max_tokens": 512,
         "messages": user(document + "\n\nReply with only the secret access code mentioned above."),
     }
 
@@ -485,20 +514,41 @@ def context_targets_for_model(meta, targets):
 
 def _tools_are_supported(meta):
     if "tools_status" in meta:
-        return meta.get("tools_status") == "supported"
+        return meta.get("tools_status") in {"supported", "inferred"}
     return bool(meta.get("supports_tools"))
 
 
 def _reasoning_efforts(meta):
     if not meta.get("supports_reasoning"):
         return []
-    declared = meta.get("reasoning_efforts") or meta.get("reasoning_levels")
+    declared = meta.get("reasoning_efforts")
+    if declared is None:
+        declared = meta.get("reasoning_levels")
     allowed = {"none", "low", "medium", "high"}
     if isinstance(declared, list):
         values = [str(value).lower() for value in declared if str(value).lower() in allowed]
-        if values:
-            return list(dict.fromkeys(values))
-    return ["none", "low", "high"]
+        if meta.get("reasoning_zero_allowed") is False:
+            values = [value for value in values if value != "none"]
+        return list(dict.fromkeys(values))
+    fallback = ["none", "low", "high"]
+    if meta.get("reasoning_zero_allowed") is False:
+        fallback.remove("none")
+    return fallback
+
+
+def parse_model_ids(value):
+    values = [item.strip() for item in str(value).split(",") if item.strip()]
+    if not values:
+        raise argparse.ArgumentTypeError("models must contain at least one model id")
+    return list(dict.fromkeys(values))
+
+
+def select_models(catalog, requested=None):
+    models = [item for item in catalog if isinstance(item, dict) and item.get("enabled")]
+    if not requested:
+        return models
+    wanted = set(requested)
+    return [item for item in models if item.get("public_id") in wanted]
 
 
 def matrix_plan(meta, repeat=DEFAULT_REPEAT, context_targets=None):
@@ -554,12 +604,23 @@ def matrix_plan(meta, repeat=DEFAULT_REPEAT, context_targets=None):
     if safe_targets:
         for target in safe_targets:
             plan.append(("context_needle_%d" % target, needle_payload(target)))
+    elif context_targets:
+        observed_target = min(int(target) for target in context_targets)
+        plan.append(
+            (
+                "context_needle_observed_%d" % observed_target,
+                needle_payload(observed_target),
+            )
+        )
     else:
         plan.append(("context_needle_skipped", {"skipped": "context_window_unverified"}))
     for index in range(1, max(0, int(repeat)) + 1):
         entry = {"stream": True, "max_tokens": 32, "messages": user("Reply with exactly the word OK.")}
-        if reasoning_efforts:
-            entry["reasoning_effort"] = "none" if "none" in reasoning_efforts else reasoning_efforts[0]
+        # A positive reasoning level with a 32-token window creates an empty
+        # answer on models that cannot express "none". Leave the field out and
+        # measure the model's default path instead of manufacturing starvation.
+        if "none" in reasoning_efforts:
+            entry["reasoning_effort"] = "none"
         plan.append(("stability_%d" % index, entry))
     plan.append(
         (
@@ -609,6 +670,7 @@ def run_matrix(meta, deadline, repeat=DEFAULT_REPEAT, context_targets=None):
     def run(case, payload, annotate=None):
         if payload.get("skipped"):
             record = {"skipped": payload["skipped"], "ok": False}
+            record["case"] = case
             results.append(record)
             emit(case, record)
             return record
@@ -620,6 +682,7 @@ def run_matrix(meta, deadline, repeat=DEFAULT_REPEAT, context_targets=None):
             record = retry
         if annotate:
             annotate(record)
+        record["case"] = case
         results.append(record)
         emit(case, record)
         return record
@@ -627,13 +690,21 @@ def run_matrix(meta, deadline, repeat=DEFAULT_REPEAT, context_targets=None):
     for case, payload in matrix_plan(meta, repeat=repeat, context_targets=context_targets):
         if deadline - time.monotonic() < 20:
             record = {"skipped": "budget", "ok": False}
+            record["case"] = case
             results.append(record)
             emit(case, record)
             continue
         if case.startswith("context_needle_") and not payload.get("skipped"):
             run(case, payload, lambda record: record.update({"needle_hit": needle_hit(record.get("_content_text", ""))}))
             continue
-        record = run(case, payload)
+        annotate = None
+        if case.startswith("stability_"):
+            def annotate_stability(value):
+                value["exact_ok"] = stability_record_ok(value)
+                value["ok"] = value["exact_ok"]
+
+            annotate = annotate_stability
+        record = run(case, payload, annotate)
         raw_calls = record.get("_tool_calls_raw") or []
         if case == "tools_parallel" and raw_calls:
             followup = {
@@ -762,6 +833,7 @@ def parse_args(argv=None):
     parser.add_argument("--context-targets", type=parse_context_targets, default=list(DEFAULT_CONTEXT_TARGETS))
     parser.add_argument("--max-models", type=_positive_int, default=DEFAULT_MAX_MODELS)
     parser.add_argument("--matrix-budget-seconds", type=_positive_float, default=DEFAULT_MATRIX_BUDGET_SECONDS)
+    parser.add_argument("--models", type=parse_model_ids, default=None, help="comma-separated model allowlist")
     return parser.parse_args(argv)
 
 
@@ -779,7 +851,15 @@ def main(argv=None):
     try:
         status, body = call_admin("GET", "/admin/api/models")
         catalog = unwrap(body) if status == 200 else []
-        models = [item for item in catalog if item.get("enabled")] if isinstance(catalog, list) else []
+        if isinstance(catalog, list):
+            for item in catalog:
+                item["public_id"] = item.get("public_id") or item.get("model_id") or item.get("id")
+            requested_models = args.models
+            if requested_models is None and not REMOTE_MODEL_FILTER.startswith("__"):
+                requested_models = [REMOTE_MODEL_FILTER]
+            models = select_models(catalog, requested_models)
+        else:
+            models = []
         status, metrics = call_admin("GET", "/metrics", timeout=15)
         pool_healthy = None
         if status == 200:
@@ -820,7 +900,7 @@ def main(argv=None):
 
         def gate(meta):
             attempts = [
-                chat(meta["public_id"], {"stream": False, "max_tokens": 16, "messages": user("Reply with exactly OK.")}, timeout=GATE_TIMEOUT)
+                chat(meta["public_id"], gate_payload(), timeout=GATE_TIMEOUT)
                 for _ in range(2)
             ]
             statuses = [attempt.get("status") for attempt in attempts]

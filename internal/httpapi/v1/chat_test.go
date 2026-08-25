@@ -81,6 +81,24 @@ func TestChatOpenCodeFreeEmptyResponseReturnsFault(t *testing.T) {
 	}
 }
 
+func TestChatNonstreamReasoningStarvationReturnsRetryableFault(t *testing.T) {
+	body := &semanticMarkBody{ReadCloser: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"thinking"},"finish_reason":"length"}]}`))}
+	client := &semanticMarkProvider{response: &http.Response{StatusCode: http.StatusOK, Body: body}}
+	response, err := NewChat(nil, nil, client).execute([]byte(`{"model":"vendor/model","max_tokens":64}`), false)(
+		context.Background(), 1, nil, &router.CommitState{},
+	)
+	if response != nil && response.Body != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
+	var classified fault.Fault
+	if !errors.As(err, &classified) {
+		t.Fatalf("execute error = %T %v, want reasoning starvation fault", err, err)
+	}
+	if classified.PublicCode != "upstream_empty_response" || !classified.Retryable {
+		t.Fatalf("classified = %#v, want retryable upstream_empty_response", classified)
+	}
+}
+
 // A transient gateway status on a streaming request is retried once while
 // nothing has been written to the client — the 2026-08-24 x-preview 503 showed
 // streams had no protection at all against an upstream blip.
@@ -145,6 +163,62 @@ func TestChatOpenCodeFreeNoRetryAfterClientBytesWritten(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "upstream_stream_truncated") {
 		t.Fatalf("body = %q, want in-stream truncation event", response.Body.String())
+	}
+}
+
+func TestChatOpenCodeFreeMapsFinalTransient500ToBadGateway(t *testing.T) {
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return model, nil
+	})
+	calls := 0
+	handler := NewChat(resolver, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(_ context.Context, _ runtimeconfig.Snapshot, _ []byte, _ bool) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("gateway failure"))}, nil
+	}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"free-model","messages":[{"role":"user","content":"hi"}]}`))
+
+	handler.ServeHTTP(response, request)
+
+	if calls != 2 {
+		t.Fatalf("gateway calls = %d, want one retry", calls)
+	}
+	assertChatError(t, response, http.StatusBadGateway, "upstream_unavailable")
+}
+
+func TestChatOpenCodeFreeRetriesReasoningStarvationBeforeWriting(t *testing.T) {
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return model, nil
+	})
+	calls := 0
+	starved := `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"thinking"},"finish_reason":"length"}]}`
+	answered := `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+	handler := NewChat(resolver, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(_ context.Context, _ runtimeconfig.Snapshot, _ []byte, _ bool) (*http.Response, error) {
+		calls++
+		body := starved
+		if calls == 2 {
+			body = answered
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"free-model","messages":[{"role":"user","content":"hi"}]}`))
+
+	handler.ServeHTTP(response, request)
+
+	if calls != 2 {
+		t.Fatalf("gateway calls = %d, want one retry after starvation", calls)
+	}
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"ok"`) {
+		t.Fatalf("response = %d %s, want successful retry", response.Code, response.Body.String())
 	}
 }
 
@@ -419,6 +493,16 @@ func TestSemanticChatEventAcceptsReasoningAliases(t *testing.T) {
 	}
 }
 
+func TestSemanticChatEventRejectsEmptyContent(t *testing.T) {
+	accepted, err := semanticChatEvent(sse.Event{Data: []string{`{"choices":[{"delta":{"content":""}}]}`}})
+	if err != nil {
+		t.Fatalf("semanticChatEvent returned error: %v", err)
+	}
+	if accepted {
+		t.Fatal("empty content event was accepted as semantic output")
+	}
+}
+
 func TestChatStreamCommentOnlyAttemptFails(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -491,6 +575,29 @@ func TestChatStreamCommittedInterruptionAppendsErrorEvent(t *testing.T) {
 	}
 	if !logger.contains("stream_truncated_after_commit") {
 		t.Fatalf("committed interruption was not logged; got %v", logger.messages())
+	}
+}
+
+func TestChatStreamReasoningStarvationAppendsEmptyResponseError(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"more\"},\"finish_reason\":\"length\"}]}\n\n" +
+				"data: [DONE]\n\n",
+		)),
+	}
+	response := httptest.NewRecorder()
+
+	NewChat(nil, nil, nil).streamResponse(context.Background(), response, upstream)
+
+	body := response.Body.String()
+	if !strings.Contains(body, "upstream_empty_response") {
+		t.Fatalf("body = %q, want upstream_empty_response", body)
+	}
+	if strings.Count(body, "data: [DONE]") != 1 {
+		t.Fatalf("body = %q, want one terminal [DONE]", body)
 	}
 }
 

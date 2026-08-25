@@ -336,3 +336,30 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 发布后 app 实际使用目标镜像，容器 `running/healthy`、重启 0、OOM `false`；`/health/live`、`/health/ready`、代理池 `18080/healthz`、OpenCodeFree `6020/healthz`、根页和管理员页均返回 200；匿名 `/v1/models` 与 `/metrics` 均返回 401；`3756/18080/18081/6020` 监听正常。
 - 远端只读数据库核验：`schema_migrations` 最大版本 45，enabled 模型 5 个。发布后 5 分钟日志未发现 panic、fatal、migration 或 foreign-key 错误；管理员 reasoning 与预算请求均返回 200，临时测试 Key 已由清理逻辑删除。
 - 本地门禁通过：`go test ./...`、`go vet ./...`、19 个 Python 探针测试和 `git diff --check`；两轮代码审查无阻断问题。未将免认证健康检查或单模型结果宣称为完整模型矩阵、代理轮换或 CONNECT E2E。
+
+## 27. 2026-08-26 hy3 稳定模型短测与评测器修复
+
+- 远端真实短测严格限定 `opencode-free/hy3-free`，总耗时约 130 秒；门控两次连续 200，reasoning low/high、JSON、长输出均 200，20/20 stability 样本成功，TTFT 约 1.7-7.4 秒。
+- 工具用例返回 501 `not_implemented`，模型目录为 `supports_tools=false` 且 `tools_status=unknown`，归类为模型能力限制而非路由器故障；context needle 因目录 `context_length=0` 跳过，未编造上下文窗口结论。
+- 根因修复：`scripts/test/vibe_eval_remote.py` 的 `run_matrix` 仅在日志副本附加 `case`，返回记录缺失该字段，导致真实 stability 样本被汇总为 `samples=0`；现在普通、预算跳过和重试记录均保留 case。新增模型白名单、reasoning zero_allowed、inferred tools 与两条 case 归因回归测试。
+- 本地服务修复仍未发布到远端：reasoning 空答案返回可重试的上游空响应，OpenCodeFree 首字节前瞬态 500/空 reasoning 自动重试，最终 500 映射 502；相关 Go 回归测试已通过。远端当前仍为 `nvidia-router:deploy-20260826-model-health-race-6d4b782`。
+- 远端复核：容器 healthy、重启 0、OOM false，live/ready 均 200；`vibe-eval` 临时 Key 匹配残留 0。近期 `validation_all_failed`、`proxy_rejected`、`proxy_transport_retired` 仍是上游代理出口波动，未发现 panic、foreign-key 或协议错误。
+- 验证组合：`go test ./...`、`go vet ./...`、21 个 Python 单测、`git diff --check` 均通过；未执行本地修复的生产部署、全模型矩阵、完整代理轮换或 CONNECT E2E。
+
+## 28. 2026-08-26 Vibe 评测语义与流式空终答修复
+
+- 根因一：两套评测器把 reasoning 字符当成用户答案，reasoning-only + `finish_reason=length` 被记为 `empty_response=false/ok=true`；修复为 content/tool call 才算可见输出，稳定性还必须精确匹配 `OK`。
+- 根因二：`vibe_eval_remote.py` 的稳定性门控使用 16-token 输出预算，先前会把稳定 reasoning 模型在门控阶段误排除；门控改为 512，context needle 改为 512，并在未知 `context_length` 时执行命名的 8K lower-bound 探测，不写回或猜测窗口值。
+- 根因三：Chat SSE 首事件快速路径把空 `content` 当语义事件，且 `[DONE]` 前无终态校验；新增空 content 拒绝、终态前的 reasoning-only/length 检查和 `upstream_empty_response` 流内错误。普通非流式、OpenCodeFree 重试和最终 500 映射修复保持不变。
+- 最终短测只使用 `opencode-free/hy3-free`，约 125 秒：门控 2/2 200，reasoning low/high、JSON、长输出 200，8K lower-bound needle 命中；稳定性 17/20（85%），3 次为空终答且 `finish_reason=length`。工具 501 是目录 `supports_tools=false`/`tools_status=unknown` 的能力限制。
+- 远端仍运行 `nvidia-router:deploy-20260826-model-health-race-6d4b782`，本地服务修复未部署、未重启；24 小时日志签名为 validation_all_failed 172、proxy_rejected 11、proxy_transport_retired 74、transport_failed 10，panic/fatal/foreign-key/upstream_protocol_error 均 0。代理签名继续按出口/provider 波动处理。
+- 本地验证：`go test ./...`、`go vet ./...`、34 个 Python 单测、`gofmt -d`、`git diff --check` 通过。未完成全模型矩阵、Codex/Responses E2E、完整代理轮换或 CONNECT 专项验收。
+
+## 29. 2026-08-26 稳定模型复现与评测器边界修复
+
+- 远端只读核验仍为 `nvidia-router:deploy-20260826-model-health-race-6d4b782`，容器 `running/healthy`、重启 0、OOM false，Release 与版本化镜像完整；本轮没有部署、重启或改远端配置。
+- 近 24 小时应用日志脱敏计数：`validation_all_failed=249`、`proxy_rejected=11`、`proxy_transport_retired=95`、`transport_failed=10`、`reasoning_starved_response=4`；未发现 panic、fatal、migration、foreign-key 或 `upstream_protocol_error`。前四类继续归为代理出口/provider 波动，思考饥饿是旧版本仍只告警未重试的证据。
+- 仅对 `opencode-free/hy3-free` 执行一次有界短测，矩阵耗时 121.4 秒：门控 2/2 HTTP 200；25/26 请求 HTTP 200；8K lower-bound context needle 命中；工具 501 `not_implemented` 与目录 `supports_tools=false/tools_status=unknown` 一致；稳定性 16/20，4 次为 `finish_reason=length` 且无可见 content。该结果复现旧版本问题，不代表全模型通过。
+- 评测器新增边界：声明 `reasoning_zero_allowed=false` 时过滤 `none`，声明 levels 无可表达档位时跳过显式 reasoning；稳定性要求完整匹配 `OK`；生成代码结果比较改用 `ast.literal_eval`，不再执行模型返回的表达式。服务端空终答、SSE 终态、OpenCodeFree 瞬态重试修复仍未发布到远端。
+- 本地门禁：`go test ./...`、`go vet ./...`、31 个 vibe 单测、8 个 capability 单测、`gofmt -d`、`git diff --check` 均通过。若要验证服务端修复，必须先处理未提交改动，生成唯一版本号并按 `scripts/deploy/deploy_remote.py` 发布；发布会重启测试机 app，需遵守目标机确认规则。
+- 当前 Windows 未安装 `gcc`，`go test -race` 在 `CGO_ENABLED=1` 下无法构建；未为本轮临时安装工具或改环境配置，race 结果保持未验证。

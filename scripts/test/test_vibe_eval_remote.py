@@ -136,12 +136,153 @@ class SSEStatsTest(unittest.TestCase):
         self.assertEqual(stats["stream_error_code"], "empty_stream")
         self.assertFalse(MODULE.stream_record_ok(200, stats))
 
+    def test_reasoning_only_stream_is_not_a_user_visible_success(self):
+        stats = {
+            "done": True,
+            "semantic_events": 2,
+            "malformed_events": 0,
+            "stream_error_code": None,
+            "content_chars": 0,
+            "reasoning_chars": 120,
+            "tool_call_count": 0,
+        }
+
+        self.assertFalse(MODULE.stream_record_ok(200, stats))
+
+    def test_tool_only_stream_is_a_user_visible_success(self):
+        stats = {
+            "done": True,
+            "semantic_events": 2,
+            "malformed_events": 0,
+            "stream_error_code": None,
+            "content_chars": 0,
+            "reasoning_chars": 0,
+            "tool_call_count": 1,
+        }
+
+        self.assertTrue(MODULE.stream_record_ok(200, stats))
+
+    def test_stream_parser_keeps_internal_content_for_task_verification(self):
+        stats = MODULE.parse_sse_events(
+            [b'data: {"choices":[{"delta":{"content":"OK"}}]}\n', b"data: [DONE]\n"],
+            include_raw=True,
+        )
+
+        self.assertEqual(stats["_content_text"], "OK")
+
+
+class ChatRecordTest(unittest.TestCase):
+    def test_chat_carries_stream_content_to_stability_verifier(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def __iter__(self):
+                return iter([b'data: {"choices":[{"delta":{"content":"OK"}}]}\n', b"data: [DONE]\n"])
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        original_opener = MODULE.v1_opener
+        original_key = MODULE.access_key
+        MODULE.v1_opener = Opener()
+        MODULE.access_key = {"id": None, "key": "test-key"}
+        try:
+            record = MODULE.chat("stable/model", {"stream": True, "messages": []})
+        finally:
+            MODULE.v1_opener = original_opener
+            MODULE.access_key = original_key
+
+        self.assertEqual(record["_content_text"], "OK")
+
+    def test_chat_marks_complete_nonstream_response(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}'
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        original_opener = MODULE.v1_opener
+        original_key = MODULE.access_key
+        MODULE.v1_opener = Opener()
+        MODULE.access_key = {"id": None, "key": "test-key"}
+        try:
+            record = MODULE.chat("stable/model", {"stream": False, "messages": []})
+        finally:
+            MODULE.v1_opener = original_opener
+            MODULE.access_key = original_key
+
+        self.assertTrue(record["done"])
+
 
 class NeedleAndSummaryTest(unittest.TestCase):
     def test_needle_hit_returns_only_a_boolean(self):
         self.assertTrue(MODULE.needle_hit("answer: ZEBRA-42-VECTOR"))
         self.assertFalse(MODULE.needle_hit("answer: ZEBRA-42"))
         self.assertIsInstance(MODULE.needle_hit("ZEBRA-42-VECTOR"), bool)
+
+    def test_inferred_tools_are_eligible_for_tool_matrix(self):
+        self.assertTrue(
+            MODULE._tools_are_supported(
+                {"supports_tools": True, "tools_status": "inferred"}
+            )
+        )
+
+    def test_reasoning_efforts_respect_zero_allowed(self):
+        self.assertEqual(
+            MODULE._reasoning_efforts(
+                {
+                    "supports_reasoning": True,
+                    "reasoning_levels": ["none", "low", "high"],
+                    "reasoning_zero_allowed": False,
+                }
+            ),
+            ["low", "high"],
+        )
+
+    def test_unexpressible_declared_reasoning_profile_is_skipped(self):
+        self.assertEqual(
+            MODULE._reasoning_efforts(
+                {
+                    "supports_reasoning": True,
+                    "reasoning_levels": ["none"],
+                    "reasoning_zero_allowed": False,
+                }
+            ),
+            [],
+        )
+
+    def test_stability_does_not_force_positive_reasoning_into_tiny_budget(self):
+        plan = MODULE.matrix_plan(
+            {
+                "supports_reasoning": True,
+                "reasoning_levels": ["low", "high"],
+                "reasoning_zero_allowed": True,
+                "supports_tools": False,
+                "tools_status": "unknown",
+                "context_length": 0,
+            },
+            repeat=1,
+            context_targets=[],
+        )
+        stability = next(payload for case, payload in plan if case == "stability_1")
+        self.assertNotIn("reasoning_effort", stability)
 
     def test_context_targets_do_not_invent_an_undeclared_window(self):
         self.assertEqual(
@@ -152,6 +293,26 @@ class NeedleAndSummaryTest(unittest.TestCase):
             MODULE.context_targets_for_model({"context_length": 0}, [8192, 32768]),
             [],
         )
+
+    def test_unknown_context_runs_lower_bound_probe_without_declaring_window(self):
+        plan = MODULE.matrix_plan(
+            {
+                "supports_reasoning": True,
+                "reasoning_levels": ["low", "high"],
+                "context_length": 0,
+                "supports_tools": False,
+                "tools_status": "unknown",
+            },
+            repeat=1,
+            context_targets=[8192],
+        )
+
+        cases = [case for case, _ in plan]
+        self.assertIn("context_needle_observed_8192", cases)
+        self.assertNotIn("context_needle_skipped", cases)
+
+    def test_context_probe_reserves_budget_for_needle_answer(self):
+        self.assertEqual(MODULE.needle_payload(8192)["max_tokens"], 512)
 
     def test_stability_summary_has_twenty_sample_gate_and_no_content(self):
         records = [
@@ -186,7 +347,81 @@ class NeedleAndSummaryTest(unittest.TestCase):
         self.assertNotIn("content_text", encoded)
 
 
+class MatrixRecordTest(unittest.TestCase):
+    def test_matrix_results_keep_case_for_stability_summary(self):
+        original_plan = MODULE.matrix_plan
+        original_chat = MODULE.chat
+        original_log = MODULE.log
+        MODULE.matrix_plan = lambda meta, repeat, context_targets: [
+            ("stability_1", {"stream": False, "messages": []})
+        ]
+        MODULE.chat = lambda public_id, payload: {
+            "ok": True,
+            "status": 200,
+            "ttft": 0.01,
+        }
+        MODULE.log = lambda kind, payload: None
+        try:
+            records = MODULE.run_matrix(
+                {"public_id": "stable/model", "provider": "opencodefree"},
+                deadline=MODULE.time.monotonic() + 30,
+                repeat=1,
+                context_targets=[],
+            )
+        finally:
+            MODULE.matrix_plan = original_plan
+            MODULE.chat = original_chat
+            MODULE.log = original_log
+
+        self.assertEqual(records[0]["case"], "stability_1")
+
+    def test_budget_skips_keep_case_for_summary(self):
+        original_plan = MODULE.matrix_plan
+        original_log = MODULE.log
+        MODULE.matrix_plan = lambda meta, repeat, context_targets: [
+            ("stability_1", {"stream": False, "messages": []})
+        ]
+        MODULE.log = lambda kind, payload: None
+        try:
+            records = MODULE.run_matrix(
+                {"public_id": "stable/model", "provider": "opencodefree"},
+                deadline=MODULE.time.monotonic() + 1,
+                repeat=1,
+                context_targets=[],
+            )
+        finally:
+            MODULE.matrix_plan = original_plan
+            MODULE.log = original_log
+
+        self.assertEqual(records[0], {"case": "stability_1", "ok": False, "skipped": "budget"})
+
+    def test_stability_requires_exact_visible_answer(self):
+        self.assertTrue(MODULE.stability_record_ok({"ok": True, "_content_text": "OK"}))
+        self.assertFalse(MODULE.stability_record_ok({"ok": True, "_content_text": "maybe"}))
+        self.assertFalse(MODULE.stability_record_ok({"ok": True, "_content_text": ""}))
+
+
 class ArgumentTest(unittest.TestCase):
+    def test_gate_reserves_budget_for_a_visible_answer(self):
+        self.assertEqual(MODULE.gate_payload()["max_tokens"], 512)
+
+    def test_explicit_model_allowlist_is_parsed(self):
+        args = MODULE.parse_args(["--models", "stable/model,second/model"])
+
+        self.assertEqual(args.models, ["stable/model", "second/model"])
+
+    def test_model_allowlist_filters_catalog_before_gate(self):
+        selected = MODULE.select_models(
+            [
+                {"public_id": "stable/model", "enabled": True},
+                {"public_id": "other/model", "enabled": True},
+                {"public_id": "disabled/model", "enabled": False},
+            ],
+            ["stable/model"],
+        )
+
+        self.assertEqual([item["public_id"] for item in selected], ["stable/model"])
+
     def test_matrix_arguments_are_parameterized(self):
         args = MODULE.parse_args(
             [

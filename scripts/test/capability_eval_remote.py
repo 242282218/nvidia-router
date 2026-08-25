@@ -16,6 +16,7 @@ tool arguments never reach stdout.
 
 from __future__ import annotations
 
+import ast
 import json
 import multiprocessing
 import re
@@ -207,6 +208,10 @@ def _text_value(value):
     return str(value)
 
 
+def has_user_visible_output(content_chars, tool_call_count=0):
+    return bool(content_chars or tool_call_count)
+
+
 def user(content):
     return [{"role": "user", "content": content}]
 
@@ -247,8 +252,8 @@ def chat(model, payload, timeout=CHAT_TIMEOUT):
                 record["_tool_calls_raw"] = raw_calls
                 record["finish_reason"] = first.get("finish_reason")
                 record["completion_tokens"] = (body.get("usage") or {}).get("completion_tokens")
-                record["empty_response"] = not (
-                    record["content_chars"] or record["reasoning_chars"] or raw_calls
+                record["empty_response"] = not has_user_visible_output(
+                    record["content_chars"], len(raw_calls)
                 )
                 record["ok"] = record["status"] == 200 and not record["empty_response"]
     except urllib.error.HTTPError as error:
@@ -346,7 +351,7 @@ def _consume_stream(response, record, started):
     record["_content_text"] = "".join(chunks)
     record["stream_gap_max"] = round(max(gaps), 3) if gaps else None
     record["_tool_calls_raw"] = [slots[i] for i in sorted(slots)]
-    record["empty_response"] = not (content_chars or reasoning_chars or slots)
+    record["empty_response"] = not has_user_visible_output(content_chars, len(slots))
     record["ok"] = record["status"] == 200 and done and events > 0 and not record["empty_response"]
 
 
@@ -443,8 +448,8 @@ def _outcome_matches(outcome):
     # repr() equality with numeric normalization: 1 == 1.0 and equal lists of
     # numbers must pass, so compare the parsed literals when possible
     try:
-        got_value = eval(outcome["got"])  # noqa: S307 - sandbox-controlled repr
-        expected_value = eval(outcome["expected"])
+        got_value = ast.literal_eval(outcome["got"])
+        expected_value = ast.literal_eval(outcome["expected"])
     except Exception:
         return outcome["got"] == outcome["expected"]
 
@@ -561,7 +566,7 @@ def needle_payload(context_target=8192):
     document = filler[:midpoint] + " IMPORTANT: the secret access code is " + NEEDLE + ". " + filler[midpoint:]
     return {
         "stream": False,
-        "max_tokens": 64,
+        "max_tokens": 512,
         "messages": user(document + "\n\nReply with only the secret access code mentioned above."),
     }
 
@@ -588,12 +593,24 @@ TOOL_RESULTS = {
 }
 
 
+def _reasoning_efforts(meta):
+    if not meta.get("supports_reasoning"):
+        return []
+    allowed = {"none", "low", "medium", "high"}
+    declared = [str(value).lower() for value in (meta.get("reasoning_levels") or [])]
+    efforts = [value for value in declared if value in allowed]
+    if meta.get("reasoning_zero_allowed") is False:
+        efforts = [value for value in efforts if value != "none"]
+    if meta.get("reasoning_levels") is not None:
+        return list(dict.fromkeys(efforts))
+    fallback = ["none", "low", "high"]
+    if meta.get("reasoning_zero_allowed") is False:
+        fallback.remove("none")
+    return fallback
+
+
 def build_plan(meta):
-    efforts = []
-    if meta.get("supports_reasoning"):
-        allowed = {"none", "low", "medium", "high"}
-        declared = [str(v).lower() for v in (meta.get("reasoning_levels") or [])]
-        efforts = [v for v in declared if v in allowed] or ["none", "low", "high"]
+    efforts = _reasoning_efforts(meta)
     effort_mid = "medium" if "medium" in efforts else ("high" if "high" in efforts else None)
     plan = []
 
@@ -780,7 +797,8 @@ def verify_record(case, record):
         record["city_arg_ok"] = any("beijing" in str(c.get("args", "")).lower() for c in calls)
         return
     if case.startswith("stability_"):
-        record["exact_ok"] = text.strip().upper().startswith("OK")
+        record["exact_ok"] = text.strip() == "OK"
+        record["ok"] = bool(record.get("ok") and record["exact_ok"])
         return
     if case.startswith("context_needle"):
         record["needle_hit"] = NEEDLE in text
