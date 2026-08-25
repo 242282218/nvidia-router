@@ -266,3 +266,14 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 标准版本 `20260825-design-tokens-ccc725d`，release `/opt/nvidia-router-releases/20260825-design-tokens-ccc725d`，镜像 `nvidia-router:deploy-20260825-design-tokens-ccc725d`；切换前备份 `backups/predeploy-20260825-design-tokens-ccc725d/router.db`（10,059,776 字节，600）；回滚点 `20260825-ui-overlays-772fce2`。
 - 首次构建失败：镜像加速器瞬时无法解析 `golang:1.24.0-bookworm` 元数据；远端直接 pull 精确 tag 后重试即成功。教训：加速器抖动先补拉精确 tag 重试，不改 Dockerfile、不换版本号。
 - 发布后验证：app `running/healthy`、重启 0、OOM false；live/ready、18080/6020 healthz、根页与新资源 `index-CweVNl6N.js`/`index-CIPy-lLW.css`、公网 live 均 200；匿名 `/v1/models` 与 `/metrics` 401；schema 44、enabled 模型 10；近 5 分钟错误签名 0。管理烟测：登录 200、受保护 API 全 200、注销 204。
+
+## 20. 2026-08-25 P0-P3 全量优化提交（5da18ad）
+
+- 提交 `5da18ad`（`fix: resolve tool-gate deadlock, reasoning starvation, and proxy exit stickiness`），基于 2026-08-25 能力评测与四份测试报告的根因修复：
+  - **工具门控死锁（P0）**：`capabilities.go` validateRequirements 放行 `tools_status=inferred`（运营/能力注册表显式声明；unsupported 与 unknown 仍拒绝）；探针改两段式（required → auto+强提示，tools 探针 max_tokens 16→256），unsupported 需两种形态都明确阴性。kimi-k3/minimax-m3/nemotron-free/x-preview 恢复 Agent 可用。
+  - **小预算思考饥饿（P0）**：`AutoReasoningSpec(profile, outputLimit)` 注入阶梯——≤128 token 注入 none（无 none 可表达则跳过注入，绝不落入正档位）、129–511 最便宜正档位、≥512 维持 medium 上限；`capThinkingBudget` 增加绝对保留 `limit−32`（limit≤32 不封顶）。两个协议包均接线，Responses 的 max_output_tokens 已在 Parse 时改名所以直接读 chat["max_tokens"]。
+  - **proxy_rejected 出口粘滞（P1）**：CONNECT 被拒的出口现在 `Retire(RetireReasonProxyRejected)` 计入池失败计数并丢弃缓存 transport，消除同会话反复拨同一坏出口导致的成簇快速 502；router 层短路语义保持不变。
+  - **启动期 profile 一致性检查（P1）**：`CountUnexpressibleReasoningProfiles` 启动时告警 llama 形态（levels=[none]+zero_allowed=false）模型。
+  - **OCF 流式瞬态重试（P2）**：首字节未写出前允许一次 500ms 重试（firstWriteTracker 跟踪）；owned_by 按 provider 区分；capability 501 写入专用 error_code。
+  - **常态化探测（P3）**：迁移 045 加 `capability_probe_enabled`（默认关）+ `capability_probe_interval_hours`（默认 24），CapabilityProbeRunner 串行跑 detailed probe 自动回写。
+- 测试要点：探针 fake 用 `chatResponses []string` 按调用重放；runner 测试必须给 discoverer 设 `chatResponse` 兜底否则第二个 chat 模型的 base+reasoning 探针会因空 choices 失败导致调用数不符；runner 已改为纯串行（无并发），测试确定性依赖 List 的 public_id 排序。
