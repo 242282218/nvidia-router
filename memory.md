@@ -286,3 +286,17 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 回滚点为 `/opt/nvidia-router-releases/20260825-design-tokens-ccc725d` / `nvidia-router:deploy-20260825-design-tokens-ccc725d`。切换前备份为 `/opt/nvidia-router-releases/20260825-redeploy-227061b/backups/predeploy-20260825-redeploy-227061b/router.db`，大小 10,391,552 字节，权限 `600`，UID/GID `10001:10001`，SHA-256 为 `87a7872b1bde68253100dec58ceab328a0ba7cf385882471c2ce12b82c56e878`。
 - 发布后 app 使用目标镜像，`running/healthy`、重启 0、OOM false；schema 45、enabled 模型 11 个；3756 live/ready、18080/6020 healthz、根页均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；临时归档已清理。
 - 管理烟测通过：登录 200、鉴权 metrics 200、reasoning 接受请求 2/2 返回 200、预算协调请求 200、注销和临时 Key 清理由脚本 finally 执行。未执行完整模型矩阵、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
+
+## 22. 2026-08-25 渠道状态美学重构与重新部署（b8e83c2）
+
+- GitHub `main` 与部署源码基线均为 `b8e83c2`（`feat: redesign channel status with Claude and Codex aesthetics`）：
+  - 前端融合 Claude 官方温润排版（暖白卡片、微光呼吸状态胶囊、清晰标题层级）与 Codex 官方精密遥测（4 联 KPI 态势概览看板、交互式状态过滤胶囊条、即时搜索框、4 列对齐核心指标网格与 Uptime Bar 悬停时间线）。
+  - 补齐前端 `capability_probe_enabled` 运行时设置契约与测试用例，全量 44 套件 292 个前端单测全部 PASS，88/88 对比度配对合规，vue-tsc/eslint 0 错误。
+- 使用标准脚本 `python scripts/deploy/deploy_remote.py 20260825-channel-status-b8e83c2` 发布到 `/opt/nvidia-router-releases/20260825-channel-status-b8e83c2`，镜像为 `nvidia-router:deploy-20260825-channel-status-b8e83c2`。
+- 回滚点为 `/opt/nvidia-router-releases/20260825-redeploy-227061b` / `nvidia-router:deploy-20260825-redeploy-227061b`。切换前备份为 `/opt/nvidia-router-releases/20260825-channel-status-b8e83c2/backups/predeploy-20260825-channel-status-b8e83c2/router.db`，大小 10,518,528 字节，权限 `600`，属主 `10001:10001`。
+- 发布后验证：
+  - 容器 `nvidia-router-app-1` 状态 `Up (healthy)`、重启 0；
+  - 端点 `http://127.0.0.1:3756/health/live` 与 `http://127.0.0.1:3756/health/ready` 返回 200；
+  - 静态资源 `/admin/` 与 `/admin/assets/ModelHealthView-DzqfBNNQ.css` 正常返回 200；
+  - 管理员认证：使用配置管理密码 `POST /admin/api/auth/login` 返回 200 `authenticated: true`，获取 Session Cookie 请求 `/admin/api/model-health/summary` 正常返回 11 个白名单模型遥测数据。
+
