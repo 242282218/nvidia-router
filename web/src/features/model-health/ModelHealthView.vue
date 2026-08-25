@@ -65,6 +65,7 @@ const range = ref<ModelHealthRange>('6h')
 const group = ref<ModelHealthGroup>('default')
 const sort = ref<ModelHealthSort>('quality')
 const scope = ref<'all' | 'enabled'>('all')
+const statusFilter = ref<'all' | 'healthy' | 'degraded' | 'unavailable' | 'unchecked'>('all')
 const search = ref('')
 const summary = ref<ModelHealthSummary | null>(null)
 const loading = ref(false)
@@ -89,10 +90,29 @@ const intervalValue = computed({
   set: (value: string) => { void updateSettings({ interval_seconds: Number(value) }) },
 })
 
+const rangeLabel = computed(() => {
+  const match = ranges.find((item) => item.value === range.value)
+  return match ? match.label : range.value
+})
+
+const enabledCount = computed(() => (summary.value?.models ?? []).filter((m) => m.enabled).length)
+const disabledCount = computed(() => (summary.value?.models ?? []).filter((m) => !m.enabled).length)
+
+const aggregateSuccessRate = computed(() => {
+  const models = summary.value?.models ?? []
+  const probed = models.filter((m) => m.probe_count > m.skipped_count && m.probe_count > 0)
+  if (probed.length === 0) return '100.0'
+  const totalSuccess = probed.reduce((acc, m) => acc + m.success_count, 0)
+  const totalEffective = probed.reduce((acc, m) => acc + (m.success_count + m.failure_count + m.timeout_count), 0)
+  if (totalEffective === 0) return '100.0'
+  return ((totalSuccess / totalEffective) * 100).toFixed(1)
+})
+
 const filteredModels = computed<ModelHealthModel[]>(() => {
   const needle = search.value.trim().toLowerCase()
   const models = (summary.value?.models ?? []).filter((model) => {
     if (scope.value === 'enabled' && !model.enabled) return false
+    if (statusFilter.value !== 'all' && displayStatus(model) !== statusFilter.value) return false
     if (!needle) return true
     return [model.display_name, model.public_id, model.provider, model.kind]
       .some((value) => value.toLowerCase().includes(needle))
@@ -376,7 +396,202 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         </template>
       </UiPageHeader>
 
+      <!-- Codex / Claude 风格 KPI 全景状态条 -->
+      <div
+        v-if="summary"
+        class="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4"
+      >
+        <!-- 监控模型 -->
+        <div class="stat-card flex flex-col justify-between">
+          <div class="flex items-center justify-between gap-2">
+            <span class="type-label">监控模型</span>
+            <UiIcon
+              name="model"
+              :size="16"
+              class="text-[var(--color-text-subtle)]"
+            />
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="font-mono-data text-2xl font-semibold tracking-tight text-[var(--color-text)]">
+              {{ summary.total_models }}
+            </span>
+            <span class="text-xs text-[var(--color-text-muted)]">
+              (启用 {{ enabledCount }} · 停用 {{ disabledCount }})
+            </span>
+          </div>
+          <span class="mt-1 text-xs text-[var(--color-text-subtle)]">白名单全量配置模型</span>
+        </div>
+
+        <!-- 整体可用率 -->
+        <div class="stat-card flex flex-col justify-between">
+          <div class="flex items-center justify-between gap-2">
+            <span class="type-label">整体可用率</span>
+            <UiIcon
+              name="pulse"
+              :size="16"
+              class="text-[var(--color-text-subtle)]"
+            />
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span
+              class="font-mono-data text-2xl font-semibold tracking-tight"
+              :class="Number(aggregateSuccessRate) >= 85 ? 'text-[var(--color-success-text)]' : Number(aggregateSuccessRate) >= 50 ? 'text-[var(--color-warning-text)]' : 'text-[var(--color-danger-text)]'"
+            >
+              {{ aggregateSuccessRate }}%
+            </span>
+            <span class="text-xs text-[var(--color-text-muted)]">SLA 达标</span>
+          </div>
+          <span class="mt-1 text-xs text-[var(--color-text-subtle)]">有效探针成功率加权</span>
+        </div>
+
+        <!-- 累计探测 -->
+        <div class="stat-card flex flex-col justify-between">
+          <div class="flex items-center justify-between gap-2">
+            <span class="type-label">窗口探测</span>
+            <UiIcon
+              name="gauge"
+              :size="16"
+              class="text-[var(--color-text-subtle)]"
+            />
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="font-mono-data text-2xl font-semibold tracking-tight text-[var(--color-text)]">
+              {{ totalProbes }}
+            </span>
+            <span class="text-xs text-[var(--color-text-muted)]">次</span>
+          </div>
+          <span class="mt-1 text-xs text-[var(--color-text-subtle)]">{{ rangeLabel }} 采样窗口</span>
+        </div>
+
+        <!-- 巡检状态 -->
+        <div class="stat-card flex flex-col justify-between">
+          <div class="flex items-center justify-between gap-2">
+            <span class="type-label">巡检状态</span>
+            <UiIcon
+              name="timer"
+              :size="16"
+              class="text-[var(--color-text-subtle)]"
+            />
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <span
+              class="inline-block h-2 w-2 shrink-0 rounded-full"
+              :class="currentSettings.enabled ? 'bg-[var(--color-success)] animate-pulse' : 'bg-[var(--color-text-subtle)]'"
+            />
+            <span class="text-sm font-medium text-[var(--color-text)]">
+              {{ currentSettings.enabled ? `自动巡检 (${currentSettings.interval_seconds}s/轮)` : '手动巡检' }}
+            </span>
+          </div>
+          <span class="mt-1 text-xs text-[var(--color-text-subtle)]">
+            {{ updatedAt ? `更新于 ${formatTimeOfDay(updatedAt)}` : '等待同步' }}
+          </span>
+        </div>
+      </div>
+
+      <!-- 快速状态过滤胶囊条（交互式过滤器） -->
+      <div
+        v-if="summary"
+        class="mb-4 flex flex-wrap items-center gap-2"
+        role="tablist"
+        aria-label="状态快速过滤"
+      >
+        <button
+          type="button"
+          class="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border px-3 text-xs font-medium transition-all duration-[var(--duration-micro)] pointer-coarse:h-11"
+          :class="statusFilter === 'all' ? 'border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text)] font-semibold' : 'border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+          @click="statusFilter = 'all'"
+        >
+          <span>全部状态</span>
+          <span class="font-mono-data text-[var(--color-text-subtle)]">({{ summary.total_models }})</span>
+        </button>
+
+        <button
+          type="button"
+          class="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border px-3 text-xs font-medium transition-all duration-[var(--duration-micro)] pointer-coarse:h-11"
+          :class="statusFilter === 'healthy' ? 'border-[var(--color-success)] bg-[var(--color-success-background)] text-[var(--color-success-foreground)] font-semibold' : 'border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+          @click="statusFilter = statusFilter === 'healthy' ? 'all' : 'healthy'"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-success)]"
+            aria-hidden="true"
+          />
+          <span>健康</span>
+          <span class="font-mono-data opacity-80">({{ displayStatusCounts.healthy }})</span>
+        </button>
+
+        <button
+          type="button"
+          class="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border px-3 text-xs font-medium transition-all duration-[var(--duration-micro)] pointer-coarse:h-11"
+          :class="statusFilter === 'degraded' ? 'border-[var(--color-warning)] bg-[var(--color-warning-background)] text-[var(--color-warning-foreground)] font-semibold' : 'border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+          @click="statusFilter = statusFilter === 'degraded' ? 'all' : 'degraded'"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-warning)]"
+            aria-hidden="true"
+          />
+          <span>降级</span>
+          <span class="font-mono-data opacity-80">({{ displayStatusCounts.degraded }})</span>
+        </button>
+
+        <button
+          type="button"
+          class="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border px-3 text-xs font-medium transition-all duration-[var(--duration-micro)] pointer-coarse:h-11"
+          :class="statusFilter === 'unavailable' ? 'border-[var(--color-danger)] bg-[var(--color-danger-background)] text-[var(--color-danger-foreground)] font-semibold' : 'border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+          @click="statusFilter = statusFilter === 'unavailable' ? 'all' : 'unavailable'"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-danger)]"
+            aria-hidden="true"
+          />
+          <span>异常</span>
+          <span class="font-mono-data opacity-80">({{ displayStatusCounts.unavailable }})</span>
+        </button>
+
+        <button
+          type="button"
+          class="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-control)] border px-3 text-xs font-medium transition-all duration-[var(--duration-micro)] pointer-coarse:h-11"
+          :class="statusFilter === 'unchecked' ? 'border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text)] font-semibold' : 'border-[var(--color-border-subtle)] bg-[var(--color-sunken)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]'"
+          @click="statusFilter = statusFilter === 'unchecked' ? 'all' : 'unchecked'"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-text-subtle)]"
+            aria-hidden="true"
+          />
+          <span>无数据</span>
+          <span class="font-mono-data opacity-80">({{ noDataCount }})</span>
+        </button>
+      </div>
+
+      <!-- 搜索与筛选工具栏 -->
       <div class="flex flex-wrap items-center gap-3">
+        <!-- 搜索输入框 -->
+        <div class="relative min-w-[200px] flex-1 sm:max-w-xs">
+          <UiIcon
+            name="search"
+            :size="14"
+            class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-subtle)]"
+          />
+          <input
+            v-model="search"
+            type="text"
+            placeholder="搜索模型名称、ID、提供商…"
+            aria-label="搜索模型"
+            class="input-field h-9 pl-8 pr-3 text-xs sm:text-sm"
+          >
+          <button
+            v-if="search"
+            type="button"
+            class="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-[var(--color-text-subtle)] hover:text-[var(--color-text)]"
+            title="清空搜索"
+            @click="search = ''"
+          >
+            <UiIcon
+              name="close"
+              :size="12"
+            />
+          </button>
+        </div>
+
         <UiSelect
           v-model="range"
           data-testid="model-health-range"
@@ -434,30 +649,37 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         </UiSelect>
       </div>
 
+      <!-- 状态图例与探测说明条 -->
       <div
         data-testid="model-health-legend"
-        class="panel-inset mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border border-[var(--color-border-subtle)] px-3.5 py-2"
+        class="panel-inset mt-4 flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border border-[var(--color-border-subtle)] px-3.5 py-2"
         role="list"
         aria-label="渠道状态图例"
       >
-        <span class="text-xs font-semibold text-[var(--color-text)]">状态图例</span>
-        <span
-          v-for="item in statusLegend"
-          :key="item.key"
-          class="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
-          role="listitem"
-        >
+        <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+          <span class="text-xs font-semibold text-[var(--color-text)]">状态图例</span>
           <span
-            class="h-2 w-2 shrink-0 rounded-full"
-            :style="{ backgroundColor: item.color }"
-            aria-hidden="true"
-          />
-          <span class="font-medium text-[var(--color-text)]">{{ item.label }}</span>
-          <span class="text-[var(--color-text-subtle)]">（{{ item.hint }}）</span>
+            v-for="item in statusLegend"
+            :key="item.key"
+            class="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
+            role="listitem"
+          >
+            <span
+              class="h-2 w-2 shrink-0 rounded-full"
+              :style="{ backgroundColor: item.color }"
+              aria-hidden="true"
+            />
+            <span class="font-medium text-[var(--color-text)]">{{ item.label }}</span>
+            <span class="text-[var(--color-text-subtle)]">（{{ item.hint }}）</span>
+          </span>
+        </div>
+
+        <span class="text-xs text-[var(--color-text-subtle)]">
+          主动探测为只读请求，不计入业务监控
         </span>
       </div>
 
-      <p class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-muted)]">
+      <p class="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-muted)]">
         <span>监控 {{ summary?.total_models ?? 0 }} 个模型 · 总探测 {{ totalProbes }}</span>
         <span v-if="summary">健康 {{ displayStatusCounts.healthy }} · 降级 {{ displayStatusCounts.degraded }} · 异常 {{ displayStatusCounts.unavailable }} · 无数据 {{ noDataCount }}</span>
         <span v-if="updatedAt">更新于 {{ formatTimeOfDay(updatedAt) }}</span>
@@ -499,7 +721,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         skeleton="cards"
         :skeleton-lines="6"
         empty-label="没有匹配的模型"
-        empty-hint="调整模型范围、分组或时间范围后重试。"
+        empty-hint="调整模型范围、状态筛选、分组或时间范围后重试。"
         empty-icon="model"
         error-test-id="model-health-error"
         retry-test-id="model-health-retry"
@@ -509,16 +731,18 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
           <div
             v-for="section in groupedModels"
             :key="section.key"
-            class="mb-5 last:mb-0"
+            class="mb-6 last:mb-0"
           >
             <div
               v-if="group !== 'default'"
-              class="mb-2 flex items-center gap-2"
+              class="mb-3 flex items-center justify-between border-b border-[var(--color-border-subtle)] pb-2"
             >
-              <h2 class="type-heading">
-                {{ section.label }}
-              </h2>
-              <span class="text-xs text-[var(--color-text-subtle)]">{{ section.models.length }}</span>
+              <div class="flex items-center gap-2">
+                <h2 class="type-heading">
+                  {{ section.label }}
+                </h2>
+                <span class="rounded-full bg-[var(--color-sunken)] px-2 py-0.5 font-mono-data text-xs text-[var(--color-text-subtle)]">{{ section.models.length }}</span>
+              </div>
             </div>
             <div class="grid min-w-0 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3">
               <ModelHealthCard

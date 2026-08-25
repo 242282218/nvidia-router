@@ -36,6 +36,7 @@ export interface RuntimeSettings {
   embedding_cache_enabled: boolean
   embedding_cache_max_entries: number
   auto_reasoning_enabled: boolean
+  capability_probe_enabled: boolean
 }
 
 export interface RuntimeSummaryResponse {

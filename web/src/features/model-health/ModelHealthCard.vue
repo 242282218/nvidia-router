@@ -197,7 +197,10 @@ function timelineLabel(model: ModelHealthModel): string {
 }
 
 function providerLabel(provider: string): string {
-  return provider === 'opencodefree' ? 'OpenCodeFree' : provider.toUpperCase()
+  if (!provider) return '未知'
+  if (provider === 'opencodefree') return 'OpenCodeFree'
+  if (provider === 'nvidia') return 'NVIDIA NIM'
+  return provider.toUpperCase()
 }
 </script>
 
@@ -231,14 +234,14 @@ function providerLabel(provider: string): string {
           </span>
 
           <!-- 渠道标签 -->
-          <span class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-[0.04em] text-[var(--color-text-muted)]">
+          <span class="rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-mono-data uppercase tracking-[0.03em] text-[var(--color-text-secondary)]">
             {{ providerLabel(model.provider) }}
           </span>
 
           <!-- 类型标签 -->
           <span
             v-if="model.kind"
-            class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.04em] text-[var(--color-text-subtle)]"
+            class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.03em] text-[var(--color-text-subtle)]"
           >
             {{ model.kind }}
           </span>
@@ -246,7 +249,7 @@ function providerLabel(provider: string): string {
           <!-- 停用标签 -->
           <span
             v-if="!model.enabled"
-            class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs text-[var(--color-text-subtle)]"
+            class="rounded-[var(--radius-control)] border border-[var(--color-disabled-border)] bg-[var(--color-disabled-background)] px-1.5 py-0.5 text-xs font-medium text-[var(--color-disabled-foreground)]"
           >
             停用
           </span>

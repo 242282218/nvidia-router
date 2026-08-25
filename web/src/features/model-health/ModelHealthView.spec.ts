@@ -172,4 +172,27 @@ describe('ModelHealthView', () => {
     expect(wrapper.get('[data-testid="model-health-error"]').text()).toContain('渠道状态加载失败')
     expect(wrapper.find('[data-testid="model-health-retry"]').exists()).toBe(true)
   })
+
+  it('filters models via search input and interactive status pills', async () => {
+    const wrapper = mount(ModelHealthView)
+    await flushPromises()
+
+    // 搜索过滤
+    const searchInput = wrapper.get('input[aria-label="搜索模型"]')
+    await searchInput.setValue('Healthy')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="model-health-card-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="model-health-card-2"]').exists()).toBe(false)
+
+    await searchInput.setValue('')
+    await flushPromises()
+
+    // 状态快速过滤胶囊：点击「降级」
+    const degradedButton = wrapper.findAll('button').find((b) => b.text().includes('降级'))
+    expect(degradedButton).toBeDefined()
+    await degradedButton!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="model-health-card-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="model-health-card-2"]').exists()).toBe(true)
+  })
 })

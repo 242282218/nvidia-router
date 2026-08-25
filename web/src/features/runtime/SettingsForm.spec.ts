@@ -22,6 +22,7 @@ const settings: RuntimeSettings = {
   embedding_cache_enabled: false,
   embedding_cache_max_entries: 256,
   auto_reasoning_enabled: false,
+  capability_probe_enabled: false,
 }
 
 const inputTestIds = {

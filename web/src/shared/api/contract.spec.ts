@@ -119,6 +119,7 @@ const runtimeSettings = object({
   embedding_cache_enabled: scalar('boolean'),
   embedding_cache_max_entries: scalar('number'),
   auto_reasoning_enabled: scalar('boolean'),
+  capability_probe_enabled: scalar('boolean'),
 })
 
 const model = object({

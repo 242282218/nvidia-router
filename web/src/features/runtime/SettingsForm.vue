@@ -22,13 +22,14 @@ interface SettingsFields {
   embedding_cache_enabled: boolean
   embedding_cache_max_entries: number | string
   auto_reasoning_enabled: boolean
+  capability_probe_enabled: boolean
 }
 
 type SettingParam = keyof RuntimeSettings
-type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes' | 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled'>
+type NumericSettingParam = Exclude<SettingParam, 'failover_status_codes' | 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled' | 'capability_probe_enabled'>
 
 interface SettingRule {
-  field: Exclude<keyof SettingsFields, 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled' | 'failover_status_codes'>
+  field: Exclude<keyof SettingsFields, 'latency_routing_enabled' | 'embedding_cache_enabled' | 'auto_reasoning_enabled' | 'capability_probe_enabled' | 'failover_status_codes'>
   hint?: string
   integerInput: boolean
   max: number
@@ -67,6 +68,7 @@ const fields = reactive<SettingsFields>({
   embedding_cache_enabled: false,
   embedding_cache_max_entries: 256,
   auto_reasoning_enabled: true,
+  capability_probe_enabled: false,
 })
 const localErrors = ref<Partial<Record<SettingParam, string>>>({})
 
@@ -111,6 +113,7 @@ watch(() => props.settings, (settings) => {
   fields.embedding_cache_enabled = settings.embedding_cache_enabled
   fields.embedding_cache_max_entries = settings.embedding_cache_max_entries
   fields.auto_reasoning_enabled = settings.auto_reasoning_enabled
+  fields.capability_probe_enabled = settings.capability_probe_enabled
 }, { immediate: true })
 
 function submit(): void {
@@ -125,6 +128,7 @@ function validateFields(): RuntimeSettings | null {
   settings.latency_routing_enabled = fields.latency_routing_enabled
   settings.embedding_cache_enabled = fields.embedding_cache_enabled
   settings.auto_reasoning_enabled = fields.auto_reasoning_enabled
+  settings.capability_probe_enabled = fields.capability_probe_enabled
   for (const rule of settingRules) {
     const raw = fields[rule.field]
     const value = typeof raw === 'string' && raw.trim() === '' ? Number.NaN : Number(raw)

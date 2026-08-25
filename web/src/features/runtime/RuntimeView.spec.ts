@@ -48,6 +48,7 @@ const settings = {
   embedding_cache_enabled: false,
   embedding_cache_max_entries: 256,
   auto_reasoning_enabled: false,
+  capability_probe_enabled: false,
 }
 
 // 渠道健康摘要：2 个健康 + 1 个不可用（success_rate 40%），KPI 应显示 2 / 3
