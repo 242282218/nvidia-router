@@ -294,9 +294,20 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
   - 补齐前端 `capability_probe_enabled` 运行时设置契约与测试用例，全量 44 套件 292 个前端单测全部 PASS，88/88 对比度配对合规，vue-tsc/eslint 0 错误。
 - 使用标准脚本 `python scripts/deploy/deploy_remote.py 20260825-channel-status-b8e83c2` 发布到 `/opt/nvidia-router-releases/20260825-channel-status-b8e83c2`，镜像为 `nvidia-router:deploy-20260825-channel-status-b8e83c2`。
 - 回滚点为 `/opt/nvidia-router-releases/20260825-redeploy-227061b` / `nvidia-router:deploy-20260825-redeploy-227061b`。切换前备份为 `/opt/nvidia-router-releases/20260825-channel-status-b8e83c2/backups/predeploy-20260825-channel-status-b8e83c2/router.db`，大小 10,518,528 字节，权限 `600`，属主 `10001:10001`。
-- 发布后验证：
+
+## 23. 2026-08-25 渠道状态精修重构与重新部署（3f3ceae）
+
+- GitHub `main` 与部署源码基线均为 `3f3ceae`（`feat: optimize channel status card with Claude and Codex telemetry aesthetics`）：
+  - 优化卡面结构：双同心呼吸光晕指示灯、SLA 与延迟速度评级微标签、成功/异常分项拆解、60-slot Uptime Bar 跟随 Tooltip 悬浮提示与自适应对齐。
+  - 新增 `/admin/model-health` 至 `/admin/channel-status` 的平滑路由别名重定向。
+  - 前端 44 套件 292 个测试 100% PASS，vue-tsc/eslint 0 错误，静态闭包 41/41 完整。
+- 使用标准脚本 `python scripts/deploy/deploy_remote.py 20260825-channel-status-3f3ceae` 发布到 `/opt/nvidia-router-releases/20260825-channel-status-3f3ceae`，镜像为 `nvidia-router:deploy-20260825-channel-status-3f3ceae`。
+- 回滚点为 `/opt/nvidia-router-releases/20260825-channel-status-b8e83c2` / `nvidia-router:deploy-20260825-channel-status-b8e83c2`。切换前备份为 `/opt/nvidia-router-releases/20260825-channel-status-3f3ceae/backups/predeploy-20260825-channel-status-3f3ceae/router.db`，大小 10,559,488 字节，权限 `600`，属主 `10001:10001`。
+- 远端按指令通过离线 CLI 完成管理员密码重置（密码未写入文件或日志）。
+- 部署后验证：
   - 容器 `nvidia-router-app-1` 状态 `Up (healthy)`、重启 0；
   - 端点 `http://127.0.0.1:3756/health/live` 与 `http://127.0.0.1:3756/health/ready` 返回 200；
-  - 静态资源 `/admin/` 与 `/admin/assets/ModelHealthView-DzqfBNNQ.css` 正常返回 200；
-  - 管理员认证：使用配置管理密码 `POST /admin/api/auth/login` 返回 200 `authenticated: true`，获取 Session Cookie 请求 `/admin/api/model-health/summary` 正常返回 11 个白名单模型遥测数据。
+  - 静态资源 `/admin/` 正常返回 200；
+  - 管理员认证：使用配置管理员密码 `POST /admin/api/auth/login` 返回 200 `authenticated: true`，获取 Session Cookie 请求 `/admin/api/model-health/summary` 正常返回 11 个白名单模型遥测数据。
+
 
