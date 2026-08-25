@@ -12,19 +12,25 @@ defineOptions({ name: 'ModelHealthCard' })
 const props = defineProps<{ model: ModelHealthModel }>()
 
 type BadgeVariant = 'success' | 'warning' | 'danger' | 'muted'
-type StatusMeta = { label: string; variant: BadgeVariant; color: string; dotColor: string; borderColor: string }
+type StatusMeta = {
+  label: string
+  sublabel: string
+  variant: BadgeVariant
+  color: string
+  dotColor: string
+  borderColor: string
+}
 
-// 状态色一律走主题 token：写死的 Tailwind 色阶在暗色主题下不会跟着切换，
-// 而本项目的暗色是 [data-theme='dark'] 而不是 .dark，`dark:` 变体根本不生效。
-// 卡片描边用状态色与边框 token 混色，浅色/暗色都得到同一份语义强度。
+// 状态色走主题语义 token；卡片描边采用状态色与边框 token 混色，暗色/亮色下均保证完美对比度与高级质感。
 const statusBorder = {
-  healthy: 'border-[color-mix(in_srgb,var(--color-success)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-success)_55%,var(--color-border))]',
-  degraded: 'border-[color-mix(in_srgb,var(--color-warning)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-warning)_55%,var(--color-border))]',
-  unavailable: 'border-[color-mix(in_srgb,var(--color-danger)_30%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-danger)_55%,var(--color-border))]',
+  healthy: 'border-[color-mix(in_srgb,var(--color-success)_28%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-success)_58%,var(--color-border))]',
+  degraded: 'border-[color-mix(in_srgb,var(--color-warning)_32%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-warning)_62%,var(--color-border))]',
+  unavailable: 'border-[color-mix(in_srgb,var(--color-danger)_32%,var(--color-border))] hover:border-[color-mix(in_srgb,var(--color-danger)_62%,var(--color-border))]',
 } as const
 
 const mutedStatus: StatusMeta = {
   label: '无数据',
+  sublabel: '暂无探测',
   variant: 'muted',
   color: 'var(--color-text-subtle)',
   dotColor: 'var(--color-text-subtle)',
@@ -34,6 +40,7 @@ const mutedStatus: StatusMeta = {
 const statusMeta: Record<string, StatusMeta> = {
   healthy: {
     label: '健康',
+    sublabel: '服务稳定',
     variant: 'success',
     color: 'var(--color-success)',
     dotColor: 'var(--color-success)',
@@ -41,6 +48,7 @@ const statusMeta: Record<string, StatusMeta> = {
   },
   degraded: {
     label: '降级',
+    sublabel: '性能波动',
     variant: 'warning',
     color: 'var(--color-warning)',
     dotColor: 'var(--color-warning)',
@@ -48,6 +56,7 @@ const statusMeta: Record<string, StatusMeta> = {
   },
   unavailable: {
     label: '异常',
+    sublabel: '服务中断',
     variant: 'danger',
     color: 'var(--color-danger)',
     dotColor: 'var(--color-danger)',
@@ -63,9 +72,29 @@ const uncheckedStatus: StatusMeta = mutedStatus
 const visualStatus = computed(() => displayStatus(props.model))
 const status = computed(() => statusMeta[visualStatus.value] ?? uncheckedStatus)
 
-const rateLabel = computed(() => props.model.probe_count > props.model.skipped_count
-  ? `${props.model.success_rate.toFixed(1)}%`
-  : '0.0%')
+const rateLabel = computed(() => {
+  if (props.model.probe_count <= props.model.skipped_count || props.model.probe_count === 0) {
+    return '0.0%'
+  }
+  return `${props.model.success_rate.toFixed(1)}%`
+})
+
+const latencyGrade = computed(() => {
+  if (props.model.last_duration_ms === undefined) return '无采样'
+  if (props.model.last_duration_ms < 300) return '极速响应'
+  if (props.model.last_duration_ms < 800) return '正常响应'
+  return '响应偏慢'
+})
+
+const slaGrade = computed(() => {
+  if (props.model.probe_count === 0 || props.model.probe_count <= props.model.skipped_count) {
+    return '待探测'
+  }
+  if (props.model.success_rate >= 99) return 'SLA 优异'
+  if (props.model.success_rate >= 85) return 'SLA 达标'
+  if (props.model.success_rate >= 50) return '轻微降级'
+  return '严重告警'
+})
 
 const titleId = computed(() => `model-health-title-${props.model.model_id}`)
 
@@ -125,7 +154,7 @@ function outcomeLabel(outcome: ModelHealthOutcome): string {
   switch (outcome) {
     case 'success': return '全部成功'
     case 'failure': return '全部失败'
-    case 'timeout': return '全部超时'
+    case 'timeout': return '请求超时'
     case 'skipped': return '无数据'
     case 'canceled': return '已取消'
     case 'mixed': return '部分成功'
@@ -134,11 +163,11 @@ function outcomeLabel(outcome: ModelHealthOutcome): string {
   }
 }
 
-// 时间线条形色：与状态 token 同源，hover 只降不透明度，不换色相。
+// 时间线条形色：与状态 token 同源，hover 混入 surface，不换色相。
 function outcomeBarStyle(outcome: ModelHealthOutcome, isHovered: boolean): { backgroundColor: string } {
   const tone = (token: string) => ({
     backgroundColor: isHovered
-      ? `color-mix(in srgb, ${token} 72%, var(--color-surface))`
+      ? `color-mix(in srgb, ${token} 75%, var(--color-surface))`
       : token,
   })
   switch (outcome) {
@@ -188,6 +217,13 @@ function formatScaleTime(dateStr?: string): string {
   return d.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+function formatRelativeProbe(dateStr?: string): string {
+  if (!dateStr) return '未探测'
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
 function bucketTitle(bucket: ModelHealthBucket): string {
   return `${formatDate(bucket.start, { seconds: true })} · ${outcomeLabel(bucket.outcome)} · ${bucket.probe_count} 次`
 }
@@ -206,18 +242,19 @@ function providerLabel(provider: string): string {
 
 <template>
   <article
-    class="model-health-card relative min-w-0 flex flex-col justify-between overflow-visible rounded-[var(--radius-panel)] border bg-[var(--color-surface)] p-4 transition-colors duration-[var(--duration-micro)] sm:p-5"
+    class="model-health-card group relative min-w-0 flex flex-col justify-between overflow-visible rounded-[var(--radius-panel)] border bg-[var(--color-surface)] p-4.5 transition-all duration-[var(--duration-micro)] sm:p-5"
     :class="status.borderColor"
     :data-testid="`model-health-card-${model.model_id}`"
     :data-status="visualStatus"
     :aria-labelledby="titleId"
   >
     <div>
-      <!-- 头部第一行：状态徽章 + 渠道/类型标签 + 快捷复制 -->
-      <div class="flex items-start justify-between gap-2">
+      <!-- 头部第一行：Claude 风格温润状态胶囊 + 厂商/类型标签 + 复制按钮 -->
+      <div class="flex items-center justify-between gap-2">
         <div class="flex min-w-0 flex-wrap items-center gap-1.5">
-          <!-- 状态徽章：复用全站 badge 词汇，避免这里再拼一套配色 -->
+          <!-- 呼吸感状态徽章 -->
           <span
+            class="inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-2 py-0.5 text-xs font-medium"
             :class="{
               'badge-success': status.variant === 'success',
               'badge-warning': status.variant === 'warning',
@@ -225,20 +262,29 @@ function providerLabel(provider: string): string {
               'badge-muted': status.variant === 'muted',
             }"
           >
+            <!-- 双同心状态呼吸光晕 -->
             <span
-              class="h-1.5 w-1.5 shrink-0 rounded-full"
-              :style="{ backgroundColor: status.dotColor }"
+              class="relative flex h-2 w-2 shrink-0 items-center justify-center"
               aria-hidden="true"
-            />
-            <span>{{ status.label }}</span>
+            >
+              <span
+                class="absolute inline-flex h-full w-full rounded-full opacity-35"
+                :style="{ backgroundColor: status.dotColor }"
+              />
+              <span
+                class="relative inline-flex h-1.5 w-1.5 rounded-full"
+                :style="{ backgroundColor: status.dotColor }"
+              />
+            </span>
+            <span class="font-semibold">{{ status.label }}</span>
           </span>
 
-          <!-- 渠道标签 -->
+          <!-- 渠道提供商芯片 -->
           <span class="rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs font-mono-data uppercase tracking-[0.03em] text-[var(--color-text-secondary)]">
             {{ providerLabel(model.provider) }}
           </span>
 
-          <!-- 类型标签 -->
+          <!-- 类型芯片 -->
           <span
             v-if="model.kind"
             class="rounded-[var(--radius-control)] bg-[var(--color-sunken)] px-1.5 py-0.5 text-xs uppercase tracking-[0.03em] text-[var(--color-text-subtle)]"
@@ -255,11 +301,11 @@ function providerLabel(provider: string): string {
           </span>
         </div>
 
-        <!-- 快捷复制：扁平 ghost，命中区不低于 24px -->
+        <!-- 快捷复制按钮：桌面端 hover 显现，移动端常驻 -->
         <button
           type="button"
-          class="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-xs font-medium transition-colors duration-[var(--duration-micro)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:min-h-11"
-          :class="copied ? 'text-[var(--color-success-text)]' : 'text-[var(--color-text-muted)]'"
+          class="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-[var(--radius-control)] border border-transparent px-2 py-0.5 text-xs font-medium transition-all duration-[var(--duration-micro)] hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] active:translate-y-px focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2 pointer-coarse:min-h-11 sm:opacity-85 sm:group-hover:opacity-100"
+          :class="copied ? 'text-[var(--color-success-text)] font-semibold' : 'text-[var(--color-text-muted)]'"
           :title="`复制模型 ID: ${model.public_id || model.display_name}`"
           @click="handleCopy"
         >
@@ -272,31 +318,31 @@ function providerLabel(provider: string): string {
         </button>
       </div>
 
-      <!-- 头部第二行：模型标题 -->
-      <div class="mt-2.5">
+      <!-- 头部第二行：模型标题与 Public ID -->
+      <div class="mt-3">
         <h2
           :id="titleId"
-          class="m-0 truncate font-mono-data text-sm font-semibold text-[var(--color-text)]"
+          class="m-0 truncate font-mono-data text-sm font-semibold tracking-tight text-[var(--color-text)]"
           :title="model.display_name || model.public_id"
         >
           {{ model.display_name || model.public_id }}
         </h2>
         <p
           v-if="model.display_name && model.display_name !== model.public_id"
-          class="m-0 mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]"
+          class="m-0 mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-subtle)]"
           :title="model.public_id"
         >
           {{ model.public_id }}
         </p>
       </div>
 
-      <!-- 核心指标栏：开放式 4 列，上下细分割线，不做框中框 -->
-      <div class="my-3 grid grid-cols-2 gap-x-2 gap-y-3 border-y border-[var(--color-border-subtle)] py-3 sm:grid-cols-4">
-        <!-- 可用率 -->
-        <div class="min-w-0">
+      <!-- Codex 级 4 联遥测网格：开放式排版，上下细发丝线分割，无框中框 -->
+      <div class="my-3.5 grid grid-cols-2 gap-x-3 gap-y-3.5 border-y border-[var(--color-border-subtle)] py-3 sm:grid-cols-4">
+        <!-- 可用率 (SLA) -->
+        <div class="min-w-0 flex flex-col justify-between">
           <span class="block truncate text-xs text-[var(--color-text-muted)]">可用率</span>
           <span
-            class="mt-0.5 block truncate font-mono-data text-base font-semibold"
+            class="mt-1 block truncate font-mono-data text-lg font-semibold tracking-tight leading-none"
             :class="{
               'text-[var(--color-success-text)]': model.success_rate >= 85 && model.probe_count > 0,
               'text-[var(--color-warning-text)]': model.success_rate < 85 && model.success_rate >= 50 && model.probe_count > 0,
@@ -307,42 +353,57 @@ function providerLabel(provider: string): string {
           >
             {{ rateLabel }}
           </span>
+          <span class="mt-1 block truncate font-mono-data text-[11px] text-[var(--color-text-subtle)]">
+            {{ slaGrade }}
+          </span>
         </div>
 
         <!-- 最新延迟 -->
-        <div class="min-w-0">
+        <div class="min-w-0 flex flex-col justify-between">
           <span class="block truncate text-xs text-[var(--color-text-muted)]">最新延迟</span>
-          <span class="mt-0.5 block truncate font-mono-data text-base font-semibold text-[var(--color-text)]">
+          <span class="mt-1 block truncate font-mono-data text-lg font-semibold tracking-tight leading-none text-[var(--color-text)]">
             <template v-if="model.last_duration_ms !== undefined">
-              {{ model.last_duration_ms }}<span class="ml-0.5 text-xs font-normal text-[var(--color-text-muted)]">ms</span>
+              {{ model.last_duration_ms }}<span class="ml-0.5 font-mono-data text-xs font-normal text-[var(--color-text-subtle)]">ms</span>
             </template>
             <template v-else>
               —
             </template>
           </span>
+          <span class="mt-1 block truncate font-mono-data text-[11px] text-[var(--color-text-subtle)]">
+            {{ latencyGrade }}
+          </span>
         </div>
 
         <!-- 探测次数 -->
-        <div class="min-w-0">
+        <div class="min-w-0 flex flex-col justify-between">
           <span class="block truncate text-xs text-[var(--color-text-muted)]">探测次数</span>
-          <span class="mt-0.5 block truncate font-mono-data text-base font-semibold text-[var(--color-text)]">
+          <span class="mt-1 block truncate font-mono-data text-lg font-semibold tracking-tight leading-none text-[var(--color-text)]">
             {{ model.probe_count }}
+          </span>
+          <span class="mt-1 block truncate font-mono-data text-[11px] text-[var(--color-text-subtle)]">
+            {{ model.success_count }} 成功 / {{ model.failure_count + model.timeout_count }} 异常
           </span>
         </div>
 
         <!-- 连续失败 -->
-        <div class="min-w-0">
+        <div class="min-w-0 flex flex-col justify-between">
           <span class="block truncate text-xs text-[var(--color-text-muted)]">连续失败</span>
           <span
-            class="mt-0.5 block truncate font-mono-data text-base font-semibold"
+            class="mt-1 block truncate font-mono-data text-lg font-semibold tracking-tight leading-none"
             :class="model.consecutive_failures > 0 ? 'text-[var(--color-danger-text)]' : 'text-[var(--color-text)]'"
           >
             {{ model.consecutive_failures }}
           </span>
+          <span
+            class="mt-1 block truncate font-mono-data text-[11px]"
+            :class="model.consecutive_failures > 0 ? 'text-[var(--color-danger-text)] font-medium' : 'text-[var(--color-text-subtle)]'"
+          >
+            {{ model.consecutive_failures > 0 ? '需排查' : '状态正常' }}
+          </span>
         </div>
       </div>
 
-      <!-- 状态时间线 -->
+      <!-- Claude 级 Uptime Timeline 条带 -->
       <div class="relative mt-1">
         <div class="mb-1.5 flex items-center justify-between gap-2 text-xs">
           <span class="font-medium text-[var(--color-text-secondary)]">状态时间线</span>
@@ -351,7 +412,7 @@ function providerLabel(provider: string): string {
           </span>
         </div>
 
-        <!-- 胶囊轨道 -->
+        <!-- 胶囊轨道条 -->
         <div
           ref="timelineTrackRef"
           :data-testid="`model-health-timeline-${model.model_id}`"
@@ -360,11 +421,11 @@ function providerLabel(provider: string): string {
           :aria-label="timelineLabel(model)"
           @mouseleave="handleTrackLeave"
         >
-          <!-- 跟随 Tooltip -->
+          <!-- 跟随 Tooltip 悬浮气泡 -->
           <div
             v-if="hoveredBucket"
             data-testid="model-health-tooltip"
-            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+6px)] z-[var(--z-tooltip)] flex flex-col items-center whitespace-normal rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] px-2.5 py-1.5"
+            class="model-health-tooltip pointer-events-none absolute bottom-[calc(100%+8px)] z-[var(--z-tooltip)] flex flex-col items-center whitespace-normal rounded-[var(--radius-control)] border border-[var(--color-border-strong)] bg-[var(--color-surface-raised)] px-3 py-2 text-left"
             :class="tooltipPlacement === 'start' ? 'translate-x-0' : tooltipPlacement === 'end' ? '-translate-x-full' : '-translate-x-1/2'"
             :style="{ left: `${tooltipX}px` }"
           >
@@ -376,11 +437,22 @@ function providerLabel(provider: string): string {
               <span>{{ outcomeLabel(hoveredBucket.outcome) }}</span>
               <span class="font-normal text-[var(--color-text-muted)]">· {{ hoveredBucket.probe_count }} 次探测</span>
             </div>
-            <div class="mt-0.5 flex items-center gap-2 font-mono-data text-xs text-[var(--color-text-muted)]">
+            <div class="mt-1 flex items-center gap-2 font-mono-data text-xs text-[var(--color-text-muted)]">
               <span>{{ formatDate(hoveredBucket.start, { seconds: true }) }}</span>
-              <span v-if="hoveredBucket.average_duration_ms > 0">{{ hoveredBucket.average_duration_ms }}ms</span>
+              <span
+                v-if="hoveredBucket.average_duration_ms > 0"
+                class="font-semibold text-[var(--color-text)]"
+              >
+                {{ hoveredBucket.average_duration_ms }}ms
+              </span>
             </div>
-            <!-- 指向宿主格子的小三角 -->
+            <div
+              v-if="hoveredBucket.probe_count > 0"
+              class="mt-1 border-t border-[var(--color-border-subtle)] pt-1 text-[11px] font-mono-data text-[var(--color-text-subtle)]"
+            >
+              成功: {{ hoveredBucket.success_count }} · 失败: {{ hoveredBucket.failure_count }} · 超时: {{ hoveredBucket.timeout_count }}
+            </div>
+            <!-- 指向宿主小格子的指示尖角 -->
             <div
               class="absolute -bottom-1 h-1.5 w-1.5 rotate-45 border-b border-r border-[var(--color-border-strong)] bg-[var(--color-surface-raised)]"
             />
@@ -406,7 +478,7 @@ function providerLabel(provider: string): string {
           />
         </div>
 
-        <!-- 时间刻度 -->
+        <!-- 时间标尺 -->
         <div class="mt-1.5 flex justify-between gap-2 font-mono-data text-xs text-[var(--color-text-subtle)]">
           <span class="truncate">{{ model.buckets.length ? formatScaleTime(model.buckets[0]?.start) : '—' }}</span>
           <span class="truncate">{{ model.buckets.length > 1 ? formatScaleTime(model.buckets[Math.floor(model.buckets.length / 2)]?.start) : '—' }}</span>
@@ -415,25 +487,51 @@ function providerLabel(provider: string): string {
       </div>
     </div>
 
-    <!-- 底部异常提示条 -->
-    <div
-      v-if="model.last_error_code"
-      class="mt-3 flex min-w-0 items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--color-danger-background)] bg-[var(--color-danger-background)] px-2.5 py-1.5 text-xs text-[var(--color-danger-foreground)]"
-    >
-      <UiIcon
-        name="warning"
-        :size="13"
-        class="shrink-0 text-current"
-        aria-hidden="true"
-      />
-      <span class="truncate">最近异常：{{ errorLabel(model.last_error_code) }}</span>
+    <!-- 底部状态指示与异常诊断条 -->
+    <div class="mt-3.5">
+      <!-- 异常诊断条 -->
+      <div
+        v-if="model.last_error_code"
+        class="flex min-w-0 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-[var(--color-danger-background)] bg-[var(--color-danger-background)] px-2.5 py-1.5 text-xs text-[var(--color-danger-foreground)]"
+      >
+        <div class="flex min-w-0 items-center gap-1.5">
+          <UiIcon
+            name="warning"
+            :size="13"
+            class="shrink-0 text-current"
+            aria-hidden="true"
+          />
+          <span class="truncate font-medium">最近异常：{{ errorLabel(model.last_error_code) }}</span>
+        </div>
+        <span
+          v-if="model.last_probe_at"
+          class="shrink-0 font-mono-data text-[11px] opacity-80"
+        >
+          {{ formatRelativeProbe(model.last_probe_at) }}
+        </span>
+      </div>
+
+      <!-- 正常运行极简常态信息 -->
+      <div
+        v-else-if="model.last_probe_at"
+        class="flex min-w-0 items-center justify-between gap-2 px-1 text-[11px] text-[var(--color-text-subtle)]"
+      >
+        <div class="flex items-center gap-1.5">
+          <span
+            class="h-1.5 w-1.5 rounded-full"
+            :style="{ backgroundColor: status.dotColor }"
+          />
+          <span>{{ status.sublabel }}</span>
+        </div>
+        <span class="font-mono-data">采样于 {{ formatRelativeProbe(model.last_probe_at) }}</span>
+      </div>
     </div>
   </article>
 </template>
 
 <style scoped>
 .model-health-tooltip {
-  max-width: min(18rem, calc(100% - 1rem), calc(100vw - 2rem));
+  max-width: min(20rem, calc(100% - 1rem), calc(100vw - 2rem));
   overflow-wrap: anywhere;
 }
 </style>

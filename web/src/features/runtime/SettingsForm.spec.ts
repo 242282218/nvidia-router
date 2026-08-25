@@ -152,6 +152,7 @@ describe('SettingsForm', () => {
         embedding_cache_enabled: false,
         embedding_cache_max_entries: 256,
         auto_reasoning_enabled: false,
+        capability_probe_enabled: false,
       },
     ],
     [
@@ -186,6 +187,7 @@ describe('SettingsForm', () => {
         embedding_cache_enabled: false,
         embedding_cache_max_entries: 256,
         auto_reasoning_enabled: false,
+        capability_probe_enabled: false,
       },
     ],
   ])('accepts exact settings boundaries', async (fields, expected) => {

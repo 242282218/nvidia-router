@@ -105,6 +105,7 @@ export function createAppRouter(
             meta: { title: '系统与观测', nav: { group: '系统观测', icon: 'system', order: 62, testId: 'nav-system' } },
           },
           { path: 'statistics', redirect: '/monitoring' },
+          { path: 'model-health', redirect: '/channel-status' },
           { path: 'live', redirect: '/system?tab=live' },
           { path: 'audit', redirect: '/system?tab=audit' },
           { component: NotFoundView, path: ':pathMatch(.*)*', meta: { title: '页面不存在' } },
