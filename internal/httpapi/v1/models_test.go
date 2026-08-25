@@ -17,6 +17,7 @@ func TestV1ModelsListsEnabledWhitelist(t *testing.T) {
 		{ID: 1, PublicID: "public-chat", UpstreamID: "vendor/chat", DisplayName: "Chat", Kind: modelcatalog.KindChat, Enabled: true, ContextLength: 131072},
 		{ID: 2, PublicID: "public-embed", UpstreamID: "vendor/embed", DisplayName: "Embed", Kind: modelcatalog.KindEmbedding, Enabled: true},
 		{ID: 3, PublicID: "public-disabled", UpstreamID: "vendor/disabled", DisplayName: "Disabled", Kind: modelcatalog.KindChat, Enabled: false},
+		{ID: 4, PublicID: "public-free", UpstreamID: "free-model", DisplayName: "Free", Kind: modelcatalog.KindChat, Enabled: true, Provider: modelcatalog.ProviderOpenCodeFree},
 	}
 	handler := NewModels(modelListerFunc(func(context.Context) ([]modelcatalog.Model, error) {
 		return listed, nil
@@ -38,14 +39,14 @@ func TestV1ModelsListsEnabledWhitelist(t *testing.T) {
 	if payload.Object != "list" {
 		t.Fatalf("object = %q, want list", payload.Object)
 	}
-	if len(payload.Data) != 2 {
-		t.Fatalf("data len = %d, want 2; body=%s", len(payload.Data), response.Body.String())
+	if len(payload.Data) != 3 {
+		t.Fatalf("data len = %d, want 3; body=%s", len(payload.Data), response.Body.String())
 	}
 	for _, entry := range payload.Data {
 		if entry.Object != "model" {
 			t.Fatalf("entry object = %q, want model", entry.Object)
 		}
-		if entry.ID != "public-chat" && entry.ID != "public-embed" {
+		if entry.ID != "public-chat" && entry.ID != "public-embed" && entry.ID != "public-free" {
 			t.Fatalf("unexpected id %q leaked disabled or upstream id", entry.ID)
 		}
 		if entry.Created <= 0 {
@@ -53,6 +54,12 @@ func TestV1ModelsListsEnabledWhitelist(t *testing.T) {
 		}
 		if entry.OwnedBy == "" {
 			t.Fatalf("owned_by empty for %q", entry.ID)
+		}
+		if entry.ID == "public-chat" && entry.OwnedBy != "nvidia" {
+			t.Fatalf("owned_by for public-chat = %q, want nvidia (default)", entry.OwnedBy)
+		}
+		if entry.ID == "public-free" && entry.OwnedBy != "opencodefree" {
+			t.Fatalf("owned_by for public-free = %q, want opencodefree", entry.OwnedBy)
 		}
 		// Only a declared context window is exposed; undeclared (0) models omit
 		// the field so clients fall back to their own defaults.

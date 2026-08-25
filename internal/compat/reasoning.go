@@ -150,11 +150,43 @@ func ParseReasoning(fields map[string]json.RawMessage) (ReasoningSpec, error) {
 	return result, nil
 }
 
-func AutoReasoningSpec(profile ReasoningProfile) (ReasoningSpec, bool) {
+// Auto-injection thresholds on the client's completion allowance. At or below
+// the off ceiling, reasoning must not fire at all: upstreams spend every token
+// thinking and return an empty answer with finish_reason=length. Between the
+// ceilings only the cheapest positive level fits. The content reserve in
+// capThinkingBudget starts binding below 128 tokens, which is why the off rung
+// ends there.
+const (
+	autoReasoningOffCeiling   = 128
+	autoReasoningSmallCeiling = 511
+)
+
+func AutoReasoningSpec(profile ReasoningProfile, outputLimit int) (ReasoningSpec, bool) {
 	if !profile.Supported {
 		return ReasoningSpec{}, false
 	}
 	levels := availableLevels(profile)
+	if outputLimit > 0 && outputLimit <= autoReasoningOffCeiling {
+		// A tiny completion window cannot survive any reasoning. Say "off" when
+		// this profile can express it; otherwise stay silent — injecting a
+		// positive level here guarantees starvation, and silence never produces
+		// the ErrReasoningUnsupported path (no spec is constructed).
+		for _, level := range levels {
+			if level == ReasoningNone {
+				return ReasoningSpec{Requested: true, Level: ReasoningNone, Budget: 0, Source: "auto-inject"}, true
+			}
+		}
+		return ReasoningSpec{}, false
+	}
+	if outputLimit > 0 && outputLimit <= autoReasoningSmallCeiling {
+		for _, level := range levels {
+			if level == ReasoningNone || level == ReasoningAuto {
+				continue
+			}
+			return ReasoningSpec{Requested: true, Level: level, Budget: budgetForLevel(level), Source: "auto-inject"}, true
+		}
+		return ReasoningSpec{}, false
+	}
 	// A silent default must be moderate. Auto-injection fires on requests that
 	// never mentioned reasoning, so picking the heaviest level gave every such
 	// request the slowest path — and for upstreams whose accepted vocabulary
@@ -262,7 +294,7 @@ func ApplyReasoning(fields map[string]json.RawMessage, decision ReasoningDecisio
 	// answer, so an unreconciled budget starves the content: upstreams happily
 	// spend every token on reasoning and return an empty message with
 	// finish_reason=length. Cap it before it reaches the wire.
-	budget := capThinkingBudget(decision.EffectiveBudget, outputTokenLimit(fields))
+	budget := capThinkingBudget(decision.EffectiveBudget, OutputTokenLimit(fields))
 	StripReasoning(fields)
 	if preserveNativeThinking {
 		encoded, err := marshalThinking(decision, budget)
@@ -304,9 +336,11 @@ const (
 	thinkingBudgetDenominator = 4
 )
 
-// outputTokenLimit reports the completion allowance the client asked for, or 0
-// when it left the limit to the upstream default.
-func outputTokenLimit(fields map[string]json.RawMessage) int {
+// OutputTokenLimit reports the completion allowance the client asked for, or 0
+// when it left the limit to the upstream default. Exported because the protocol
+// packages must evaluate the auto-reasoning ladder against the same number the
+// budget cap later uses.
+func OutputTokenLimit(fields map[string]json.RawMessage) int {
 	for _, name := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		raw, ok := fields[name]
 		if !ok {
@@ -324,11 +358,24 @@ func outputTokenLimit(fields map[string]json.RawMessage) int {
 // capThinkingBudget keeps the reasoning budget inside the completion allowance.
 // A negative budget means "let the upstream decide" and stays untouched, as does
 // every budget when the client set no limit of its own.
+// thinkingContentReserve keeps an absolute slice of the completion allowance
+// for the visible answer. The percentage cap alone still hands most of a tiny
+// window to reasoning (75% of 64 is 48), where even a one-line reply needs more
+// than the remaining 16 tokens. Below the crossover where reserve < 75% (limit
+// < 128) the absolute reserve binds instead. A limit at or below the reserve
+// itself leaves the budget uncapped: clamping to zero would emit
+// budget_tokens:0, which several upstreams reject, and converting enabled to
+// disabled is the injection ladder's decision, not the cap's.
+const thinkingContentReserve = 32
+
 func capThinkingBudget(budget, limit int) int {
 	if budget <= 0 || limit <= 0 {
 		return budget
 	}
 	allowed := limit * thinkingBudgetNumerator / thinkingBudgetDenominator
+	if reserved := limit - thinkingContentReserve; reserved > 0 && reserved < allowed {
+		allowed = reserved
+	}
 	if allowed <= 0 || budget <= allowed {
 		return budget
 	}
@@ -474,6 +521,15 @@ func parseFlexibleLevel(value, param string) (ReasoningLevel, error) {
 		return "", invalid("invalid_parameter", param, "The reasoning level must be a non-empty string.")
 	}
 	return ReasoningLevel(trimmed), nil
+}
+
+// AvailableLevels returns the profile's usable levels in ascending budget
+// order, dropping "none" when the profile forbids it. Exported so the catalog
+// can validate at startup that a reasoning model can express at least one
+// level (the llama shape — levels=[none] with zero_allowed=false — yields an
+// empty slice and made every effort request fail 501).
+func AvailableLevels(profile ReasoningProfile) []ReasoningLevel {
+	return availableLevels(profile)
 }
 
 func availableLevels(profile ReasoningProfile) []ReasoningLevel {

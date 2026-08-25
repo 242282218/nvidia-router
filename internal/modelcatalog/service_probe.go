@@ -232,38 +232,84 @@ func (s *Service) applyProbeReasoning(ctx context.Context, id int64, probe reaso
 }
 
 func (s *Service) probeTools(ctx context.Context, model Model, call probeChatFunc) (string, error) {
-	body, err := marshalProbeToolsBody(model.UpstreamID)
+	// Two forms because several gateway models accept tool_choice:"required"
+	// but ignore its semantics: only "auto" plus an explicit instruction draws
+	// a tool_call from them. Any form producing a valid call is enough for
+	// supported; unsupported requires BOTH forms to be definitively negative,
+	// so a gateway that merely rejects the required spelling is not condemned
+	// by its first answer.
+	required, err := s.attemptToolsProbe(ctx, model, call, "required")
 	if err != nil {
 		return ProbeStatusUnknown, err
+	}
+	switch {
+	case required.supported:
+		return "supported", nil
+	case required.transient:
+		// The upstream is visibly failing; firing the second form at it only
+		// doubles the load without improving the verdict.
+		return ProbeStatusUnknown, nil
+	}
+	auto, err := s.attemptToolsProbe(ctx, model, call, "auto")
+	if err != nil {
+		return ProbeStatusUnknown, err
+	}
+	switch {
+	case auto.supported:
+		return "supported", nil
+	case auto.transient:
+		return ProbeStatusUnknown, nil
+	}
+	return ProbeStatusUnsupported, nil
+}
+
+// toolsAttempt is one tools-probe form's outcome. negative covers both a 200
+// without valid tool_calls and an explicit 4xx rejection of that form.
+type toolsAttempt struct {
+	supported bool
+	negative  bool
+	transient bool
+}
+
+func (s *Service) attemptToolsProbe(_ context.Context, model Model, call probeChatFunc, toolChoice string) (toolsAttempt, error) {
+	body, err := marshalProbeToolsBody(model.UpstreamID, toolChoice)
+	if err != nil {
+		return toolsAttempt{}, err
 	}
 	response, err := call(body)
 	if err != nil {
 		if isProbeTransient(err) {
-			return ProbeStatusUnknown, nil
+			return toolsAttempt{transient: true}, nil
 		}
-		return ProbeStatusUnknown, err
+		return toolsAttempt{}, err
 	}
 	payload, class, err := readProbeChat(response)
 	if err != nil {
-		return ProbeStatusUnknown, err
+		// readProbeChat returns an error alongside a class for transient and
+		// invalid answers; the class decides. A nil payload with a transient
+		// class is just an unreachable upstream.
+		if class == probeHTTPTransient {
+			return toolsAttempt{transient: true}, nil
+		}
+		return toolsAttempt{}, err
 	}
 	switch class {
 	case probeHTTPUnsupported:
-		return ProbeStatusUnsupported, nil
+		return toolsAttempt{negative: true}, nil
 	case probeHTTPTransient:
-		return ProbeStatusUnknown, nil
+		return toolsAttempt{transient: true}, nil
 	case probeHTTPSuccess:
 		if _, calls, err := validateProbePayload(payload); err != nil {
 			if isProbeTransient(err) {
-				return ProbeStatusUnknown, nil
+				return toolsAttempt{transient: true}, nil
 			}
-			return ProbeStatusUnknown, err
+			return toolsAttempt{}, err
 		} else if calls {
-			return "supported", nil
+			return toolsAttempt{supported: true}, nil
 		}
-		return ProbeStatusUnknown, nil
+		return toolsAttempt{negative: true}, nil
 	default:
-		return ProbeStatusUnknown, nil
+		return toolsAttempt{}, nil
 	}
 }
 
@@ -281,10 +327,15 @@ func (s *Service) applyProbeTools(ctx context.Context, id int64, status string) 
 }
 
 func marshalProbeBody(model string, tools, reasoning map[string]any) ([]byte, error) {
+	return marshalProbeBodyWithLimit(model, tools, reasoning, modelProbeMaxTokens,
+		[]map[string]string{{"role": "user", "content": "Reply with exactly OK."}})
+}
+
+func marshalProbeBodyWithLimit(model string, tools, reasoning map[string]any, maxTokens int, messages []map[string]string) ([]byte, error) {
 	body := map[string]any{
 		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "Reply with exactly OK."}},
-		"max_tokens": modelProbeMaxTokens,
+		"messages":   messages,
+		"max_tokens": maxTokens,
 	}
 	for key, value := range tools {
 		body[key] = value
@@ -302,8 +353,17 @@ func marshalProbeReasoningBody(model, wire string) ([]byte, error) {
 	return marshalProbeBody(model, nil, map[string]any{"reasoning_effort": "high"})
 }
 
-func marshalProbeToolsBody(model string) ([]byte, error) {
-	return marshalProbeBody(model,
+// probeToolsInstruction is the explicit prompt paired with tool_choice:"auto".
+// Several gateway models accept the required form but ignore its semantics;
+// only an imperative instruction reliably draws a tool_call from them.
+const probeToolsInstruction = "You must call the weather tool."
+
+func marshalProbeToolsBody(model, toolChoice string) ([]byte, error) {
+	message := "Reply with exactly OK."
+	if toolChoice != "required" {
+		message = probeToolsInstruction
+	}
+	return marshalProbeBodyWithLimit(model,
 		map[string]any{
 			"tools": []map[string]any{{
 				"type": "function",
@@ -317,8 +377,9 @@ func marshalProbeToolsBody(model string) ([]byte, error) {
 					},
 				},
 			}},
-			"tool_choice": "required",
-		}, nil)
+			"tool_choice": toolChoice,
+		}, nil, toolsProbeMaxTokens,
+		[]map[string]string{{"role": "user", "content": message}})
 }
 
 func readProbeChat(response *http.Response) ([]byte, probeHTTPClass, error) {

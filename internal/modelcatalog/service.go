@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"nvidia-router/internal/clock"
+	"nvidia-router/internal/compat"
 	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/upstream/nvidia"
 	"nvidia-router/internal/xkproxy"
@@ -56,6 +57,12 @@ const (
 	modelVerificationTimeout    = 30 * time.Second
 	maxModelVerificationTimeout = 5 * time.Minute
 	modelProbeMaxTokens         = 16
+	// toolsProbeMaxTokens bounds the tool-calling probe specifically. Gateway
+	// models frequently emit hidden reasoning (or truncated argument JSON)
+	// before the tool_call; a 16-token window turned every such model into a
+	// permanent false "unsupported". Probes are operator-triggered, so the
+	// larger window amortizes to nothing against a wrong verdict.
+	toolsProbeMaxTokens = 256
 	// probeAttempts bounds how many NVIDIA keys one probe may try. A model that
 	// stays unreachable on three different credentials is a model or upstream
 	// problem, and more attempts would only burn quota.
@@ -541,6 +548,31 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 		return fmt.Errorf("set model enabled state: %w", err)
 	}
 	return nil
+}
+
+// CountUnexpressibleReasoningProfiles reports how many enabled reasoning
+// models have a profile that cannot express any level — the llama shape
+// (levels=[none], zero_allowed=false) that made every reasoning_effort request
+// fail 501 model_capability_unsupported. The count is advisory: startup logs it
+// per model so an operator can PATCH the row; nothing is auto-written.
+func (s *Service) CountUnexpressibleReasoningProfiles(ctx context.Context) (int, []string, error) {
+	models, err := s.repository.List(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("list models for reasoning profile check: %w", err)
+	}
+	var broken []string
+	for _, model := range models {
+		// The check covers every reasoning model, not only enabled ones: a
+		// disabled row with an unexpressible profile will 501 the moment an
+		// operator re-enables it.
+		if !model.SupportsReasoning {
+			continue
+		}
+		if len(compat.AvailableLevels(model.ReasoningProfile())) == 0 {
+			broken = append(broken, model.PublicID)
+		}
+	}
+	return len(broken), broken, nil
 }
 
 func (s *Service) SetCapabilityVerified(ctx context.Context, id int64, verifiedAt *time.Time) error {

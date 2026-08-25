@@ -19,7 +19,12 @@ type RetireReason string
 
 const (
 	RetireReasonTransportError RetireReason = "transport_error"
-	RetireReasonShutdown       RetireReason = "shutdown"
+	// RetireReasonProxyRejected marks an exit that answered a CONNECT with an
+	// HTTP refusal. Retiring it feeds the pool's transport-failure counter so
+	// repeated refusals eject the exit instead of leaving it sticky for later
+	// requests on the same session.
+	RetireReasonProxyRejected RetireReason = "proxy_rejected"
+	RetireReasonShutdown      RetireReason = "shutdown"
 )
 
 type ErrorReason string

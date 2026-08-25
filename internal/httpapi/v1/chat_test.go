@@ -81,6 +81,73 @@ func TestChatOpenCodeFreeEmptyResponseReturnsFault(t *testing.T) {
 	}
 }
 
+// A transient gateway status on a streaming request is retried once while
+// nothing has been written to the client — the 2026-08-24 x-preview 503 showed
+// streams had no protection at all against an upstream blip.
+func TestChatOpenCodeFreeStreamTransientRetriedBeforeFirstWrite(t *testing.T) {
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return model, nil
+	})
+	calls := 0
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	handler := NewChat(resolver, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(_ context.Context, _ runtimeconfig.Snapshot, _ []byte, stream bool) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("upstream busy"))}, nil
+		}
+		if !stream {
+			t.Fatal("second attempt arrived as non-stream")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sseBody))}, nil
+	}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"free-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+
+	handler.ServeHTTP(response, request)
+
+	if calls != 2 {
+		t.Fatalf("gateway calls = %d, want 2 (one transient then one success)", calls)
+	}
+	if !strings.Contains(response.Body.String(), "data:") || !strings.Contains(response.Body.String(), "[DONE]") {
+		t.Fatalf("retried stream body = %q, want SSE events and [DONE]", response.Body.String())
+	}
+}
+
+// Once the first SSE event has been written the stream can never be replayed:
+// a later transient status must surface instead of duplicating headers.
+func TestChatOpenCodeFreeNoRetryAfterClientBytesWritten(t *testing.T) {
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	resolver := modelResolverFunc(func(context.Context, string, modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return model, nil
+	})
+	calls := 0
+	// The first attempt commits real events and ends without [DONE]; the
+	// handler must append its truncated terminal rather than retry.
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+	handler := NewChat(resolver, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(_ context.Context, _ runtimeconfig.Snapshot, _ []byte, _ bool) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sseBody))}, nil
+	}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"free-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+
+	handler.ServeHTTP(response, request)
+
+	if calls != 1 {
+		t.Fatalf("gateway calls = %d, want 1 (no retry once bytes were written)", calls)
+	}
+	if !strings.Contains(response.Body.String(), "upstream_stream_truncated") {
+		t.Fatalf("body = %q, want in-stream truncation event", response.Body.String())
+	}
+}
+
 func TestStreamWriteDeadlineUsesEarlierContextDeadline(t *testing.T) {
 	settings := &deadlineBudgetSettings{snapshot: runtimeconfig.Snapshot{
 		ConnectTimeoutMS: 100, FirstByteTimeoutMS: 100, StreamFirstTokenTimeoutMS: 100,
@@ -255,6 +322,36 @@ func TestChatPassesParsedCapabilityRequirementsToModelResolver(t *testing.T) {
 	}
 	if !called || response.Code != http.StatusOK {
 		t.Fatalf("provider path called=%v status=%d body=%s", called, response.Code, response.Body.String())
+	}
+}
+
+// inferred tools_status is an explicit capability claim (operator PATCH or the
+// capability-hint registry), so a tools request must route upstream instead of
+// deadlocking on 501 capability_unverified — several gateway models can never
+// pass the probe because they ignore tool_choice:"required".
+func TestChatToolRequestSucceedsOnInferredStatusModel(t *testing.T) {
+	resolver := modelResolverFunc(func(_ context.Context, _ string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-model", UpstreamID: "vendor/model", Kind: modelcatalog.KindChat,
+			Enabled: true, SupportsTools: true, ToolsStatus: modelcatalog.ToolsStatusInferred,
+		}, nil
+	})
+	called := false
+	runner := attemptRunnerFunc(func(context.Context, int64, bool, router.ExecuteFunc) (router.AttemptResult, error) {
+		called = true
+		return router.AttemptResult{Response: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}}, nil
+	})
+	handler := NewChat(resolver, runner, nil)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"public-model","messages":[{"role":"user","content":"use lookup"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`))
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented && !called {
+		t.Fatalf("inferred-tools request answered %d without reaching the provider: %s", response.Code, response.Body.String())
+	}
+	if !called || response.Code != http.StatusOK {
+		t.Fatalf("tools request called=%v status=%d body=%s", called, response.Code, response.Body.String())
 	}
 }
 

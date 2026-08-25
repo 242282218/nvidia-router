@@ -76,6 +76,10 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if !model.Enabled {
 			continue
 		}
+		provider := model.Provider
+		if provider == "" {
+			provider = modelcatalog.ProviderNVIDIA
+		}
 		entry := modelDTO{
 			ID:     model.PublicID,
 			Object: "model",
@@ -83,7 +87,7 @@ func (h *Models) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			// so every listing returned different values for the same models
 			// and clients could not diff or cache the catalog.
 			Created: modelCreatedUnix(model.CreatedAt),
-			OwnedBy: "nvidia",
+			OwnedBy: provider,
 		}
 		if model.ContextLength > 0 {
 			length := model.ContextLength

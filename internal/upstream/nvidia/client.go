@@ -340,7 +340,7 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 		return nil, xkproxy.NewTransportError(errors.New("proxy is disabled"))
 	}
 	observability.SetRouteMode(ctx, "built-in")
-	response, _, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
+	response, handle, _, retryable, err := c.doProxyAttempt(ctx, snapshot, build)
 	if !retryable {
 		return response, err
 	}
@@ -353,10 +353,17 @@ func (c *Client) do(ctx context.Context, snapshot runtimeconfig.Snapshot, build 
 	// the upstream load on a known-bad path (audit R5). Such proxy-produced
 	// answers are also NOT an NVIDIA key fault: wrap them as a proxy-rejected
 	// error so the router's executeLease surfaces a 502 without a key switch.
+	// The refusing exit is retired either way — without this a sticky session
+	// would keep dialling the same dead exit on every later request (2026-08-25
+	// clustered fast-502 analysis).
 	if !replayableProxyError(err) {
+		if handle != nil {
+			handle.Retire(xkproxy.RetireReasonProxyRejected)
+			handle.Release()
+		}
 		return nil, xkproxy.NewProxyRejectedError(err)
 	}
-	response, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
+	response, _, _, retryable, err = c.doProxyAttempt(ctx, snapshot, build)
 	if err == nil || response != nil {
 		return response, err
 	}
@@ -414,7 +421,7 @@ func (c *Client) doDirect(ctx context.Context, snapshot runtimeconfig.Snapshot, 
 	return httpClient.Do(request)
 }
 
-func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, bool, bool, error) {
+func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snapshot, build requestFactory) (*http.Response, *xkproxy.Handle, bool, bool, error) {
 	// The session label travels through xkproxy.Acquire so the Manager can put the
 	// CONNECT header on the outer proxy request. It must never be written to the
 	// target request header: NVIDIA would see it and the pool would not. The label is
@@ -432,13 +439,13 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	handle, err := xkproxy.AcquireWithWait(acquireCtx, c.proxy, snapshot, session, proxyAcquireWaitBudget)
 	cancelAcquire()
 	if err != nil {
-		return nil, false, false, err
+		return nil, nil, false, false, err
 	}
 	var wrote atomic.Bool
 	request, err := build(ctx)
 	if err != nil {
 		handle.Release()
-		return nil, false, false, err
+		return nil, nil, false, false, err
 	}
 	started := time.Now()
 	firstByteTimer := startFirstByteWatch(snapshot.FirstByteDeadline)
@@ -463,7 +470,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			if err == nil {
 				err = errors.New("NVIDIA proxy transport returned response without body")
 			}
-			return nil, wrote.Load(), false, err
+			return nil, nil, wrote.Load(), false, err
 		}
 		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
 			// The response header marks the network-observable first-byte point;
@@ -477,7 +484,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 		}, handle.ReportRequestFailure)
 		if err != nil {
 			_ = response.Body.Close()
-			return nil, wrote.Load(), false, err
+			return nil, nil, wrote.Load(), false, err
 		}
 		// Feed the observed result back into the pool so selection reflects live
 		// exit quality (audit H4/H8):
@@ -499,7 +506,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 				)
 			}
 		}
-		return response, wrote.Load(), false, nil
+		return response, nil, wrote.Load(), false, nil
 	}
 	if err == nil {
 		err = errors.New("NVIDIA proxy transport returned no response")
@@ -512,7 +519,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 			err = fmt.Errorf("%w: %w", fault.ErrFirstByteTimeout, err)
 		}
 		handle.Release()
-		return nil, wrote.Load(), false, err
+		return nil, nil, wrote.Load(), false, err
 	}
 	// A pure transport failure through a pooled exit is worth one replay, but it
 	// is also the clearest signal that a specific exit is failing. Record the exit
@@ -526,7 +533,7 @@ func (c *Client) doProxyAttempt(ctx context.Context, snapshot runtimeconfig.Snap
 	}
 	handle.Retire(xkproxy.RetireReasonTransportError)
 	handle.Release()
-	return nil, false, true, err
+	return nil, nil, false, true, err
 }
 
 // firstByteWatch reports whether the first-byte deadline elapsed before any

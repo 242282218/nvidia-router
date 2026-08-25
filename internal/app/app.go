@@ -328,12 +328,41 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	// with the gateway's live /models so a 6-model outage (2026-08-19) cannot
 	// recur without operator intervention. No-op when the gateway is unconfigured.
 	models.StartOpenCodeFreeSync(rootCtx, time.Hour)
+	// Startup capability-metadata check: a reasoning model whose profile cannot
+	// express any level (e.g. levels=[none] with zero_allowed=false) answers 501
+	// to every effort request. Log the offenders so the operator can PATCH them;
+	// nothing is auto-written (2026-08-25 llama incident).
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if broken, ids, err := models.CountUnexpressibleReasoningProfiles(checkCtx); err != nil {
+		resolved.Logger.Warn("reasoning profile consistency check failed", "error", err)
+	} else if broken > 0 {
+		resolved.Logger.Warn("reasoning models with unexpressible profiles found",
+			"count", broken, "public_ids", strings.Join(ids, ","))
+	}
+	checkCancel()
+	// Periodic capability probe (migration 045): re-runs the detailed probe so
+	// tools/reasoning metadata tracks the upstream instead of drifting. The
+	// enabled flag is read per cycle from runtime settings, so toggling it in
+	// the admin panel takes effect without a restart.
+	capabilityProbe := modelcatalog.NewCapabilityProbeRunner(models, resolved.Logger)
+	go capabilityProbe.Start(rootCtx, time.Duration(probeIntervalHours(settings.Snapshot().CapabilityProbeIntervalHours))*time.Hour, func() bool {
+		return settings.Snapshot().CapabilityProbeEnabled
+	})
 	lockTransferred = true
 	return app, nil
 }
 
 func (a *App) Handler() http.Handler {
 	return a.handler
+}
+
+// probeIntervalHours resolves the operator's cadence to the documented default
+// when the row has not been through migration 045 (interval column = 0).
+func probeIntervalHours(configured int) int {
+	if configured <= 0 {
+		return 24
+	}
+	return configured
 }
 
 // FlushObservability synchronously persists any buffered request-log records.

@@ -36,6 +36,7 @@ type settingsDTO struct {
 	EmbeddingCacheEnabled     bool   `json:"embedding_cache_enabled"`
 	EmbeddingCacheMaxEntries  int    `json:"embedding_cache_max_entries"`
 	AutoReasoningEnabled      bool   `json:"auto_reasoning_enabled"`
+	CapabilityProbeEnabled    bool   `json:"capability_probe_enabled"`
 }
 
 type settingsPatch struct {
@@ -59,6 +60,7 @@ type settingsPatch struct {
 	EmbeddingCacheEnabled     *bool   `json:"embedding_cache_enabled"`
 	EmbeddingCacheMaxEntries  *int    `json:"embedding_cache_max_entries"`
 	AutoReasoningEnabled      *bool   `json:"auto_reasoning_enabled"`
+	CapabilityProbeEnabled    *bool   `json:"capability_probe_enabled"`
 }
 
 func NewSettings(store runtimeSettingsStore) *Settings {
@@ -154,6 +156,9 @@ func applySettingsPatch(current runtimeconfig.Snapshot, patch settingsPatch) run
 	if patch.AutoReasoningEnabled != nil {
 		current.AutoReasoningEnabled = *patch.AutoReasoningEnabled
 	}
+	if patch.CapabilityProbeEnabled != nil {
+		current.CapabilityProbeEnabled = *patch.CapabilityProbeEnabled
+	}
 	return current
 }
 
@@ -176,6 +181,7 @@ func toSettingsDTO(snapshot runtimeconfig.Snapshot) settingsDTO {
 		EmbeddingCacheEnabled:     snapshot.EmbeddingCacheEnabled,
 		EmbeddingCacheMaxEntries:  snapshot.EmbeddingCacheMaxEntries,
 		AutoReasoningEnabled:      snapshot.AutoReasoningEnabled,
+		CapabilityProbeEnabled:    snapshot.CapabilityProbeEnabled,
 	}
 }
 

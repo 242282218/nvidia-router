@@ -191,7 +191,10 @@ func (r Request) MarshalForWithOptions(model modelcatalog.Model, autoReasoning b
 	}
 	reasoning := r.reasoning
 	if autoReasoning && !reasoning.Requested && model.SupportsReasoning {
-		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile()); ok {
+		// mapMaxOutputTokens already renamed max_output_tokens to max_tokens in
+		// chatFields, so OutputTokenLimit sees the same allowance the budget cap
+		// will.
+		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile(), compat.OutputTokenLimit(chat)); ok {
 			reasoning = automatic
 		}
 	}

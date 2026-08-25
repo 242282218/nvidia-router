@@ -474,7 +474,7 @@ func TestResolveEnforcesKindAndCapabilities(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsInferredToolsCapability(t *testing.T) {
+func TestResolveAdmitsInferredToolsCapability(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	if err := service.SaveSelection(context.Background(), []Selection{{
 		PublicID: "inferred-tools", UpstreamID: "vendor/inferred-tools", DisplayName: "Inferred tools",
@@ -482,8 +482,21 @@ func TestResolveRejectsInferredToolsCapability(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveSelection: %v", err)
 	}
-	if _, err := service.Resolve(context.Background(), "inferred-tools", Requirements{Kind: KindChat, Tools: true}); !errors.Is(err, ErrCapabilityUnverified) {
-		t.Fatalf("Resolve inferred tools error = %v, want ErrCapabilityUnverified", err)
+	// inferred is an explicit claim (operator PATCH or capability hint), so a
+	// tools request must route instead of deadlocking on 501 capability_unverified.
+	if _, err := service.Resolve(context.Background(), "inferred-tools", Requirements{Kind: KindChat, Tools: true}); err != nil {
+		t.Fatalf("Resolve inferred tools error = %v, want nil", err)
+	}
+	// A model whose tools support was never claimed stays blocked even when the
+	// boolean flag is set: only supported/inferred describe verified or claimed.
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "unknown-tools", UpstreamID: "vendor/unknown-tools", DisplayName: "Unknown tools",
+		Kind: KindChat, Enabled: true, SupportsTools: true, ToolsStatus: ToolsStatusUnknown,
+	}}); err != nil {
+		t.Fatalf("SaveSelection unknown-tools: %v", err)
+	}
+	if _, err := service.Resolve(context.Background(), "unknown-tools", Requirements{Kind: KindChat, Tools: true}); !errors.Is(err, ErrCapabilityUnverified) {
+		t.Fatalf("Resolve unknown-tools error = %v, want ErrCapabilityUnverified", err)
 	}
 }
 
@@ -1084,6 +1097,9 @@ type fakeDiscoverer struct {
 	// chatCompletion, when set, wraps the probe body so a test can observe
 	// whether the probe declared semantic completion before closing it.
 	chatCompletion *probeCompletion
+	// chatResponses replays one body per Chat call, overriding chatResponse and
+	// chatStatuses. A call past the slice falls back to the normal replay.
+	chatResponses []string
 }
 
 func (d *fakeDiscoverer) Models(_ context.Context, token string) ([]string, error) {
@@ -1109,6 +1125,10 @@ func (d *fakeDiscoverer) Chat(_ context.Context, snapshot runtimeconfig.Snapshot
 	body := d.chatResponse
 	if body == "" {
 		body = `{"choices":[]}`
+	}
+	if len(d.chatResponses) > 0 {
+		body = d.chatResponses[0]
+		d.chatResponses = d.chatResponses[1:]
 	}
 	status := http.StatusOK
 	if len(d.chatStatuses) > 0 {

@@ -196,7 +196,7 @@ func (r Request) MarshalForWithOptions(model modelcatalog.Model, autoReasoning b
 	}
 	reasoning := r.reasoning
 	if autoReasoning && !reasoning.Requested && model.SupportsReasoning {
-		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile()); ok {
+		if automatic, ok := compat.AutoReasoningSpec(model.ReasoningProfile(), compat.OutputTokenLimit(fields)); ok {
 			reasoning = automatic
 		}
 	}

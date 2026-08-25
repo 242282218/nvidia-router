@@ -2,6 +2,7 @@ package compat
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -103,6 +104,39 @@ func TestMaxCompletionTokensCountsAsAllowance(t *testing.T) {
 	applyForTest(t, fields, thinkingProfile())
 	if got := string(fields["thinking"]); got != `{"budget_tokens":300,"type":"enabled"}` {
 		t.Fatalf("thinking = %s, want budget capped to 300", got)
+	}
+}
+
+func TestThinkingBudgetAbsoluteReserveAtTinyLimit(t *testing.T) {
+	// 75% of 64 is 48, but a 16-token remainder starves even a one-line reply;
+	// the absolute reserve binds instead and leaves exactly reserve tokens.
+	fields := map[string]json.RawMessage{
+		"max_tokens":       json.RawMessage(`64`),
+		"reasoning_effort": json.RawMessage(`"high"`),
+	}
+	applyForTest(t, fields, thinkingProfile())
+	if got := string(fields["thinking"]); got != `{"budget_tokens":32,"type":"enabled"}` {
+		t.Fatalf("thinking = %s, want budget capped to the 32-token reserve", got)
+	}
+}
+
+func TestThinkingBudgetReserveBindsBelowCrossover(t *testing.T) {
+	// Below limit 128 the absolute reserve beats the 75% share; at 128 they
+	// agree (96) and above it the percentage wins again.
+	for _, testCase := range []struct{ limit, want int }{
+		{120, 88},
+		{128, 96},
+		{200, 150},
+	} {
+		fields := map[string]json.RawMessage{
+			"max_tokens":       json.RawMessage(fmt.Sprintf(`%d`, testCase.limit)),
+			"reasoning_effort": json.RawMessage(`"high"`),
+		}
+		applyForTest(t, fields, thinkingProfile())
+		want := fmt.Sprintf(`{"budget_tokens":%d,"type":"enabled"}`, testCase.want)
+		if got := string(fields["thinking"]); got != want {
+			t.Fatalf("limit %d: thinking = %s, want %s", testCase.limit, got, want)
+		}
 	}
 }
 

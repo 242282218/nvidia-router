@@ -47,6 +47,7 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 			stream_first_token_timeout_ms = ?, stream_idle_timeout_ms = ?,
 			latency_routing_enabled = ?, embedding_cache_enabled = ?,
 			embedding_cache_max_entries = ?, auto_reasoning_enabled = ?,
+			capability_probe_enabled = ?, capability_probe_interval_hours = ?,
 			updated_at = ?
 		WHERE id = 1`,
 		next.QueueCapacity, next.QueueWaitTimeoutMS, next.ConnectTimeoutMS,
@@ -56,6 +57,7 @@ func (r *Repository) Store(ctx context.Context, next Snapshot) (returnErr error)
 		next.StreamFirstTokenTimeoutMS, next.StreamIdleTimeoutMS,
 		boolInt(next.LatencyRoutingEnabled), boolInt(next.EmbeddingCacheEnabled),
 		next.EmbeddingCacheMaxEntries, boolInt(next.AutoReasoningEnabled),
+		boolInt(next.CapabilityProbeEnabled), next.CapabilityProbeIntervalHours,
 		formatTimestamp(time.Now()),
 	)
 	if err != nil {
@@ -85,7 +87,7 @@ type snapshotQuerier interface {
 
 func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error) {
 	var snapshot Snapshot
-	var latencyEnabled, cacheEnabled, autoReasoningEnabled int
+	var latencyEnabled, cacheEnabled, autoReasoningEnabled, probeEnabled int
 	err := source.QueryRowContext(ctx, `
 		SELECT queue_capacity, queue_wait_timeout_ms, connect_timeout_ms,
 			first_byte_timeout_ms, nonstream_total_timeout_ms, shutdown_grace_ms,
@@ -93,7 +95,7 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 			max_attempts_per_request, retry_budget_ms, max_streaming_per_key,
 			stream_first_token_timeout_ms, stream_idle_timeout_ms,
 			latency_routing_enabled, embedding_cache_enabled, embedding_cache_max_entries,
-			auto_reasoning_enabled
+			auto_reasoning_enabled, capability_probe_enabled, capability_probe_interval_hours
 		FROM runtime_settings WHERE id = 1`).Scan(
 		&snapshot.QueueCapacity,
 		&snapshot.QueueWaitTimeoutMS,
@@ -112,6 +114,8 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 		&cacheEnabled,
 		&snapshot.EmbeddingCacheMaxEntries,
 		&autoReasoningEnabled,
+		&probeEnabled,
+		&snapshot.CapabilityProbeIntervalHours,
 	)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load runtime settings: %w", err)
@@ -119,6 +123,7 @@ func loadSnapshot(ctx context.Context, source snapshotQuerier) (Snapshot, error)
 	snapshot.LatencyRoutingEnabled = latencyEnabled != 0
 	snapshot.EmbeddingCacheEnabled = cacheEnabled != 0
 	snapshot.AutoReasoningEnabled = autoReasoningEnabled != 0
+	snapshot.CapabilityProbeEnabled = probeEnabled != 0
 	return snapshot, nil
 }
 

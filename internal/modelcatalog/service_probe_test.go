@@ -3,9 +3,13 @@ package modelcatalog
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestHasValidToolCallsRequiresFunctionAndJSONArguments(t *testing.T) {
@@ -142,4 +146,246 @@ func TestModelProbeDeclaresCompletionOnSuccess(t *testing.T) {
 	if !tracker.marked {
 		t.Fatal("a validated probe must mark completion, otherwise the exit that served it is charged a failure")
 	}
+}
+
+const toolsProbeCallBody = `{"choices":[{"message":{"tool_calls":[{"function":{"name":"weather","arguments":"{\"city\":\"Hangzhou\"}"}}]}}]}`
+
+// The periodic probe runner probes only enabled chat models and writes the
+// verdict back through the same applyProbe path as the admin job.
+func TestCapabilityProbeRunnerProbesEnabledChatModelsOnly(t *testing.T) {
+	service, db, secrets, discoverer := newCatalogTestService(t)
+	secrets.availableIDs = []int64{11}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "probe-enabled", UpstreamID: "vendor/pe", DisplayName: "PE", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection chat: %v", err)
+	}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "probe-embed", UpstreamID: "vendor/pemb", DisplayName: "PEMB", Kind: KindEmbedding, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection embedding: %v", err)
+	}
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+	discoverer.chatResponses = []string{
+		`{"choices":[{"message":{"content":"ok"}}]}`, // base
+		`{"choices":[{"message":{"content":"ok"}}]}`, // reasoning
+		toolsProbeCallBody,                           // required form hits
+	}
+
+	runner := NewCapabilityProbeRunner(service, discardLogger())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runner.runOnceForTest(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("probe cycle did not finish")
+	}
+
+	// The seeded deepseek-v4-flash alias row is also enabled+chat, so both chat
+	// models probe serially. The first model consumes the replay queue: base,
+	// reasoning, then the required form hitting tool_call → supported (3 calls).
+	// The second model falls through to the plain 200-without-calls response:
+	// base + reasoning + both silent tools forms → unsupported (4 calls).
+	// The embedding model must be skipped entirely.
+	if discoverer.chatCalls != 7 {
+		t.Fatalf("chat calls = %d, want 7 (embedding model must be skipped)", discoverer.chatCalls)
+	}
+	var supportedCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM models WHERE kind = 'chat' AND tools_status = ?`, ToolsStatusSupported).Scan(&supportedCount); err != nil {
+		t.Fatalf("count supported models: %v", err)
+	}
+	if supportedCount != 1 {
+		t.Fatalf("supported chat models = %d, want 1", supportedCount)
+	}
+}
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// runOnceForTest exposes one synchronous probe cycle for tests.
+func (r *CapabilityProbeRunner) runOnceForTest(ctx context.Context) {
+	cycle, err := r.runOnce(ctx)
+	if err != nil {
+		r.logger.Warn("capability probe cycle failed", "error", err)
+		return
+	}
+	r.logger.Info("capability probe cycle completed",
+		"models", cycle.total, "supported", cycle.supported,
+		"unsupported", cycle.unsupported, "unknown", cycle.unknown)
+}
+
+// The startup consistency check must flag the llama shape — levels=[none] with
+// zero_allowed=false yields an empty available-level set, which made every
+// reasoning_effort request fail 501 model_capability_unsupported (2026-08-25).
+func TestCountUnexpressibleReasoningProfilesFlagsLlamaShape(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "healthy-reasoning", UpstreamID: "vendor/hr", DisplayName: "HR", Kind: KindChat,
+		SupportsReasoning: true, ReasoningWireFormat: "openai",
+		ReasoningLevels: []string{"none", "low", "high"}, ReasoningZeroAllowed: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection healthy: %v", err)
+	}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "broken-reasoning", UpstreamID: "vendor/br", DisplayName: "BR", Kind: KindChat,
+		SupportsReasoning: true, ReasoningWireFormat: "openai",
+		ReasoningLevels: []string{"none"}, ReasoningZeroAllowed: false,
+	}}); err != nil {
+		t.Fatalf("SaveSelection broken: %v", err)
+	}
+
+	count, ids, err := service.CountUnexpressibleReasoningProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("CountUnexpressibleReasoningProfiles: %v", err)
+	}
+	if count != 1 || len(ids) != 1 || ids[0] != "broken-reasoning" {
+		t.Fatalf("count = %d ids = %v, want 1 [broken-reasoning]", count, ids)
+	}
+}
+
+// detailedProbeService prepares a chat model for the detailed probe path.
+func detailedProbeService(t *testing.T, publicID string) (*Service, *fakeDiscoverer, int64) {
+	t.Helper()
+	service, db, secrets, discoverer := newCatalogTestService(t)
+	secrets.availableIDs = []int64{11}
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: publicID, UpstreamID: "vendor/" + publicID, DisplayName: publicID, Kind: KindChat,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+	discoverer.chatResponse = `{"choices":[{"message":{"content":"ok"}}]}`
+	return service, discoverer, modelIDByPublicID(t, db, publicID)
+}
+
+func serviceRepositoryDB(t *testing.T, service *Service) *sql.DB {
+	t.Helper()
+	return service.repository.db
+}
+
+// A gateway that ignores tool_choice:"required" used to stay unknown forever
+// and deadlock every tools request behind 501. The auto fallback with an
+// explicit instruction is what rescues them.
+func TestToolsProbeTriesAutoFallbackWhenRequiredYieldsNoCalls(t *testing.T) {
+	service, discoverer, modelID := detailedProbeService(t, "tools-fallback")
+	discoverer.chatResponses = []string{
+		`{"choices":[{"message":{"content":"ok"}}]}`, // base
+		`{"choices":[{"message":{"content":"ok"}}]}`, // reasoning (openai wire)
+		`{"choices":[{"message":{"content":"ok"}}]}`, // required form: silent
+		toolsProbeCallBody,                           // auto form: calls
+	}
+
+	summary, err := service.TestModelAutoDetailed(context.Background(), modelID)
+	if err != nil {
+		t.Fatalf("TestModelAutoDetailed: %v", err)
+	}
+	if summary.Tools != "supported" {
+		t.Fatalf("probe.Tools = %q, want supported", summary.Tools)
+	}
+	if len(discoverer.chatBodies) != 4 {
+		t.Fatalf("chat calls = %d, want 4", len(discoverer.chatBodies))
+	}
+	var requiredForm map[string]any
+	if err := json.Unmarshal(discoverer.chatBodies[2], &requiredForm); err != nil {
+		t.Fatalf("decode required form: %v", err)
+	}
+	if requiredForm["tool_choice"] != "required" || requiredForm["max_tokens"] != float64(toolsProbeMaxTokens) {
+		t.Fatalf("required form = %v/%v, want required/%d", requiredForm["tool_choice"], requiredForm["max_tokens"], toolsProbeMaxTokens)
+	}
+	var autoForm map[string]any
+	if err := json.Unmarshal(discoverer.chatBodies[3], &autoForm); err != nil {
+		t.Fatalf("decode auto form: %v", err)
+	}
+	if autoForm["tool_choice"] != "auto" {
+		t.Fatalf("fallback tool_choice = %v, want auto", autoForm["tool_choice"])
+	}
+	messages, _ := autoForm["messages"].([]any)
+	if len(messages) != 1 || !strings.Contains(messages[0].(map[string]any)["content"].(string), "must call the weather tool") {
+		t.Fatalf("fallback message = %v, want explicit instruction", messages)
+	}
+	var stored string
+	db := serviceRepositoryDB(t, service)
+	if err := db.QueryRow(`SELECT tools_status FROM models WHERE id = ?`, modelID).Scan(&stored); err != nil {
+		t.Fatalf("load stored status: %v", err)
+	}
+	if stored != ToolsStatusSupported {
+		t.Fatalf("stored tools_status = %q, want supported", stored)
+	}
+}
+
+// Both forms staying silent is the only shape that condemns a model to
+// unsupported — one silent form may just be a rejected spelling.
+func TestToolsProbeWritesUnsupportedOnlyWhenBothFormsStaySilent(t *testing.T) {
+	service, discoverer, modelID := detailedProbeService(t, "tools-silent")
+	discoverer.chatResponses = []string{
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+	}
+
+	summary, err := service.TestModelAutoDetailed(context.Background(), modelID)
+	if err != nil {
+		t.Fatalf("TestModelAutoDetailed: %v", err)
+	}
+	if summary.Tools != ProbeStatusUnsupported {
+		t.Fatalf("probe.Tools = %q, want unsupported", summary.Tools)
+	}
+	var stored string
+	if err := serviceRepositoryDB(t, service).QueryRow(`SELECT tools_status FROM models WHERE id = ?`, modelID).Scan(&stored); err != nil {
+		t.Fatalf("load stored status: %v", err)
+	}
+	if stored != ToolsStatusUnsupported {
+		t.Fatalf("stored tools_status = %q, want unsupported", stored)
+	}
+}
+
+// A transient failure on the first form stops the probe without firing the
+// second form at an upstream that is visibly failing.
+func TestToolsProbeStopsAfterTransientWithoutFallback(t *testing.T) {
+	service, discoverer, modelID := detailedProbeService(t, "tools-transient")
+	discoverer.chatStatuses = []int{200, 200, 503} // base, reasoning, required-form transient
+
+	summary, err := service.TestModelAutoDetailed(context.Background(), modelID)
+	if err != nil {
+		t.Fatalf("TestModelAutoDetailed: %v", err)
+	}
+	if summary.Tools != ProbeStatusUnknown {
+		t.Fatalf("probe.Tools = %q, want unknown", summary.Tools)
+	}
+	if len(discoverer.chatBodies) != 3 {
+		t.Fatalf("chat calls = %d, want 3 (no auto fallback after transient)", len(discoverer.chatBodies))
+	}
+	var verifiedAt sql.NullString
+	if err := serviceRepositoryDB(t, service).QueryRow(`SELECT tools_verified_at FROM models WHERE id = ?`, modelID).Scan(&verifiedAt); err != nil {
+		t.Fatalf("load verified_at: %v", err)
+	}
+	if verifiedAt.Valid {
+		t.Fatal("unknown verdict must not write tools_verified_at")
+	}
+}
+
+// The required form being rejected outright (4xx) does not condemn the model:
+// some gateways only accept the auto spelling.
+func TestToolsProbeFourXXOnRequiredFallsBackToAuto(t *testing.T) {
+	service, discoverer, modelID := detailedProbeService(t, "tools-4xx")
+	// chatResponses pairs with chatStatuses: base 200, reasoning 200,
+	// required-form 400, auto-form 200 with calls.
+	discoverer.chatStatuses = []int{200, 200, 400, 200}
+	discoverer.chatResponses = []string{
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+		`{"choices":[{"message":{"content":"ok"}}]}`,
+		`{"error":{"message":"tool_choice required not supported"}}`,
+		toolsProbeCallBody,
+	}
+
+	summary, err := service.TestModelAutoDetailed(context.Background(), modelID)
+	if err != nil {
+		t.Fatalf("TestModelAutoDetailed: %v", err)
+	}
+	if summary.Tools != "supported" {
+		t.Fatalf("probe.Tools = %q, want supported (auto form rescued)", summary.Tools)
+	}
+	_ = service
 }

@@ -150,6 +150,43 @@ func TestClientWrapsProxyAuthRequiredConnectAsProxyError(t *testing.T) {
 	}
 }
 
+// TestProxyRejectedRetiresCachedTransport locks in the 2026-08-25 fix for the
+// clustered fast-502 pattern: an exit that refuses the CONNECT must have its
+// cached transport retired, so the next request on the same sticky session
+// dials a fresh CONNECT instead of silently reusing a tunnel to a dead exit.
+func TestProxyRejectedRetiresCachedTransport(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newConnectProxy(t)
+	proxy.FailNextConnectStatus(http.StatusBadGateway)
+	manager := newProxyManager(t, proxy.Address(), upstream.Client().Transport.(*http.Transport))
+	descriptor := DefaultDescriptor()
+	descriptor.Chat.URL = upstream.URL + "/v1/chat/completions"
+	client, err := NewClient(upstream.Client(), descriptor, fixedSettings{}, manager)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	requestBody := []byte(`{"model":"vendor/model"}`)
+	snapshot := runtimeconfig.Snapshot{ConnectTimeoutMS: 500, FirstByteTimeoutMS: 1000}
+	if _, err := client.Chat(context.Background(), snapshot, "same-key", requestBody, false); err == nil {
+		t.Fatal("first Chat succeeded despite a rejected CONNECT")
+	}
+	// A healthy retry through the same session must dial the proxy again —
+	// proof the poisoned cached transport was dropped.
+	proxy.AllowConnect()
+	response, err := client.Chat(context.Background(), snapshot, "same-key", requestBody, false)
+	if err != nil {
+		t.Fatalf("second Chat after retire: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("second Chat status = %d, want 200", response.StatusCode)
+	}
+}
+
 func TestClientDoesNotReplayAfterFirstByteDeadline(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -289,6 +326,10 @@ func (p *connectProxy) Connects() int32 { return p.connects.Load() }
 // FailNextConnect makes the next CONNECT answer with an HTTP 5xx status, which
 // the client surfaces as a transport error that must NOT be replayed.
 func (p *connectProxy) FailNextConnect() { p.failNext.Store(http.StatusBadGateway) }
+
+// AllowConnect clears any pending failure status so subsequent CONNECTs tunnel
+// normally again.
+func (p *connectProxy) AllowConnect() { p.failNext.Store(0) }
 
 // FailNextConnectStatus makes the next CONNECT answer with an explicit status code,
 // so a test can distinguish a 407 auth rejection from a generic 5xx.

@@ -82,6 +82,7 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
 	model, err := h.models.Resolve(request.Context(), modelID, parsed.Requirements())
 	if err != nil {
+		recordCapabilityErrorCode(request.Context(), err)
 		writeChatError(writer, modelError(err))
 		return
 	}

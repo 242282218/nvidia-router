@@ -175,7 +175,13 @@ func validateRequirements(model Model, requirements Requirements) error {
 		if !model.SupportsTools {
 			return ErrCapabilityUnsupported
 		}
-		if model.ToolsStatus != ToolsStatusSupported {
+		// "inferred" is an explicit claim: an operator PATCHed supports_tools, or
+		// the capability-hint registry asserted it. The probe cannot verify several
+		// gateway models (they ignore tool_choice:"required"), so demanding
+		// probe-verified support deadlocked them at 501 forever. Probe-refuted
+		// models carry "unsupported" and stay blocked; models nobody ever claimed
+		// anything about carry "unknown" and stay blocked.
+		if model.ToolsStatus != ToolsStatusSupported && model.ToolsStatus != ToolsStatusInferred {
 			return ErrCapabilityUnverified
 		}
 	}

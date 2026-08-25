@@ -27,6 +27,9 @@ func (h *Responses) serveOpenCodeFreeResponses(writer http.ResponseWriter, reque
 		return
 	}
 
+	// Retry once on a transient upstream status — for streams only while
+	// nothing has been written, so headers can never be sent twice.
+	tracked := &firstWriteTracker{ResponseWriter: writer}
 	for attempt := 0; attempt < 2; attempt++ {
 		ctx, cancel := context.WithTimeout(nvidia.WithForwardedHeaders(request.Context(), request.Header), openCodeFreeRequestTimeout)
 		response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
@@ -41,9 +44,9 @@ func (h *Responses) serveOpenCodeFreeResponses(writer http.ResponseWriter, reque
 			return
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			retry, mapped := openCodeFreeResponsesStatus(response, attempt == 0, stream)
+			retry, mapped := openCodeFreeResponsesStatus(response, attempt == 0)
 			cancel()
-			if retry {
+			if retry && !(stream && tracked.wrote) {
 				select {
 				case <-time.After(500 * time.Millisecond):
 					continue
@@ -102,7 +105,7 @@ func (h *Responses) serveOpenCodeFreeResponses(writer http.ResponseWriter, reque
 	}
 }
 
-func openCodeFreeResponsesStatus(response *http.Response, allowRetry, stream bool) (bool, error) {
+func openCodeFreeResponsesStatus(response *http.Response, allowRetry bool) (bool, error) {
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
 	_ = response.Body.Close()
 	message := strings.TrimSpace(string(body))
@@ -115,7 +118,7 @@ func openCodeFreeResponsesStatus(response *http.Response, allowRetry, stream boo
 		return false, &apierror.Error{Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_model_not_found", Message: message}
 	}
 	if response.StatusCode == http.StatusTooManyRequests || isOpenCodeFreeTransientStatus(response.StatusCode) {
-		retry := allowRetry && !stream && response.StatusCode != http.StatusTooManyRequests
+		retry := allowRetry && response.StatusCode != http.StatusTooManyRequests
 		if retry {
 			return true, nil
 		}

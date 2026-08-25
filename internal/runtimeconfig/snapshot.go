@@ -90,6 +90,11 @@ type Snapshot struct {
 	// AutoReasoningEnabled injects the highest supported reasoning level when a
 	// client omits all reasoning aliases. Explicit client values always win.
 	AutoReasoningEnabled bool
+	// CapabilityProbeEnabled runs the periodic detailed capability probe worker.
+	// Off by default because it changes upstream request volume.
+	CapabilityProbeEnabled bool
+	// CapabilityProbeIntervalHours is the cadence of the periodic probe loop.
+	CapabilityProbeIntervalHours int
 	// FirstByteDeadline is request-local metadata and is intentionally not persisted.
 	FirstByteDeadline time.Time
 }
@@ -180,6 +185,17 @@ func Validate(snapshot Snapshot) error {
 			min   int
 			max   int
 		}{"embedding_cache_max_entries", snapshot.EmbeddingCacheMaxEntries, 1, 10000})
+	}
+	// The capability-probe interval follows the zero-skip convention: a snapshot
+	// that has not been through migration 045 carries 0, and the worker resolves
+	// it to the documented default.
+	if snapshot.CapabilityProbeIntervalHours != 0 {
+		checks = append(checks, struct {
+			field string
+			value int
+			min   int
+			max   int
+		}{"capability_probe_interval_hours", snapshot.CapabilityProbeIntervalHours, 6, 168})
 	}
 	for _, check := range checks {
 		if check.value < check.min || check.value > check.max {

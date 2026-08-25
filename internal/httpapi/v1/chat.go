@@ -97,6 +97,9 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
 	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
 	if err != nil {
+		// Distinguish capability rejections from generic 4xx in request logs so
+		// monitoring can tell "router never verified this" from a client bug.
+		recordCapabilityErrorCode(request.Context(), err)
 		writeChatError(writer, modelError(err))
 		return
 	}
@@ -225,11 +228,13 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	// The gateway occasionally answers a transient 5xx/436 status on an upstream blip
-	// (observed in round-2 stability runs). Non-stream requests retry once after
-	// a short pause; streams never retry because headers may already be written.
+	// (observed in round-2 stability runs). Retry once after a short pause — for
+	// streams only while nothing has been written, so headers can never be sent
+	// twice; trackedWriter reports whether the first attempt stayed clean.
+	tracked := &firstWriteTracker{ResponseWriter: writer}
 	for attempt := 0; ; attempt++ {
-		retryable := h.openCodeFreeOnce(writer, request, body, stream, attempt == 0)
-		if !retryable || attempt >= 1 || stream {
+		retryable := h.openCodeFreeOnce(tracked, request, body, stream, attempt == 0)
+		if !retryable || attempt >= 1 || (stream && tracked.wrote) {
 			return
 		}
 		select {
@@ -237,6 +242,36 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		case <-request.Context().Done():
 			return
 		}
+	}
+}
+
+// firstWriteTracker records whether any byte (including headers) reached the
+// client, so a streaming retry can be proven safe before it happens.
+type firstWriteTracker struct {
+	http.ResponseWriter
+	wroteHeader bool
+	wrote       bool
+}
+
+func (t *firstWriteTracker) WriteHeader(status int) {
+	if !t.wrote {
+		t.wrote = true
+		t.wroteHeader = true
+	}
+	t.ResponseWriter.WriteHeader(status)
+}
+
+func (t *firstWriteTracker) Write(payload []byte) (int, error) {
+	if !t.wrote {
+		t.wrote = true
+		t.wroteHeader = true
+	}
+	return t.ResponseWriter.Write(payload)
+}
+
+func (t *firstWriteTracker) Flush() {
+	if flusher, ok := t.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
@@ -269,12 +304,12 @@ func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Reques
 			return false
 		}
 		if response.StatusCode == http.StatusTooManyRequests || isOpenCodeFreeTransientStatus(response.StatusCode) {
-			// 5xx and the gateway's non-standard 436 are transient; the non-stream
-			// caller retries once. 429 is the gateway's own concurrency limit, so
+			// 5xx and the gateway's non-standard 436 are transient; the caller
+			// retries once. 429 is the gateway's own concurrency limit, so
 			// replaying would add load instead of relieving it. A retryable status is
 			// still written on the final attempt; otherwise net/http would turn the
 			// unwritten response into a misleading empty 200.
-			retryable = allowRetry && !stream && response.StatusCode != http.StatusTooManyRequests
+			retryable = allowRetry && response.StatusCode != http.StatusTooManyRequests
 			if !retryable {
 				status := response.StatusCode
 				if status == 436 {
@@ -547,6 +582,18 @@ func modelError(err error) error {
 		}
 	}
 	return err
+}
+
+// recordCapabilityErrorCode tags the request-log record with a specific
+// error_code for capability rejections; the middleware's fallback would
+// otherwise lump them into the generic http_4xx bucket.
+func recordCapabilityErrorCode(ctx context.Context, err error) {
+	switch {
+	case errors.Is(err, modelcatalog.ErrCapabilityUnverified):
+		observability.SetErrorCode(ctx, "capability_unverified")
+	case errors.Is(err, modelcatalog.ErrCapabilityUnsupported), errors.Is(err, modelcatalog.ErrModelKindMismatch):
+		observability.SetErrorCode(ctx, "capability_unsupported")
+	}
 }
 
 func writeChatError(writer http.ResponseWriter, err error) {
