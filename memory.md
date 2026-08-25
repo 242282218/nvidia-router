@@ -363,3 +363,11 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 评测器新增边界：声明 `reasoning_zero_allowed=false` 时过滤 `none`，声明 levels 无可表达档位时跳过显式 reasoning；稳定性要求完整匹配 `OK`；生成代码结果比较改用 `ast.literal_eval`，不再执行模型返回的表达式。服务端空终答、SSE 终态、OpenCodeFree 瞬态重试修复仍未发布到远端。
 - 本地门禁：`go test ./...`、`go vet ./...`、31 个 vibe 单测、8 个 capability 单测、`gofmt -d`、`git diff --check` 均通过。若要验证服务端修复，必须先处理未提交改动，生成唯一版本号并按 `scripts/deploy/deploy_remote.py` 发布；发布会重启测试机 app，需遵守目标机确认规则。
 - 当前 Windows 未安装 `gcc`，`go test -race` 在 `CGO_ENABLED=1` 下无法构建；未为本轮临时安装工具或改环境配置，race 结果保持未验证。
+
+## 30. 2026-08-26 vibe 修复发布与稳定性确认
+
+- 提交 `e3729c8` 已按标准脚本发布为 `/opt/nvidia-router-releases/20260826-vibe-debug-e3729c8`，镜像为 `nvidia-router:deploy-20260826-vibe-debug-e3729c8`；回滚点为 `20260826-model-health-race-6d4b782` / `nvidia-router:deploy-20260826-model-health-race-6d4b782`。
+- 切换前备份为 `/opt/nvidia-router-releases/20260826-vibe-debug-e3729c8/backups/predeploy-20260826-vibe-debug-e3729c8/router.db`，权限 `600`、属主 `10001:10001`、大小 10,575,872 字节，SHA-256 为 `907e12992ad01aae0bca16d4b3ad119166df666d844929c6ce1635ab6eaa1ac8`。
+- 发布后实际镜像与 Release 一致，容器 `running/healthy`、重启 0、OOM false；3756 live/ready、18080/6020 healthz 均 200，3756/18080/18081/6020 监听正常。
+- 仅对稳定模型 `opencode-free/hy3-free` 做线上矩阵：服务修复上线后旧的 32-token 稳定性样本为 17/20，3 个 reasoning-only 流被正确转成 `upstream_empty_response`；评测稳定性预算提升到 512 后，矩阵耗时 145.9 秒，20/20 稳定性成功，reasoning low/high、JSON、8K lower-bound needle、长输出均 200，工具 501 仍为该模型能力限制。总测试时长未超过 15 分钟。
+- 评测器的 512-token 稳定性修复在本地工作树中已验证红绿，线上通过 `remote_exec.py` 直接执行；它不改变已运行服务镜像。发布后 5 分钟应用日志未发现 panic、fatal、migration、foreign-key、`upstream_protocol_error` 或 `upstream_empty_response`，代理池仍有正常的 `validation_all_failed` 波动。

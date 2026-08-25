@@ -615,7 +615,7 @@ def matrix_plan(meta, repeat=DEFAULT_REPEAT, context_targets=None):
     else:
         plan.append(("context_needle_skipped", {"skipped": "context_window_unverified"}))
     for index in range(1, max(0, int(repeat)) + 1):
-        entry = {"stream": True, "max_tokens": 32, "messages": user("Reply with exactly the word OK.")}
+        entry = {"stream": True, "max_tokens": 512, "messages": user("Reply with exactly the word OK.")}
         # A positive reasoning level with a 32-token window creates an empty
         # answer on models that cannot express "none". Leave the field out and
         # measure the model's default path instead of manufacturing starvation.

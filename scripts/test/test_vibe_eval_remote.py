@@ -284,6 +284,22 @@ class NeedleAndSummaryTest(unittest.TestCase):
         stability = next(payload for case, payload in plan if case == "stability_1")
         self.assertNotIn("reasoning_effort", stability)
 
+    def test_stability_reserves_budget_for_a_visible_answer(self):
+        plan = MODULE.matrix_plan(
+            {
+                "supports_reasoning": True,
+                "reasoning_levels": ["low", "high"],
+                "reasoning_zero_allowed": True,
+                "supports_tools": False,
+                "tools_status": "unknown",
+                "context_length": 0,
+            },
+            repeat=1,
+            context_targets=[],
+        )
+        stability = next(payload for case, payload in plan if case == "stability_1")
+        self.assertEqual(stability["max_tokens"], 512)
+
     def test_context_targets_do_not_invent_an_undeclared_window(self):
         self.assertEqual(
             MODULE.context_targets_for_model({"context_length": 8192}, [8192, 32768]),
