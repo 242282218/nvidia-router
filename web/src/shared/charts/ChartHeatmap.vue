@@ -62,7 +62,7 @@ function cellTitle(rowLabel: string, colLabel: string, value: number | null): st
           <th
             v-for="col in colLabels"
             :key="col"
-            class="font-mono-data px-1 pb-1 text-[10px] font-medium text-[var(--color-text-subtle)]"
+            class="font-mono-data px-1 pb-1 text-xs font-medium text-[var(--color-text-subtle)]"
             scope="col"
           >
             {{ col }}

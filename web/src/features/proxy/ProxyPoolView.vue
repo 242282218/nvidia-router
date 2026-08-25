@@ -291,7 +291,7 @@ async function refreshPool(): Promise<void> {
                 当前配置来源：{{ sourceLabel(settings?.source) }}。XApi 凭据只以密文保存，页面不回显完整地址。
               </p>
             </div>
-            <label class="flex h-9 cursor-pointer items-center gap-2.5 text-sm text-[var(--color-text-secondary)]">
+            <label class="flex h-9 cursor-pointer items-center gap-3 text-sm text-[var(--color-text-secondary)]">
               <input
                 v-model="enabled"
                 data-testid="proxy-enabled"

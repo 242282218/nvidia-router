@@ -296,7 +296,7 @@ onBeforeUnmount(() => {
                 role="group"
                 :aria-label="group.group"
               >
-                <p class="px-3 pb-1 pt-3 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-subtle)] first:pt-1">
+                <p class="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-[0.1em] text-[var(--color-text-subtle)] first:pt-1">
                   {{ group.group }}
                 </p>
                 <button
@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="flex items-center gap-4 border-t border-[var(--color-border)] px-4 py-2.5 text-[11px] text-[var(--color-text-subtle)]">
+          <div class="flex items-center gap-4 border-t border-[var(--color-border)] px-4 py-2.5 text-xs text-[var(--color-text-subtle)]">
             <span class="flex items-center gap-1"><UiKbd>↑</UiKbd><UiKbd>↓</UiKbd> 选择</span>
             <span class="flex items-center gap-1"><UiKbd>↵</UiKbd> 打开</span>
             <span class="ml-auto hidden items-center gap-1 sm:flex"><UiKbd>Ctrl</UiKbd><UiKbd>K</UiKbd> 唤起</span>

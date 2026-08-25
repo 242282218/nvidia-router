@@ -68,7 +68,7 @@ function clearSensitiveState(): void {
       v-if="plaintext"
       class="space-y-4"
     >
-      <div class="flex items-start gap-2.5 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3">
+      <div class="flex items-start gap-3 rounded-[var(--radius-control)] border border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_5%,transparent)] p-3">
         <UiIcon
           name="warning"
           :size="16"

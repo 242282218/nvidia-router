@@ -215,7 +215,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
   <div class="min-h-screen text-[var(--color-text)]">
     <!-- Mobile header -->
     <header
-      class="fixed inset-x-0 top-0 z-[var(--z-toolbar)] flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-canvas-deep)] px-4 lg:hidden"
+      class="fixed inset-x-0 top-0 z-[var(--z-toolbar)] flex h-14 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 lg:hidden"
     >
       <button
         ref="menuButton"
@@ -231,8 +231,8 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           :size="20"
         />
       </button>
-      <div class="flex min-w-0 flex-1 items-center gap-2.5">
-        <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-brand)] text-[11px] font-bold text-[var(--color-brand-foreground)]">
+      <div class="flex min-w-0 flex-1 items-center gap-3">
+        <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-brand)] text-xs font-bold text-[var(--color-brand-foreground)]">
           N
         </div>
         <p class="truncate text-sm font-semibold">
@@ -302,10 +302,10 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           v-if="!railCollapsed"
           class="min-w-0"
         >
-          <p class="truncate text-[13px] font-semibold tracking-[0.01em]">
+          <p class="truncate text-sm font-semibold tracking-[0.01em]">
             NVIDIA Router
           </p>
-          <p class="mt-0.5 text-[11px] tracking-[0.02em] text-[var(--color-text-muted)]">
+          <p class="mt-0.5 text-xs tracking-[0.02em] text-[var(--color-text-muted)]">
             管理控制台
           </p>
         </div>
@@ -317,7 +317,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         :class="railCollapsed ? 'lg:px-3' : ''"
       >
         <button
-          class="flex h-10 w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-transparent px-3 text-sm text-[var(--color-text-secondary)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
+          class="flex h-10 w-full items-center gap-3 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-transparent px-3 text-sm text-[var(--color-text-secondary)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] focus-visible:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] focus-visible:outline-offset-2"
           :class="railCollapsed ? 'lg:justify-center lg:px-0' : ''"
           type="button"
           data-testid="open-command-palette"
@@ -351,7 +351,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           <!-- 滑动激活指示器：跟随当前项平移，而非逐项切换背景 -->
           <div
             v-if="indicator.visible"
-            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.34,1.3,0.64,1)]"
+            class="absolute left-0 right-0 top-0 rounded-[var(--radius-control)] bg-[var(--color-active)] transition-[transform,height] duration-[var(--duration-local)] ease-[var(--ease-enter)]"
             :style="{ transform: `translateY(${indicator.top}px)`, height: `${indicator.height}px` }"
             aria-hidden="true"
           />
@@ -403,14 +403,14 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
         <!-- 展开态：品牌色头像（角标状态点）+ 身份 + 右侧 … 菜单 -->
         <div
           v-if="!railCollapsed"
-          class="flex items-center gap-2.5"
+          class="flex items-center gap-3"
         >
           <div
             class="relative ml-1 shrink-0"
             role="img"
             aria-label="管理员，会话有效"
           >
-            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)]">
+            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-sm font-semibold text-[var(--color-brand-foreground)]">
               管
             </div>
             <span class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--color-surface)] bg-[var(--color-success)]" />
@@ -479,7 +479,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
           >
             <template #trigger>
               <span
-                class="relative flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-[13px] font-semibold text-[var(--color-brand-foreground)]"
+                class="relative flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-brand)] text-sm font-semibold text-[var(--color-brand-foreground)]"
                 role="img"
                 aria-label="管理员，会话有效"
               >
@@ -534,7 +534,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
 
       <!-- 折叠开关：仅桌面显示 -->
       <button
-        class="sidebar-rail-toggle absolute -right-3.5 top-[70px] hidden h-7 w-7 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] lg:flex"
+        class="sidebar-rail-toggle absolute -right-3.5 top-[70px] hidden h-8 w-8 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-muted)] transition-[background-color,border-color,color] duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] lg:flex"
         type="button"
         data-testid="toggle-rail"
         :aria-label="railCollapsed ? '展开侧栏' : '折叠侧栏'"
@@ -543,7 +543,7 @@ function onKeydown(event: globalThis.KeyboardEvent): void {
       >
         <UiIcon
           :name="railCollapsed ? 'panel-left-open' : 'panel-left-close'"
-          :size="13"
+          :size="14"
         />
       </button>
     </aside>

@@ -288,7 +288,7 @@ function providerLabel(provider: string): string {
       </div>
 
       <!-- 核心指标栏：开放式 4 列，上下细分割线，不做框中框 -->
-      <div class="my-3 grid grid-cols-2 gap-x-2 gap-y-2.5 border-y border-[var(--color-border-subtle)] py-2.5 sm:grid-cols-4">
+      <div class="my-3 grid grid-cols-2 gap-x-2 gap-y-3 border-y border-[var(--color-border-subtle)] py-3 sm:grid-cols-4">
         <!-- 可用率 -->
         <div class="min-w-0">
           <span class="block truncate text-xs text-[var(--color-text-muted)]">可用率</span>
@@ -385,7 +385,7 @@ function providerLabel(provider: string): string {
 
           <span
             v-if="model.buckets.length === 0"
-            class="min-w-0 flex-1 rounded-[2px] border border-dashed border-[var(--color-muted-border)]"
+            class="min-w-0 flex-1 rounded-[var(--radius-data)] border border-dashed border-[var(--color-muted-border)]"
             aria-hidden="true"
           />
 

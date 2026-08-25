@@ -56,8 +56,8 @@ const displayValue = computed(() => {
 </script>
 
 <template>
-  <div class="metric-card flex flex-col gap-2.5">
-    <div class="flex items-center gap-2.5">
+  <div class="metric-card flex flex-col gap-3">
+    <div class="flex items-center gap-3">
       <span
         v-if="icon"
         class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[var(--radius-control)]"
@@ -74,7 +74,7 @@ const displayValue = computed(() => {
       </p>
     </div>
     <p
-      class="font-mono-data text-[22px] font-semibold leading-tight tracking-[var(--tracking-display)] tabular-nums"
+      class="type-metric-mono leading-tight"
       :class="toneValue ? toneValueClass[tone] : 'text-[var(--color-text)]'"
     >
       {{ displayValue }}

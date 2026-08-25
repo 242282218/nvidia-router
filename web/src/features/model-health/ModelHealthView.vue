@@ -368,7 +368,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
                   class="input-field h-8 w-24"
                 >
               </div>
-              <p class="border-t border-[var(--color-border-subtle)] px-3 pb-1.5 pt-2 text-[11px] leading-relaxed text-[var(--color-text-subtle)]">
+              <p class="border-t border-[var(--color-border-subtle)] px-3 pb-1.5 pt-2 text-xs leading-relaxed text-[var(--color-text-subtle)]">
                 频率越短，上游调用越多；探测为只读请求。
               </p>
             </template>
@@ -376,7 +376,7 @@ function isModelHealthModel(value: unknown): value is ModelHealthModel {
         </template>
       </UiPageHeader>
 
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div class="flex flex-wrap items-center gap-3">
         <UiSelect
           v-model="range"
           data-testid="model-health-range"

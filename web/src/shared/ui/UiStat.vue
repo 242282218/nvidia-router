@@ -61,7 +61,7 @@ const displayValue = computed(() => {
       class="mt-2 font-semibold leading-tight"
       :class="[
         toneClass[tone],
-        prominent ? 'stat-display' : mono ? 'font-mono-data text-[22px]' : 'text-[22px]',
+        prominent ? 'stat-display' : mono ? 'type-metric-mono' : 'type-metric',
       ]"
     >
       {{ displayValue }}

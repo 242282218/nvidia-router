@@ -73,11 +73,11 @@ export default defineConfig({
     /* ── 卡片与面板（扁平：无阴影，层级靠底色亮度差 + 描边） ── */
     {
       'card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)]',
-      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] transition-colors duration-200 hover:border-[var(--color-border-strong)]',
-      'panel-inset': 'rounded-[var(--radius-control)] bg-[var(--color-sunken)]',
-      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 transition-colors duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)]',
+      'card-hover': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] transition-colors duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)]',
+      'panel-inset': 'rounded-[var(--radius-control)] border border-[var(--color-border-subtle)] bg-[var(--color-sunken)]',
+      'stat-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 transition-colors duration-[var(--duration-micro)] hover:border-[var(--color-border-strong)]',
       // Static metric tile (no hover affordance — it is read-only telemetry,
-      // not a clickable card). Distinct from stat-card which reacts to hover.
+      // not a clickable card). p-5 统一与 stat-card 对齐，避免行内 5/6 混用导致的基线抖动。
       'metric-card': 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5',
     },
     /* ── 页面骨架 ── */
@@ -86,11 +86,11 @@ export default defineConfig({
       'content-wrapper': 'mx-auto max-w-[1280px]',
       'section-header': 'mb-6 flex flex-wrap items-end justify-between gap-x-4 gap-y-3',
       'page-title': 'type-title',
-      'page-subtitle': 'mt-2 max-w-2xl text-sm text-[var(--color-text-muted)]',
+      'page-subtitle': 'mt-1.5 max-w-2xl text-sm leading-relaxed text-[var(--color-text-muted)]',
     },
     /* ── 徽章 ── */
     {
-      'badge': 'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium leading-none',
+      'badge': 'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium leading-none tracking-[0.01em]',
       'badge-success': 'badge border-[var(--color-success-background)] bg-[var(--color-success-background)] text-[var(--color-success-foreground)]',
       'badge-warning': 'badge border-[var(--color-warning-background)] bg-[var(--color-warning-background)] text-[var(--color-warning-foreground)]',
       'badge-danger': 'badge border-[var(--color-danger-background)] bg-[var(--color-danger-background)] text-[var(--color-danger-foreground)]',
@@ -134,8 +134,10 @@ export default defineConfig({
     /* ── 语义字体阶梯（负字距红线：设计约束硬规则 #6，标题收紧最多到 0）。
        Warm Restraint v4：display 收紧 -0.02em 专供 KPI 主数字，title 微松 +0.01em；
        type-label 维持既有 uppercase + 0.1em（眉题效果已达标，不再收紧）。
+       新增 caption（12px 辅助说明）与 metric（22px tab-nums KPI），与 mono
+       组成完整刻度；11px 仅保留给 kbd 微标签。
 
-       这四条必须是 rule 而不是 shortcut：--text-* 是 font **简写**值
+       这几条必须是 rule 而不是 shortcut：--text-* 是 font **简写**值
        （weight size/line-height family），而 UnoCSS 的 `font-[...]` 编译成
        font-family。把简写赋给 font-family 是无效声明，会被整条丢弃，标题
        于是一路回落到浏览器默认（h1 30px/700、h2 22.5px/700，眉题 15px），
@@ -148,6 +150,34 @@ export default defineConfig({
       'letter-spacing': '0.1em',
       'text-transform': 'uppercase',
       color: 'var(--color-text-subtle)',
+    }],
+    ['type-caption', {
+      font: 'var(--text-caption)',
+      'letter-spacing': 'var(--tracking-caption)',
+      color: 'var(--color-text-muted)',
+    }],
+    ['type-metric', {
+      font: 'var(--text-metric)',
+      'letter-spacing': 'var(--tracking-metric)',
+      'font-variant-numeric': 'tabular-nums',
+      color: 'var(--color-text)',
+    }],
+    ['type-mono', {
+      font: 'var(--text-mono)',
+      'letter-spacing': '-0.01em',
+      color: 'var(--color-text-secondary)',
+    }],
+    ['type-metric', {
+      font: 'var(--text-metric)',
+      'letter-spacing': 'var(--tracking-metric)',
+      'font-variant-numeric': 'tabular-nums',
+      color: 'var(--color-text)',
+    }],
+    ['type-metric-mono', {
+      font: 'var(--text-metric-mono)',
+      'letter-spacing': 'var(--tracking-metric)',
+      'font-variant-numeric': 'tabular-nums',
+      color: 'var(--color-text)',
     }],
     ['animate-fade-in', { animation: 'fadeIn var(--duration-local) var(--ease-enter) both' }],
     ['animate-slide-up', { animation: 'slideUp var(--duration-local) var(--ease-enter) both' }],

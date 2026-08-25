@@ -250,3 +250,12 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 回滚点为 `/opt/nvidia-router-releases/20260824-ui-consistency-08eb1c9` / `nvidia-router:deploy-20260824-ui-consistency-08eb1c9`；切换前备份为 `/opt/nvidia-router-releases/20260825-ui-overlays-772fce2/backups/predeploy-20260825-ui-overlays-772fce2/router.db`，大小 9,494,528 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `9d363345872d8c101863832178d0068638db52a83d713a2b31b68d4fd022f495`。
 - 发布后 app 使用目标镜像，`running/healthy`、重启 0、OOM false；3756 live/ready、代理池 `18080/healthz`、OpenCodeFree `6020/healthz`、根页和公网 live 均 200；新静态资源 `/assets/index-CMOvBKXD.js`、`/assets/index-D5M_XNC2.css` 均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；部署后错误签名计数为 0。
 - 管理员烟测通过：登录 200，会话访问 models/settings/runtime summary/access-keys 均 200，注销 204。未执行真实模型请求、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
+
+## 18. 2026-08-25 模型能力评测与修复
+
+- 新增可复用探针 `scripts/test/capability_eval_remote.py`（经 `remote_exec.py --stdin-env` 注入密码，在 hangzhou2-2 机内跑），判分全部程序化：沙箱执行生成代码、约束正则、needle 回取；本地 Windows 无 spawn 沙箱时走 `_sandbox_inline` 回退。
+- 管理员密码：环境变量 `NVIDIA_ROUTER_ADMIN_PASSWORD` 已失效（401）；当前有效值在项目根 `.env` 的 `NVIDIA_ROUTER_INITIAL_ADMIN_PASSWORD`。
+- 工具 501 根因是路由器门控（`tools_status != supported` 即拒，internal/modelcatalog/capabilities.go:179）。生产 detailed 探测入口：`POST /admin/api/model-test-jobs {"model_ids":[...],"mode":"concurrent"}`，会自动写回 reasoning/tools 状态。实测 llama tools=unsupported（真实不支持）；nemotron-free 与 x-preview 反复探测均 unknown——`service_probe.go` 的 `marshalProbeToolsBody` 用 `tool_choice=required`，这两个网关模型疑似只响应 auto+强提示，属探针局限，不要据此断言模型不支持工具。
+- 元数据修复：llama(id=35) PATCH `reasoning_zero_allowed=true` 后 `reasoning_effort=none` 从 501 变 200（levels=["none"] 且 zero_allowed=false 时 nearestLevel 必失败）。
+- 探针假阴性已修：reasoning 模型在小 max_tokens 下会吃光预算产出空回复——stability 32→512、json_mode 256→1024、tools_parallel 512→1024；多函数代码块需执行式函数选择（同名 arity 的 helper 会遮蔽目标函数）。
+- 第二轮复测要点：kimi-k3 恢复可用且 needle/IF/推理/补测代码全对（偶发 502）；hy3 稳定性 3/3 exact OK；nemotron json_mode 仍输出超长非精确 JSON（真实弱点）。

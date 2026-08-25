@@ -165,7 +165,7 @@ const legendItems = [
               <li
                 v-for="cell in cells"
                 :key="cell.label"
-                class="h-7 min-w-[22px] rounded-[6px] border border-transparent transition-transform duration-100 hover:scale-110"
+                class="h-7 min-w-[22px] rounded-[var(--radius-data)] border border-transparent transition-transform duration-100 hover:scale-110"
                 :style="cellStyle(cell)"
                 :title="cell.title"
               />
@@ -177,7 +177,7 @@ const legendItems = [
               <span
                 v-for="(cell, index) in cells"
                 :key="`label-${cell.label}`"
-                class="text-center font-mono-data text-[9px] text-[var(--color-text-subtle)]"
+                class="text-center font-mono-data text-xs text-[var(--color-text-subtle)]"
               >
                 {{ index % labelStep === 0 ? formatBucketLabel(cell.label) : '' }}
               </span>
@@ -195,7 +195,7 @@ const legendItems = [
             class="flex items-center gap-1 text-xs text-[var(--color-text-muted)]"
           >
             <span
-              class="h-2.5 w-2.5 rounded-[3px] border border-transparent"
+              class="h-2.5 w-2.5 rounded-[var(--radius-data)] border border-transparent"
               :style="item.style"
             />
             {{ item.label }}

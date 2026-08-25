@@ -74,7 +74,7 @@ function toggleReveal(): void {
 <template>
   <div class="flex min-w-0 flex-wrap items-center gap-1.5">
     <code
-      class="font-mono-data min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-secondary)]"
+      class="font-mono-data min-w-0 flex-1 truncate text-sm text-[var(--color-text-secondary)]"
       :class="secret && !revealed ? 'select-none' : ''"
       :title="label ?? value"
     >{{ display }}</code>

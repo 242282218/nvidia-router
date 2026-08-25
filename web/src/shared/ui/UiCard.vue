@@ -25,13 +25,13 @@ withDefaults(defineProps<{
       class="mb-5 flex flex-wrap items-start justify-between gap-3"
       :class="padded ? '' : 'px-6 pt-6'"
     >
-      <div class="min-w-0">
+      <div class="min-w-0 flex-1">
         <h2 class="type-heading">
           {{ title }}
         </h2>
         <p
           v-if="subtitle"
-          class="mt-0.5 text-xs text-[var(--color-text-muted)]"
+          class="mt-1 type-caption"
         >
           {{ subtitle }}
         </p>

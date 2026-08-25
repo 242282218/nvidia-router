@@ -196,7 +196,7 @@ const yAxisLabels = computed(() => [
       :style="{ left: hoverStyle.left }"
       role="status"
     >
-      <p class="font-mono-data text-[11px] text-[var(--color-text-muted)]">
+      <p class="font-mono-data text-xs text-[var(--color-text-muted)]">
         {{ hoverPoint.point.label }}
       </p>
       <p

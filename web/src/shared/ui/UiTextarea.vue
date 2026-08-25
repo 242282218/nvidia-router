@@ -14,7 +14,7 @@ const model = defineModel<string>({ default: '' })
   <textarea
     v-model="model"
     class="input-field h-auto min-h-[4.5rem] resize-y py-2.5 leading-relaxed"
-    :class="mono ? 'font-mono-data text-[13px]' : ''"
+    :class="mono ? 'font-mono-data text-sm' : ''"
     :rows="rows"
     v-bind="$attrs"
   />

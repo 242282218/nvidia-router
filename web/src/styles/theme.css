@@ -70,36 +70,53 @@
   --color-brand: #76b900;
   --color-brand-foreground: #081000;
 
-  /* ── 字体刻度：四层语义阶梯，页面标题不再与卡片标题争层级 ──
-     display 仅用于关键指标数字；title 用于页面 h1；heading 用于卡片/区块；
-     body 正文；label 用于眉题、表头、徽章等辅助标注。
-     label 不低于 12px：辅助文字 12px 是可读性底线（排版节奏硬规则）。 */
+  /* ── 字体刻度：五层语义阶梯 + 指标专用 ──
+     display 仅用于关键指标数字（28px）；title 用于页面 h1（22px）；
+     heading 用于卡片/区块（15px）；body 正文 15px；label 用于眉题、表头、徽章；
+     caption 用于次级说明/时间戳（12px）；metric 用于 KPI 大数字（22px tab nums）。
+     label/caption 不低于 12px：辅助文字可读性底线。11px 仅允许在 kbd 芯片等
+     功能性微标签中使用，且不得用于承载信息的正文。 */
   --text-display: 600 1.75rem/1.2 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-title: 600 1.375rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-heading: 600 0.9375rem/1.4 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
   --text-label: 500 0.75rem/1.3 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-caption: 500 0.75rem/1.45 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-metric: 600 1.375rem/1.15 Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+  --text-metric-mono: 600 1.375rem/1.15 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --text-mono: 500 0.8125rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
   /* ── 字距（Warm Restraint v4）：display 收紧、title 微松、label 眉题化 ──
      font 简写不含 letter-spacing，组件按层级引用对应变量。 */
   --tracking-display: -0.02em;
   --tracking-title: 0.01em;
   --tracking-label: 0.04em;
+  --tracking-caption: 0.02em;
+  --tracking-metric: -0.015em;
 
-  /* ── 圆角：控件收敛、面板舒展，弱化工具感 ── */
+  /* ── 圆角：控件收敛、面板舒展、数据形状克制 ──
+     data 仅用于时间线/进度条等 1-2px 细条，不用于卡片表面。 */
   --radius-control: 8px;
   --radius-panel: 12px;
   --radius-overlay: 16px;
+  --radius-data: 6px;
 
   /* ── 遮罩：模态/抽屉的纯色半透明 scrim（无 blur，保证弹层内容干净可读） ── */
   --color-overlay: rgba(28, 25, 23, 0.42);
 
-  /* ── 间距刻度（4px 基网） ── */
+  /* ── 间距刻度（4px 基网，主刻度 + 半步用于图标/文字紧凑间隙） ──
+     常规布局仅使用 4/8/12/16/24/32；6px（1.5）仅允许用于图标-文字、徽章内间隙
+     等 24px 以下的微观排版，不得用于区块间距。10px（2.5）不在刻度内，统一用
+     12px 替代。 */
   --space-1: 4px;
+  --space-1_5: 6px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
 
   /* ── 动效：enter 快出缓入，exit 快进缓出；页面级过渡走 --duration-local ── */
   --duration-micro: 140ms;
@@ -319,6 +336,8 @@ summary:focus-visible {
 .font-mono-data {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
 }
 
 /* ── 路由级页面过渡：纯淡入淡出 + 轻微位移，不加 blur/scale ── */
@@ -402,7 +421,7 @@ summary:focus-visible {
 
 /* ── 组件级材质（扁平） ── */
 
-/* 键盘按键芯片：快捷键提示专用 */
+/* 键盘按键芯片：快捷键提示专用（11px 为功能性微标签唯一例外） */
 .kbd {
   display: inline-flex;
   align-items: center;
@@ -418,20 +437,21 @@ summary:focus-visible {
   font-size: 11px;
   font-weight: 500;
   line-height: 1;
+  letter-spacing: 0.02em;
   white-space: nowrap;
 }
 
 /* 浮动提示面板：UiTooltip / 帮助浮层共用表面 */
 .tooltip-surface {
   z-index: var(--z-tooltip);
-  max-width: min(260px, calc(100vw - 2rem));
-  padding: 6px 10px;
+  max-width: min(280px, calc(100vw - 2rem));
+  padding: 7px 10px;
   border-radius: var(--radius-control);
   border: 1px solid var(--color-border);
   background: var(--color-surface-raised);
   color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
+  font: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
   white-space: normal;
   overflow-wrap: anywhere;
 }

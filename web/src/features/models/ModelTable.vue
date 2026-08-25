@@ -213,15 +213,22 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               </label>
             </td>
             <td class="data-table-td">
-              <p class="font-medium text-[var(--color-text)]">
+              <p
+                class="truncate font-medium text-[var(--color-text)]"
+                :title="candidate.display_name"
+              >
                 {{ candidate.display_name }}
               </p>
-              <p class="mt-0.5 font-mono-data text-xs text-[var(--color-text-muted)]">
+              <p
+                class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]"
+                :title="candidatePublicId(candidate)"
+              >
                 {{ candidatePublicId(candidate) }}
               </p>
               <p
                 v-if="candidatePublicId(candidate) !== candidate.upstream_id"
-                class="mt-0.5 text-xs text-[var(--color-text-subtle)]"
+                class="mt-0.5 truncate text-xs text-[var(--color-text-subtle)]"
+                :title="candidate.upstream_id"
               >
                 上游 {{ candidate.upstream_id }}
               </p>
@@ -297,10 +304,16 @@ function onModelTestChange(model: Model, event: globalThis.Event): void {
               </label>
             </td>
             <td class="data-table-td">
-              <p class="font-medium text-[var(--color-text)]">
+              <p
+                class="truncate font-medium text-[var(--color-text)]"
+                :title="model.display_name"
+              >
                 {{ model.display_name }}
               </p>
-              <p class="mt-0.5 font-mono-data text-xs text-[var(--color-text-muted)]">
+              <p
+                class="mt-0.5 truncate font-mono-data text-xs text-[var(--color-text-muted)]"
+                :title="model.public_id"
+              >
                 {{ model.public_id }}
               </p>
             </td>
