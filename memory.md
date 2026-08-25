@@ -277,3 +277,12 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
   - **OCF 流式瞬态重试（P2）**：首字节未写出前允许一次 500ms 重试（firstWriteTracker 跟踪）；owned_by 按 provider 区分；capability 501 写入专用 error_code。
   - **常态化探测（P3）**：迁移 045 加 `capability_probe_enabled`（默认关）+ `capability_probe_interval_hours`（默认 24），CapabilityProbeRunner 串行跑 detailed probe 自动回写。
 - 测试要点：探针 fake 用 `chatResponses []string` 按调用重放；runner 测试必须给 discoverer 设 `chatResponse` 兜底否则第二个 chat 模型的 base+reasoning 探针会因空 choices 失败导致调用数不符；runner 已改为纯串行（无并发），测试确定性依赖 List 的 public_id 排序。
+
+## 21. 2026-08-25 P0-P3 确认性重新部署（227061b）
+
+- GitHub `main` 与部署源码基线均为 `227061b`；发布前工作树干净，`go test ./...`、`go vet ./...`、`git diff --check` 通过。
+- 使用标准 `python scripts/deploy/deploy_remote.py 20260825-redeploy-227061b` 发布到 `/opt/nvidia-router-releases/20260825-redeploy-227061b`，镜像为 `nvidia-router:deploy-20260825-redeploy-227061b`；运行时 `.env` 与 deploy override 从现网 Release 继承。
+- 首次构建因远端 Docker 镜像加速器对 `node:22.12.0-bookworm-slim` 返回 `not found` 失败，期间未停止 app、未生成备份、未切换现网；通过远端精确拉取该 tag 后重试成功。不要因此修改 Dockerfile、换基础版本或复用失败版本。
+- 回滚点为 `/opt/nvidia-router-releases/20260825-design-tokens-ccc725d` / `nvidia-router:deploy-20260825-design-tokens-ccc725d`。切换前备份为 `/opt/nvidia-router-releases/20260825-redeploy-227061b/backups/predeploy-20260825-redeploy-227061b/router.db`，大小 10,391,552 字节，权限 `600`，UID/GID `10001:10001`，SHA-256 为 `87a7872b1bde68253100dec58ceab328a0ba7cf385882471c2ce12b82c56e878`。
+- 发布后 app 使用目标镜像，`running/healthy`、重启 0、OOM false；schema 45、enabled 模型 11 个；3756 live/ready、18080/6020 healthz、根页均 200；匿名 `/v1/models` 与 `/metrics` 均 401；3756/18080/18081/6020 监听正常；临时归档已清理。
+- 管理烟测通过：登录 200、鉴权 metrics 200、reasoning 接受请求 2/2 返回 200、预算协调请求 200、注销和临时 Key 清理由脚本 finally 执行。未执行完整模型矩阵、代理轮换或 CONNECT 矩阵；公网 HTTP 明文风险保持不变。
