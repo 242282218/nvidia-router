@@ -378,3 +378,12 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 同一时间窗口内的 501 均归为该能力不匹配；hy3 另有上游 429，OpenCodeFree 的其他探针出现 503 `Endpoint is unavailable`，分别属于上游限流和 provider 可用性问题，不应合并为能力门控故障。
 - `reasoning_effort: none` 的语义是关闭思考，`ReasoningSpec.RequiresReasoning()` 不应要求 reasoning 能力；相关解析回归测试已覆盖。工具调用应关闭 Cherry 的全局 MCP 注入，或选择经过稳定性验证且明确支持工具的模型。
 - 本地分支新增能力拒绝的具体能力类型和 API 可操作错误：工具请求返回 `model_capability_unsupported`、`param=tools`，提示移除 `tools/tool_choice` 或换用支持工具的模型；`errors.Is(ErrCapabilityUnsupported)` 兼容性保持。该改动尚未提交或部署，生产仍使用上一版本镜像。
+
+## 32. 2026-08-26 请求日志持久化与生命周期修复发布（37c81bc）
+
+- GitHub `main` 已推送到 `37c81bc8b3da9121065cecb420f936a5d25439c4`；本次增加请求能力摘要、日志缓冲深度/丢弃/flush 失败指标和迁移 046，并修复失败批次保留、ForceFlush context 传递、Stop 并发关闭及 context 取消后的写入门禁。
+- 本地门禁通过：`go test ./...`、`go vet ./...`、前端 lint、typecheck、44 个 Vitest 套件/292 个测试、生产构建和 diff 校验；race 仍受 Windows 缺少 C 编译器限制，未安装工具或改环境。
+- 按标准脚本发布到 `/opt/nvidia-router-releases/20260826-observability-37c81bc`，实际镜像为 `nvidia-router:deploy-20260826-observability-37c81bc`；旧回滚点为 `/opt/nvidia-router-releases/20260826-vibe-debug-e3729c8` / `nvidia-router:deploy-20260826-vibe-debug-e3729c8`。
+- 切换前数据库备份为 `/opt/nvidia-router-releases/20260826-observability-37c81bc/backups/predeploy-20260826-observability-37c81bc/router.db`，大小 10,993,664 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `080676e98b913e8153390b198584964765060336352b34f302e291bab4747112`。
+- 发布后 app 实际 `running/healthy`、重启 0、OOM false；schema 最大版本 46，`request_logs.requested_capabilities` 存在；3756 live/ready、18080/18081/6020 healthz、根页及新 JS/CSS、公网 live 均 200；匿名 models/metrics 401；管理登录、只读 API、鉴权 metrics 200，登出 204；三项日志缓冲 Prometheus 指标已出现。
+- 本轮未执行真实模型请求、全模型矩阵、代理轮换或 CONNECT E2E；仅做部署和管理/健康验证，未超过 15 分钟模型测试约束。公网 HTTP 明文风险及代理出口波动告警保持既有状态。
