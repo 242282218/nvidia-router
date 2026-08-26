@@ -273,6 +273,7 @@ const requestLog = object({
   prompt_tokens: optional(scalar('number')),
   completion_tokens: optional(scalar('number')),
   upstream_request_id: optional(scalar('string')),
+  requested_capabilities: optional(scalar('string')),
   reasoning_requested: scalar('boolean'),
   reasoning_present: scalar('boolean'),
   stream_done: scalar('boolean'),

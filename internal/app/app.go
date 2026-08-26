@@ -276,7 +276,7 @@ func New(ctx context.Context, dependencies Dependencies) (*App, error) {
 	unsupported := observe(v1.Unsupported)
 	statsHandler := adminapi.NewStats(observabilityRepository, resolved.Clock)
 	monitoringHandler := adminapi.NewMonitoring(observabilityRepository, resolved.Clock)
-	metricsHandler := metricsapi.New(keyPool, observabilityRepository)
+	metricsHandler := metricsapi.New(keyPool, observabilityRepository, requestRecorder)
 	// The built-in proxy pool is the project's core, so its live health belongs
 	// in Prometheus next to the key pool: operators can alert on "pool drained"
 	// without scraping the admin page. Static-proxy mode leaves this nil and the

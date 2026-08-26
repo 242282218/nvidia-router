@@ -206,6 +206,14 @@ const timeParts = computed(() => {
         </div>
         <div class="flex items-baseline justify-between gap-3">
           <dt class="text-[var(--color-text-muted)]">
+            请求能力
+          </dt>
+          <dd class="min-w-0 truncate font-mono-data text-[var(--color-text-secondary)]">
+            {{ log.requested_capabilities ?? '—' }}
+          </dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="text-[var(--color-text-muted)]">
             错误码
           </dt>
           <dd class="min-w-0 truncate font-mono-data text-[var(--color-danger-text)]">

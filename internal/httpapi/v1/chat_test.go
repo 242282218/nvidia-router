@@ -40,6 +40,24 @@ func TestModelErrorDistinguishesUnverifiedCapability(t *testing.T) {
 	}
 }
 
+func TestModelErrorExplainsUnsupportedTools(t *testing.T) {
+	publicErr, ok := modelError(&modelcatalog.UnsupportedCapabilityError{
+		Capability: modelcatalog.CapabilityTools,
+	}).(*apierror.Error)
+	if !ok {
+		t.Fatalf("modelError type = %T, want *apierror.Error", modelError(&modelcatalog.UnsupportedCapabilityError{Capability: modelcatalog.CapabilityTools}))
+	}
+	if publicErr.Status != http.StatusNotImplemented || publicErr.Code != "model_capability_unsupported" {
+		t.Fatalf("modelError = status %d code %q, want 501 model_capability_unsupported", publicErr.Status, publicErr.Code)
+	}
+	if publicErr.Param == nil || *publicErr.Param != "tools" {
+		t.Fatalf("modelError param = %v, want tools", publicErr.Param)
+	}
+	if !strings.Contains(publicErr.Message, "tools") || !strings.Contains(publicErr.Message, "tool_choice") {
+		t.Fatalf("modelError message = %q, want actionable tools guidance", publicErr.Message)
+	}
+}
+
 func TestChatRejectsOversizedBody(t *testing.T) {
 	handler := NewChat(nil, nil, nil)
 	request := httptest.NewRequest(
@@ -396,6 +414,62 @@ func TestChatPassesParsedCapabilityRequirementsToModelResolver(t *testing.T) {
 	}
 	if !called || response.Code != http.StatusOK {
 		t.Fatalf("provider path called=%v status=%d body=%s", called, response.Code, response.Body.String())
+	}
+}
+
+func TestChatCapabilityRejectionRecordsRequestedCapability(t *testing.T) {
+	resolver := modelResolverFunc(func(_ context.Context, _ string, requirements modelcatalog.Requirements) (modelcatalog.Model, error) {
+		if !requirements.Tools {
+			t.Fatal("resolver did not receive tools requirement")
+		}
+		return modelcatalog.Model{}, &modelcatalog.UnsupportedCapabilityError{Capability: modelcatalog.CapabilityTools}
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, nil, nil))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"public-model","messages":[{"role":"user","content":"use lookup"}],"tools":[{"type":"function","function":{"name":"lookup"}}],"tool_choice":"auto"}`,
+	))
+
+	handler.ServeHTTP(response, request)
+
+	assertChatError(t, response, http.StatusNotImplemented, "model_capability_unsupported")
+	if recorded.RequestedCapabilities != "tools" {
+		t.Fatalf("requested capabilities = %q, want tools", recorded.RequestedCapabilities)
+	}
+	if recorded.ErrorCode == nil || *recorded.ErrorCode != "model_capability_unsupported" {
+		t.Fatalf("recorded error code = %v, want model_capability_unsupported", recorded.ErrorCode)
+	}
+}
+
+func TestChatMarshalCapabilityErrorRecordsErrorCode(t *testing.T) {
+	resolver := modelResolverFunc(func(_ context.Context, _ string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-model", UpstreamID: "vendor/model", Kind: modelcatalog.KindChat,
+			Enabled: true, SupportsReasoning: true, ReasoningWireFormat: "openai",
+			ReasoningLevels: []string{"none"}, ReasoningZeroAllowed: false,
+		}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewChat(resolver, nil, nil))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"public-model","messages":[{"role":"user","content":"think"}],"reasoning_effort":"high"}`,
+	))
+
+	handler.ServeHTTP(response, request)
+
+	assertChatError(t, response, http.StatusNotImplemented, "model_capability_unsupported")
+	if recorded.ErrorCode == nil || *recorded.ErrorCode != "model_capability_unsupported" {
+		t.Fatalf("recorded error code = %v, want model_capability_unsupported", recorded.ErrorCode)
 	}
 }
 

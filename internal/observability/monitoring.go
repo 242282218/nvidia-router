@@ -86,23 +86,24 @@ type MonitoringSnapshot struct {
 }
 
 type RequestLog struct {
-	RequestID         string  `json:"request_id"`
-	Endpoint          string  `json:"endpoint"`
-	ModelID           *string `json:"model_id,omitempty"`
-	AccessKeyID       *int64  `json:"access_key_id,omitempty"`
-	NVIDIAKeyID       *int64  `json:"nvidia_key_id,omitempty"`
-	HTTPStatus        int     `json:"http_status"`
-	Outcome           string  `json:"outcome"`
-	ErrorCode         *string `json:"error_code,omitempty"`
-	IsStream          bool    `json:"is_stream"`
-	QueueMS           int64   `json:"queue_ms"`
-	FirstByteMS       *int64  `json:"first_byte_ms,omitempty"`
-	FirstTokenMS      *int64  `json:"first_token_ms,omitempty"`
-	DurationMS        int64   `json:"duration_ms"`
-	AttemptCount      int64   `json:"attempt_count"`
-	PromptTokens      *int64  `json:"prompt_tokens,omitempty"`
-	CompletionTokens  *int64  `json:"completion_tokens,omitempty"`
-	UpstreamRequestID *string `json:"upstream_request_id,omitempty"`
+	RequestID             string  `json:"request_id"`
+	Endpoint              string  `json:"endpoint"`
+	ModelID               *string `json:"model_id,omitempty"`
+	AccessKeyID           *int64  `json:"access_key_id,omitempty"`
+	NVIDIAKeyID           *int64  `json:"nvidia_key_id,omitempty"`
+	HTTPStatus            int     `json:"http_status"`
+	Outcome               string  `json:"outcome"`
+	ErrorCode             *string `json:"error_code,omitempty"`
+	IsStream              bool    `json:"is_stream"`
+	QueueMS               int64   `json:"queue_ms"`
+	FirstByteMS           *int64  `json:"first_byte_ms,omitempty"`
+	FirstTokenMS          *int64  `json:"first_token_ms,omitempty"`
+	DurationMS            int64   `json:"duration_ms"`
+	AttemptCount          int64   `json:"attempt_count"`
+	PromptTokens          *int64  `json:"prompt_tokens,omitempty"`
+	CompletionTokens      *int64  `json:"completion_tokens,omitempty"`
+	UpstreamRequestID     *string `json:"upstream_request_id,omitempty"`
+	RequestedCapabilities *string `json:"requested_capabilities,omitempty"`
 	// Reasoning observability exposes only booleans, field names and character
 	// counts; reasoning text is never stored or serialized.
 	ReasoningRequested      bool    `json:"reasoning_requested"`

@@ -28,6 +28,12 @@ func (fakeRequests) MetricsSummary(context.Context) (observability.MetricsSummar
 	return observability.MetricsSummary{Requests: 12, Successes: 10, Failures: 2}, nil
 }
 
+type fakeRequestBuffer struct{}
+
+func (fakeRequestBuffer) Depth() int         { return 3 }
+func (fakeRequestBuffer) Dropped() int64     { return 4 }
+func (fakeRequestBuffer) FlushFailed() int64 { return 5 }
+
 type fakeProxyPool struct{}
 
 func (fakeProxyPool) PoolStatus() xkproxy.PoolStatus {
@@ -71,6 +77,23 @@ func TestMetricsHandlerExposesProxyPoolHealth(t *testing.T) {
 		"nvidia_router_proxy_pool_healthy 7",
 		"nvidia_router_proxy_pool_panic_mode 1",
 		"nvidia_router_proxy_pool_upstream_overloaded 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsHandlerExposesRequestBufferHealth(t *testing.T) {
+	handler := New(fakeSummary{}, fakeRequests{}, fakeRequestBuffer{})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	body := response.Body.String()
+	for _, want := range []string{
+		"nvidia_router_request_log_buffer_depth 3",
+		"nvidia_router_request_log_dropped_total 4",
+		"nvidia_router_request_log_flush_failed_total 5",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, body)

@@ -371,3 +371,10 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 发布后实际镜像与 Release 一致，容器 `running/healthy`、重启 0、OOM false；3756 live/ready、18080/6020 healthz 均 200，3756/18080/18081/6020 监听正常。
 - 仅对稳定模型 `opencode-free/hy3-free` 做线上矩阵：服务修复上线后旧的 32-token 稳定性样本为 17/20，3 个 reasoning-only 流被正确转成 `upstream_empty_response`；评测稳定性预算提升到 512 后，矩阵耗时 145.9 秒，20/20 稳定性成功，reasoning low/high、JSON、8K lower-bound needle、长输出均 200，工具 501 仍为该模型能力限制。总测试时长未超过 15 分钟。
 - 评测器的 512-token 稳定性修复在本地工作树中已验证红绿，线上通过 `remote_exec.py` 直接执行；它不改变已运行服务镜像。发布后 5 分钟应用日志未发现 panic、fatal、migration、foreign-key、`upstream_protocol_error` 或 `upstream_empty_response`，代理池仍有正常的 `validation_all_failed` 波动。
+
+## 31. 2026-08-26 Cherry 全局 MCP 工具导致 501
+
+- `AI_APICallError` 的直接根因不是 `reasoning_effort: none`：Cherry Studio 请求会附带全局 MCP 工具集合（本次 44 个工具）和 `tool_choice: auto`。解析后 `Requirements.Tools=true`，而 hy3 与 NVIDIA Nemotron 目录均声明 `supports_tools=false`，能力门控正确返回 501；不得为了消除错误静默删除工具字段或伪造工具成功。
+- 同一时间窗口内的 501 均归为该能力不匹配；hy3 另有上游 429，OpenCodeFree 的其他探针出现 503 `Endpoint is unavailable`，分别属于上游限流和 provider 可用性问题，不应合并为能力门控故障。
+- `reasoning_effort: none` 的语义是关闭思考，`ReasoningSpec.RequiresReasoning()` 不应要求 reasoning 能力；相关解析回归测试已覆盖。工具调用应关闭 Cherry 的全局 MCP 注入，或选择经过稳定性验证且明确支持工具的模型。
+- 本地分支新增能力拒绝的具体能力类型和 API 可操作错误：工具请求返回 `model_capability_unsupported`、`param=tools`，提示移除 `tools/tool_choice` 或换用支持工具的模型；`errors.Is(ErrCapabilityUnsupported)` 兼容性保持。该改动尚未提交或部署，生产仍使用上一版本镜像。

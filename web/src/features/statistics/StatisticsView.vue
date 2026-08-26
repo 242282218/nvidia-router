@@ -371,7 +371,7 @@ function isRequestLog(value: unknown): value is import('./types').RequestLog {
     || typeof value.created_at !== 'string') return false
   const numericFields = ['queue_ms', 'duration_ms', 'attempt_count']
   if (!numericFields.every((field) => isFiniteNumber(value[field]) && value[field] >= 0)) return false
-  return ['model_id', 'error_code', 'upstream_request_id']
+  return ['model_id', 'error_code', 'upstream_request_id', 'requested_capabilities']
     .every((field) => value[field] === undefined || typeof value[field] === 'string')
     && ['access_key_id', 'nvidia_key_id', 'first_byte_ms', 'first_token_ms', 'prompt_tokens', 'completion_tokens']
       .every((field) => value[field] === undefined || (isFiniteNumber(value[field]) && value[field] >= 0))

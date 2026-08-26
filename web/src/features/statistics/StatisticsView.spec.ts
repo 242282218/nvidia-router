@@ -85,6 +85,7 @@ const logs: RequestLogsPage = {
     reasoning_wire_fields: 'thinking',
     reasoning_present: true,
     reasoning_chars: 95,
+    requested_capabilities: 'tools',
     stream_done: true,
     route_mode: 'direct',
     created_at: '2026-08-03T03:00:00.000Z',
@@ -137,6 +138,7 @@ describe('StatisticsView monitoring dashboard', () => {
     expect(detail.text()).toContain('思考')
     expect(detail.text()).toContain('请求 是 · 响应 是 · 95 字')
     expect(detail.text()).toContain('thinking')
+    expect(detail.text()).toContain('tools')
     expect(detail.text()).toContain('direct')
     expect(wrapper.text()).not.toContain('response body')
 

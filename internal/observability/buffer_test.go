@@ -16,12 +16,31 @@ import (
 // batchRecorderStub captures every batch flushed for assertions. It satisfies
 // batchRecorder so BufferRecorder can be exercised without a real SQLite DB.
 type batchRecorderStub struct {
-	mu         sync.Mutex
-	batches    [][]RequestRecord
-	failRecord atomic.Bool
-	processed  atomic.Int64
-	flushed    chan []RequestRecord
-	blocker    chan struct{}
+	mu                sync.Mutex
+	batches           [][]RequestRecord
+	failRecord        atomic.Bool
+	failuresRemaining atomic.Int64
+	processed         atomic.Int64
+	flushed           chan []RequestRecord
+	blocker           chan struct{}
+}
+
+type contextBlockingBatchRecorder struct {
+	seen    chan context.Context
+	release chan struct{}
+}
+
+func (s *contextBlockingBatchRecorder) RecordBatch(ctx context.Context, _ []RequestRecord) error {
+	select {
+	case s.seen <- ctx:
+	default:
+	}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func newBatchRecorderStub() *batchRecorderStub {
@@ -33,6 +52,15 @@ func newBatchRecorderStub() *batchRecorderStub {
 func (s *batchRecorderStub) RecordBatch(_ context.Context, records []RequestRecord) error {
 	if s.failRecord.Load() {
 		return errors.New("stub: forced failure")
+	}
+	for {
+		remaining := s.failuresRemaining.Load()
+		if remaining <= 0 {
+			break
+		}
+		if s.failuresRemaining.CompareAndSwap(remaining, remaining-1) {
+			return errors.New("stub: transient failure")
+		}
 	}
 	if s.blocker != nil {
 		<-s.blocker // gate flush completion (simulates slow DB)
@@ -367,6 +395,181 @@ func TestBufferRecorderForceFlushReturnsErrorFromBatch(t *testing.T) {
 	_ = recorder.Record(context.Background(), RequestRecord{RequestID: "fail"})
 	if err := recorder.ForceFlush(context.Background()); err == nil {
 		t.Fatal("ForceFlush error = nil, want forced failure")
+	}
+	if got, want := recorder.FlushFailed(), int64(DefaultFlushRetryCount+1); got != want {
+		t.Fatalf("FlushFailed = %d, want bounded attempts %d", got, want)
+	}
+	cancel()
+	<-done
+}
+
+func TestBufferRecorderRetainsFailedBatchForLaterFlush(t *testing.T) {
+	stub := newBatchRecorderStub()
+	stub.failRecord.Store(true)
+	recorder := NewBufferRecorder(stub, clock.RealClock{}, BufferOptions{
+		Capacity:        8,
+		BatchSize:       1024,
+		FlushDelay:      time.Hour,
+		FlushRetryCount: 1,
+		FlushRetryDelay: time.Millisecond,
+		Logger:          discardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() { recorder.Run(ctx); close(done) }()
+	<-recorder.started
+	if err := recorder.Record(context.Background(), RequestRecord{RequestID: "retry-later"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := recorder.ForceFlush(context.Background()); err == nil {
+		t.Fatal("ForceFlush error = nil, want forced failure")
+	}
+
+	stub.failRecord.Store(false)
+	if err := recorder.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("second ForceFlush: %v, want retained batch to retry", err)
+	}
+	select {
+	case batch := <-stub.flushed:
+		if len(batch) != 1 || batch[0].RequestID != "retry-later" {
+			t.Fatalf("flushed batch = %#v, want retained retry-later record", batch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retained batch was not persisted")
+	}
+	cancel()
+	<-done
+}
+
+func TestBufferRecorderForceFlushUsesCallerContext(t *testing.T) {
+	stub := &contextBlockingBatchRecorder{
+		seen:    make(chan context.Context, 1),
+		release: make(chan struct{}),
+	}
+	recorder := NewBufferRecorder(stub, clock.RealClock{}, BufferOptions{
+		Capacity:   8,
+		BatchSize:  1024,
+		FlushDelay: time.Hour,
+		Logger:     discardLogger(),
+	})
+
+	runCtx, stopRun := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { recorder.Run(runCtx); close(done) }()
+	<-recorder.started
+	if err := recorder.Record(context.Background(), RequestRecord{RequestID: "force-context"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	forceCtx, cancelForce := context.WithCancel(context.Background())
+	forceDone := make(chan error, 1)
+	go func() { forceDone <- recorder.ForceFlush(forceCtx) }()
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(stub.release) }) }
+	t.Cleanup(func() {
+		release()
+		cancelForce()
+		stopRun()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	})
+
+	select {
+	case got := <-stub.seen:
+		if got != forceCtx {
+			t.Errorf("RecordBatch context = %T, want caller context", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ForceFlush did not reach RecordBatch")
+	}
+	cancelForce()
+	select {
+	case err := <-forceDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ForceFlush error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ForceFlush did not honor caller cancellation")
+	}
+	release()
+	stopRun()
+	<-done
+}
+
+func TestBufferRecorderStopIsConcurrentSafe(t *testing.T) {
+	recorder := NewBufferRecorder(newBatchRecorderStub(), clock.RealClock{}, BufferOptions{Logger: discardLogger()})
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for index := 0; index < 64; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			recorder.Stop()
+		}()
+	}
+	close(start)
+	group.Wait()
+}
+
+func TestBufferRecorderRejectsRecordAfterStop(t *testing.T) {
+	recorder := NewBufferRecorder(newBatchRecorderStub(), clock.RealClock{}, BufferOptions{Logger: discardLogger()})
+	recorder.Stop()
+	if err := recorder.Record(context.Background(), RequestRecord{RequestID: "after-stop"}); err == nil {
+		t.Fatal("Record after Stop returned nil, want stopped error")
+	}
+}
+
+func TestBufferRecorderRejectsRecordAfterRunContextCancel(t *testing.T) {
+	recorder := NewBufferRecorder(newBatchRecorderStub(), clock.RealClock{}, BufferOptions{Logger: discardLogger()})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { recorder.Run(ctx); close(done) }()
+	<-recorder.started
+	cancel()
+	<-done
+	if err := recorder.Record(context.Background(), RequestRecord{RequestID: "after-cancel"}); err == nil {
+		t.Fatal("Record after Run context cancellation returned nil, want stopped error")
+	}
+}
+
+func TestBufferRecorderRetriesTransientBatchFailure(t *testing.T) {
+	stub := newBatchRecorderStub()
+	stub.failuresRemaining.Store(1)
+	recorder := NewBufferRecorder(stub, clock.RealClock{}, BufferOptions{
+		Capacity:   8,
+		BatchSize:  1024,
+		FlushDelay: time.Hour,
+		Logger:     discardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() { recorder.Run(ctx); close(done) }()
+	<-recorder.started
+
+	if err := recorder.Record(context.Background(), RequestRecord{RequestID: "retry-transient"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := recorder.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v, want transient failure to be retried", err)
+	}
+	select {
+	case batch := <-stub.flushed:
+		if len(batch) != 1 || batch[0].RequestID != "retry-transient" {
+			t.Fatalf("flushed batch = %#v, want retry-transient", batch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retried batch was not persisted")
+	}
+	if got := recorder.FlushFailed(); got != 1 {
+		t.Fatalf("FlushFailed = %d, want 1 failed attempt", got)
 	}
 	cancel()
 	<-done

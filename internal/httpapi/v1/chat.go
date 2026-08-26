@@ -95,7 +95,9 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	// full-body unmarshal of every request, amplified by large image payloads.
 	requestedReasoningLevel := parsed.RequestedReasoningLevel()
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
-	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), parsed.Requirements())
+	requirements := parsed.Requirements()
+	observability.SetRequestedCapabilities(request.Context(), requirements.Vision, requirements.Tools, requirements.Reasoning)
+	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), requirements)
 	if err != nil {
 		// Distinguish capability rejections from generic 4xx in request logs so
 		// monitoring can tell "router never verified this" from a client bug.
@@ -636,6 +638,23 @@ func modelError(err error) error {
 			Message: "The requested model is not available.",
 		}
 	}
+	var unsupported *modelcatalog.UnsupportedCapabilityError
+	if errors.As(err, &unsupported) {
+		param := unsupported.Capability
+		message := "The selected model does not support the requested capability."
+		switch unsupported.Capability {
+		case modelcatalog.CapabilityTools:
+			message = "The selected model does not support tools. Remove tools and tool_choice or choose a model that supports tools."
+		case modelcatalog.CapabilityReasoning:
+			message = "The selected model does not support the requested reasoning mode."
+		case modelcatalog.CapabilityVision:
+			message = "The selected model does not support vision inputs."
+		}
+		return &apierror.Error{
+			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "model_capability_unsupported",
+			Message: message, Param: &param, Cause: err,
+		}
+	}
 	if errors.Is(err, modelcatalog.ErrCapabilityUnverified) {
 		return &apierror.Error{
 			Status: http.StatusNotImplemented, Type: "invalid_request_error", Code: "capability_unverified",
@@ -655,6 +674,11 @@ func modelError(err error) error {
 // error_code for capability rejections; the middleware's fallback would
 // otherwise lump them into the generic http_4xx bucket.
 func recordCapabilityErrorCode(ctx context.Context, err error) {
+	var unsupported *modelcatalog.UnsupportedCapabilityError
+	if errors.As(err, &unsupported) {
+		observability.SetErrorCode(ctx, "model_capability_unsupported")
+		return
+	}
 	switch {
 	case errors.Is(err, modelcatalog.ErrCapabilityUnverified):
 		observability.SetErrorCode(ctx, "capability_unverified")

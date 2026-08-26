@@ -68,6 +68,7 @@ export interface RequestLog {
   prompt_tokens?: number
   completion_tokens?: number
   upstream_request_id?: string
+  requested_capabilities?: string
   // Reasoning observability exposes only booleans, field names and character
   // counts; reasoning text is never stored or serialized.
   reasoning_requested: boolean

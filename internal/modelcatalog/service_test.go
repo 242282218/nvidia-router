@@ -474,6 +474,36 @@ func TestResolveEnforcesKindAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestResolveNamesUnsupportedCapability(t *testing.T) {
+	service, _, _, _ := newCatalogTestService(t)
+	if err := service.SaveSelection(context.Background(), []Selection{{
+		PublicID: "plain", UpstreamID: "vendor/plain", DisplayName: "Plain", Kind: KindChat, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveSelection: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		requirements Requirements
+		capability   string
+	}{
+		{name: "vision", requirements: Requirements{Kind: KindChat, Vision: true}, capability: "vision"},
+		{name: "reasoning", requirements: Requirements{Kind: KindChat, Reasoning: true}, capability: "reasoning"},
+		{name: "tools", requirements: Requirements{Kind: KindChat, Tools: true}, capability: "tools"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := service.Resolve(context.Background(), "plain", testCase.requirements)
+			if !errors.Is(err, ErrCapabilityUnsupported) {
+				t.Fatalf("Resolve error = %v, want ErrCapabilityUnsupported", err)
+			}
+			if !strings.Contains(err.Error(), testCase.capability) {
+				t.Fatalf("Resolve error = %q, want capability %q", err, testCase.capability)
+			}
+		})
+	}
+}
+
 func TestResolveAdmitsInferredToolsCapability(t *testing.T) {
 	service, _, _, _ := newCatalogTestService(t)
 	if err := service.SaveSelection(context.Background(), []Selection{{

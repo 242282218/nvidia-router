@@ -141,6 +141,33 @@ func TestResponsesPassesParsedCapabilityRequirementsToModelResolver(t *testing.T
 	}
 }
 
+func TestResponsesMarshalCapabilityErrorRecordsErrorCode(t *testing.T) {
+	resolver := modelResolverFunc(func(_ context.Context, _ string, _ modelcatalog.Requirements) (modelcatalog.Model, error) {
+		return modelcatalog.Model{
+			ID: 3, PublicID: "public-chat", UpstreamID: "vendor/chat", Kind: modelcatalog.KindChat,
+			Enabled: true, SupportsReasoning: true, ReasoningWireFormat: "openai",
+			ReasoningLevels: []string{"none"}, ReasoningZeroAllowed: false,
+		}, nil
+	})
+	var recorded observability.RequestRecord
+	recorder := requestRecorderFunc(func(_ context.Context, record observability.RequestRecord) error {
+		recorded = record
+		return nil
+	})
+	handler := observability.HTTPMiddleware(recorder, clock.RealClock{}, slog.New(slog.NewTextHandler(io.Discard, nil)), NewResponses(resolver, nil, nil))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(
+		`{"model":"public-chat","input":"think","reasoning":{"effort":"high"}}`,
+	))
+
+	handler.ServeHTTP(response, request)
+
+	assertChatError(t, response, http.StatusBadRequest, "model_capability_unsupported")
+	if recorded.ErrorCode == nil || *recorded.ErrorCode != "model_capability_unsupported" {
+		t.Fatalf("recorded error code = %v, want model_capability_unsupported", recorded.ErrorCode)
+	}
+}
+
 func TestResponsesNonstreamExecutionMarksSemanticCompletionAfterConversion(t *testing.T) {
 	body := &semanticMarkBody{ReadCloser: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))}
 	client := &semanticMarkProvider{response: &http.Response{StatusCode: http.StatusOK, Body: body}}

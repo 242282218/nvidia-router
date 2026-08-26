@@ -274,6 +274,29 @@ func TestRepositoryListRequestLogsIncludesReasoningLevels(t *testing.T) {
 	}
 }
 
+func TestRepositoryListRequestLogsIncludesRequestedCapabilities(t *testing.T) {
+	db := openObservabilityDB(t)
+	repository := NewRepository(db)
+	if err := repository.Record(context.Background(), RequestRecord{
+		RequestID: "log-capabilities", Endpoint: "/v1/chat/completions", ModelID: "model-a",
+		HTTPStatus: http.StatusNotImplemented, Outcome: OutcomeFailure, DurationMS: 100, AttemptCount: 1,
+		RequestedCapabilities: "tools", CreatedAt: time.Date(2026, 8, 18, 4, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	page, err := repository.ListRequestLogs(context.Background(), RequestLogsQuery{MonitoringQuery: MonitoringQuery{
+		Range: MonitoringRange24Hours,
+		From:  time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
+		To:    time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC),
+	}, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListRequestLogs: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].RequestedCapabilities == nil || *page.Items[0].RequestedCapabilities != "tools" {
+		t.Fatalf("requested capabilities = %#v, want tools", page.Items)
+	}
+}
+
 func TestRepositoryListDailyStatsAveragesFirstToken(t *testing.T) {
 	db := openObservabilityDB(t)
 	repository := NewRepository(db)

@@ -11,17 +11,18 @@ import (
 type requestStateKey struct{}
 
 type RequestState struct {
-	mu                sync.Mutex
-	ModelID           string
-	AccessKeyID       *int64
-	NVIDIAKeyID       *int64
-	ErrorCode         *string
-	IsStream          bool
-	QueueMS           int64
-	AttemptCount      int
-	PromptTokens      *int64
-	CompletionTokens  *int64
-	UpstreamRequestID *string
+	mu                    sync.Mutex
+	ModelID               string
+	AccessKeyID           *int64
+	NVIDIAKeyID           *int64
+	ErrorCode             *string
+	IsStream              bool
+	QueueMS               int64
+	AttemptCount          int
+	PromptTokens          *int64
+	CompletionTokens      *int64
+	UpstreamRequestID     *string
+	RequestedCapabilities string
 	// FirstTokenAt is set by the streaming handler the instant the first SSE
 	// data event reaches the client. The middleware converts it to a TTFT in
 	// milliseconds, mirroring first_byte_ms.
@@ -89,6 +90,24 @@ func SetUpstreamRequestID(ctx context.Context, value string) {
 		return
 	}
 	updateState(ctx, func(state *RequestState) { state.UpstreamRequestID = stringPointer(value) })
+}
+
+// SetRequestedCapabilities records only the capability names required by the
+// parsed request. The fixed order makes logs easy to group and compare.
+func SetRequestedCapabilities(ctx context.Context, vision, tools, reasoning bool) {
+	capabilities := make([]string, 0, 3)
+	if vision {
+		capabilities = append(capabilities, "vision")
+	}
+	if tools {
+		capabilities = append(capabilities, "tools")
+	}
+	if reasoning {
+		capabilities = append(capabilities, "reasoning")
+	}
+	updateState(ctx, func(state *RequestState) {
+		state.RequestedCapabilities = strings.Join(capabilities, ",")
+	})
 }
 
 // SetFirstTokenAt records the instant the first SSE data event reached the
@@ -216,8 +235,9 @@ func (s *RequestState) Snapshot() RequestState {
 		ErrorCode: s.ErrorCode, IsStream: s.IsStream, QueueMS: s.QueueMS,
 		AttemptCount: s.AttemptCount, PromptTokens: s.PromptTokens,
 		CompletionTokens: s.CompletionTokens, UpstreamRequestID: s.UpstreamRequestID,
-		FirstTokenAt:       s.FirstTokenAt,
-		ReasoningRequested: s.ReasoningRequested, ReasoningWireFields: s.ReasoningWireFields,
+		RequestedCapabilities: s.RequestedCapabilities,
+		FirstTokenAt:          s.FirstTokenAt,
+		ReasoningRequested:    s.ReasoningRequested, ReasoningWireFields: s.ReasoningWireFields,
 		ReasoningSource:         s.ReasoningSource,
 		ReasoningRequestedLevel: s.ReasoningRequestedLevel, ReasoningEffectiveLevel: s.ReasoningEffectiveLevel,
 		ReasoningPresent: s.ReasoningPresent, ReasoningChars: s.ReasoningChars,

@@ -38,6 +38,10 @@ type RequestRecord struct {
 	PromptTokens      *int64
 	CompletionTokens  *int64
 	UpstreamRequestID *string
+	// RequestedCapabilities is a stable, comma-separated summary of model
+	// capabilities requested by the client. It contains no tool definitions,
+	// message content, images, or reasoning values.
+	RequestedCapabilities string
 	// Reasoning observability carries only booleans, field names and character
 	// counts. Reasoning text, prompts and keys are never persisted.
 	ReasoningRequested      bool

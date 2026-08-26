@@ -20,6 +20,12 @@ type requestSummaryProvider interface {
 	MetricsSummary(context.Context) (observability.MetricsSummary, error)
 }
 
+type requestBufferProvider interface {
+	Depth() int
+	Dropped() int64
+	FlushFailed() int64
+}
+
 // ProxyPoolProvider exposes the built-in proxy pool's live health so operators
 // can alert on it via Prometheus instead of scraping the admin page. A nil
 // provider (static-proxy mode) means the pool metrics are absent, which is
@@ -31,11 +37,16 @@ type ProxyPoolProvider interface {
 type Handler struct {
 	pool      SummaryProvider
 	requests  requestSummaryProvider
+	buffer    requestBufferProvider
 	proxyPool ProxyPoolProvider
 }
 
-func New(pool SummaryProvider, requests requestSummaryProvider) *Handler {
-	return &Handler{pool: pool, requests: requests}
+func New(pool SummaryProvider, requests requestSummaryProvider, buffers ...requestBufferProvider) *Handler {
+	var buffer requestBufferProvider
+	if len(buffers) > 0 {
+		buffer = buffers[0]
+	}
+	return &Handler{pool: pool, requests: requests, buffer: buffer}
 }
 
 // WithProxyPool attaches the built-in proxy pool health to the handler. Kept as
@@ -71,6 +82,11 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			writeCounter(&builder, "nvidia_router_requests_succeeded_total", summary.Successes)
 			writeCounter(&builder, "nvidia_router_requests_failed_total", summary.Failures)
 		}
+	}
+	if h.buffer != nil {
+		writeGauge(&builder, "nvidia_router_request_log_buffer_depth", h.buffer.Depth())
+		writeCounter(&builder, "nvidia_router_request_log_dropped_total", h.buffer.Dropped())
+		writeCounter(&builder, "nvidia_router_request_log_flush_failed_total", h.buffer.FlushFailed())
 	}
 	if h.proxyPool != nil {
 		status := h.proxyPool.PoolStatus()

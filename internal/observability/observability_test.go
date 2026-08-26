@@ -32,6 +32,16 @@ func TestRequestRecordContainsOnlyAllowlistedMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestStateRecordsRequestedCapabilitiesWithoutPayload(t *testing.T) {
+	ctx, state := WithRequestState(context.Background())
+	SetRequestedCapabilities(ctx, true, true, false)
+
+	snapshot := state.Snapshot()
+	if snapshot.RequestedCapabilities != "vision,tools" {
+		t.Fatalf("requested capabilities = %q, want vision,tools", snapshot.RequestedCapabilities)
+	}
+}
+
 func TestRepositoryRecordStoresRequestAndFourDailyDimensions(t *testing.T) {
 	db := openObservabilityDB(t)
 	accessKeyID := insertAccessKey(t, db)
@@ -231,6 +241,26 @@ func TestRepositoryRecordStoresReasoningLevels(t *testing.T) {
 	}
 	if !effective.Valid || effective.String != record.ReasoningEffectiveLevel {
 		t.Fatalf("effective level = %#v, want %q", effective, record.ReasoningEffectiveLevel)
+	}
+}
+
+func TestRepositoryRecordStoresRequestedCapabilities(t *testing.T) {
+	db := openObservabilityDB(t)
+	repository := NewRepository(db)
+	record := RequestRecord{
+		RequestID: "requested-capabilities", Endpoint: "/v1/chat/completions", ModelID: "chat-model",
+		HTTPStatus: http.StatusNotImplemented, Outcome: OutcomeFailure, DurationMS: 10, AttemptCount: 1,
+		RequestedCapabilities: "tools,reasoning", CreatedAt: time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC),
+	}
+	if err := repository.Record(context.Background(), record); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	var capabilities sql.NullString
+	if err := db.QueryRow("SELECT requested_capabilities FROM request_logs WHERE request_id = ?", record.RequestID).Scan(&capabilities); err != nil {
+		t.Fatalf("read requested capabilities: %v", err)
+	}
+	if !capabilities.Valid || capabilities.String != record.RequestedCapabilities {
+		t.Fatalf("requested capabilities = %#v, want %q", capabilities, record.RequestedCapabilities)
 	}
 }
 

@@ -134,6 +134,7 @@ func (r *Repository) ListRequestLogs(ctx context.Context, query RequestLogsQuery
 		       http_status, outcome, error_code, is_stream, queue_ms,
 		       first_byte_ms, first_token_ms, duration_ms, attempt_count,
 		       prompt_tokens, completion_tokens, upstream_request_id, created_at,
+		       requested_capabilities,
 		       reasoning_requested, reasoning_wire_fields, reasoning_present,
 		       reasoning_chars, stream_done, route_mode, reasoning_source,
 		       reasoning_requested_level, reasoning_effective_level
@@ -548,7 +549,7 @@ func normalizeRequestLogsPage(page, pageSize int) (int, int, error) {
 
 func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	var item RequestLog
-	var modelID, errorCode, upstreamRequestID, reasoningWireFields, routeMode, reasoningSource sql.NullString
+	var modelID, errorCode, upstreamRequestID, requestedCapabilities, reasoningWireFields, routeMode, reasoningSource sql.NullString
 	var reasoningRequestedLevel, reasoningEffectiveLevel sql.NullString
 	var accessKeyID, nvidiaKeyID, firstByteMS, firstTokenMS, promptTokens, completionTokens, reasoningChars sql.NullInt64
 	var isStream, reasoningRequested, reasoningPresent, streamDone int
@@ -556,7 +557,7 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 		&item.RequestID, &item.Endpoint, &modelID, &accessKeyID, &nvidiaKeyID,
 		&item.HTTPStatus, &item.Outcome, &errorCode, &isStream, &item.QueueMS,
 		&firstByteMS, &firstTokenMS, &item.DurationMS, &item.AttemptCount, &promptTokens,
-		&completionTokens, &upstreamRequestID, &item.CreatedAt,
+		&completionTokens, &upstreamRequestID, &item.CreatedAt, &requestedCapabilities,
 		&reasoningRequested, &reasoningWireFields, &reasoningPresent, &reasoningChars,
 		&streamDone, &routeMode, &reasoningSource, &reasoningRequestedLevel, &reasoningEffectiveLevel,
 	); err != nil {
@@ -572,6 +573,7 @@ func scanRequestLog(rows *sql.Rows) (RequestLog, error) {
 	item.PromptTokens = nullableInt64Pointer(promptTokens)
 	item.CompletionTokens = nullableInt64Pointer(completionTokens)
 	item.UpstreamRequestID = nullableStringPointer(upstreamRequestID)
+	item.RequestedCapabilities = nullableStringPointer(requestedCapabilities)
 	item.ReasoningRequested = reasoningRequested != 0
 	item.ReasoningWireFields = nullableStringPointer(reasoningWireFields)
 	item.ReasoningPresent = reasoningPresent != 0

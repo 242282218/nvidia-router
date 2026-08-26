@@ -26,6 +26,29 @@ var (
 	ErrProviderNotConfigured = errors.New("model provider is not configured")
 )
 
+const (
+	CapabilityVision    = "vision"
+	CapabilityReasoning = "reasoning"
+	CapabilityTools     = "tools"
+)
+
+// UnsupportedCapabilityError keeps the rejected capability available to API
+// error mapping while preserving errors.Is(err, ErrCapabilityUnsupported).
+type UnsupportedCapabilityError struct {
+	Capability string
+}
+
+func (e *UnsupportedCapabilityError) Error() string {
+	if e == nil || e.Capability == "" {
+		return ErrCapabilityUnsupported.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrCapabilityUnsupported, e.Capability)
+}
+
+func (e *UnsupportedCapabilityError) Unwrap() error {
+	return ErrCapabilityUnsupported
+}
+
 func normalizeSelection(selection Selection) (Selection, error) {
 	if strings.TrimSpace(selection.PublicID) == "" || strings.TrimSpace(selection.UpstreamID) == "" || strings.TrimSpace(selection.DisplayName) == "" {
 		return Selection{}, errors.New("model IDs and display name are required")
@@ -168,12 +191,15 @@ func validateRequirements(model Model, requirements Requirements) error {
 	if model.Kind != requirements.Kind {
 		return ErrModelKindMismatch
 	}
-	if requirements.Vision && !model.SupportsVision || requirements.Reasoning && !model.SupportsReasoning {
-		return ErrCapabilityUnsupported
+	if requirements.Vision && !model.SupportsVision {
+		return &UnsupportedCapabilityError{Capability: CapabilityVision}
+	}
+	if requirements.Reasoning && !model.SupportsReasoning {
+		return &UnsupportedCapabilityError{Capability: CapabilityReasoning}
 	}
 	if requirements.Tools {
 		if !model.SupportsTools {
-			return ErrCapabilityUnsupported
+			return &UnsupportedCapabilityError{Capability: CapabilityTools}
 		}
 		// "inferred" is an explicit claim: an operator PATCHed supports_tools, or
 		// the capability-hint registry asserted it. The probe cannot verify several

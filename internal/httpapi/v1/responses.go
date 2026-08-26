@@ -80,7 +80,9 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 	// payload would duplicate a full-body unmarshal of every request.
 	requestedReasoningLevel := parsed.RequestedReasoningLevel()
 	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
-	model, err := h.models.Resolve(request.Context(), modelID, parsed.Requirements())
+	requirements := parsed.Requirements()
+	observability.SetRequestedCapabilities(request.Context(), requirements.Vision, requirements.Tools, requirements.Reasoning)
+	model, err := h.models.Resolve(request.Context(), modelID, requirements)
 	if err != nil {
 		recordCapabilityErrorCode(request.Context(), err)
 		writeChatError(writer, modelError(err))
