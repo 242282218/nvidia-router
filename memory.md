@@ -412,3 +412,9 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 
 - Responses OCF 流经 `firstWriteTracker` 包装后必须提供 `Unwrap`，以透传 `ResponseWriter` 的可选能力；SSE 遇 `ErrWriteDeadlineUnsupported` 时应保留 watchdog 并降级为普通 `Flush`，不能把能力缺失误报为 500。
 - 本轮 `go test ./... -count=1`、`go vet ./...`、`git diff --check` 均通过；未部署、未重启。不得记录凭据、完整 URL 或响应正文。
+
+## 36. 2026-08-29 执行核心收敛发布
+
+- 本次部署源码提交为 `7d6bbb3`；标准 Release 为 `/opt/nvidia-router-releases/20260829-executor-consolidation-7d6bbb3`，镜像为 `nvidia-router:deploy-20260829-executor-consolidation-7d6bbb3`。
+- 回滚点为上一版本 `20260826-vibe-codex-cherry-288be38`；切换前数据库备份位于 `/opt/nvidia-router-releases/20260829-executor-consolidation-7d6bbb3/backups/predeploy-20260829-executor-consolidation-7d6bbb3/router.db`，SHA-256 为 `78218e062322d99524365bcc625a15ef0362613df43fb5951276c7a0aac58fb4`，权限/属主为 `600/10001:10001`。
+- 发布后健康检查、关键端口、静态资源和匿名鉴权均通过；管理员登录烟测返回 401，未重置密码。真实模型/代理矩阵未执行，公网 HTTP 明文警告保持。
