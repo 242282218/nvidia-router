@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 	"unicode/utf8"
@@ -74,36 +75,14 @@ func (h *Responses) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		writeChatError(writer, err)
 		return
 	}
-	modelID, stream := parsed.PublicModelID(), parsed.Stream()
-	observability.SetModel(request.Context(), modelID, stream)
-	// Parse already resolved the requested reasoning level; re-parsing the
-	// payload would duplicate a full-body unmarshal of every request.
-	requestedReasoningLevel := parsed.RequestedReasoningLevel()
-	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
-	requirements := parsed.Requirements()
-	observability.SetRequestedCapabilities(request.Context(), requirements.Vision, requirements.Tools, requirements.Reasoning)
-	model, err := h.models.Resolve(request.Context(), modelID, requirements)
-	if err != nil {
-		recordCapabilityErrorCode(request.Context(), err)
-		writeChatError(writer, modelError(err))
-		return
-	}
-	autoReasoning := h.autoReasoningEnabled() && model.SupportsReasoning
-	upstreamBody, err := parsed.MarshalForWithOptions(model, autoReasoning)
+	prepared, err := prepareModelRequest(request.Context(), parsed, h.models, h.autoReasoningEnabled())
 	if err != nil {
 		writeChatError(writer, err)
 		return
 	}
-	// One pass over the upstream body extracts both the effective level and the
-	// reasoning wire fields (previously two full-body unmarshals).
-	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
-	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
-	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
-	if parsed.ReasoningRequested() {
-		observability.SetReasoningSource(request.Context(), "client")
-	} else if autoReasoning && model.SupportsReasoning {
-		observability.SetReasoningSource(request.Context(), "auto-inject")
-	}
+	model := prepared.Model
+	upstreamBody := prepared.Body
+	stream := prepared.Stream
 	id, err := responsesprotocol.NewResponseID()
 	if err != nil {
 		writeChatError(writer, err)
@@ -181,6 +160,13 @@ func (h *Responses) executeWithConfig(body []byte, responsesID string, model mod
 		}
 		if present, chars := observability.ReasoningContentFromBody(validated.Body); present {
 			observability.SetReasoningResponse(ctx, present, chars)
+			if observability.ReasoningStarvedFromBody(validated.Body) {
+				slog.Warn("reasoning_starved_response",
+					"model", upstreamModelFromBody(body),
+					"reasoning_chars", chars,
+				)
+				return response, fault.EmptyResponse(errors.New("reasoning consumed completion budget"))
+			}
 		}
 		converted, err := responsesprotocol.FromChatWithConfig(validated.Body, responsesID, model, config)
 		if err != nil {
@@ -317,14 +303,15 @@ func (c *chatDeltaSource) Next() (responsesprotocol.ChatDelta, error) {
 // responsesSSEEmitter writes Responses events to the HTTP response and commits
 // on the first event. The done event is rendered as the final [DONE] marker.
 type responsesSSEEmitter struct {
-	ctx         context.Context
-	encoder     *sse.Encoder
-	commit      *router.CommitState
-	flusher     http.ResponseWriter
-	header      bool
-	notified    bool
-	onFirstData func()
-	onComplete  func()
+	ctx                 context.Context
+	encoder             *sse.Encoder
+	commit              *router.CommitState
+	flusher             http.ResponseWriter
+	header              bool
+	notified            bool
+	deadlineUnsupported bool
+	onFirstData         func()
+	onComplete          func()
 	// writeWatchdog guards the flush against a client that stops reading (audit
 	// H6); when it fires, onStall closes the upstream body so the state machine
 	// loop ends and the lease is released.
@@ -336,7 +323,7 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 	if e.ctx != nil && e.commit.Committed() && e.ctx.Err() != nil {
 		return e.ctx.Err()
 	}
-	if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+	if err := e.setWriteDeadline(); err != nil {
 		return err
 	}
 	if !e.header {
@@ -361,7 +348,7 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 		if e.writeWatchdog != nil {
 			e.writeWatchdog.Arm()
 		}
-		if err := sse.FlushWithDeadline(e.flusher, flusher, e.writeTimeout); err != nil {
+		if err := e.flush(flusher); err != nil {
 			return err
 		}
 		if e.writeWatchdog != nil {
@@ -385,12 +372,50 @@ func (e *responsesSSEEmitter) Emit(event responsesprotocol.EmittedEvent) error {
 
 func (e *responsesSSEEmitter) Commit() error {
 	if !e.header {
-		if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+		if err := e.setWriteDeadline(); err != nil {
 			return err
 		}
 		writeSSEHeaders(e.flusher)
 		e.header = true
 		e.commit.Wrap(e.flusher).WriteHeader(http.StatusOK)
+	}
+	return nil
+}
+
+// setWriteDeadline keeps a watchdog-only fallback for ResponseWriters that do
+// not expose a cancellable write deadline. This mirrors sse.Proxy: lack of the
+// optional net/http capability must not turn a valid stream into a 500.
+func (e *responsesSSEEmitter) setWriteDeadline() error {
+	if e.deadlineUnsupported || e.writeTimeout <= 0 {
+		return nil
+	}
+	if err := sse.SetWriteDeadline(e.flusher, e.writeTimeout); err != nil {
+		if errors.Is(err, sse.ErrWriteDeadlineUnsupported) {
+			e.deadlineUnsupported = true
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// flush uses the write deadline when available and falls back to a plain flush
+// when the ResponseWriter only supports http.Flusher. The watchdog remains
+// armed by Emit around either path, so unsupported writers still have a bound
+// on the upstream lease even though the synchronous flush itself is not
+// cancellable by net/http.
+func (e *responsesSSEEmitter) flush(flusher http.Flusher) error {
+	if e.deadlineUnsupported {
+		flusher.Flush()
+		return nil
+	}
+	if err := sse.FlushWithDeadline(e.flusher, flusher, e.writeTimeout); err != nil {
+		if errors.Is(err, sse.ErrWriteDeadlineUnsupported) {
+			e.deadlineUnsupported = true
+			flusher.Flush()
+			return nil
+		}
+		return err
 	}
 	return nil
 }

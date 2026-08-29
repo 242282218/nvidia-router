@@ -18,6 +18,7 @@ import (
 	"nvidia-router/internal/observability"
 	responsesprotocol "nvidia-router/internal/protocol/responses"
 	"nvidia-router/internal/router"
+	"nvidia-router/internal/runtimeconfig"
 	"nvidia-router/internal/sse"
 	"nvidia-router/internal/upstream/nvidia"
 )
@@ -391,7 +392,7 @@ func TestResponsesDoneCompletionCallbackRunsAfterFlush(t *testing.T) {
 	}
 }
 
-func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
+func TestResponsesEmitterFallsBackWhenWriteDeadlineUnsupported(t *testing.T) {
 	writer := &responseDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
 	emitter := &responsesSSEEmitter{
 		encoder:      sse.NewEncoder(writer),
@@ -399,9 +400,55 @@ func TestResponsesEmitterStopsOnWriteDeadline(t *testing.T) {
 		flusher:      writer,
 		writeTimeout: time.Second,
 	}
-	if err := emitter.Emit(responsesprotocol.EmittedEvent{Event: "done"}); err == nil {
-		t.Fatal("Emit returned nil when response write deadline was unsupported")
+	if err := emitter.Emit(responsesprotocol.EmittedEvent{Event: "done"}); err != nil {
+		t.Fatalf("Emit: %v", err)
 	}
+	if writer.Code != http.StatusOK || !strings.Contains(writer.Body.String(), "[DONE]") {
+		t.Fatalf("fallback response = %d %q, want 200 with terminal event", writer.Code, writer.Body.String())
+	}
+}
+
+func TestResponsesOpenCodeFreeStreamSupportsDeadlineWriter(t *testing.T) {
+	writer := &deadlineRequiredResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	serveOpenCodeFreeResponsesStreamForTest(t, writer)
+	if writer.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", writer.Code, writer.Body.String())
+	}
+	if writer.headerWithoutDeadline {
+		t.Fatal("response headers were committed without a write deadline")
+	}
+	if writer.writes == 0 || !strings.Contains(writer.Body.String(), "event: response.completed") || !strings.Contains(writer.Body.String(), "data: [DONE]") {
+		t.Fatalf("deadline-capable stream = writes:%d body:%q, want completed SSE", writer.writes, writer.Body.String())
+	}
+}
+
+func TestResponsesOpenCodeFreeStreamFallsBackWithoutDeadlineWriter(t *testing.T) {
+	writer := &responseDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+	serveOpenCodeFreeResponsesStreamForTest(t, writer)
+	if writer.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", writer.Code, writer.Body.String())
+	}
+	if !strings.Contains(writer.Body.String(), "event: response.completed") || !strings.Contains(writer.Body.String(), "data: [DONE]") {
+		t.Fatalf("unsupported-deadline stream = %q, want completed SSE", writer.Body.String())
+	}
+}
+
+func serveOpenCodeFreeResponsesStreamForTest(t *testing.T, writer http.ResponseWriter) {
+	t.Helper()
+	const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	model := modelcatalog.Model{
+		ID: 1, PublicID: "free-model", UpstreamID: "free-model",
+		Kind: modelcatalog.KindChat, Provider: modelcatalog.ProviderOpenCodeFree, Enabled: true,
+	}
+	handler := NewResponses(nil, nil, nil).WithOpenCodeFree(openCodeFreeFunc(func(_ context.Context, _ runtimeconfig.Snapshot, _ []byte, _ bool) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sseBody)),
+		}, nil
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"free-model","stream":true}`))
+	handler.serveOpenCodeFreeResponses(writer, request, []byte(`{"model":"free-model","stream":true}`), "resp_ocf", model, responsesprotocol.ResponseConfig{}, true)
 }
 
 func TestResponsesEmitterRefreshesWriteDeadlineForEveryEvent(t *testing.T) {
@@ -527,7 +574,14 @@ func TestChatDeltaSourceAccumulatesReasoningLength(t *testing.T) {
 
 func TestResponsesNonstreamRecordsReasoning(t *testing.T) {
 	upstreamChat := []byte(`{"id":"c1","choices":[{"message":{"role":"assistant","reasoning_content":"deep reasoning","content":"hello"}}]}`)
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	var upstreamRequestBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read upstream request body: %v", err)
+			return
+		}
+		upstreamRequestBody = body
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write(upstreamChat)
 	}))
@@ -580,6 +634,21 @@ func TestResponsesNonstreamRecordsReasoning(t *testing.T) {
 	}
 	if recorded.ReasoningEffectiveLevel != "medium" {
 		t.Fatalf("reasoning_effective_level = %q, want medium", recorded.ReasoningEffectiveLevel)
+	}
+	if recorded.ReasoningSource != "client" {
+		t.Fatalf("reasoning_source = %q, want client", recorded.ReasoningSource)
+	}
+	var upstreamPayload map[string]json.RawMessage
+	if err := json.Unmarshal(upstreamRequestBody, &upstreamPayload); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	var upstreamModel string
+	if err := json.Unmarshal(upstreamPayload["model"], &upstreamModel); err != nil || upstreamModel != "vendor/chat" {
+		t.Fatalf("upstream model = %q, want vendor/chat", upstreamModel)
+	}
+	var upstreamReasoning string
+	if err := json.Unmarshal(upstreamPayload["reasoning_effort"], &upstreamReasoning); err != nil || upstreamReasoning != "medium" {
+		t.Fatalf("upstream reasoning_effort = %q, want medium", upstreamReasoning)
 	}
 	if !recorded.ReasoningPresent {
 		t.Fatal("reasoning_present = false, want true")

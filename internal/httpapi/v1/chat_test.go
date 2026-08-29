@@ -148,7 +148,7 @@ func TestChatOpenCodeFreeStreamTransientRetriedBeforeFirstWrite(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("gateway calls = %d, want 2 (one transient then one success)", calls)
 	}
-	if !strings.Contains(response.Body.String(), "data:") || !strings.Contains(response.Body.String(), "[DONE]") {
+	if !strings.Contains(response.Body.String(), `"content":"ok"`) || !strings.Contains(response.Body.String(), "[DONE]") {
 		t.Fatalf("retried stream body = %q, want SSE events and [DONE]", response.Body.String())
 	}
 }
@@ -1018,7 +1018,14 @@ func (f requestRecorderFunc) Record(ctx context.Context, record observability.Re
 // recorded as reasoning_requested plus wire field names, and the response's
 // reasoning_content length must land in reasoning_chars.
 func TestChatNonstreamRecordsReasoningRequestAndResponse(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	var upstreamRequestBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read upstream request body: %v", err)
+			return
+		}
+		upstreamRequestBody = body
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"choices":[{"message":{"reasoning_content":"deep thought","content":"answer"}}]}`))
 	}))
@@ -1065,6 +1072,21 @@ func TestChatNonstreamRecordsReasoningRequestAndResponse(t *testing.T) {
 	}
 	if recorded.ReasoningEffectiveLevel != "medium" {
 		t.Fatalf("reasoning_effective_level = %q, want medium", recorded.ReasoningEffectiveLevel)
+	}
+	if recorded.ReasoningSource != "client" {
+		t.Fatalf("reasoning_source = %q, want client", recorded.ReasoningSource)
+	}
+	var upstreamPayload map[string]json.RawMessage
+	if err := json.Unmarshal(upstreamRequestBody, &upstreamPayload); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	var upstreamModel string
+	if err := json.Unmarshal(upstreamPayload["model"], &upstreamModel); err != nil || upstreamModel != "vendor/model" {
+		t.Fatalf("upstream model = %q, want vendor/model", upstreamModel)
+	}
+	var upstreamReasoning string
+	if err := json.Unmarshal(upstreamPayload["reasoning_effort"], &upstreamReasoning); err != nil || upstreamReasoning != "medium" {
+		t.Fatalf("upstream reasoning_effort = %q, want medium", upstreamReasoning)
 	}
 	if !recorded.ReasoningPresent {
 		t.Fatal("reasoning_present = false, want true")

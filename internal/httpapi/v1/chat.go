@@ -89,39 +89,14 @@ func (h *Chat) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeChatError(writer, err)
 		return
 	}
-	observability.SetModel(request.Context(), parsed.PublicModelID(), parsed.Stream())
-	// Parse already resolved the requested reasoning level (compat.ParseReasoning
-	// ran on the request fields); re-parsing the payload for it would duplicate a
-	// full-body unmarshal of every request, amplified by large image payloads.
-	requestedReasoningLevel := parsed.RequestedReasoningLevel()
-	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, "")
-	requirements := parsed.Requirements()
-	observability.SetRequestedCapabilities(request.Context(), requirements.Vision, requirements.Tools, requirements.Reasoning)
-	model, err := h.models.Resolve(request.Context(), parsed.PublicModelID(), requirements)
-	if err != nil {
-		// Distinguish capability rejections from generic 4xx in request logs so
-		// monitoring can tell "router never verified this" from a client bug.
-		recordCapabilityErrorCode(request.Context(), err)
-		writeChatError(writer, modelError(err))
-		return
-	}
-	autoReasoning := h.autoReasoningEnabled() && model.SupportsReasoning
-	upstreamBody, err := parsed.MarshalForWithOptions(model, autoReasoning)
+	prepared, err := prepareModelRequest(request.Context(), parsed, h.models, h.autoReasoningEnabled())
 	if err != nil {
 		writeChatError(writer, err)
 		return
 	}
-	// One pass over the upstream body extracts both the effective level and the
-	// reasoning wire fields (previously two full-body unmarshals).
-	effectiveReasoningLevel, reasoningRequested, wireFields := observability.ReasoningMetadataFromBody(upstreamBody)
-	observability.SetReasoningLevels(request.Context(), requestedReasoningLevel, effectiveReasoningLevel)
-	observability.SetReasoningRequest(request.Context(), reasoningRequested, wireFields)
-	if parsed.ReasoningRequested() {
-		observability.SetReasoningSource(request.Context(), "client")
-	} else if autoReasoning && model.SupportsReasoning {
-		observability.SetReasoningSource(request.Context(), "auto-inject")
-	}
-	stream := parsed.Stream()
+	model := prepared.Model
+	upstreamBody := prepared.Body
+	stream := prepared.Stream
 	// OpenCodeFree models route to the optional gateway directly: no NVIDIA key
 	// pool, no failover, one upstream. Every other provider keeps the Attempt
 	// path (key pool, retry budget, sticky sessions).
@@ -220,8 +195,8 @@ func (h *Chat) execute(body []byte, stream bool) router.ExecuteFunc {
 const openCodeFreeRequestTimeout = 10 * time.Minute
 
 // serveOpenCodeFree runs a chat request against the optional OpenCodeFree
-// gateway. It mirrors the NVIDIA path's stream/nonstream handling but skips the
-// key pool: the model's provider decides the route before this is called.
+// gateway. The shared executor owns retry/status/body lifecycle; this method
+// only adapts Chat validation and stream writing to that lifecycle.
 func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Request, body []byte, stream bool) {
 	if h.openCodeFree == nil {
 		writeChatError(writer, &apierror.Error{
@@ -230,21 +205,47 @@ func (h *Chat) serveOpenCodeFree(writer http.ResponseWriter, request *http.Reque
 		})
 		return
 	}
-	// The gateway occasionally answers a transient 5xx/436 status on an upstream blip
-	// (observed in round-2 stability runs). Retry once after a short pause — for
-	// streams only while nothing has been written, so headers can never be sent
-	// twice; trackedWriter reports whether the first attempt stayed clean.
 	tracked := &firstWriteTracker{ResponseWriter: writer}
-	for attempt := 0; ; attempt++ {
-		retryable := h.openCodeFreeOnce(tracked, request, body, stream, attempt == 0)
-		if !retryable || attempt >= 1 || (stream && tracked.wrote) {
-			return
-		}
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-request.Context().Done():
-			return
-		}
+	execution := openCodeFreeExecution{
+		call: func(ctx context.Context, stream bool) (*http.Response, error) {
+			return h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
+		},
+	}
+	err := execution.run(nvidia.WithForwardedHeaders(request.Context(), request.Header), stream, tracked,
+		func(ctx context.Context, response *http.Response) error {
+			if stream {
+				h.streamResponse(ctx, tracked, response)
+				return nil
+			}
+			validated, err := nvidia.ValidateNonstreamChat(response)
+			if err != nil {
+				if errors.Is(err, nvidia.ErrEmptyResponse) {
+					return fault.EmptyResponse(err)
+				}
+				if errors.Is(err, nvidia.ErrProtocol) {
+					return fault.Protocol(err)
+				}
+				return err
+			}
+			if present, chars := observability.ReasoningContentFromBody(validated.Body); present {
+				observability.SetReasoningResponse(ctx, present, chars)
+				if observability.ReasoningStarvedFromBody(validated.Body) {
+					slog.Warn("reasoning_starved_response",
+						"model", upstreamModelFromBody(body),
+						"reasoning_chars", chars,
+					)
+					return fault.EmptyResponse(errors.New("reasoning consumed completion budget"))
+				}
+			}
+			markResponseComplete(response)
+			copyResponseHeaders(tracked.Header(), response.Header)
+			tracked.Header().Set("Content-Type", "application/json")
+			tracked.WriteHeader(response.StatusCode)
+			_, _ = tracked.Write(validated.Body)
+			return nil
+		})
+	if err != nil {
+		writeChatError(writer, fmt.Errorf("OpenCodeFree chat: %w", err))
 	}
 }
 
@@ -254,6 +255,12 @@ type firstWriteTracker struct {
 	http.ResponseWriter
 	wroteHeader bool
 	wrote       bool
+}
+
+// Unwrap preserves optional ResponseWriter capabilities (for example
+// SetWriteDeadline) when the tracker is used as a transparent adapter.
+func (t *firstWriteTracker) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
 }
 
 func (t *firstWriteTracker) WriteHeader(status int) {
@@ -273,114 +280,12 @@ func (t *firstWriteTracker) Write(payload []byte) (int, error) {
 }
 
 func (t *firstWriteTracker) Flush() {
+	if !t.wrote {
+		t.wrote = true
+		t.wroteHeader = true
+	}
 	if flusher, ok := t.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
-	}
-}
-
-func (h *Chat) openCodeFreeOnce(writer http.ResponseWriter, request *http.Request, body []byte, stream, allowRetry bool) (retryable bool) {
-	ctx, cancel := context.WithTimeout(nvidia.WithForwardedHeaders(request.Context(), request.Header), openCodeFreeRequestTimeout)
-	defer cancel()
-	response, err := h.openCodeFree.Chat(ctx, runtimeconfig.Snapshot{}, body, stream)
-	if err != nil {
-		writeChatError(writer, fmt.Errorf("OpenCodeFree chat: %w", err))
-		return false
-	}
-	if response == nil || response.Body == nil {
-		writeChatError(writer, fault.EmptyResponse(errors.New("OpenCodeFree chat returned no response")))
-		return false
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
-		msg := strings.TrimSpace(string(bodyBytes))
-		if msg == "" {
-			msg = fmt.Sprintf("OpenCodeFree upstream returned HTTP %d", response.StatusCode)
-		} else if len(msg) > 512 {
-			msg = msg[:512]
-		}
-		if response.StatusCode == http.StatusNotFound {
-			writeChatError(writer, &apierror.Error{
-				Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_model_not_found",
-				Message: msg,
-			})
-			return false
-		}
-		if response.StatusCode == http.StatusTooManyRequests || isOpenCodeFreeTransientStatus(response.StatusCode) {
-			// 5xx and the gateway's non-standard 436 are transient; the caller
-			// retries once. 429 is the gateway's own concurrency limit, so
-			// replaying would add load instead of relieving it. A retryable status is
-			// still written on the final attempt; otherwise net/http would turn the
-			// unwritten response into a misleading empty 200.
-			retryable = allowRetry && response.StatusCode != http.StatusTooManyRequests
-			if !retryable {
-				status := response.StatusCode
-				if status == http.StatusInternalServerError || status == 436 {
-					status = http.StatusBadGateway
-				}
-				writeChatError(writer, fault.New(status, fault.ScopeUpstreamGlobal, "server_error", "upstream_unavailable", msg, nil))
-			}
-			return retryable
-		}
-		writeChatError(writer, &apierror.Error{
-			Status: http.StatusBadGateway, Type: "server_error", Code: "upstream_error",
-			Message: msg,
-		})
-		return false
-	}
-	if stream {
-		// No Attempt budget exists on this path, so primeSSE's idle wrapper would
-		// get a zero window and tear the stream down immediately. Instead the
-		// absolute context deadline above plus the transport timeouts bound it,
-		// and streamResponse derives its write stall window from ctx.
-		h.streamResponse(ctx, writer, response)
-		return false
-	}
-	validated, err := nvidia.ValidateNonstreamChat(response)
-	if err != nil {
-		if errors.Is(err, nvidia.ErrEmptyResponse) || errors.Is(err, nvidia.ErrProtocol) {
-			// A 200 response with an empty or malformed body can be a transient
-			// gateway/upstream blip. Retry once before surfacing the protocol error;
-			// streams cannot be replayed after headers may have been sent.
-			if allowRetry {
-				return true
-			}
-		}
-		if errors.Is(err, nvidia.ErrEmptyResponse) {
-			writeChatError(writer, fault.EmptyResponse(err))
-			return false
-		}
-		if errors.Is(err, nvidia.ErrProtocol) {
-			writeChatError(writer, fault.Protocol(err))
-			return false
-		}
-		writeChatError(writer, err)
-		return false
-	}
-	if observability.ReasoningStarvedFromBody(validated.Body) {
-		if allowRetry {
-			return true
-		}
-		writeChatError(writer, fault.EmptyResponse(errors.New("reasoning consumed completion budget")))
-		return false
-	}
-	markResponseComplete(response)
-	_ = response.Body.Close()
-	response.Body = io.NopCloser(bytes.NewReader(validated.Body))
-	response.ContentLength = int64(len(validated.Body))
-	copyResponseHeaders(writer.Header(), response.Header)
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(writer, response.Body)
-	return false
-}
-
-func isOpenCodeFreeTransientStatus(status int) bool {
-	switch status {
-	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529, 436:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -413,7 +318,6 @@ func (s *chatStreamCompletion) observe(data string) {
 func (s chatStreamCompletion) isEmpty() bool {
 	return s.finishLength && !s.contentPresent && !s.toolCallPresent
 }
-
 func (h *Chat) streamResponse(ctx context.Context, writer http.ResponseWriter, upstream *http.Response) {
 	commit := &router.CommitState{}
 	// Reasoning length sampling is gated on the request having asked for it;

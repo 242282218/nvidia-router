@@ -387,3 +387,28 @@ python scripts/test/check_web_dist_closure.py   # dist 静态资源闭包（无 
 - 切换前数据库备份为 `/opt/nvidia-router-releases/20260826-observability-37c81bc/backups/predeploy-20260826-observability-37c81bc/router.db`，大小 10,993,664 字节，权限 `600`，属主 `10001:10001`，SHA-256 为 `080676e98b913e8153390b198584964765060336352b34f302e291bab4747112`。
 - 发布后 app 实际 `running/healthy`、重启 0、OOM false；schema 最大版本 46，`request_logs.requested_capabilities` 存在；3756 live/ready、18080/18081/6020 healthz、根页及新 JS/CSS、公网 live 均 200；匿名 models/metrics 401；管理登录、只读 API、鉴权 metrics 200，登出 204；三项日志缓冲 Prometheus 指标已出现。
 - 本轮未执行真实模型请求、全模型矩阵、代理轮换或 CONNECT E2E；仅做部署和管理/健康验证，未超过 15 分钟模型测试约束。公网 HTTP 明文风险及代理出口波动告警保持既有状态。
+## 33. 2026-08-27 Codex/Cherry 兼容性与项目精简审计
+
+- 本轮只读分析与真实矩阵均限定在国内 `hangzhou2-2`，线上版本仍为 `20260826-vibe-codex-cherry-288be38`；未部署、未重启、未改远端配置、白名单或数据库。详细结论见 `docs/项目精简与优化分析报告-2026-08-27.md`。
+- 直接根因不是单纯 HTTP 转发失败，而是三类问题叠加：模型工具能力元数据的 `false/unknown` 硬门控会在上游调用前返回 501；Responses 是 stateless Responses→Chat 转换器，按设计拒绝 hosted/stateful/background 能力；代理出口/provider 瞬态会产生 502/503/超时和流截断。三类必须分开统计。
+- 当前稳定模型筛选必须先做两次最小请求；StepFun 两次 35 秒超时应排除深测。24 小时模型健康仅用于筛选，不等价于所有能力通过。Chat 矩阵和 Responses 矩阵需分别统计，不能合并成一个成功率。
+- 2026-08-27 Luna 矩阵安全标量：Chat 65 条中 200=50、501=2、502=12、timeout=1，稳定性子样本 10/15；Responses 41 条中 200=39、502=2，稳定性 14/15。OCF Nemotron 仍有 `upstream_protocol_error`/`upstream_stream_truncated`、JSON 不精确；NVIDIA Nemotron 的高档 reasoning、JSON/context 与长输出受出口波动影响；hy3 基础/Responses 稳定但工具被目录状态阻断。
+- 所有启用模型的 `context_length` 仍为 0/未声明；不能从一次约 8K 输入成功推断 32K 或 128K。小 `max_tokens` 下思考吃光预算导致 `finish=length` 或空可见内容时，应按模型 reasoning profile 解释，不得直接判作上下文失败。
+- Cherry 本机 MCP 初始化错误（参数缺失、OAuth/session 失效、连接拒绝）与路由器 501/502 是不同来源；排障时按客户端 MCP、路由器能力门控、上游代理/provider 三层对齐 request id 和错误类别。
+- Codex 普通 Responses、function tool、混合工具过滤路径已验证可用；非 function hosted tools、stateful response、background 等仍按设计返回结构化 400。不得把 custom provider 宣称为完整 Codex hosted tool 实现。
+- 精简方向：保留国内 XApi/CONNECT 代理池、Key 池、Responses 转换、鉴权审计；合并 Chat/Responses 共同执行器、OCF 两套 retry/status 生命周期和多后台 writer/scheduler。能力状态收敛为单一 `CapabilitySnapshot`，未知、推断、已验证、明确不支持必须可区分。
+- 复测方法：使用现有 `model_whitelist_audit_remote.py`、`live-model-matrix.py` 和 Responses 探针；PowerShell 传模型过滤器优先使用 `--models`，避免 JSON 引号丢失；每项控制在 15 分钟内，报告只保留状态码、错误类别、finish、TTFT、长度、工具数量/参数合法性和 AST 布尔值。
+- 本轮没有新增发布版本、数据库备份或回滚点；后续若实施重构或部署，必须重新生成唯一版本号，并记录镜像、Release、Git SHA、备份、回滚点和未完成验证项。继续禁止在 memory、日志、脚本或报告中记录任何凭据、完整上游 URL、响应正文或生成代码。
+
+## 34. 2026-08-28 数据面执行核心两阶段收敛（未部署）
+
+- 分支 `codex/optimize-executor-20260828` 仅包含本地代码/测试/设计文档，未提交、未部署、未重启远端服务；不得把本地通过当作线上验证。
+- 第一阶段新增 `internal/httpapi/v1/opencodefree_execution.go`，Chat 与 Responses 的 OpenCodeFree 路径共用一次重试、500ms 等待、404/429/5xx/436 状态映射、首字节提交门控和幂等 body 关闭；删除两套旧循环与重复状态映射。为保持旧 OCF stream 空流/[DONE] 公开契约，handler 不新增 `primeSSE`；真实流错误仍由原 `streamResponse*` 负责。
+- 第二阶段新增 `internal/httpapi/v1/request_prepare.go`，Chat/Responses 共用模型/stream 观测、Resolve、能力错误码、MarshalForWithOptions、reasoning source/effective wire 观测；协议解析、Responses 转换、provider 分支和模型门控保持各自边界。准备器直接借用协议 marshaller 返回的 body，不额外复制大请求。
+- 可复用门禁：`go test ./internal/httpapi/v1 -run 'TestOpenCodeFreeExecution' -count=1`、`go test ./internal/httpapi/v1 -run 'Test(PrepareModelRequest|Chat|Responses)' -count=1`、`go test ./internal/httpapi/v1 ./internal/router ./internal/upstream/opencodefree -count=1`、`go test ./...`、`go vet ./...`、`git diff --check`；本轮均通过。
+- 第二阶段新增测试应避免格式化包含 `sync.Mutex` 的 `observability.RequestState`（会触发 vet copylocks）；只断言并打印标量观测字段。远端下一步仍需按国内 `hangzhou2-2` 流程，先健康/端口/数据库检查，再稳定模型两次门控和短 Chat/Responses 矩阵；不得复用旧版本号。
+
+## 35. 2026-08-28 Responses OCF 流写入降级与最终门禁
+
+- Responses OCF 流经 `firstWriteTracker` 包装后必须提供 `Unwrap`，以透传 `ResponseWriter` 的可选能力；SSE 遇 `ErrWriteDeadlineUnsupported` 时应保留 watchdog 并降级为普通 `Flush`，不能把能力缺失误报为 500。
+- 本轮 `go test ./... -count=1`、`go vet ./...`、`git diff --check` 均通过；未部署、未重启。不得记录凭据、完整 URL 或响应正文。
